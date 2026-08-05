@@ -222,7 +222,13 @@ jobs:
     env:
       GYT_DEEPSEEK_API_KEY: ci-fake-deepseek-key
       GYT_MOONSHOT_API_KEY: ci-fake-moonshot-key
-      GYT_DATA_DIR: ${{ runner.temp }}/gyt-e2e-data
+      # 这里必须用 github.workspace 而不是 runner.temp:
+      # runner 上下文只在 step 级可用,写在 job 级 env 里会让**整个 workflow 文件不合法**,
+      # 表现是 GitHub 秒失败(0s)且不产生任何 job、check-runs API 也查不到注解,
+      # 极难从报错本身定位。2026-08-06 首次 push 就栽在这儿。
+      # 排查工具:docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -no-color
+      # job 级可用的上下文只有:github / inputs / matrix / needs / secrets / strategy / vars
+      GYT_DATA_DIR: ${{ github.workspace }}/.gyt-e2e-data
       # 冒烟不打真实模型接口,只验证进程与路由;缓存开着也无妨
       GYT_LLM_CACHE_ENABLED: "true"
 

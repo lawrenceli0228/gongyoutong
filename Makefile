@@ -24,7 +24,7 @@ DATA_UID       := 10001
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup dev test cov lint fmt up down e2e frontend
+.PHONY: help setup dev test cov lint lint-ci fmt up down e2e frontend
 
 help: ## 打印所有可用目标
 	@echo "工友通 · 可用命令:"
@@ -48,6 +48,13 @@ cov: ## 跑测试 + 覆盖率报告,低于 80% 直接失败(与 CI 同一把尺�
 
 lint: ## 静态检查(ruff,只报不改)
 	cd $(BACKEND_DIR) && $(UV) run ruff check .
+
+lint-ci: ## 校验 GitHub Actions 工作流语法(改过 .github/workflows/ 后必跑)
+	@# 为什么必须在本地跑:workflow 文件不合法时,GitHub 压根不会创建 job,
+	@# 表现为 0 秒失败、无日志、check-runs API 也查不到注解 —— 靠 CI 自己是抓不到的。
+	@# 典型例子:job 级 env 里写 $${{ runner.temp }}(runner 上下文只在 step 级可用)。
+	@docker run --rm -v "$(PWD):/repo" -w /repo rhysd/actionlint:latest -no-color \
+		.github/workflows/*.yml && echo "actionlint 通过"
 
 fmt: ## 自动格式化 + 可自动修的 lint 问题(ruff)
 	cd $(BACKEND_DIR) && $(UV) run ruff format . && $(UV) run ruff check --fix .
