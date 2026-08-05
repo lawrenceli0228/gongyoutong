@@ -41,8 +41,16 @@ services:
       dockerfile: Dockerfile
       target: app
       args:
-        # 海外网络可覆盖成 https://huggingface.co
-        HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+        # 权重下载源。这里的默认值必须与 backend/Dockerfile 的
+        # `ARG HF_ENDPOINT` 保持一致 —— 这是全仓唯一允许的重复点,
+        # 因为 compose 无法读取 Dockerfile 的 ARG 默认值。改一处必须改两处。
+        #
+        # 别改回 hf-mirror.com:它在 2026-08 已不再镜像内容,只回 308 跳转,
+        # 会让构建在下载权重那步必失败。完整排查记录见 Dockerfile 里的注释。
+        #
+        # 要临时换源:在 .env 里设 HF_ENDPOINT=...,或
+        # docker compose build --build-arg HF_ENDPOINT=https://<可用源> backend
+        HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
     image: gyt-backend:dev
     container_name: gyt-backend
 

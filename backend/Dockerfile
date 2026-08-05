@@ -50,8 +50,26 @@ ARG UV_VERSION=0.12.1
 ARG HUGGINGFACE_HUB_VERSION=1.26.0
 # 与 Settings.embedding_model 默认值一致
 ARG EMBEDDING_MODEL=BAAI/bge-m3
-# 国内镜像;海外构建可 --build-arg HF_ENDPOINT=https://huggingface.co
-ARG HF_ENDPOINT=https://hf-mirror.com
+# 权重下载源。
+#
+# 2026-08-06 实测记录(别再改回 hf-mirror,除非重新验证过):
+#   原本这里默认 https://hf-mirror.com,构建在 models 阶段必失败,
+#   报 huggingface_hub.errors.LocalEntryNotFoundError。
+#   根因不是网络不通 —— hf-mirror.com 已经不再镜像内容,
+#   它对 /api/models/... 只回一个 308 跳转到 huggingface.co:
+#       HTTP/1.1 308 Permanent Redirect
+#       Location: https://huggingface.co/api/models/BAAI/bge-m3
+#   huggingface_hub 的 HEAD 元数据探测在这个跨域跳转上拿不到结果,
+#   于是判定"既下不到、本地也没有",直接抛错。
+#   同一构建环境下做过 A/B 对照(两个 RUN 阶段,ENV 均在 import 前设好):
+#       官方 huggingface.co = 成功
+#       hf-mirror.com       = 失败 LocalEntryNotFoundError
+#
+# 因此默认改为官方源。若你的网络确实访问不了官方源(例如国内无代理),
+# 用 --build-arg 覆盖成一个**你亲自验证过能下载的**镜像:
+#     docker compose build --build-arg HF_ENDPOINT=https://<可用镜像> backend
+# 验证方法:见 backend/README.md「权重下载源失效时怎么办」。
+ARG HF_ENDPOINT=https://huggingface.co
 
 
 # -----------------------------------------------------------------------------
@@ -149,13 +167,33 @@ import os
 from huggingface_hub import snapshot_download
 
 repo_id = os.environ["GYT_BUILD_EMBEDDING_REPO"]
+endpoint = os.environ.get("HF_ENDPOINT") or "(默认 huggingface.co)"
 print(f"[构建] 开始预下载嵌入模型权重:{repo_id}", flush=True)
-print(f"[构建] 下载源:{os.environ.get('HF_ENDPOINT')}", flush=True)
-local_path = snapshot_download(
-    repo_id=repo_id,
-    ignore_patterns=["onnx/*", "imgs/*", "*.jpg", "*.jpeg", "*.png", "*.webp"],
-    max_workers=4,
-)
+print(f"[构建] 下载源:{endpoint}", flush=True)
+try:
+    local_path = snapshot_download(
+        repo_id=repo_id,
+        ignore_patterns=["onnx/*", "imgs/*", "*.jpg", "*.jpeg", "*.png", "*.webp"],
+        max_workers=4,
+    )
+except Exception as exc:
+    # 这里刻意把排查路径直接印在构建日志里 —— 这个失败点离演示日最近,
+    # 而报错原文(LocalEntryNotFoundError)会把人误导到"检查网络"的死胡同上。
+    print(
+        "\n[构建] 权重下载失败,镜像不会产出。\n"
+        f"[构建]   下载源:{endpoint}\n"
+        f"[构建]   错误:  {type(exc).__name__}: {exc}\n"
+        "[构建] 排查顺序:\n"
+        "[构建]   1. 先确认这个源是不是真的在提供文件,而不是只回一个跳转:\n"
+        f"[构建]      curl -sI {endpoint}/api/models/{repo_id} | head -3\n"
+        "[构建]      若看到 308/301 且 Location 指向别的域名,这个源就是失效的\n"
+        "[构建]      (hf-mirror.com 在 2026-08 就是这样坏掉的)。\n"
+        "[构建]   2. 换一个你验证过的源重建:\n"
+        "[构建]      docker compose build --build-arg HF_ENDPOINT=https://<可用源> backend\n"
+        "[构建]   3. 完全无法联网时,见 backend/README.md 的离线导入权重方案。\n",
+        flush=True,
+    )
+    raise
 print(f"[构建] 权重已固化到镜像层:{local_path}", flush=True)
 PY
 

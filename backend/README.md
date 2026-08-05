@@ -328,11 +328,99 @@ make down                           # 先规规矩矩收摊
 ### 镜像构建特别慢 / 卡在下载权重
 
 - 首次构建要拉 2.2GB 的 BGE-M3,**10~30 分钟是正常的**,只发生一次。
-- 卡住多半是没走镜像站:确认 `.env` 里有 `HF_ENDPOINT=https://hf-mirror.com`。
-  海外网络可以 `docker compose build --build-arg HF_ENDPOINT=https://huggingface.co`。
+- 卡住不等于慢。**先分清是"在下载"还是"下载源坏了"** —— 见下一节。
 - 看进度:`docker compose build backend --progress=plain`。
 - **改业务代码不该触发重下权重**。如果触发了,说明 `Dockerfile` 阶段 3(models)被改成
   依赖源码或 `FROM deps` 了 —— 那是这个文件的命根子,必须改回 `FROM base` 且不 COPY 源码。
+
+### 权重下载源失效时怎么办
+
+构建在 models 阶段报 `huggingface_hub.errors.LocalEntryNotFoundError`
+(原文是"Please check your connection")时,**十有八九不是你的网络问题**。
+
+这个报错会把人骗去查网络,但真实原因通常是:下载源还活着、能连通、
+甚至能返回 200,但它已经不再提供文件了,只回一个跳转。
+`huggingface_hub` 的元数据探测拿不到结果,就报"既下不到、本地也没有"。
+
+**2026-08-06 我们踩过的原型:** 默认源 `hf-mirror.com` 就是这么坏的 ——
+
+```bash
+curl -sI https://hf-mirror.com/api/models/BAAI/bge-m3 | head -3
+# HTTP/1.1 308 Permanent Redirect
+# Location: https://huggingface.co/api/models/BAAI/bge-m3    ← 跳到别的域名 = 这个源已失效
+```
+
+#### 三步排查
+
+**第一步:确认这个源是不是真在提供文件**
+
+```bash
+SRC=https://huggingface.co          # 换成你正在用的源
+curl -sI $SRC/api/models/BAAI/bge-m3 | head -3
+```
+
+- `200` → 源是好的,问题在别处(看第三步)
+- `308` / `301` 且 `Location` 指向**别的域名** → 这个源已经失效,换掉它
+- 连不上 / 超时 → 真的是网络,换源或挂代理
+
+**第二步:A/B 实测两个源到底哪个能下**
+
+别猜,直接在容器里跑一次真实下载(只拉一个几 KB 的 config.json,十几秒出结果):
+
+```bash
+docker run --rm python:3.12-slim-bookworm sh -c "
+  pip install -q huggingface_hub &&
+  HF_ENDPOINT=$SRC python -c \"
+from huggingface_hub import snapshot_download
+snapshot_download('BAAI/bge-m3', allow_patterns=['config.json'], cache_dir='/tmp/probe')
+print('这个源可用')\" "
+```
+
+注意:`HF_ENDPOINT` 必须在 **python 进程启动前**就设好。
+`huggingface_hub` 在 import 时把它读进模块常量,进程内再改环境变量是无效的
+(我们第一版探针就栽在这上面,得出了完全相反的结论)。
+
+**第三步:换成验证过的源重建**
+
+```bash
+docker compose build --build-arg HF_ENDPOINT=https://<你验证过的源> backend
+```
+
+固定下来就在根目录 `.env` 里设 `HF_ENDPOINT=...`(compose 会透传成 build arg)。
+
+#### 这个值住在哪(改之前先看这里)
+
+同一个值有两个地方要同步,**改一处必须改两处**:
+
+| 位置 | 角色 |
+|---|---|
+| `backend/Dockerfile` 的 `ARG HF_ENDPOINT` | 事实上的默认值,单独 `docker build` 时生效 |
+| `docker-compose.yml` 的 `args.HF_ENDPOINT` | 走 compose 时生效;compose 读不到 Dockerfile 的 ARG 默认值,只能重复一遍 |
+
+根目录 `.env` 里的 `HF_ENDPOINT` 是**覆盖**用的,默认注释掉。
+在那儿填值会盖掉上面两个默认值 —— 我们就是这样第二次构建失败的:
+Dockerfile 已经改成官方源了,`.env` 里还留着失效的 `hf-mirror.com`。
+
+#### 完全无法联网时:离线导入权重
+
+在一台能联网的机器上下好,再拷到构建机:
+
+```bash
+# 联网机器上
+pip install huggingface_hub
+python -c "
+from huggingface_hub import snapshot_download
+p = snapshot_download('BAAI/bge-m3',
+    ignore_patterns=['onnx/*','imgs/*','*.jpg','*.jpeg','*.png','*.webp'])
+print(p)"
+tar czf bge-m3.tar.gz -C ~/.cache/huggingface .
+
+# 构建机上:解到 ~/.cache/huggingface,构建时挂进去
+# 并在 Dockerfile 的 models 阶段把 snapshot_download 换成
+# COPY --from=<挂载源> 或 --mount=type=bind 的方式复用本地缓存
+```
+
+W2 若真遇到这种极端网络环境再动手改 Dockerfile,现在别提前埋这条路径。
 
 ### 磁盘不够 / `no space left on device`
 
