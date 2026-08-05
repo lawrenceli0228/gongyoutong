@@ -106,7 +106,15 @@ knowledge     cad          safety        schedule      report
 </section>
 
 <section id="s2"><h2><span class="no">02</span>开工前必须清掉的两件事</h2>
-<p><b>这两件不做完,W2 的验收门槛无从谈起。</b>建议 W2 第一天上午解决。</p>
+<p><b>这三件不做完,W2 的验收门槛无从谈起。</b>前两件建议 W2 第一天解决(都在你手上,同属共享基座),
+第三件是人工标注,两人周一就要开始滚动做。</p>
+
+<div class="callout"><b>顺带说清楚 T1 交付的测试边界,免得误会:</b>
+T1 的骨架代码测满了 —— 117 个测试函数、182 个执行用例、覆盖率 98%。
+但方案规划的 <b>7 条 E2E 只落了 1 条</b>(冷启动冒烟)、<b>3 套评测一套都没有</b>、集成测试也是 0。
+这不是欠账,是<b>没有可测对象</b>:T1 只有一个 ping 占位 Agent,英雄链/问答引用/CAD 查询这些
+E2E 测的东西还不存在。它们会随 W2/W3 的 Agent 一起落地 —— 这也是为什么评测框架要在 W2 第一天搭好,
+而不是等到要出分的那一刻才现写。</div>
 
 <div class="callout warn"><b>前置 A · 收口 TODO-5(半天,你做)</b><br>
 <code>gyt.core.llm</code> 的磁盘缓存与自研退避<b>目前只有单测在调</b>。真实路径是
@@ -117,6 +125,22 @@ knowledge     cad          safety        schedule      report
 (a) 自定义 <code>BaseChatModel</code> 子类覆写 <code>_agenerate</code> 转调 <code>llm.ainvoke</code>;
 (b) 换官方机制 <code>set_llm_cache</code> + 自实现 <code>BaseCache</code>。
 <br><b>验收:</b>补一条「真实 Agent 调用确实经过缓存/重试」的断言测试。没有这条测试,链路会静默失效到演示日。</div>
+
+<div class="callout warn"><b>前置 A2 · 搭评测跑分框架(约 2h,你做,做完队友直接用)</b><br>
+<code>backend/eval/</code> 目录<b>目前还不存在</b>。W2 的两个门槛(RAG≥80%、Safety≥80%)都要靠它出分,
+CI 里的 eval job 现在还是注释占位。
+<br><b>为什么必须一个人搭、不能各写各的:</b>两人各写一套「读数据集 → 逐条跑 → 算分 → 对比门槛 → 进 CI」
+的逻辑,等于重复劳动 + 两套口径不一致 —— 到时候「RAG 是 82%、Safety 是 79%」这两个数字根本没法横向比。
+这跟 <code>core/</code> 四件套是同一类东西:<b>共享基座,先行一步</b>(D12)。
+<br><b>做到这就停(别做成评测平台):</b>
+<ul>
+<li><code>eval/runner.py</code> —— 读一个 CSV/JSONL 数据集 → 对每条调被测 Agent → 交给一个可插拔的判分函数 → 汇总</li>
+<li>判分函数按套区分:RAG 判「答案正确 + 页码命中」,Safety 判「违规项分类是否命中标注」,路由判「是否派给了期望的 Agent」</li>
+<li>输出:总分 + 逐条明细(哪几条挂了,方便调提示词),低于门槛 <b>exit 非 0</b></li>
+<li>门槛值从 <code>config.py</code> 的 <code>eval_threshold_*</code> 读,<b>不要在脚本里再写一遍数字</b></li>
+<li>Makefile 加 <code>make eval</code>;CI 的 eval job 取消注释,W2 末生效</li>
+</ul>
+<b>顺手一起做的理由:</b>你 W2 第一天本来就在动 <code>core/</code>(收口 TODO-5),评测框架同属共享基座,一次做完。</div>
 
 <div class="callout warn"><b>前置 B · 评测集(各自准备自己 Agent 的,人工活)</b><br>
 新分工后<b>数据集责任跟着 Agent 走</b>,比原来清晰:
@@ -244,6 +268,7 @@ knowledge     cad          safety        schedule      report
 <tr><td><b>Safety 评测 ≥80%</b>(30 张标注图)</td><td>你</td><td><b>触发预案</b>:挂开源安全帽检测模型做前置增强</td></tr>
 <tr><td>CAD:GBK 样例解析正确 + 索引可复用</td><td>队友</td><td>W3 还有余量,但要在周末如实说出来</td></tr>
 <tr><td>Schedule:CRUD + 中文日期单测全过</td><td>你</td><td>纯逻辑,不过就是没写完</td></tr>
+<tr><td>评测框架可用 + CI 的 eval job 已取消注释生效</td><td>你(W2 第一天)</td><td>没有它,上面两个百分比就只是手工数出来的,不可复现也进不了门禁</td></tr>
 <tr><td><b>CI 保持全绿,覆盖率 ≥80%</b></td><td>两人</td><td>红了当天修,不许攒</td></tr>
 </table></div>
 <div class="callout"><b>门槛的意义是「当周暴露」,不是「当周为难人」。</b>
