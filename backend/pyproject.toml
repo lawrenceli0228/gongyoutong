@@ -1,0 +1,96 @@
+# 工友通(GYT)后端 —— 项目与工具链配置
+#
+# 依赖版本核实记录(2026-08-05,逐个 curl https://pypi.org/pypi/<包名>/json 取 info.version):
+#   langgraph            1.2.10   已进入 1.x,下界必须 >=1.x,写 >=0.6 会解析到旧大版本
+#   langgraph-supervisor 0.0.31   仍是 0.0.x,它自己要求 langgraph>=1.0.2,<2 且 langchain-core>=1.0,<2
+#   langchain            1.3.14   提供 langchain.agents.create_agent(core/base_agent.py 唯一入口);
+#                                 **必须显式声明** —— 整个依赖闭包里没有任何包会把它带进来
+#                                 (langgraph / langgraph-supervisor / langchain-openai / langgraph-api
+#                                  全都只依赖 langchain-core),漏了会在 import gyt.graph 时 ModuleNotFoundError
+#   langchain-openai     1.4.1    要求 langchain-core>=1.5.1,<2
+#   langchain-core       1.5.3
+#   pydantic             2.13.4
+#   pydantic-settings    2.14.2
+#   pytest               9.1.1
+#   pytest-asyncio       1.4.0    要求 pytest>=8.4,<10
+#   pytest-cov           7.1.0
+#   ruff                 0.16.1   0.x,上界卡到 <0.17,免得小版本换规则集炸 CI
+#   langgraph-cli        0.4.31   [inmem] 附加依赖需要 python>=3.11
+#
+# 约束策略:下界锁到已核实的当前版本(保证解析出的是 1.x 新 API),
+# 上界卡在下一个大版本(0.x 的包卡下一个小版本),避免不兼容升级偷偷进来。
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gyt"
+version = "0.1.0"
+description = "工友通 —— 建筑工地多智能体助手后端"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=1.2.10,<2",
+    "langgraph-supervisor>=0.0.31,<0.1",
+    # langchain 伞包:core/base_agent.py 的 `from langchain.agents import create_agent` 靠它。
+    # 别以为 langgraph 会顺手带进来 —— 它只依赖 langchain-core,不依赖伞包。
+    "langchain>=1.3.14,<2",
+    "langchain-openai>=1.4.1,<2",
+    "langchain-core>=1.5.3,<2",
+    "pydantic>=2.13.4,<3",
+    "pydantic-settings>=2.14.2,<3",
+    # langgraph-cli[inmem] 是主依赖而不是 dev 依赖 —— 这是被 backend/Dockerfile 逼出来的:
+    # 镜像用 `uv sync --no-dev` 安装,而容器的启动命令就是 `langgraph dev`,
+    # 放进 dev 组的话 --no-dev 会把它剥掉,镜像构建期的守卫会直接 exit 1。
+    "langgraph-cli[inmem]>=0.4.31,<0.5",
+]
+
+[dependency-groups]
+# 只放"线上镜像不需要"的东西。langgraph-cli 见上面主依赖里的说明,不要往这里搬。
+dev = [
+    "pytest>=9.1.1,<10",
+    "pytest-asyncio>=1.4.0,<2",
+    "pytest-cov>=7.1.0,<8",
+    "ruff>=0.16.1,<0.17",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gyt"]
+
+[tool.pytest.ini_options]
+# asyncio_mode=auto:async 测试函数不用挨个贴 @pytest.mark.asyncio
+asyncio_mode = "auto"
+# pytest-asyncio 1.x 不显式声明这个就会一直刷弃用告警
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+# CI 另外追加 --cov-fail-under=80 把覆盖率门槛真开起来;
+# 本地默认不带,免得别人单跑一个测试文件时被全局覆盖率卡住。
+addopts = "--cov=gyt --cov-report=term-missing"
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.coverage.run]
+omit = ["*/tests/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# E/W 代码风格, F 未定义或未使用, I import 排序, B 常见 bug 模式, UP 语法现代化
+select = ["E", "W", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# UP042 要求把 `class X(str, Enum)` 改写成 `enum.StrEnum`。
+# 但**共享接口契约 v1 明文规定**这两个枚举必须写成 `(str, Enum)`
+# (errors.ErrorCode / artifacts.ArtifactKind),它是跨泳道的硬约定,
+# 单条泳道无权改。所以这里给 lint 让路,而不是给契约让路。
+# 若哪天团队决定统一迁到 StrEnum,要同时改契约文档 + 这两处 + 本条豁免。
+"src/gyt/core/errors.py" = ["UP042"]
+"src/gyt/core/artifacts.py" = ["UP042"]

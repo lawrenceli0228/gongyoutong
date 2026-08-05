@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "gyt": "./src/gyt/graph.py:graph"
+  },
+  "env": "../.env",
+  "python_version": "3.11"
+}

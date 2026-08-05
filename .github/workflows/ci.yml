@@ -1,0 +1,374 @@
+# =============================================================================
+# 工友通(GYT)· 持续集成
+#
+# 流水线全貌:
+#
+#   push / PR → main
+#        │
+#        ├─► lint-shell ──┐   (秒级:shell 脚本语法自检,不需要任何依赖)
+#        │                │
+#        ├─► test ────────┤   (主关卡:ruff + pytest,覆盖率 <80% 直接红)
+#        │   3.11 / 3.12  │
+#        │                ▼
+#        └─────────────► e2e   (冒烟:后端能起来 + /ok 探活通过)
+#                              ├ 当前 continue-on-error,不拦合并
+#                              └ W3 接 Playwright 全量后去掉该开关
+#
+#        ( eval —— W2 启用,见文件末尾被注释掉的 job )
+#
+# -----------------------------------------------------------------------------
+# Action 版本核实记录(2026-08-05,curl api.github.com/repos/<仓库>/releases/latest):
+#   actions/checkout       v7.0.1   (2026-07-20)  → 用 @v7
+#   astral-sh/setup-uv     v9.0.0   (2026-07-21)  → 用 @v9
+#   actions/upload-artifact v7.0.1  (2026-04-10)  → 用 @v7
+# 注意:网上多数教程还停在 checkout@v3 / setup-uv@v1,那些是过期写法,别抄。
+# setup-uv v9 的输入项也已核实(action.yml):
+#   version / python-version / working-directory / enable-cache /
+#   cache-dependency-glob / cache-suffix 均存在且语义如下方使用方式。
+# -----------------------------------------------------------------------------
+# 刻意不做的事:
+#   · 不在 CI 里构建后端镜像 —— 那会触发 BGE-M3 约 2.2GB 权重下载,
+#     免费 runner 上又慢又容易超时。镜像正确性靠本地 `make up` 验证,
+#     真要上 CI 得先配自托管 runner 或权重缓存,属于赛后的事(见 TODOS.md)。
+#   · 不跑任何真实模型调用 —— 测试全部 mock,CI 里也只给假 Key。
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # 允许在 Actions 页面手点运行,排查 CI 本身的问题时很有用
+  workflow_dispatch:
+
+# 同一分支上连续推送时,取消还在跑的旧任务,省额度也省等待
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 最小权限:CI 只读代码,不需要写仓库的任何权限
+permissions:
+  contents: read
+
+env:
+  # 后端代码根目录(相对仓库根)
+  BACKEND_DIR: backend
+  # 覆盖率门槛。与 Makefile 的 COV_MIN、方案里的验收标准是同一把尺子,
+  # 三处必须一致,改这里就得同步改 Makefile。
+  COV_MIN: "80"
+  # 后端服务端口,与 backend/Dockerfile 的 EXPOSE、docker-compose.yml 一致
+  BACKEND_PORT: "2024"
+
+jobs:
+  # ===========================================================================
+  # job: lint-shell —— shell 脚本语法自检
+  # 只用 bash 自带的 -n(只解析不执行),不装任何东西,十几秒出结果。
+  # 目的:setup-frontend.sh 写错一个引号,不该等到有人真去装前端时才发现。
+  # ===========================================================================
+  lint-shell:
+    name: shell 脚本语法检查
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: bash -n 语法自检
+        run: |
+          set -euo pipefail
+          found=0
+          # -print0 / read -d '' 组合:文件名含空格也不会被拆开
+          while IFS= read -r -d '' script; do
+            echo "检查 ${script}"
+            bash -n "${script}"
+            found=$((found + 1))
+          done < <(find scripts -name '*.sh' -type f -print0)
+          if [ "${found}" -eq 0 ]; then
+            echo "::error::scripts/ 下没找到任何 .sh 文件,路径约定可能被改了"
+            exit 1
+          fi
+          echo "共检查 ${found} 个脚本,语法均正常"
+
+  # ===========================================================================
+  # job: test —— 主关卡(静态检查 + 单元/集成测试 + 覆盖率门槛)
+  #
+  # 双 Python 版本矩阵的理由:
+  #   3.11 是 pyproject 声明的下界(requires-python >=3.11),得保证真能跑;
+  #   3.12 是 backend/Dockerfile 实际使用的版本,线上跑的就是它。
+  #   只测一个的话,另一个迟早在最不该出事的时候出事。
+  # ===========================================================================
+  test:
+    name: 测试 (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # 一个版本挂掉时,另一个继续跑完 —— 一次就能看到是"共性问题"还是"版本问题"
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    defaults:
+      run:
+        # 后续所有 run 步骤都在 backend/ 下执行,不用每条命令都写 cd
+        working-directory: ${{ env.BACKEND_DIR }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 uv 与 Python
+        uses: astral-sh/setup-uv@v9
+        with:
+          # 让 uv 装/选定指定版本的 Python(内部设置 UV_PYTHON)
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          # action 自身的工作目录(它要在这里找 pyproject.toml / uv.lock)。
+          # 注意:defaults.run.working-directory 只作用于 run 步骤,
+          # 对 uses 步骤无效,所以这里必须再写一次。
+          working-directory: ${{ env.BACKEND_DIR }}
+          # 缓存键跟着依赖清单走:依赖没变就直接复用缓存
+          cache-dependency-glob: |
+            backend/pyproject.toml
+            backend/uv.lock
+          # 两个 Python 版本的缓存分开存,避免互相污染
+          cache-suffix: py${{ matrix.python-version }}
+
+      - name: 同步依赖
+        # 不加 --no-dev:CI 需要 dev 组里的 pytest / ruff。
+        # 有 uv.lock 时用 --frozen 保证装的就是锁定版本,顺便验证 lock 没过期;
+        # 尚未提交 lock 时退化为在线解析,并明确告警(骨架期的临时状态)。
+        run: |
+          set -euo pipefail
+          if [ -f uv.lock ]; then
+            uv sync --frozen
+          else
+            echo "::warning::未找到 backend/uv.lock,本次依赖为在线解析,构建结果不可复现。请尽快提交 lock 文件。"
+            uv sync
+          fi
+
+      - name: 静态检查 (ruff check)
+        run: uv run ruff check .
+
+      - name: 导入自检 —— 整张图能不能 import
+        # 为什么单列一步而不是靠单测:import gyt.graph 会连着走
+        # langchain(create_agent)与 langgraph_supervisor 两条 import 链,
+        # 依赖清单漏声明一个包(例如伞包 langchain)时,uv sync **不会报错**,
+        # 直到有人真去 import 才 ModuleNotFoundError —— 而 `langgraph dev`
+        # 和 Docker 容器启动走的正是这条路。让它成为一条不依赖测试覆盖的独立门禁。
+        # 图是模块级构建的,会真的要 API Key,所以这里给假 Key。
+        env:
+          GYT_DEEPSEEK_API_KEY: ci-fake-deepseek-key
+          GYT_MOONSHOT_API_KEY: ci-fake-moonshot-key
+          GYT_DATA_DIR: ${{ runner.temp }}/gyt-import-check
+        run: uv run python -c "import gyt.graph; print('图已构建:', gyt.graph.graph.name)"
+
+      - name: 格式检查 (ruff format --check)
+        # 已于 T1 合流时纳入门禁(2026-08-06):骨架跑过一次 `make fmt`,
+        # 24 个文件全部格式化到位,ruff check 与 pytest 同时保持全绿,
+        # 因此删掉了原来的 continue-on-error。格式从此和 lint 一样拦门。
+        run: uv run ruff format --check .
+
+      - name: 单元与集成测试 + 覆盖率门槛
+        env:
+          # 假 Key:让 Settings 校验和 get_chat_model 的"缺 Key"分支不误触发。
+          # 测试全部 mock,这些值永远不会真的发出去。真 Key 绝不进 CI。
+          GYT_DEEPSEEK_API_KEY: ci-fake-deepseek-key
+          GYT_MOONSHOT_API_KEY: ci-fake-moonshot-key
+          # 缓存/数据目录指到 runner 的临时区,别污染工作副本
+          GYT_DATA_DIR: ${{ runner.temp }}/gyt-data
+        # --cov / --cov-report=term-missing 已经写在 pyproject 的 addopts 里,
+        # 这里只补 CI 特有的两项:xml 报告(给产物)与真正的覆盖率门槛。
+        run: |
+          uv run pytest \
+            --cov-report=xml \
+            --cov-fail-under=${{ env.COV_MIN }}
+
+      - name: 上传覆盖率报告
+        # 失败时更需要看报告,所以用 always()
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-py${{ matrix.python-version }}
+          path: ${{ env.BACKEND_DIR }}/coverage.xml
+          # 测试在依赖同步阶段就挂掉时不会有 xml,别再叠一条红色噪音
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ===========================================================================
+  # job: e2e —— 冒烟(占位版)
+  #
+  # 现在只验证一件事:后端进程能起来,且 LangGraph 的 GET /ok 能通。
+  # 这一条就足以拦住"图注册写错 / 模块 import 崩了 / 启动参数不对"这类
+  # 单元测试照样全绿、但服务根本起不来的问题。
+  #
+  # W3 计划:换成 Playwright 全量流程(上传照片 → Safety 识图 → 出报告),
+  #          同时删掉下面的 continue-on-error,让它真正成为门禁。
+  # ===========================================================================
+  e2e:
+    name: 端到端冒烟 (占位)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # 单测都没过就没必要起服务了,省额度
+    needs: test
+    # 占位阶段不拦合并。W3 接入 Playwright 时删掉这一行。
+    continue-on-error: true
+
+    defaults:
+      run:
+        working-directory: ${{ env.BACKEND_DIR }}
+
+    env:
+      GYT_DEEPSEEK_API_KEY: ci-fake-deepseek-key
+      GYT_MOONSHOT_API_KEY: ci-fake-moonshot-key
+      GYT_DATA_DIR: ${{ runner.temp }}/gyt-e2e-data
+      # 冒烟不打真实模型接口,只验证进程与路由;缓存开着也无妨
+      GYT_LLM_CACHE_ENABLED: "true"
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 uv 与 Python
+        uses: astral-sh/setup-uv@v9
+        with:
+          # 与 backend/Dockerfile 的基础镜像版本对齐,冒烟要贴近线上
+          python-version: "3.12"
+          enable-cache: true
+          working-directory: ${{ env.BACKEND_DIR }}
+          cache-dependency-glob: |
+            backend/pyproject.toml
+            backend/uv.lock
+          cache-suffix: e2e
+
+      - name: 同步依赖
+        run: |
+          set -euo pipefail
+          if [ -f uv.lock ]; then uv sync --frozen; else uv sync; fi
+
+      - name: 后台启动 LangGraph 服务
+        # --no-reload   CI 里不需要热重载
+        # --allow-blocking  本地嵌入模型是同步阻塞调用,不放行会被框架拦下
+        # 日志重定向到文件,失败时整段打出来定位问题
+        run: |
+          set -euo pipefail
+          nohup uv run langgraph dev \
+            --host 127.0.0.1 \
+            --port "${{ env.BACKEND_PORT }}" \
+            --no-browser \
+            --no-reload \
+            --allow-blocking \
+            > "${{ runner.temp }}/langgraph.log" 2>&1 &
+          echo "$!" > "${{ runner.temp }}/langgraph.pid"
+          echo "已在后台拉起服务,PID=$(cat "${{ runner.temp }}/langgraph.pid")"
+
+      - name: 等待 /ok 探活通过
+        # 退避策略:每 3 秒探一次,最多 40 次(约 2 分钟)。
+        # 给这么久是因为首启要加载嵌入模型,冷启动本来就慢。
+        #
+        #   尝试 1 ──失败──► sleep 3 ──► 尝试 2 ──► ... ──► 尝试 40 ──► 超时打日志退出
+        #        └──成功──► 立刻继续
+        run: |
+          set -euo pipefail
+          readonly MAX_ATTEMPTS=40
+          readonly SLEEP_SECONDS=3
+          url="http://127.0.0.1:${{ env.BACKEND_PORT }}/ok"
+          for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+            if curl --silent --fail --max-time 5 "${url}" > /dev/null; then
+              echo "第 ${attempt} 次探活成功:${url}"
+              exit 0
+            fi
+            # 进程已经死了就别再等满两分钟
+            if ! kill -0 "$(cat "${{ runner.temp }}/langgraph.pid")" 2>/dev/null; then
+              echo "::error::后端进程已退出,服务启动失败"
+              break
+            fi
+            echo "第 ${attempt}/${MAX_ATTEMPTS} 次探活未通过,${SLEEP_SECONDS} 秒后重试"
+            sleep "${SLEEP_SECONDS}"
+          done
+          echo "::error::后端在约 $((MAX_ATTEMPTS * SLEEP_SECONDS)) 秒内未就绪"
+          echo "----- 服务日志 -----"
+          cat "${{ runner.temp }}/langgraph.log" || true
+          exit 1
+
+      - name: 冒烟断言 —— 图 "gyt" 已注册
+        # /assistants/search 返回已注册的图列表。
+        # 图 ID 必须与 backend/langgraph.json 和前端 NEXT_PUBLIC_ASSISTANT_ID 一致,
+        # 对不上就说明三处配置漂移了 —— 这正是冒烟要抓的东西。
+        run: |
+          set -euo pipefail
+          response="$(curl --silent --fail --max-time 10 \
+            -X POST "http://127.0.0.1:${{ env.BACKEND_PORT }}/assistants/search" \
+            -H 'Content-Type: application/json' \
+            -d '{"limit": 100}')"
+          echo "${response}"
+          echo "${response}" | grep -q '"gyt"' \
+            || { echo "::error::已注册的图里找不到 \"gyt\",检查 backend/langgraph.json"; exit 1; }
+          echo "冒烟通过:图 \"gyt\" 已正确注册"
+
+      - name: 收尾 —— 停服务并归档日志
+        if: always()
+        run: |
+          set -uo pipefail
+          pid_file="${{ runner.temp }}/langgraph.pid"
+          if [ -f "${pid_file}" ]; then
+            kill "$(cat "${pid_file}")" 2>/dev/null || true
+          fi
+          echo "----- 服务日志(完整) -----"
+          cat "${{ runner.temp }}/langgraph.log" 2>/dev/null || echo "(无日志)"
+
+# =============================================================================
+# job: eval —— 三套评测门槛(W2 启用,现在先注释占位)
+#
+# 为什么现在不开:评测集(数据 + 打分脚本)还没建,开了必然一直红,
+# 红久了大家就学会无视 CI —— 那比没有 CI 更糟。
+#
+# W2 启用步骤:
+#   1. 准备评测集与 backend/evals/run_eval.py(输出 JSON:{"score": 0.93, ...});
+#   2. 把下面整段的注释符去掉,并加到 e2e 的 needs 里(或保持并行);
+#   3. 三条门槛值不要写死在这里,一律从 gyt.config 的 get_settings() 读:
+#        eval_threshold_routing = 0.90   路由准确率
+#        eval_threshold_safety  = 0.80   安全隐患识别
+#        eval_threshold_rag     = 0.80   知识问答召回
+#      脚本自己比对阈值,不达标就以非零码退出,CI 只负责红/绿。
+#   4. 评测同样全程 mock 或走离线缓存,绝不在 CI 里烧真实额度。
+#
+# eval:
+#   name: 评测门槛
+#   runs-on: ubuntu-latest
+#   timeout-minutes: 30
+#   needs: test
+#   defaults:
+#     run:
+#       working-directory: ${{ env.BACKEND_DIR }}
+#   env:
+#     GYT_DEEPSEEK_API_KEY: ci-fake-deepseek-key
+#     GYT_MOONSHOT_API_KEY: ci-fake-moonshot-key
+#     GYT_DATA_DIR: ${{ runner.temp }}/gyt-eval-data
+#   steps:
+#     - name: 检出代码
+#       uses: actions/checkout@v7
+#     - name: 安装 uv 与 Python
+#       uses: astral-sh/setup-uv@v9
+#       with:
+#         python-version: "3.12"
+#         enable-cache: true
+#         working-directory: ${{ env.BACKEND_DIR }}
+#         cache-suffix: eval
+#     - name: 同步依赖
+#       run: uv sync --frozen
+#     - name: 路由准确率(门槛 eval_threshold_routing)
+#       run: uv run python -m gyt.evals.run_eval --suite routing
+#     - name: 安全隐患识别(门槛 eval_threshold_safety)
+#       run: uv run python -m gyt.evals.run_eval --suite safety
+#     - name: 知识问答召回(门槛 eval_threshold_rag)
+#       run: uv run python -m gyt.evals.run_eval --suite rag
+#     - name: 上传评测明细
+#       if: always()
+#       uses: actions/upload-artifact@v7
+#       with:
+#         name: eval-reports
+#         path: ${{ env.BACKEND_DIR }}/evals/reports/
+#         if-no-files-found: ignore
+# =============================================================================

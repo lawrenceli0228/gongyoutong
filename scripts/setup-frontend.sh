@@ -1,0 +1,360 @@
+#!/usr/bin/env bash
+# =============================================================================
+# 工友通(GYT)· 前端初始化脚本
+#
+# 干什么:把 LangChain 官方的 agent-chat-ui 拉到仓库的 frontend/ 目录,
+#         剥掉它自带的 .git(我们不要嵌套仓库/子模块),
+#         再补上三个上游没带、但本项目需要的文件:
+#           frontend/.env           指向本地后端 :2024,图 ID = gyt
+#           frontend/Dockerfile     docker-compose.yml 的 frontend 服务要用
+#           frontend/.dockerignore  别把 node_modules / .next 塞进构建上下文
+#
+# 为什么前端不进 git:上游仓库会持续更新,vendored 一整份进来只会让 diff 失控。
+#         需要时重跑本脚本即可,一分钟的事。
+#
+# 用法:
+#   bash scripts/setup-frontend.sh            # 常规:已存在则跳过,不覆盖
+#   bash scripts/setup-frontend.sh --force    # 强制:重新生成三个配置文件
+#                                             # (仍不会删已存在的 frontend/ 源码)
+#
+# 执行流程与幂等判定:
+#
+#      开始
+#        │
+#        ▼
+#   frontend/package.json 存在?
+#        │
+#    ┌───┴────────────────────────┐
+#   是│                          否│
+#     ▼                            ▼
+#  跳过 clone            frontend/ 目录存在且非空?
+#  (打印提示)                  │
+#     │                    ┌─────┴─────┐
+#     │                  是│          否│
+#     │                    ▼            ▼
+#     │              报错退出      clone 到临时目录
+#     │            (半成品目录,     ──► 删掉 .git
+#     │              让人工决定)    ──► 整体 mv 成 frontend/
+#     │                               (临时目录做中转:clone 失败时
+#     │                                不会留下半个 frontend/)
+#     └──────────────┬─────────────────┘
+#                    ▼
+#          写三个生成文件(逐个判断是否已存在)
+#                    │
+#                    ▼
+#             打印下一步中文提示
+#
+# 注意:仓库根目录路径含空格(buildMate AI Agent),
+#       本文件里所有路径变量必须带双引号,少一个引号就会在别人机器上炸。
+# =============================================================================
+
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# 可调常量(集中在顶部,下面的正文里不许再出现字面量)
+# 约定:BACKEND_URL / ASSISTANT_ID 必须与这些地方保持一致 ——
+#   ASSISTANT_ID  <-> backend/langgraph.json 里 graphs 的键
+#   BACKEND_URL   <-> backend/Dockerfile 的 EXPOSE 与 docker-compose.yml 的端口映射
+# -----------------------------------------------------------------------------
+readonly FRONTEND_REPO="https://github.com/langchain-ai/agent-chat-ui.git"
+readonly CLONE_DEPTH=1
+readonly BACKEND_URL="http://localhost:2024"
+readonly ASSISTANT_ID="gyt"
+readonly FRONTEND_PORT=3000
+# 前端基础镜像标签。选 22 是因为上游 package.json 里 @types/node 是 ^22,
+# 且 Next 15 官方支持 Node 20/22;换标签前先确认上游没升 Next 大版本。
+readonly NODE_IMAGE_TAG="22-slim"
+
+# -----------------------------------------------------------------------------
+# 路径解析:一律从脚本自身位置推导,允许在任意工作目录下执行
+# -----------------------------------------------------------------------------
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+readonly REPO_ROOT
+readonly FRONTEND_DIR="${REPO_ROOT}/frontend"
+
+# -----------------------------------------------------------------------------
+# 输出小工具(全中文,让不熟悉命令行的人也知道发生了什么)
+# -----------------------------------------------------------------------------
+log_step() { printf '\n[步骤] %s\n' "$1"; }
+log_ok() { printf '  ✓ %s\n' "$1"; }
+log_skip() { printf '  · %s\n' "$1"; }
+log_warn() { printf '  ! %s\n' "$1" >&2; }
+die() {
+  printf '\n[失败] %s\n' "$1" >&2
+  exit 1
+}
+
+# 把模板里的 @@占位符@@ 换成上面的常量。
+# 这样常量只在顶部写一遍,模板正文里改不出不一致。
+render_template() {
+  sed \
+    -e "s|@@BACKEND_URL@@|${BACKEND_URL}|g" \
+    -e "s|@@ASSISTANT_ID@@|${ASSISTANT_ID}|g" \
+    -e "s|@@FRONTEND_PORT@@|${FRONTEND_PORT}|g" \
+    -e "s|@@NODE_IMAGE_TAG@@|${NODE_IMAGE_TAG}|g"
+}
+
+# -----------------------------------------------------------------------------
+# 参数解析
+# -----------------------------------------------------------------------------
+FORCE_REGEN="false"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --force)
+      FORCE_REGEN="true"
+      shift
+      ;;
+    -h | --help)
+      sed -n '2,40p' "${BASH_SOURCE[0]}"
+      exit 0
+      ;;
+    *)
+      die "未知参数:$1(可用参数:--force / --help)"
+      ;;
+  esac
+done
+readonly FORCE_REGEN
+
+# -----------------------------------------------------------------------------
+# 步骤 0:前置检查
+# -----------------------------------------------------------------------------
+log_step "检查前置条件"
+command -v git >/dev/null 2>&1 || die "没找到 git 命令,请先安装 git 再重试。"
+log_ok "git 已就位"
+
+# -----------------------------------------------------------------------------
+# 步骤 1:拉取上游前端(幂等)
+# -----------------------------------------------------------------------------
+log_step "准备前端源码:${FRONTEND_DIR}"
+
+if [[ -f "${FRONTEND_DIR}/package.json" ]]; then
+  log_skip "frontend/ 已存在且看起来完整,跳过 clone。"
+  log_skip "想拉最新版就先删掉整个 frontend/ 目录再重跑本脚本。"
+else
+  # 目录存在但没有 package.json = 上次 clone 中途失败留下的残骸。
+  # 不自动删:里面可能有人手改过的东西,交给人判断,别替用户做决定。
+  if [[ -d "${FRONTEND_DIR}" ]] && [[ -n "$(ls -A "${FRONTEND_DIR}" 2>/dev/null)" ]]; then
+    die "frontend/ 目录已存在但缺少 package.json,像是上次没拉完。
+      请确认里面没有你要留的东西,然后手动执行:rm -rf \"${FRONTEND_DIR}\"
+      之后重跑本脚本。"
+  fi
+
+  # 先 clone 到同级临时目录,成功后再整体改名 ——
+  # 中途断网/Ctrl-C 都不会在 frontend/ 留下半成品(上面那条报错分支就是给它兜底的)。
+  TMP_CLONE_DIR="$(mktemp -d "${REPO_ROOT}/.frontend-clone.XXXXXX")"
+  # 单引号:让变量在 trap 触发时才展开,路径里有空格/特殊字符也不会被拆开
+  trap 'rm -rf -- "${TMP_CLONE_DIR}" 2>/dev/null || true' EXIT
+
+  printf '  正在下载 %s(浅克隆,只取最新一次提交)...\n' "${FRONTEND_REPO}"
+  git clone --depth "${CLONE_DEPTH}" --quiet "${FRONTEND_REPO}" "${TMP_CLONE_DIR}" \
+    || die "克隆失败。检查网络,或给 git 配好代理后重试。"
+
+  # 删掉上游的 .git:我们要的是一份代码快照,不是嵌套仓库。
+  # 留着会让根仓库把它当 submodule 处理,git status 一片混乱。
+  rm -rf -- "${TMP_CLONE_DIR}/.git"
+
+  mv -- "${TMP_CLONE_DIR}" "${FRONTEND_DIR}"
+  trap - EXIT
+  log_ok "前端源码已就位,并已剥离上游 .git"
+fi
+
+# -----------------------------------------------------------------------------
+# 步骤 2:生成本项目特有的配置文件
+#
+# write_generated <目标文件> —— 从标准输入读内容。
+# 已存在则跳过(除非 --force),绝不静默覆盖别人改过的文件。
+# -----------------------------------------------------------------------------
+# write_generated <目标文件> [always]
+#
+#   第二个参数传 "always" 时表示**安全相关生成物**,内容与模板不一致就无条件覆盖并告警。
+#   为什么要这个开关:上游 agent-chat-ui 自带一份只有 4 行的 .dockerignore,
+#   而"存在即跳过"意味着**本项目的加固版永远赢不了先到的上游弱版本**,
+#   只在日志里留一行没人看的"已存在,保留原样"。
+#   代价很实在:上游那 4 行只挡 .env,挡不住 Next.js 约定的 .env.local /
+#   .env.production.local —— 而上游 .env.example 里明说 LANGSMITH_API_KEY 就该放那儿。
+#   Dockerfile 的 `COPY . .` + `COPY --from=build /app /app` 会把它一路搬进最终镜像层,
+#   镜像给谁谁就能明文读出密钥,推到 registry 就再也收不回来。
+#
+#        目标文件存在?
+#          |
+#          +-- 否 -----------------------------► 写入
+#          +-- 是 --+-- FORCE_REGEN=true -------► 覆盖
+#                   +-- 模式=always 且内容不同 --► 覆盖 + 告警(安全兜底)
+#                   +-- 其余 --------------------► 跳过(不动用户改过的东西)
+write_generated() {
+  local target="$1"
+  local mode="${2:-keep}"
+  local name
+  name="$(basename -- "${target}")"
+
+  if [[ -f "${target}" ]] && [[ "${FORCE_REGEN}" != "true" ]]; then
+    if [[ "${mode}" != "always" ]]; then
+      cat >/dev/null # 把标准输入吃掉,免得上游 heredoc 写管道时收到 SIGPIPE
+      log_skip "${name} 已存在,保留原样(要重新生成就加 --force)"
+      return 0
+    fi
+
+    local rendered
+    rendered="$(render_template)"
+    if [[ "${rendered}" == "$(cat -- "${target}")" ]]; then
+      log_skip "${name} 已存在且与模板一致,无需改动"
+      return 0
+    fi
+    printf '%s\n' "${rendered}" >"${target}" || die "写入 ${target} 失败,检查目录权限。"
+    log_warn "${name} 与项目模板不一致(多半是上游自带的弱版本),已按安全要求覆盖。"
+    return 0
+  fi
+
+  render_template >"${target}" || die "写入 ${target} 失败,检查目录权限。"
+  log_ok "已生成 ${name}"
+}
+
+log_step "生成前端配置文件"
+
+# --- frontend/.env:Next.js 读取的运行/编译期变量 -----------------------------
+write_generated "${FRONTEND_DIR}/.env" <<'ENVFILE'
+# 工友通前端配置(由 scripts/setup-frontend.sh 生成)
+#
+# 这个文件不进 git —— 换机器重跑 scripts/setup-frontend.sh 就有了。
+# 注意:NEXT_PUBLIC_ 开头的变量会被编译进浏览器 JS 包,里面绝不能放密钥。
+# 真正的 API Key 只在后端的 .env 里(GYT_ 前缀),前端一个都不碰。
+
+# 后端 LangGraph 服务地址。
+# 这里必须写 localhost 而不是 compose 里的服务名 backend ——
+# 请求是浏览器发出来的,浏览器跑在宿主机上,解析不到 compose 内网的服务名。
+NEXT_PUBLIC_API_URL=@@BACKEND_URL@@
+
+# 图 ID,必须和 backend/langgraph.json 里 graphs 的键一字不差,否则前端连不上图。
+NEXT_PUBLIC_ASSISTANT_ID=@@ASSISTANT_ID@@
+ENVFILE
+
+# --- frontend/.dockerignore:缩小构建上下文 + 挡住密钥进镜像 ------------------
+# 标 always:这是安全相关生成物,上游自带的弱版本不许靠"先到先得"赢过它(见 write_generated)。
+write_generated "${FRONTEND_DIR}/.dockerignore" always <<'DOCKERIGNORE'
+# 由 scripts/setup-frontend.sh 生成(安全相关:内容与模板不一致时会被无条件覆盖)。
+# 目的一:别把几百兆的 node_modules 和 .next 传给 docker daemon,
+#         依赖在镜像里会用 pnpm 重新装一遍,传过去纯属浪费。
+# 目的二(更重要):把所有 .env 变体挡在构建上下文之外。
+#         Dockerfile 里 build 阶段 `COPY . .`、runner 阶段 `COPY --from=build /app /app`,
+#         是"整份搬运";只要 .env.local / .env.production.local 进了上下文,
+#         里面的 LANGSMITH_API_KEY 就会明文躺在最终镜像层里,谁拿到镜像谁能读。
+node_modules
+.next
+out
+.turbo
+.git
+.env
+.env.*
+!.env.example
+Dockerfile
+.dockerignore
+npm-debug.log*
+DOCKERIGNORE
+
+# --- frontend/Dockerfile:上游仓库自己不带,compose 的 frontend 服务要用 -------
+write_generated "${FRONTEND_DIR}/Dockerfile" <<'DOCKERFILE'
+# syntax=docker/dockerfile:1.7
+# =============================================================================
+# 工友通前端镜像(由 scripts/setup-frontend.sh 生成 —— 手改会在下次 --force 时丢失)
+#
+#   ┌────────┐    ┌────────┐    ┌──────────┐
+#   │  deps  │───▶│ build  │───▶│  runner  │
+#   │pnpm 装 │    │next 编译│    │ 非 root  │
+#   │ 依赖   │    │静态产物 │    │ 起服务   │
+#   └────────┘    └────────┘    └──────────┘
+#     只依赖         依赖源码       只拷产物
+#   package.json                  不再联网
+#   + lock 文件
+#
+# 关键点:NEXT_PUBLIC_* 是 Next.js 的**编译期**变量,会被烘进浏览器 JS 包。
+#         必须在 build 阶段用 ARG 给进来;只在 compose 的 environment 里写是无效的,
+#         页面会去连默认地址然后连接失败。这是本文件最容易踩的坑。
+# =============================================================================
+
+ARG NODE_IMAGE_TAG=@@NODE_IMAGE_TAG@@
+
+# -----------------------------------------------------------------------------
+# 公共底座:统一 Node 版本与包管理器
+# corepack 会按 package.json 里的 packageManager 字段激活对应版本的 pnpm,
+# 保证镜像里和本地开发用的是同一个 pnpm,不会出现 lock 文件版本不认的情况。
+# -----------------------------------------------------------------------------
+FROM node:${NODE_IMAGE_TAG} AS base
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    NEXT_TELEMETRY_DISABLED=1
+RUN corepack enable
+WORKDIR /app
+
+# -----------------------------------------------------------------------------
+# 阶段 1:deps —— 只装依赖
+# 先只 COPY 依赖清单,改业务代码不会让这一层失效(pnpm install 是最慢的一步)。
+# -----------------------------------------------------------------------------
+FROM base AS deps
+COPY package.json pnpm-lock.yaml ./
+RUN --mount=type=cache,target=/pnpm/store \
+    pnpm install --frozen-lockfile
+
+# -----------------------------------------------------------------------------
+# 阶段 2:build —— 编译 Next.js 产物
+# -----------------------------------------------------------------------------
+FROM base AS build
+
+# 由 docker-compose.yml 的 build.args 传入;这里的默认值只是让裸 docker build 也能用
+ARG NEXT_PUBLIC_API_URL=@@BACKEND_URL@@
+ARG NEXT_PUBLIC_ASSISTANT_ID=@@ASSISTANT_ID@@
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
+    NEXT_PUBLIC_ASSISTANT_ID=${NEXT_PUBLIC_ASSISTANT_ID} \
+    NODE_ENV=production
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN pnpm build
+
+# -----------------------------------------------------------------------------
+# 阶段 3:runner —— 最终运行镜像
+#
+# 这里整份拷 /app 而不是只挑 .next/public:
+# 上游仓库没有 public/ 目录,挑着拷会因为源不存在直接构建失败;
+# 而且上游随时可能加新的运行期资源目录。演示项目里,稳 > 省几百兆。
+# 不跑 pnpm prune --prod 同理:省下的体积换不来的确定性,不值。
+# -----------------------------------------------------------------------------
+FROM base AS runner
+ENV NODE_ENV=production
+
+# node 官方镜像自带 uid 1000 的 node 用户,直接复用,不另建
+COPY --from=build --chown=node:node /app /app
+USER node
+
+EXPOSE @@FRONTEND_PORT@@
+
+# --hostname 0.0.0.0:容器内必须监听所有网卡,只听 127.0.0.1 的话宿主机映射端口连不上
+CMD ["node_modules/.bin/next", "start", "--hostname", "0.0.0.0", "--port", "@@FRONTEND_PORT@@"]
+DOCKERFILE
+
+# -----------------------------------------------------------------------------
+# 步骤 3:收尾提示
+# -----------------------------------------------------------------------------
+log_step "完成"
+cat <<NEXTSTEPS
+
+  前端已就位:${FRONTEND_DIR}
+  它连的后端是 ${BACKEND_URL},图 ID 是 "${ASSISTANT_ID}"。
+
+  接下来二选一:
+
+  A. 容器方式(和演示环境一致)
+       docker compose --profile ui up -d --build
+       浏览器打开 http://localhost:${FRONTEND_PORT}
+       说明:frontend 服务挂在 ui profile 下,不加 --profile ui 只会起后端。
+
+  B. 本地开发方式(改前端代码时用,热重载快)
+       先起后端:  make dev
+       再起前端:  cd "${FRONTEND_DIR}" && pnpm install && pnpm dev
+
+  提醒:
+   · frontend/ 是从上游 clone 下来的快照,不进 git;换机器重跑本脚本即可。
+   · 后端的 API Key 在仓库根目录的 .env 里(GYT_ 前缀),别往前端塞密钥。
+
+NEXTSTEPS

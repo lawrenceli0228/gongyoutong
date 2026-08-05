@@ -1,0 +1,147 @@
+# =============================================================================
+# 工友通(GYT)本地编排
+#
+#   ┌────────────────────────────────────────────────────────────────────┐
+#   │  宿主机浏览器                                                       │
+#   │      │  http://localhost:3000                                      │
+#   │      ▼                                                             │
+#   │  ┌──────────────┐   浏览器直连 localhost:2024   ┌────────────────┐  │
+#   │  │  frontend    │ ─────────────────────────────▶│   backend      │  │
+#   │  │ agent-chat-ui│   (不走 compose 内网,因为请求  │ LangGraph 服务 │  │
+#   │  │  :3000       │    是从浏览器发出的)           │  :2024 /ok     │  │
+#   │  └──────────────┘                               └───────┬────────┘  │
+#   │        profiles: [ui]                                   │           │
+#   │        依赖 backend healthy                     ./data ◀─┘ 绑定挂载  │
+#   └────────────────────────────────────────────────────────────────────┘
+#
+# 常用命令:
+#   只起后端(默认):        docker compose up -d --build
+#   连前端一起起:          docker compose --profile ui up -d --build
+#   看健康状态:            docker compose ps
+#   停掉:                  docker compose down
+#
+# 首次使用顺序(缺一步就会失败):
+#   1. cp .env.example .env  并填入 GYT_DEEPSEEK_API_KEY / GYT_MOONSHOT_API_KEY
+#   2. mkdir -p data         (Linux 上还需 sudo chown 10001:10001 data,
+#                             否则容器内非 root 用户写不进这个绑定挂载目录)
+#   3. 需要前端时先执行:    bash scripts/setup-frontend.sh
+#                            —— frontend/ 目录不在仓库里,由该脚本 clone 生成;
+#                               没跑过它就带 --profile ui 启动会报"找不到构建上下文"。
+# =============================================================================
+
+name: gyt
+
+services:
+  # ---------------------------------------------------------------------------
+  # 后端:LangGraph 服务(Supervisor 图 + 各子 Agent)
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: app
+      args:
+        # 海外网络可覆盖成 https://huggingface.co
+        HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+    image: gyt-backend:dev
+    container_name: gyt-backend
+
+    # 用 tini 式 init 进程接管 PID 1,保证 Ctrl-C / docker stop 能干净退出,
+    # 也避免 langgraph dev 派生的子进程变僵尸。
+    init: true
+
+    ports:
+      # 绑定地址:宿主 IP:宿主端口:容器端口。2024 是 LangGraph 约定端口,前端 .env 也指向它。
+      #
+      # ⚠️ 必须写死 127.0.0.1,不能只写 "2024:2024"。
+      # Docker 的短语法不带地址时会发布到 0.0.0.0,也就是**整个局域网都能访问**。
+      # 而这个端口后面挂的是一个零鉴权、零限流的 Agent 执行端点
+      # (langgraph.json 里没有 "auth" 键,代码里也没有任何鉴权/CORS 限制),
+      # 容器里还揣着两家供应商的真实 API Key。演示日在赛场 Wi-Fi 上,
+      # 同网段任何人 curl 一下 /runs/stream 就能拿你的额度跑任务、
+      # POST /threads/search 就能读走工人刚传的照片和图纸。
+      # 浏览器走 localhost 的场景完全不受影响。
+      # 真要让别的设备(手机扫码演示)访问,请先加 backend/auth.py 并在
+      # langgraph.json 里声明 "auth": {"path": "./auth.py:auth"},别靠"没人知道我 IP"。
+      - "127.0.0.1:2024:2024"
+
+    env_file:
+      # required: false 需要 Docker Compose v2.24+:没建 .env 时 compose 自己不会报
+      # "env file not found",而是照常创建容器。
+      #
+      # 但要清楚它**不等于**"没 Key 也能跑起来":gyt.graph 是模块级建图(见 graph.py
+      # 顶部「结论三」),import 时就会要 API Key,缺 Key 会在图加载期抛
+      # MissingAPIKeyError → "Application startup failed" → 进程退出。
+      # 所以启动前必须先 `cp .env.example .env` 并填两个 Key(`make up` 会替你检查)。
+      - path: .env
+        required: false
+
+    environment:
+      # 容器内数据根目录,与 Settings.data_dir 对应
+      GYT_DATA_DIR: /app/data
+      # 运行期禁止联网拉权重 —— 权重已在构建期固化进镜像(冷启动零下载)
+      HF_HUB_OFFLINE: "1"
+
+    volumes:
+      # 上传件 / 产物 / LLM 缓存 / SQLite 全部落在这里,容器重建不丢数据。
+      # 演示彩排跑过的 LLM 缓存也在其中,断网复演靠它。
+      - ./data:/app/data
+
+    # 探活:LangGraph 服务自带 GET /ok。
+    # 不用 curl 是因为 slim 基础镜像没装 curl,用 venv 里的 python 更省一个依赖。
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request,sys;
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:2024/ok', timeout=5).status == 200 else 1)"
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      # 首次启动要加载 BGE-M3 权重进内存,给足冷启动时间,期间不算 unhealthy
+      start_period: 120s
+
+    # 用 on-failure 限次而不是 unless-stopped:
+    # 缺 Key / 图写坏了这类"启动即退出"的问题下,unless-stopped 会让容器无限重启,
+    # healthcheck 永远不 healthy,--profile ui 的前端因为 depends_on: service_healthy
+    # 也永远起不来 —— 用户只看到一片 Restarting,那句写好的中文错误提示被埋在
+    # `docker compose logs backend` 里没人看。限 3 次后停住,现象一眼可见。
+    restart: on-failure:3
+
+  # ---------------------------------------------------------------------------
+  # 前端:agent-chat-ui(LangChain 官方聊天壳)
+  #
+  # 该目录不在仓库里,先跑 scripts/setup-frontend.sh 把它 clone 下来。
+  # 用 profiles 隔离:默认 `docker compose up` 不会碰它,
+  # 因此 frontend/ 不存在时也不会让整个编排失败。
+  # 要启动前端时显式加 --profile ui。
+  # ---------------------------------------------------------------------------
+  frontend:
+    profiles:
+      - ui
+    build:
+      # Dockerfile 由 scripts/setup-frontend.sh 生成(上游仓库自己没带)
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Next.js 的 NEXT_PUBLIC_* 是编译期注入到浏览器包里的,必须在 build 阶段给,
+        # 只在 environment 里给运行期变量是没用的 —— 这是最常见的踩坑点。
+        NEXT_PUBLIC_API_URL: http://localhost:2024
+        NEXT_PUBLIC_ASSISTANT_ID: gyt
+    image: gyt-frontend:dev
+    container_name: gyt-frontend
+    init: true
+    ports:
+      # 同 backend:钉死回环地址,不要发布到 0.0.0.0(理由见 backend 的 ports 注释)
+      - "127.0.0.1:3000:3000"
+    environment:
+      NODE_ENV: production
+      # 注意:这里写 localhost 而不是 backend,因为请求是浏览器发起的,
+      # 浏览器跑在宿主机上,解析不到 compose 内网的服务名。
+      NEXT_PUBLIC_API_URL: http://localhost:2024
+      NEXT_PUBLIC_ASSISTANT_ID: gyt
+    depends_on:
+      backend:
+        # 等后端 /ok 真正探活通过再起前端,避免首屏一片连接失败
+        condition: service_healthy
+    restart: unless-stopped

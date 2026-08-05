@@ -2,3 +2,63 @@
 .env
 __pycache__/
 node_modules/
+
+# ---------------------------------------------------------------------------
+# 以下为 T1 骨架补充。上面 4 行是既有内容,保持不动。
+# ---------------------------------------------------------------------------
+
+# Python 虚拟环境与打包产物
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+*.py[cod]
+
+# uv 缓存(默认落在 ~/.cache/uv;若被配置到仓库内则一并忽略)
+.uv/
+.uv-cache/
+
+# 测试与覆盖率产物
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# 运行期数据目录:sqlite / chroma / uploads / artifacts / cache 一律不进 git。
+# 例外:演示数据集 data/demo/ 要留在仓库里(Y 泳道的照片、规范 PDF、DXF 落这儿)。
+# 约定:空目录用 .gitkeep 占位,否则 git 记不住目录本身,冷启动会缺目录。
+# 注意这里必须写 /data/* 而不是 /data/ —— 后者会让 git 根本不进入该目录,
+# 下面那条 ! 例外规则就永远不会生效。
+/data/*
+!/data/demo/
+
+# 本地(非容器)跑 `make dev` 时,langgraph CLI 的工作目录是 backend/,
+# Settings.data_dir 按工作目录解析,数据会落在 backend/data/。
+# 上面那条 /data/* 是根锚定的,管不到这里,必须单列一条,
+# 否则 sqlite / 产物 / LLM 缓存会被 git 当成新文件要求提交。
+backend/data/
+
+# langgraph dev 在工作目录下写的本地运行状态(内存库快照、热重载缓存)
+.langgraph_api/
+
+# 前端:整个目录都不进 git。
+# 它由 scripts/setup-frontend.sh 从上游 langchain-ai/agent-chat-ui clone 生成
+# (脚本会剥掉上游 .git)。vendored 一整份进来会让 diff 失控、评审失效,
+# 而且别人重跑脚本时会因为 frontend/package.json 已存在而静默跳过 clone,
+# 导致所有人长期用的是被冻结在某次提交里的旧代码。
+# 写 `/frontend/` 是根锚定:只忽略仓库根的那一个,不会误伤别处同名目录。
+# 构建产物(.next/ out/ .turbo/)已被这一条整体覆盖,不必再单列。
+/frontend/
+
+# 本地环境变量的各种变体(.env 已在开头忽略);.env.example 必须进 git
+.env.*
+!.env.example
+
+# 编辑器与系统
+.idea/
+.vscode/
+*.swp
