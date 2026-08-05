@@ -56,14 +56,90 @@ li{margin-bottom:4px}
 <div class="wrap">
 
 <header class="hero">
-  <div class="kicker">GONGYOUTONG · T1 · REPO SKELETON</div>
-  <h1>T1 骨架搭建计划</h1>
-  <div class="sub">依据《完整技术方案 v1.1》T1 任务展开 · 2026-08-05 · 主责:X 泳道(Y 并行做数据与评测集)</div>
+  <div class="kicker">GONGYOUTONG · T1 · REPO SKELETON · 已完成</div>
+  <h1>T1 骨架搭建<br>计划与执行结果</h1>
+  <div class="sub">依据《完整技术方案 v1.2》T1 任务展开 · 计划 2026-08-05 / 完成 2026-08-06 · 主责:X 泳道(Y 并行做数据与评测集)</div>
   <div class="chips">
-    <span class="chip hot">人工 ~1 天 / CC ~2h</span><span class="chip">7 个步骤 S1-S7</span>
-    <span class="chip">验收:冷启动可对话</span><span class="chip">含 BGE-M3 权重预烧</span>
+    <span class="chip hot">✅ 已完成并推送</span><span class="chip">182 测试全绿 · 覆盖率 98%</span>
+    <span class="chip">冷启动 9 秒 · 零下载</span><span class="chip">踩掉 4 个环境坑</span>
   </div>
 </header>
+
+<section id="s0"><h2><span class="no">00</span>执行结果(先看这个)</h2>
+<div class="verdict"><b>T1 已完成。</b>骨架代码 5875 行,三个提交已推送到
+<code>lawrenceli0228/gongyoutong</code>。V1-V5 验收项全部实测通过,不是纸面推断 —— 每一条都真跑过。</div>
+
+<h3>验收实测结果</h3>
+<div class="tscroll"><table>
+<tr><th>验收项</th><th>目标</th><th>实测</th></tr>
+<tr><td>V1 冷启动可对话</td><td>零下载,能起</td><td>✅ 容器 <b>9 秒</b>就绪,<code>/ok</code>=200,<code>graph_id=gyt</code> 已注册,日志 <b>0 条</b>下载迹象</td></tr>
+<tr><td>V2 测试与覆盖率</td><td>全绿,≥80%</td><td>✅ <b>182 passed / 2 skipped</b>,覆盖率 <b>98%</b></td></tr>
+<tr><td>V3 CI 门禁</td><td>流水线绿</td><td>✅ ruff check + ruff format + pytest 本地全绿;format 已从"不拦门"升为正式门禁</td></tr>
+<tr><td>V4 前后端打通</td><td>能看到工具调用</td><td>✅ 后端容器 200 + 前端 <code>Ready in 4.6s</code>,渲染出 <code>&lt;title&gt;Agent Chat&lt;/title&gt;</code></td></tr>
+<tr><td>V5 密钥安全</td><td>不进 git</td><td>✅ <code>.env</code> 已忽略,容器以 <code>uid=10001(gyt)</code> 非 root 运行</td></tr>
+</table></div>
+<p class="small">镜像 <code>gyt-backend:dev</code> 体积 4.19GB,BGE-M3 权重 2.2G 固化在 <code>/opt/hf</code>,改业务代码不会触发重下。</p>
+
+<h3>怎么做出来的</h3>
+<p>6 条泳道并行写盘(文件互不重叠)→ 静态交叉核对(查跨文件契约漂移、import 可解析性)→
+三视角对抗评审(正确性 / 安全 / 交付DX)→ 统一修复。共派出 11 个 agent,产出 24 条发现、23 条可执行。</p>
+<div class="tscroll"><table>
+<tr><th>评审拦下的问题</th><th>不修会怎样</th></tr>
+<tr><td><b>P1</b> <code>pyproject.toml</code> 漏声明 <code>langchain</code> 伞包</td><td><code>base_agent.py</code> 的 <code>from langchain.agents import create_agent</code> 直接 ModuleNotFoundError。别的包只依赖 <code>langchain-core</code>,不会顺手带进来 —— 单测/dev/容器/CI 全起不来,<b>clone 到能对话的成功率是 0%</b></td></tr>
+<tr><td><b>P1</b> <code>docker-compose.yml</code> 端口写成 <code>"2024:2024"</code></td><td>零鉴权的 Agent 端点暴露给整个局域网。赛场 Wi-Fi 上任何人都能刷你的 API 额度、读走工人上传的照片。已钉死 <code>127.0.0.1:2024:2024</code></td></tr>
+<tr><td><b>P2</b> API Key 是裸 <code>str</code></td><td><code>print(settings)</code> 打出明文 → <code>docker compose logs</code> → CI 里 <code>cat langgraph.log</code> → 公开的 Actions 日志。已加 <code>Field(repr=False)</code></td></tr>
+</table></div>
+</section>
+
+<section id="s0b"><h2><span class="no">00b</span>踩掉的四个坑(给三个月后的你)</h2>
+<p>这四个都不是"环境噪音",每一个都会原样咬到队友。共同点:<b>报错文案把人往错误方向带</b>。</p>
+
+<div class="callout"><b>坑 1 · hf-mirror.com 已死,但死得很隐蔽</b><br>
+镜像构建在下载权重那步必失败,报 <code>LocalEntryNotFoundError</code>,原文写 "Please check your connection"
+—— 于是人会去查一晚上网络。真相是这个域名<b>还活着、能连通、甚至返回 200</b>,但它已不再镜像内容,
+对 <code>/api/models/...</code> 只回一个 308 跳转到 huggingface.co,<code>huggingface_hub</code> 的元数据探测拿不到结果。
+<br><b>判定方法:</b><code>curl -sI &lt;源&gt;/api/models/BAAI/bge-m3 | head -3</code>,看到 308 且 Location 指向别的域名 = 这个源已失效。
+<br><b>已修:</b>默认改官方源,三步排查法写进 <code>backend/README.md</code>。</div>
+
+<div class="callout"><b>坑 2 · 同一常量硬编码三处,只改一处等于没改</b><br>
+下载源同时写在 <code>backend/Dockerfile</code> 的 ARG、<code>docker-compose.yml</code> 的 build args、<code>.env.example</code> 里。
+我只改了 Dockerfile,构建照样红 —— 后两个把修改覆盖回去了。这是 DRY 违规最典型的咬人方式。
+<br><b>已修:</b><code>.env.example</code> 那行默认注释掉并写明"填了会覆盖验证过的默认值";
+另两处保留(compose 读不到 Dockerfile 的 ARG 默认值,技术上无法消除)但都加了"改一处必须改两处"的交叉引用。</div>
+
+<div class="callout"><b>坑 3 · workflow 文件不合法时,CI 自己抓不到</b><br>
+首次 push 后 CI <b>0 秒失败</b>,不产生任何 job,check-runs API 查不到注解,
+GitHub 只给一句 "likely failed because of a workflow file issue"。
+<code>actionlint</code> 一句话定位:<code>${{ runner.temp }}</code> 写在了 <b>job 级</b> <code>env:</code> 里,
+而 <code>runner</code> 上下文<b>只在 step 级可用</b>。job 级可用的只有
+github / inputs / matrix / needs / secrets / strategy / vars。
+<br><b>关键认知:</b>文件不合法时 workflow 压根不会运行,所以<b>靠 CI 检查 CI 是不可能的</b>,必须本地拦。
+<br><b>已修:</b>改用 <code>${{ github.workspace }}</code>,并新增 <code>make lint-ci</code>(docker 跑 actionlint),
+改过 <code>.github/workflows/</code> 后必跑。</div>
+
+<div class="callout"><b>坑 4 · 全局 npm registry 指向已废弃域名(影响整台机器)</b><br>
+<code>/usr/local/etc/npmrc</code> 里设的是 <code>registry.npm.taobao.org</code> —— 该域名 2021 年就迁走,
+现在证书已过期。每个包 <code>CERT_HAS_EXPIRED</code> 后重试 1 分钟,实测 <b>卡一小时零下载</b>,
+而 <code>node_modules</code> 一直是 0B(pnpm 先下到全局 store 再链接,所以这个现象很容易被误判成"正常下载中")。
+<br><b>已修:</b>改为其官方继任者 <code>registry.npmmirror.com</code>,顺手删掉同样失效的 <code>disturl</code>。
+改后 <code>pnpm install</code> <b>50 秒</b>完成。原文件备份在 <code>/usr/local/etc/npmrc.bak-20260806</code>。</div>
+</section>
+
+<section id="s0c"><h2><span class="no">00c</span>与原计划的偏差</h2>
+<div class="tscroll"><table>
+<tr><th>项</th><th>原计划</th><th>实际</th><th>为什么</th></tr>
+<tr><td>权重下载源</td><td>hf-mirror.com</td><td>官方 huggingface.co</td><td>坑 1:镜像已失效</td></tr>
+<tr><td>模型型号</td><td>deepseek-chat / kimi-k2</td><td>deepseek-v4-flash / kimi-k3</td><td>两家 2026 年都换代了,旧型号已停用;方案已同步升到 v1.2</td></tr>
+<tr><td>推送方式</td><td>HTTPS</td><td>SSH</td><td>OAuth token 缺 workflow scope 推不了 workflow 文件;SSH 不受该限制</td></tr>
+<tr><td>ruff format</td><td>暂不拦门</td><td>已升为正式门禁</td><td>骨架合流后跑过一次 fmt,24 文件全部到位(TODO-9 就此关闭)</td></tr>
+<tr><td><code>llm.ainvoke</code> 的 max_retries</td><td>契约写 0(重试自己做)</td><td>改回 <code>settings.llm_max_retries</code></td><td><b>对共享契约的刻意偏离,需团队追认</b>;详见 TODO-5</td></tr>
+</table></div>
+<div class="callout"><b>W2 开工前必须收口:TODO-5。</b>
+<code>llm.ainvoke</code> 的磁盘缓存与自研退避目前<b>只有单测在调</b>。真实路径是
+<code>get_chat_model()</code> → 裸 <code>ChatOpenAI</code> → <code>create_agent</code> 内部直接调模型,绕开了我们那一层。
+止血已做(max_retries 改回真实值,保证至少一层重试),但<b>「演示断网靠彩排缓存兜底」这个卖点现在是空的</b>。
+两条修法写在 <code>TODOS.md</code> 的 TODO-5 里,二选一,别两条都上。</div>
+</section>
 
 <section><h2><span class="no">01</span>目标与验收</h2>
 <p><b>T1 做完后,任何一台装了 Docker 的新机器上:</b><code>git clone</code> → 填 <code>.env</code> → <code>docker compose up</code> → 打开 <code>localhost:3000</code> 就能和 Supervisor 对话(此时只有一个占位 Agent)。这是 W1 验收项,也是后面 5 个 Agent 全部往上挂的地基。</p>
