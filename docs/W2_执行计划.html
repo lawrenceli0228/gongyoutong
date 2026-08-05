@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>W2 执行计划 · 工友通</title>
+<style>
+:root{
+  --paper:#faf8f4; --ink:#1c1a17; --ink-soft:#57534b; --line:#e4e0d8;
+  --accent:#c2410c; --accent-soft:#fff1e8; --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#166534; --ok-soft:#ecf7ee; --warn:#a16207; --warn-soft:#fef8e7;
+  --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,monospace;
+  --sans:"PingFang SC","Noto Sans SC","Microsoft YaHei",-apple-system,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --paper:#191714; --ink:#ece8e1; --ink-soft:#a49e93; --line:#37332c;
+    --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+    --ok:#7fc98f; --ok-soft:#12241a; --warn:#e0b341; --warn-soft:#2a2110; }
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.75;font-size:15.5px}
+.wrap{max-width:940px;margin:0 auto;padding:0 28px 96px}
+header.hero{border-bottom:3px solid var(--ink);padding:56px 0 26px}
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.22em;color:var(--accent);text-transform:uppercase}
+h1{font-size:clamp(28px,4.6vw,40px);line-height:1.2;margin:10px 0 6px}
+.sub{color:var(--ink-soft);font-size:15px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.chip{font-family:var(--mono);font-size:12px;border:1.5px solid var(--ink);padding:3px 10px;border-radius:999px}
+.chip.hot{background:var(--ink);color:var(--paper)}
+section{margin-top:46px}
+h2{font-size:21px;margin-bottom:12px;display:flex;align-items:baseline;gap:12px}
+h2 .no{font-family:var(--mono);font-size:13px;color:var(--paper);background:var(--accent);padding:2px 8px;border-radius:4px;transform:translateY(-2px)}
+h3{font-size:16px;margin:20px 0 8px;color:var(--blue)}
+h4{font-size:14.5px;margin:16px 0 6px}
+p{margin-bottom:10px}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+th{font-family:var(--mono);font-size:12px;text-align:left;letter-spacing:.06em;color:var(--ink-soft);border-bottom:2px solid var(--ink);padding:6px 10px;white-space:nowrap}
+td{border-bottom:1px solid var(--line);padding:8px 10px;vertical-align:top}
+tr:hover td{background:var(--accent-soft)}
+.tscroll{overflow-x:auto}
+pre{font-family:var(--mono);font-size:12.5px;line-height:1.55;background:var(--blue-soft);border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:6px;padding:16px 18px;overflow-x:auto;margin:14px 0}
+code{font-family:var(--mono);font-size:.92em;background:var(--accent-soft);padding:1px 5px;border-radius:4px}
+pre code{background:none;padding:0}
+.callout{border:1.5px solid var(--ink);border-radius:8px;padding:13px 18px;margin:16px 0;background:var(--accent-soft)}
+.callout b:first-child{color:var(--accent)}
+.callout.warn{background:var(--warn-soft);border-color:var(--warn)}
+.callout.warn b:first-child{color:var(--warn)}
+.verdict{background:var(--ok-soft);border:2px solid var(--ok);border-radius:10px;padding:16px 20px;margin:18px 0}
+.lane{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+.lane .col{border:1px solid var(--line);border-top:4px solid var(--blue);border-radius:8px;padding:14px 18px}
+.lane .col.y{border-top-color:var(--accent)}
+.lane h4{font-family:var(--mono);font-size:13.5px;margin:0 0 8px}
+.small{font-size:13px;color:var(--ink-soft)}
+ul,ol{padding-left:22px;margin-bottom:10px}
+li{margin-bottom:4px}
+.step{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:8px;padding:14px 18px;margin:14px 0}
+.step .gate{font-size:13px;color:var(--ok);font-family:var(--mono);margin-top:8px}
+.footer{margin-top:64px;border-top:3px solid var(--ink);padding-top:14px;font-family:var(--mono);font-size:12px;color:var(--ink-soft)}
+@media(max-width:700px){.lane{grid-template-columns:1fr}}
+@media print{body{font-size:12px}pre{white-space:pre-wrap}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="kicker">GONGYOUTONG · W2 · 五个真 Agent 的前两个半</div>
+  <h1>W2 执行计划<br><span style="font-size:.62em;color:var(--ink-soft)">分工按队友意愿重排</span></h1>
+  <div class="sub">上游:《完整技术方案 v1.2》·《T1 骨架搭建计划》(已完成) · 2026-08-06</div>
+  <div class="chips">
+    <span class="chip hot">队友 → Knowledge + CAD</span><span class="chip">你 → Safety + Schedule</span>
+    <span class="chip">门槛:RAG≥80% · Safety≥80%</span><span class="chip">耦合点 2→1</span>
+  </div>
+</header>
+
+<section id="s1"><h2><span class="no">01</span>分工变更:为什么这个换法其实更好</h2>
+<p>队友要 CAD + Knowledge,于是整条泳道要重排。<b>这不是妥协,是改进</b> —— 新分法把两人的耦合点从 2 个降到 1 个。</p>
+
+<div class="tscroll"><table>
+<tr><th></th><th>原方案</th><th>新方案</th><th>影响</th></tr>
+<tr><td><b>队友</b></td><td>Safety · CAD · Report</td><td><b>Knowledge · CAD</b></td><td>主题变成「文档与图纸的解析检索」,一条线</td></tr>
+<tr><td><b>你</b></td><td>Supervisor · Knowledge · Schedule</td><td><b>Safety · Schedule · Report</b> + Supervisor/英雄链</td><td>主题变成「感知输入 → 报告产出 + 编排」</td></tr>
+<tr><td><code>ingest/</code></td><td>rag.py(你)/ cad.py(队友)<b>分属两人</b></td><td>两个文件<b>都归队友</b></td><td>✅ 离线管道单人所有,不用对齐格式</td></tr>
+<tr><td>巡检英雄链</td><td>safety(队友)→ report(队友),但图在你手里 —— <b>三方联调</b></td><td>safety · report · graph.py <b>全在你手里</b></td><td>✅ 演示主线零跨人协调</td></tr>
+<tr><td>共享文件冲突面</td><td><code>graph.py</code> + <code>ingest/</code> 两处</td><td>只剩 <code>graph.py</code> 的 <code>AGENT_REGISTRY</code> 各加一行</td><td>✅ 冲突点减半</td></tr>
+</table></div>
+
+<div class="callout"><b>唯一代价:</b>队友这条线不碰视觉、你这条线不碰 RAG。两人依然各自练到 Agent 开发的全部核心动作
+(prompt 外置、工具函数 + 错误信封、artifact 传引用、评测集驱动),但技术面各缺一块。
+<b>对策:</b>每周交叉 code review 对方一个 Agent —— 这条本来就在规矩里,现在更重要。</div>
+
+<h3>新的图拓扑</h3>
+<pre>
+                          supervisor  (你 · W3 接真实路由)
+                              │
+   ┌───────────┬──────────────┼──────────────┬───────────┐
+   ▼           ▼              ▼              ▼           ▼
+knowledge     cad          safety        schedule      report
+└─── 队友 ────┘            └────────────── 你 ──────────────┘
+ 规范检索    DXF 查询       kimi 识图     SQLite 任务   docx 落盘
+ +页码引用   +PNG 预览      +结构化清单                    ▲
+                              │                           │
+                              └──[确定性边,W3 接]─────────┘
+                                 「巡检英雄链」全在你这条线内
+</pre>
+</section>
+
+<section id="s2"><h2><span class="no">02</span>开工前必须清掉的两件事</h2>
+<p><b>这两件不做完,W2 的验收门槛无从谈起。</b>建议 W2 第一天上午解决。</p>
+
+<div class="callout warn"><b>前置 A · 收口 TODO-5(半天,你做)</b><br>
+<code>gyt.core.llm</code> 的磁盘缓存与自研退避<b>目前只有单测在调</b>。真实路径是
+<code>get_chat_model()</code> → 裸 <code>ChatOpenAI</code> → <code>create_agent</code> 内部直接调模型,绕开了那一层。
+<br><b>为什么必须现在做:</b>W2 一旦写进 5 个 Agent,这条链路就被冻结在错误状态上;
+而且「演示断网靠彩排缓存兜底」这个卖点<b>现在是空的</b>。
+<br><b>两条修法(<code>TODOS.md</code> TODO-5 有详细说明,二选一别都上)</b>:
+(a) 自定义 <code>BaseChatModel</code> 子类覆写 <code>_agenerate</code> 转调 <code>llm.ainvoke</code>;
+(b) 换官方机制 <code>set_llm_cache</code> + 自实现 <code>BaseCache</code>。
+<br><b>验收:</b>补一条「真实 Agent 调用确实经过缓存/重试」的断言测试。没有这条测试,链路会静默失效到演示日。</div>
+
+<div class="callout warn"><b>前置 B · 评测集(各自准备自己 Agent 的,人工活)</b><br>
+新分工后<b>数据集责任跟着 Agent 走</b>,比原来清晰:
+<div class="tscroll"><table>
+<tr><th>数据</th><th>谁准备</th><th>规格</th><th>给谁用</th></tr>
+<tr><td>施工规范文档</td><td>队友</td><td>10-20 份 PDF/docx,真实规范,带页码</td><td>Knowledge 入库</td></tr>
+<tr><td>RAG 问答对</td><td>队友</td><td>20 组:问题 + 正确答案 + 应命中的文档页码</td><td>RAG 评测门槛</td></tr>
+<tr><td>DXF 样例</td><td>队友</td><td>3-5 份,<b>其中至少 1 份是 GBK 编码的中文图纸</b></td><td>CAD 解析测试</td></tr>
+<tr><td>工地照片</td><td>你</td><td>30 张,标注:合规 / 违规(违规项类型)/ 非工地干扰项</td><td>Safety 评测门槛</td></tr>
+</table></div>
+<b>标注是纯人工活,约各半天,而且是 W2 末验收的硬前提 —— 越早开始越好,别拖到周四。</b>
+落盘位置 <code>data/demo/</code>(该目录在 git 里,评测集 CSV 放 <code>backend/eval/</code>)。</div>
+</section>
+
+<section id="s3"><h2><span class="no">03</span>W2 交付清单</h2>
+<div class="lane">
+<div class="col y"><h4>队友 · 检索线</h4>
+<b>① Knowledge Agent(完整交付)</b><br>
+<span class="small">规范问答,回答强制带来源文档 + 页码</span>
+<hr style="border:none;border-top:1px dashed var(--line);margin:10px 0">
+<b>② CAD 解析地基(不含查询工具)</b><br>
+<span class="small">DXF 离线解析 + 索引落盘 + GBK 样例过测。查询工具留到 W3</span>
+</div>
+<div class="col"><h4>你 · 感知与产出线</h4>
+<b>① Safety Agent(完整交付)</b><br>
+<span class="small">kimi-k3 识图,输出结构化隐患清单</span>
+<hr style="border:none;border-top:1px dashed var(--line);margin:10px 0">
+<b>② Schedule Agent(完整交付)</b><br>
+<span class="small">SQLite 任务 CRUD + 中文自然语言查询</span>
+</div>
+</div>
+
+<div class="callout"><b>为什么把 CAD 的解析地基提到 W2:</b>CAD 是最重的一个(约 3 人天)、是竞赛<b>亮点</b>、
+也是<b>未知数最多</b>的一个 —— DXF 实体种类繁杂、中文编码有坑、真实图纸千奇百怪。
+放到 W3 单周做完,一旦踩坑就没有恢复余地。把最有风险的<b>解析层</b>前移到 W2,
+问题在还有两周缓冲时暴露。W3 只剩上层查询工具,那部分是确定性工作。
+<br><b>替代方案</b>(不推荐):W2 每人只做一个 Agent,把 CAD 整个压到 W3 ——
+节奏更轻松,但把项目最大的不确定性堆在了最后。</div>
+</section>
+
+<section id="s4"><h2><span class="no">04</span>任务分解 · 队友泳道</h2>
+
+<div class="step"><h4>K1 · Knowledge Agent(约 2 人天 / CC 约 4h)</h4>
+照 <code>backend/README.md</code>「加一个新 Agent 的四步」走,顺序建议:
+<ol>
+<li><b><code>ingest/rag.py</code>(离线管道,先做这个)</b> —— 读 PDF/docx/md → 切块<b>并保留页码元数据</b>
+ → BGE-M3 向量化 → Chroma 落盘。<b>必须幂等</b>:重跑脚本不重算(D18)。
+ 权重已在镜像里,本地首次跑会从 <code>~/.cache/huggingface</code> 读。</li>
+<li><b><code>agents/knowledge/tools.py</code></b> —— <code>search_spec(query, top_k)</code>,
+ 每个工具 <code>@tool + @tool_guard</code>,返回 <code>Envelope</code>,
+ <code>data</code> 形如 <code>[{text, source, page, score}]</code>。检索为空要返回
+ <code>fail(EMPTY_RESULT, ...)</code> 而不是空列表 —— 让 Agent 明确知道"查不到"。</li>
+<li><b><code>prompt.md</code></b> —— 两条硬要求写进提示词:
+ <b>①回答必须列出来源文档名 + 页码;②检索为空时明确说「知识库里没有依据」,禁止编造。</b>
+ 这两条正是评测要打分的地方。</li>
+<li><b><code>__init__.py</code></b> —— <code>build_knowledge_agent()</code>,<code>purpose="text"</code></li>
+<li><b>挂载</b> —— <code>graph.py</code> 的 <code>AGENT_REGISTRY</code> 加一行,
+ <code>summary</code> 必填(它是 Supervisor 判断派活的唯一依据)</li>
+<li><b>评测</b> —— <code>backend/eval/</code> 下 20 组问答对 + 跑分脚本</li>
+</ol>
+<div class="gate">门槛:RAG 评测 ≥80%(答案正确 <b>且</b> 引用页码命中)· 单测覆盖检索/空结果/幂等三条路径</div>
+<p class="small"><b>深度上限(D6,做到这就停):</b>10-20 份文档,不做 GraphRAG、不做 rerank、不做微调。
+检索效果不好优先调切块大小与提示词,不要往上堆技术。</p>
+</div>
+
+<div class="step"><h4>K2 · CAD 解析地基(约 1.5 人天 / CC 约 6h)</h4>
+<b>本周只做解析与落索引,不做查询工具</b>(那是 W3)。
+<ol>
+<li><b><code>ingest/cad.py</code></b> —— ezdxf 读 DXF,提取:图层、尺寸标注、文字实体、块引用(构件)。
+ 结果<b>落盘成索引</b>(JSON 或 SQLite),后续查询只读索引不重解析(D18:算一次用多次)。</li>
+<li><b>GBK 编码探测</b> —— 中文 DXF 的经典坑,<b>必须有一份 GBK 样例的单测</b>,断言中文文本实体不乱码。</li>
+<li><b>坏输入处理</b> —— 损坏文件 / 非 DXF 伪装 → 返回 <code>fail(FILE_CORRUPT / FILE_UNSUPPORTED)</code>,
+ 中文人话报错。上传 DWG → 引导「请先离线转换为 DXF」(不做转换,见 TODO-4)。</li>
+<li><b>文件走 artifact</b> —— 图纸经 <code>artifacts.register()</code> 登记,后续只传 <code>artifact_id</code>,
+ <b>绝不把文件内容塞进消息状态</b>(契约 2)。</li>
+</ol>
+<div class="gate">门槛:GBK 样例正确解析 · 索引落盘后可复用 · 三类坏输入均返回合法 Envelope</div>
+<p class="small"><b>深度上限:</b>仅 DXF,不碰 DWG 二进制,不做 3D / BIM。</p>
+</div>
+</section>
+
+<section id="s5"><h2><span class="no">05</span>任务分解 · 你的泳道</h2>
+
+<div class="step"><h4>S1 · Safety Agent(约 2 人天 / CC 约 4h)</h4>
+<b>动手前先做一件事(T5 已记):pin 具体 kimi-k3 视觉型号,并实测它的图片大小/尺寸限制。</b>
+这个数直接决定压缩参数,不测就写等于埋雷。
+<ol>
+<li><b><code>agents/safety/tools.py</code></b> —— <code>analyze_site_photo(artifact_id)</code>:
+ 取 artifact → <b>超限先等比压缩</b>(<code>PHOTO_MAX_MB=10</code>,Pillow 压到 API 限制内,
+ 压不下去才友好拒绝,复审 D2 已定)→ 调 <code>get_chat_model("vision")</code> → 返回结构化 <code>Envelope</code>。</li>
+<li><b><code>prompt.md</code></b> —— 要求模型输出<b>结构化检查清单</b>:
+ <code>{违规项[], 位置描述, 风险等级, 整改建议}</code>。
+ 提示词里给足工地语境(安全帽、反光衣、高空作业、临边防护、消防通道),
+ 并明确「看不清或不确定时说不确定,不要猜」。</li>
+<li><b><code>__init__.py</code></b> —— <code>purpose="vision"</code>(<b>这条别写错,写成 text 会走到 DeepSeek,而它没有视觉能力</b>)</li>
+<li><b>挂载 + 评测</b> —— <code>AGENT_REGISTRY</code> 加一行;<code>eval/</code> 下 30 图跑分脚本</li>
+</ol>
+<div class="gate">门槛:30 图评测 ≥80% · 超限照片自动压缩后能通过 · 损坏图返回合法 Envelope</div>
+<div class="callout warn" style="margin:10px 0 0"><b>不达标怎么办(预案已定,别临时想):</b>
+挂一个开源安全帽检测模型做<b>前置增强</b> —— 先用检测模型框出人/安全帽/反光衣,
+把结构化结果连同原图一起喂给 kimi-k3,让它做判断和措辞。<b>绝不自训模型</b>(D6 上限)。</div>
+</div>
+
+<div class="step"><h4>S2 · Schedule Agent(约 1 人天 / CC 约 2h)</h4>
+最轻的一个,但有一处别忘:
+<ol>
+<li><b><code>db/</code></b> —— SQLite 建表。<b>预留 <code>project_id</code> 字段</b>(成本≈0,
+ 但赛后做多项目隔离时能省一半迁移工作量,TODO-3)。SQL 全参数化。</li>
+<li><b><code>tools.py</code></b> —— <code>create_task</code> / <code>list_tasks</code> /
+ <code>update_status</code> / <code>query_by_date</code>。
+ 列表查询<b>一次取全,禁止循环内逐条查</b>(N+1)。</li>
+<li><b>中文自然语言日期</b> —— 「下周三之前」「这个月底」要能解析。
+ 这是纯逻辑,<b>适合先写测试再写实现</b>,边界用例写足(跨月、跨年、模糊表达)。</li>
+<li><b><code>prompt.md</code> + 挂载</b></li>
+</ol>
+<div class="gate">门槛:CRUD 四条 + 中文日期解析 + 空结果,单测全覆盖</div>
+<p class="small"><b>深度上限:</b>站内提醒即可,不做短信 / 日历推送。</p>
+</div>
+</section>
+
+<section id="s6"><h2><span class="no">06</span>W2 验收门槛(周末对一次)</h2>
+<div class="tscroll"><table>
+<tr><th>门槛</th><th>负责人</th><th>不达标怎么办</th></tr>
+<tr><td><b>RAG 评测 ≥80%</b>(20 组问答对,答案对 + 页码命中)</td><td>队友</td><td>先调切块大小与提示词,别加技术栈</td></tr>
+<tr><td><b>Safety 评测 ≥80%</b>(30 张标注图)</td><td>你</td><td><b>触发预案</b>:挂开源安全帽检测模型做前置增强</td></tr>
+<tr><td>CAD:GBK 样例解析正确 + 索引可复用</td><td>队友</td><td>W3 还有余量,但要在周末如实说出来</td></tr>
+<tr><td>Schedule:CRUD + 中文日期单测全过</td><td>你</td><td>纯逻辑,不过就是没写完</td></tr>
+<tr><td><b>CI 保持全绿,覆盖率 ≥80%</b></td><td>两人</td><td>红了当天修,不许攒</td></tr>
+</table></div>
+<div class="callout"><b>门槛的意义是「当周暴露」,不是「当周为难人」。</b>
+达不到就当周说出来、当周触发预案 —— 最怕的是「感觉差不多」一路自我安慰到演示前一周,
+那时候没有任何工期可以救。这也是 D15 把评测门槛绑成里程碑验收条件的原因。</div>
+</section>
+
+<section id="s7"><h2><span class="no">07</span>协作规则(就这几条,记住)</h2>
+<div class="tscroll"><table>
+<tr><th>文件</th><th>规则</th><th>为什么</th></tr>
+<tr><td><code>graph.py</code> 的 <code>AGENT_REGISTRY</code></td><td><b>唯一共享写入点</b>。各加各的行,不重排别人的行,冲突了保留双方</td><td>W2 两人各加一行,是本周唯一的冲突面</td></tr>
+<tr><td><code>graph.py</code> 其它部分</td><td>只归你改</td><td>Supervisor 与英雄链是你的活</td></tr>
+<tr><td><code>core/</code> 四件套</td><td><b>改动需两人一致同意</b>,且不新增第 5 个文件</td><td>D12 护栏:防止两个学习者把基座盖成自建框架</td></tr>
+<tr><td><code>config.py</code></td><td>各自常量加在自己那一段(带注释分区),不动别人的</td><td>常量集中的代价就是共享写入,靠分区约定化解</td></tr>
+<tr><td><code>ingest/</code></td><td>全归队友</td><td>新分工的直接好处:离线管道单人所有</td></tr>
+<tr><td>提交前</td><td><code>make lint</code> + <code>make test</code> 必过;改过 workflow 还要 <code>make lint-ci</code></td><td>CI 红了大家都得停</td></tr>
+</table></div>
+<p><b>每周交叉 review:</b>你审队友一个 Agent,队友审你一个。新分工后两人技术面各缺一块,
+这条从「好习惯」升级成「必要动作」。</p>
+</section>
+
+<section id="s8"><h2><span class="no">08</span>风险与预案</h2>
+<div class="tscroll"><table>
+<tr><th>风险</th><th>征兆</th><th>预案</th></tr>
+<tr><td>Safety 识别率上不去</td><td>30 图评测卡在 60-70%</td><td>已定:挂开源检测模型做前置增强,不自训</td></tr>
+<tr><td>真实 DXF 千奇百怪,解析器覆盖不了</td><td>换一张图纸就报错</td><td><b>W2 前移就是为这个</b>。收窄到演示用的 3-5 份图纸,把「支持哪些实体类型」写进文档,别追求通用</td></tr>
+<tr><td>规范文档检索不准</td><td>引用页码经常错</td><td>先调切块(按条款切而非按固定长度),再调提示词。<b>不要上 rerank / GraphRAG</b></td></tr>
+<tr><td>评测集标注拖到周末</td><td>周四还没开始标</td><td>门槛无法验收 = W2 无法收尾。<b>周一就开始,每天标一点</b></td></tr>
+<tr><td>TODO-5 没收口</td><td>没人认领</td><td>断网兜底是空的,演示日一次 429 就翻车。<b>W2 第一天解决</b></td></tr>
+<tr><td>两人同时改 config.py 冲突</td><td>每次拉取都冲突</td><td>分区约定;冲突了保留双方,别删对方的常量</td></tr>
+</table></div>
+</section>
+
+<section id="s9"><h2><span class="no">09</span>W3 预览(知道自己的产出接到哪)</h2>
+<div class="lane">
+<div class="col y"><h4>队友 · W3</h4>
+CAD 上层:4 类查询工具(尺寸 / 构件 / 图层 / 位置)+ PNG 预览渲染 + prompt.md + 挂载。
+<br><span class="small">地基 W2 已打好,W3 是确定性工作。</span></div>
+<div class="col"><h4>你 · W3</h4>
+Report Agent(日报 + 巡检 2 模板,docx 必做 / PDF 尽量)→ <b>巡检英雄链确定性子图</b>
+(safety → report 硬编码边)→ Supervisor 真实路由 + 路由评测 ≥90%。
+<br><span class="small">英雄链全在你这条线内,不用跨人联调 —— 这是新分工最大的红利。</span></div>
+</div>
+<p><b>W3 末功能冻结</b>,7 条 E2E 全绿。W4 只做彩排、录屏、一键启动打磨,以及有余力时的云部署(TODO-1)。</p>
+<div class="verdict"><b>W2 的成功标准一句话:</b>两个带评测门槛的 Agent 真正达标、CAD 最有风险的解析层已经跑通、
+CI 全程没红过。做到这三条,W3 就只剩确定性工作。</div>
+</section>
+
+<div class="footer">工友通 · W2 执行计划 · 2026-08-06 · 上游:docs/工友通_AI_Agent_MVP_完整技术方案.html(v1.2)、docs/T1_骨架搭建计划.html(已完成)</div>
+
+</div>
+</body>
+</html>

@@ -15,7 +15,7 @@
 | 架构 | Supervisor 动态路由 + 1 条确定性「巡检英雄链」子图;慢操作离线预处理;传引用不传值 |
 | 质量 | 单测 24 + 集成 4 + E2E 7 + 评测集 3 套(带门槛);后端覆盖率 ≥80% 进 CI |
 | 演示 | 本地一键启动 + 三层兜底(热点/响应缓存/录屏);评测门槛=里程碑验收条件 |
-| 分工 | 双人垂直泳道:X 编排线、Y 多模态工具线,每人端到端 3 个 Agent,都在练 Agent 开发 |
+| 分工 | 双人垂直泳道:队友=检索线(Knowledge+CAD)、你=感知与产出线(Safety+Schedule+Report)+编排,每人端到端负责整个 Agent,都在练 Agent 开发 |
 
 ## 1. MVP 目标 → 实现载体映射
 
@@ -233,12 +233,24 @@ python-docx 渲染 → artifacts/ 落盘 → chat-ui 下载卡片
 
 ## 10. 里程碑与双人泳道
 
-| 周 | X(编排线) | Y(多模态工具线) | 验收(硬门槛) |
+> **2026-08-06 分工重排:** 队友希望做 CAD + Knowledge,泳道整体换过。
+> 原为「X=编排线 / Y=多模态线」的整块划分,现改为 **队友=检索线(Knowledge + CAD)、
+> 你=感知与产出线(Safety + Schedule + Report)+ Supervisor 与英雄链**。
+> 换法更优的原因:`ingest/` 两个文件都归队友(原本分属两人)、英雄链 safety→report
+> 连同 `graph.py` 全在一人手里,**两人的共享写入点从 2 处降到 1 处**(只剩
+> `AGENT_REGISTRY` 各加一行)。代价是队友不碰视觉、你不碰 RAG,靠每周交叉 review 补。
+> W2 详细计划见 `docs/W2_执行计划.html`。
+
+| 周 | 队友(检索线) | 你(感知与产出线 + 编排) | 验收(硬门槛) |
 |---|---|---|---|
-| W1 | 仓库+CI+compose;core/ 四件套;Supervisor+熔断 | 演示数据集(30 图标注/规范文档/DXF 含 GBK 样例);三套评测集定稿 | compose up 后 chat-ui 可对话;评测集就绪 |
-| W2 | Knowledge(ingest/rag.py+引用+防编造) | Safety(结构化清单+评测调优) | RAG≥80%;Safety≥80%(否则触发备案) |
-| W3 | Schedule;三处缓存;英雄链接线(与 Y 联调) | CAD(4 类查询+PNG+索引落盘);Report(2 模板) | 路由≥90%;7 条 E2E 全绿;**功能冻结** |
-| W4 | 评测回归+录屏+一键启动打磨 | 彩排×2+演示脚本+bug 修复 | 彩排 100% 通过;(余力)TODO-1 云部署 |
+| W1 | 演示数据集与评测集(各自准备自己 Agent 的) | 仓库+CI+compose;core/ 四件套;Supervisor+熔断 | ✅ 已完成:compose up 冷启动 9 秒可对话 |
+| W2 | Knowledge 完整交付;CAD 解析地基(DXF+GBK+索引落盘) | Safety 完整交付;Schedule 完整交付 | RAG≥80%;Safety≥80%(否则触发备案) |
+| W3 | CAD 上层(4 类查询+PNG 预览) | Report(2 模板);英雄链确定性子图;Supervisor 真实路由;三处缓存 | 路由≥90%;7 条 E2E 全绿;**功能冻结** |
+| W4 | 彩排×2+演示脚本+bug 修复 | 评测回归+录屏+一键启动打磨 | 彩排 100% 通过;(余力)TODO-1 云部署 |
+
+> **W2 开工前两个前置(见 W2 计划 §02):** ① 收口 TODO-5(缓存/重试不在真实执行路径,
+> 「断网兜底」目前是空的);② 评测集标注 —— 新分工后数据集责任跟着 Agent 走:
+> 规范文档与 DXF 样例归队友,30 张标注照片归你。
 
 **并行依赖表:**
 
@@ -251,7 +263,7 @@ python-docx 渲染 → artifacts/ 落盘 → chat-ui 下载卡片
 | 英雄链 | graph.py + safety + report | Supervisor、Safety、Report |
 | E2E 全绿 | tests/e2e | 全部 Agent |
 
-**冲突旗标:** `graph.py` 仅 X 修改;`ingest/` 按文件分人;英雄链联调是唯一的双人协作点,排在 W3 末。两条泳道每周交叉 code review 对方一个 Agent——学习面覆盖全部 6 个(双人都练 Agent 的目标由此保证)。
+**冲突旗标(按新分工更新):** 唯一的共享写入点是 `graph.py` 的 `AGENT_REGISTRY`——两人各加一行,约定「只加自己那行、不重排他人行、冲突了保留双方」;`graph.py` 其余部分仅你修改;`ingest/` 两个文件全归队友;`core/` 四件套改动需两人一致同意(D12 护栏);`config.py` 各自常量加在带注释的分区里。英雄链不再是跨人协作点(safety/report/graph.py 同属一人)。两人每周交叉 code review 对方一个 Agent——新分工下两人技术面各缺一块(队友不碰视觉、你不碰 RAG),这条从「好习惯」升级为「必要动作」。
 
 ## 11. 安全基线(不论部署形态,一律执行)
 

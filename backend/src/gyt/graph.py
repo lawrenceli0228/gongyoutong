@@ -95,8 +95,18 @@ API 核实结论（2026-08-05 实测，逐个从 PyPI 下 wheel 解包读源码�
       ┌──────────┬────────────┬───┴────────┬──────────┬──────────┐
       ▼          ▼            ▼            ▼          ▼          ▼
     ping     knowledge     schedule      safety      cad      report
-    (T1)     └── X 泳道 W2 ──┘            └───── Y 泳道 W2/W3 ─────┘
-             规范检索+页码    SQLite 任务    kimi 识图   DXF 查询   docx 落盘
+    (T1)     规范检索+页码   SQLite 任务   kimi 识图   DXF 查询  docx 落盘
+             队友 · W2      你 · W2       你 · W2    队友       你 · W3
+                                                     W2 打地基
+                                                     W3 出查询
+
+    注：2026-08-06 分工按队友意愿重排（原为「X=编排线 / Y=多模态线」的整块划分）。
+    现在两条线是：队友＝检索线(knowledge + cad)，你＝感知与产出线(safety +
+    schedule + report) 外加 supervisor 与英雄链。上面每列各自标注归属，
+    不再画整块的泳道括号——因为两人的 Agent 在图上是交错的。
+    这么换的直接好处：ingest/ 两个文件都归队友（原本分属两人），
+    且英雄链 safety→report 连同本文件全在一人手里，演示主线零跨人联调。
+    详见 docs/W2_执行计划.html。
 
     「巡检英雄链」（确定性子图，W3 接入，位置就在下面 build_graph() 里）：
 

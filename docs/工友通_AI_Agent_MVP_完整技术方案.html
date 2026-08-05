@@ -96,7 +96,7 @@ a{color:var(--blue)}
 <tr><td><b>架构</b></td><td>Supervisor 动态路由 + 确定性「巡检英雄链」子图;慢操作离线预处理;大对象传引用</td></tr>
 <tr><td><b>质量</b></td><td>单测 24 + 集成 4 + E2E 7 + 评测 3 套;覆盖率 ≥80% 进 CI;评测门槛 = 里程碑验收</td></tr>
 <tr><td><b>演示</b></td><td>docker-compose 一键启动 + 三层兜底(热点 / 响应缓存 / 录屏),彩排 ×2 通过率 100%</td></tr>
-<tr><td><b>分工</b></td><td>双人垂直泳道,每人端到端 3 个 Agent(提示词+工具+测试),两人都在练 Agent 开发</td></tr>
+<tr><td><b>分工</b></td><td>双人垂直泳道:队友=检索线(Knowledge+CAD)、你=感知与产出线(Safety+Schedule+Report)+编排。每人端到端负责整个 Agent(提示词+工具+测试+评测),两人都在练 Agent 开发</td></tr>
 </table></div>
 <h3>MVP 评分能力 → 实现载体</h3>
 <div class="tscroll"><table>
@@ -286,10 +286,12 @@ python-docx 渲染 → artifacts/ 落盘 → 下载卡片
 
 <section id="s10"><h2><span class="no">10</span>里程碑与双人泳道</h2>
 <div class="lane">
-<div class="col"><h4>X · 编排线</h4>
-W1 仓库+CI+core四件套+Supervisor熔断<br>W2 Knowledge(RAG+引用+防编造)<br>W3 Schedule+三处缓存+英雄链接线<br>W4 评测回归+录屏+一键启动打磨</div>
-<div class="col y"><h4>Y · 多模态工具线</h4>
-W1 演示数据集+30图标注+评测集定稿<br>W2 Safety(结构化清单+评测调优)<br>W3 CAD(4类查询+PNG)+Report(2模板)<br>W4 彩排×2+演示脚本+bug修复</div>
+<div class="col y"><h4>队友 · 检索线</h4>
+W1 各自准备自己 Agent 的评测数据<br>W2 Knowledge 完整交付 + CAD 解析地基(DXF/GBK/索引)<br>W3 CAD 上层:4 类查询 + PNG 预览<br>W4 彩排×2 + 演示脚本 + bug 修复</div>
+<div class="col"><h4>你 · 感知与产出线 + 编排</h4>
+W1 ✅ 仓库+CI+compose+core 四件套+Supervisor<br>W2 Safety 完整交付 + Schedule 完整交付<br>W3 Report + 英雄链子图 + Supervisor 真实路由 + 三处缓存<br>W4 评测回归 + 录屏 + 一键启动打磨</div>
+</div>
+<div class="callout"><b>2026-08-06 分工重排:</b>队友希望做 CAD + Knowledge,泳道整体换过。原为「X=编排线 / Y=多模态线」,现为 <b>队友=检索线、你=感知与产出线+编排</b>。这么换更优:<code>ingest/</code> 两个文件都归队友(原本分属两人)、英雄链 safety→report 连同 <code>graph.py</code> 全在一人手里,<b>共享写入点从 2 处降到 1 处</b>(只剩 <code>AGENT_REGISTRY</code> 各加一行)。代价是队友不碰视觉、你不碰 RAG,靠每周交叉 review 补。详见 <code>docs/W2_执行计划.html</code>。</div>
 </div>
 <div class="tscroll"><table>
 <tr><th>周</th><th>硬验收门槛</th></tr>
