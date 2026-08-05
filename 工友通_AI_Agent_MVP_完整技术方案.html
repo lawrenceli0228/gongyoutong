@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>工友通 AI Agent MVP · 完整技术方案</title>
+<style>
+:root{
+  --paper:#faf8f4; --ink:#1c1a17; --ink-soft:#57534b; --line:#e4e0d8;
+  --accent:#c2410c; --accent-soft:#fff1e8; --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#166534; --ok-soft:#ecf7ee; --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,monospace;
+  --sans:"PingFang SC","Noto Sans SC","Microsoft YaHei",-apple-system,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --paper:#191714; --ink:#ece8e1; --ink-soft:#a49e93; --line:#37332c;
+    --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+    --ok:#7fc98f; --ok-soft:#12241a; }
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.75;font-size:15.5px}
+.wrap{max-width:920px;margin:0 auto;padding:0 28px 96px}
+header.hero{border-bottom:3px solid var(--ink);padding:64px 0 28px;margin-bottom:8px;
+  background:linear-gradient(transparent 96%, var(--line) 96%) 0 0/100% 28px}
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.22em;color:var(--accent);text-transform:uppercase}
+h1{font-size:clamp(30px,5vw,44px);line-height:1.2;letter-spacing:.01em;margin:10px 0 6px}
+.sub{color:var(--ink-soft);font-size:15px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.chip{font-family:var(--mono);font-size:12px;border:1.5px solid var(--ink);padding:3px 10px;border-radius:999px}
+.chip.hot{background:var(--ink);color:var(--paper)}
+nav.toc{display:flex;flex-wrap:wrap;gap:4px 14px;padding:14px 0;border-bottom:1px solid var(--line);
+  font-family:var(--mono);font-size:12.5px;position:sticky;top:0;background:var(--paper);z-index:9}
+nav.toc a{color:var(--ink-soft);text-decoration:none}
+nav.toc a:hover{color:var(--accent)}
+section{margin-top:52px}
+h2{font-size:22px;margin-bottom:14px;display:flex;align-items:baseline;gap:12px}
+h2 .no{font-family:var(--mono);font-size:13px;color:var(--paper);background:var(--accent);
+  padding:2px 8px;border-radius:4px;transform:translateY(-2px)}
+h3{font-size:16.5px;margin:22px 0 8px;color:var(--blue)}
+p{margin-bottom:10px}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+th{font-family:var(--mono);font-size:12px;text-align:left;letter-spacing:.06em;color:var(--ink-soft);
+  border-bottom:2px solid var(--ink);padding:6px 10px;white-space:nowrap}
+td{border-bottom:1px solid var(--line);padding:8px 10px;vertical-align:top}
+tr:hover td{background:var(--accent-soft)}
+.tscroll{overflow-x:auto}
+pre{font-family:var(--mono);font-size:12.5px;line-height:1.55;background:var(--blue-soft);
+  border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:6px;
+  padding:16px 18px;overflow-x:auto;margin:14px 0}
+code{font-family:var(--mono);font-size:.92em;background:var(--accent-soft);padding:1px 5px;border-radius:4px}
+pre code{background:none;padding:0}
+.callout{border:1.5px solid var(--ink);border-radius:8px;padding:14px 18px;margin:16px 0;background:var(--accent-soft)}
+.callout b:first-child{color:var(--accent)}
+.ok{color:var(--ok);font-weight:600}
+.verdict{background:var(--ok-soft);border:2px solid var(--ok);border-radius:10px;padding:18px 22px;margin:20px 0}
+.verdict h2{margin:0 0 6px}
+ul,ol{padding-left:22px;margin-bottom:10px}
+li{margin-bottom:4px}
+.lane{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:14px 0}
+.lane .col{border:1px solid var(--line);border-top:4px solid var(--blue);border-radius:8px;padding:12px 16px}
+.lane .col.y{border-top-color:var(--accent)}
+.lane h4{font-family:var(--mono);font-size:13px;margin-bottom:6px}
+.small{font-size:13px;color:var(--ink-soft)}
+.footer{margin-top:72px;border-top:3px solid var(--ink);padding-top:14px;font-family:var(--mono);
+  font-size:12px;color:var(--ink-soft)}
+a{color:var(--blue)}
+@media(max-width:680px){.lane{grid-template-columns:1fr}}
+@media print{nav.toc{position:static}body{font-size:12px}pre{white-space:pre-wrap}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="kicker">GONGYOUTONG · MULTI-AGENT MVP · ENG-REVIEWED PLAN</div>
+  <h1>工友通 AI Agent MVP<br>完整技术方案</h1>
+  <div class="sub">v1.1 · 2026-08-05 · /plan-eng-review 四节评审 + 验证性复审产出;20 项决策与 2 项复审修正全部经负责人确认</div>
+  <div class="chips">
+    <span class="chip hot">2 人团队 · 双泳道</span><span class="chip">工期 3-4 周</span>
+    <span class="chip">6 Agent + 深度上限</span><span class="chip">DeepSeek + Kimi</span>
+    <span class="chip">评测门槛 = 验收</span><span class="chip">0 关键缺口</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#s1">1 总览</a><a href="#s2">2 范围</a><a href="#s3">3 架构</a><a href="#s4">4 技术栈</a>
+  <a href="#s5">5 仓库规范</a><a href="#s6">6 英雄链</a><a href="#s7">7 演示兜底</a><a href="#s8">8 测试</a>
+  <a href="#s9">9 失败模式</a><a href="#s10">10 里程碑</a><a href="#s11">11 边界</a><a href="#s12">12 任务</a><a href="#s13">13 依据</a>
+</nav>
+
+<section id="s1"><h2><span class="no">01</span>一页总览</h2>
+<div class="tscroll"><table>
+<tr><th>维度</th><th>结论</th></tr>
+<tr><td><b>目标</b></td><td>建筑工地多智能体助手竞赛 MVP:多 Agent 协同 / 多模态 / RAG / 工具调用 / 工作流自动化 / Web Demo</td></tr>
+<tr><td><b>范围</b></td><td>6 Agent 全保留、每个设硬深度上限;7 个扩展 Agent 与 4 项 TODO 明确延后</td></tr>
+<tr><td><b>技术栈</b></td><td>Python + LangGraph;文本 DeepSeek、视觉 Kimi、向量本地 BGE-M3;前端复用 agent-chat-ui(整个前端不写)</td></tr>
+<tr><td><b>架构</b></td><td>Supervisor 动态路由 + 确定性「巡检英雄链」子图;慢操作离线预处理;大对象传引用</td></tr>
+<tr><td><b>质量</b></td><td>单测 24 + 集成 4 + E2E 7 + 评测 3 套;覆盖率 ≥80% 进 CI;评测门槛 = 里程碑验收</td></tr>
+<tr><td><b>演示</b></td><td>docker-compose 一键启动 + 三层兜底(热点 / 响应缓存 / 录屏),彩排 ×2 通过率 100%</td></tr>
+<tr><td><b>分工</b></td><td>双人垂直泳道,每人端到端 3 个 Agent(提示词+工具+测试),两人都在练 Agent 开发</td></tr>
+</table></div>
+<h3>MVP 评分能力 → 实现载体</h3>
+<div class="tscroll"><table>
+<tr><th>评分能力</th><th>载体</th></tr>
+<tr><td>Multi-Agent 协同调度</td><td>LangGraph Supervisor + 6 子 Agent,调用轨迹在界面实时可视化</td></tr>
+<tr><td>多模态</td><td>Safety(Kimi 识图)· Knowledge(文档)· CAD(ezdxf 解析 + PNG 预览)</td></tr>
+<tr><td>RAG 问答</td><td>Chroma + BGE-M3,回答强制携带来源文档 + 页码</td></tr>
+<tr><td>Tool Calling</td><td>每 Agent 2-5 个工具,统一错误信封</td></tr>
+<tr><td>工作流自动化</td><td>英雄链子图:照片 → 隐患 → 报告 → docx</td></tr>
+</table></div>
+</section>
+
+<section id="s2"><h2><span class="no">02</span>范围与深度上限</h2>
+<div class="tscroll"><table>
+<tr><th>Agent</th><th>做到这就停</th><th>明确不做</th></tr>
+<tr><td><b>Supervisor</b></td><td>supervisor + 交接工具,recursion_limit=8 熔断</td><td>动态创建 Agent</td></tr>
+<tr><td><b>Safety</b></td><td>Kimi vision + 结构化检查清单 + 30 图评测(≥80%)</td><td>自训模型(不达标才挂现成检测模型)</td></tr>
+<tr><td><b>Knowledge</b></td><td>10-20 份规范,检索 + 引用到页码,空结果防编造</td><td>GraphRAG、微调</td></tr>
+<tr><td><b>Schedule</b></td><td>SQLite CRUD + 中文自然语言查询,站内提醒</td><td>短信 / 日历推送</td></tr>
+<tr><td><b>Report</b></td><td>日报 + 巡检 2 模板,docx 必做 PDF 尽量</td><td>自定义模板编辑器</td></tr>
+<tr><td><b>CAD</b></td><td>仅 DXF(演示 DWG 离线预转),4 类查询 + PNG 预览</td><td>3D、BIM、任意几何语义理解</td></tr>
+</table></div>
+<div class="callout"><b>范围铁律:</b>范围已锁定,实现阶段不重开谈判;新想法一律先进 <code>TODOS.md</code>。砍数量是错的刀法——在 LangGraph 里 Agent 是薄节点,砍深度才省真工期,且 6 个下属的调度正是评分主秀。</div>
+</section>
+
+<section id="s3"><h2><span class="no">03</span>系统架构</h2>
+<pre>
+             ┌─────────────────────────────────────┐
+             │  agent-chat-ui(Next.js,现成不写)      │
+             │  聊天 · 文件上传 · 工具调用实时可视化        │
+             └─────────────────┬───────────────────┘
+                               │ HTTP / SSE 流式
+             ┌─────────────────▼───────────────────┐
+             │        LangGraph Server(Python)      │
+             │   ┌───────────────────────────┐     │
+             │   │ Supervisor(deepseek-chat)  │     │
+             │   │ 意图路由 + 结果综合            │     │
+             │   │ recursion_limit=8 熔断      │     │
+             │   └─┬────┬────┬────┬────┬────┬┘     │
+             │     ▼    ▼    ▼    ▼    ▼    ▼      │
+             │  Safety Know. Sched. Report CAD     │
+             │  (Kimi) (RAG) (SQLite)(docx)(ezdxf) │
+             │     │                  ▲            │
+             │     └──「巡检英雄链」子图──┘            │
+             │      照片→隐患分析→报告→docx(确定性)    │
+             └──┬───────┬────────┬────────┬────────┘
+                ▼       ▼        ▼        ▼
+          DeepSeek/Kimi Chroma  SQLite   文件区
+          API(外部)  +BGE-M3   业务数据  uploads/artifacts
+                      (全本地)  (本地)   (传引用不传值)
+</pre>
+<h3>关键决策记录(ADR,负责人逐条确认)</h3>
+<div class="tscroll"><table>
+<tr><th>#</th><th>决策</th><th>选择</th><th>理由一句话</th></tr>
+<tr><td>D5</td><td>技术栈</td><td>LangGraph + 现成 chat-ui</td><td>成熟件搭底座,自研只花在亮点</td></tr>
+<tr><td>D6</td><td>范围</td><td>6 Agent + 深度上限</td><td>保协同演示价值,砍深度不砍数量</td></tr>
+<tr><td>D7</td><td>慢操作</td><td>离线预处理 + 小文件同步(图纸≤20MB/文档≤10MB/照片≤10MB 超限自动压缩)</td><td>不为不存在的负载建队列</td></tr>
+<tr><td>D8</td><td>路由</td><td>动态路由 + 确定性英雄链</td><td>演示可靠性靠确定性,智能叙事靠动态</td></tr>
+<tr><td>D9</td><td>部署</td><td>本地主跑 + 三层兜底</td><td>演示日不可控因素当需求设计</td></tr>
+<tr><td>D10</td><td>鉴权</td><td>免登录单用户,安全基线拉满</td><td>投入匹配实际暴面</td></tr>
+<tr><td>D11</td><td>仓库</td><td>单仓 + 按 Agent 分包</td><td>结构即分工,合并冲突≈0</td></tr>
+<tr><td>D12</td><td>基座</td><td>W1 先落 core/ 四件套(≤4 文件)</td><td>DRY 红线,防自造框架</td></tr>
+<tr><td>D13</td><td>提示词</td><td>独立 prompt.md + config 集中常量</td><td>提示词当文档管,常量当配置管</td></tr>
+<tr><td>D14</td><td>测试</td><td>全套 + 80% 覆盖率门槛</td><td>宁多勿少,保住彩排时间</td></tr>
+<tr><td>D15</td><td>评测</td><td>门槛 = 里程碑验收 + 预定备案</td><td>提示词质量装硬性仪表盘</td></tr>
+<tr><td>D16</td><td>E2E</td><td>6 条用户流全自动化</td><td>E2E 就是可重复执行的彩排</td></tr>
+<tr><td>D17→19</td><td>模型</td><td>DeepSeek 文本 + Kimi 视觉 + BGE-M3 本地向量</td><td>负责人指定;视觉与 embedding 缺口提前补上</td></tr>
+<tr><td>D18</td><td>缓存</td><td>三处「算一次用多次」+ 版本化缓存键</td><td>性能 / 账单 / 兜底三份收益</td></tr>
+</table></div>
+</section>
+
+<section id="s4"><h2><span class="no">04</span>技术栈与模型映射</h2>
+<div class="tscroll"><table>
+<tr><th>层</th><th>选型</th><th>说明</th></tr>
+<tr><td>语言 / 编排</td><td>Python 3.11+ · LangGraph(+supervisor)</td><td>2026 生产主流,LangSmith 可选观测</td></tr>
+<tr><td>文本 LLM</td><td>deepseek-chat</td><td>路由 / 任务 / 报告 / 知识综合默认模型</td></tr>
+<tr><td>视觉 LLM</td><td>Kimi vision(moonshot)</td><td><b>硬约束:DeepSeek 无视觉 API</b></td></tr>
+<tr><td>工具调用备胎</td><td>kimi-k2</td><td>某 Agent 评测不达标时 config 一行切换</td></tr>
+<tr><td>Embedding</td><td>BGE-M3(本地)</td><td>两家均无 embedding API;本地 = 免费 + 断网可用;<b>权重预烧进镜像,冷启动零下载</b></td></tr>
+<tr><td>向量 / 业务库</td><td>Chroma · SQLite(预留 project_id)</td><td>零运维,单用户演示足够</td></tr>
+<tr><td>CAD</td><td>ezdxf 1.4.x;ODA Converter 离线预转 DWG</td><td>绝不自己碰 DWG 二进制</td></tr>
+<tr><td>导出</td><td>python-docx;LibreOffice 转 PDF(失败降级)</td><td>docx 永远可用</td></tr>
+<tr><td>前端 / 交付</td><td>agent-chat-ui · docker-compose</td><td>一键冷启动是 W4 验收项</td></tr>
+</table></div>
+<h3>换模规则(评测驱动)</h3>
+<div class="tscroll"><table>
+<tr><th>任务</th><th>模型</th><th>换模触发条件</th></tr>
+<tr><td>Supervisor 路由 / Schedule</td><td>deepseek-chat</td><td>路由评测 &lt;90% → 试 kimi-k2</td></tr>
+<tr><td>Knowledge / Report 文笔</td><td>deepseek-chat</td><td>文本质量不满意 → kimi-k2</td></tr>
+<tr><td>Safety 识图 / CAD PNG 问答</td><td>Kimi vision</td><td>30 图评测 &lt;80% → 挂开源安全帽检测模型前置增强</td></tr>
+<tr><td>向量化</td><td>BGE-M3 本地</td><td>召回差 → bge-large-zh / 混合 BM25</td></tr>
+</table></div>
+</section>
+
+<section id="s5"><h2><span class="no">05</span>仓库结构与编码红线</h2>
+<pre>
+gongyoutong/
+├── docker-compose.yml          # 一键起(D9)
+├── .env.example                # 两套 API Key 占位;真 .env 不进 git
+├── backend/src/gyt/
+│   ├── graph.py                # ★ Supervisor+英雄链(只归 X 改)
+│   ├── config.py               # 全部常量:模型名/上限/熔断/阈值
+│   ├── core/                   # 基座四件套,W1 落地,禁超 4 文件
+│   │   ├── llm.py  errors.py  artifacts.py  base_agent.py
+│   ├── agents/                 # 每 Agent 一包:prompt.md+tools.py+测试
+│   │   ├── knowledge/(X) schedule/(X)
+│   │   └── safety/(Y) cad/(Y) report/(Y)
+│   ├── ingest/                 # rag.py(X) / cad.py(Y) 分文件防冲突
+│   └── db/                     # SQLite(预留 project_id)
+├── backend/tests/  backend/eval/
+├── frontend/                   # agent-chat-ui 定制(尽量少改)
+├── data/demo/                  # 照片30/规范文档/DXF样例(含GBK)
+└── docs/                       # 本方案/演示脚本/彩排清单
+</pre>
+<ol>
+<li>工具函数一律返回信封 <code>{ok, data, user_msg}</code>;<code>user_msg</code> 是给工人看的中文人话;提示词强制「报错如实转述,禁止编造成功」。</li>
+<li>提示词进 <code>prompt.md</code>,魔法数字进 <code>config.py</code>,大对象传 artifact ID。</li>
+<li>SQL 全参数化;列表一次取全,禁循环内查询;建表预留 <code>project_id</code>。</li>
+<li>缓存键 = 内容哈希 + prompt 版本号。</li>
+<li>复杂逻辑处内嵌 ASCII 图注释,改代码同步改图,过期图当 bug 修。</li>
+</ol>
+</section>
+
+<section id="s6"><h2><span class="no">06</span>英雄链数据流(演示的钱眼)</h2>
+<pre>
+用户上传工地照片(chat-ui)
+      │ artifact_id
+      ▼
+[Safety Agent · Kimi vision]
+  结构化检查清单 JSON:{违规项[], 位置, 等级, 建议}
+      │ 确定性边(代码写死,不经 LLM 决策)
+      ▼
+[Report Agent · deepseek-chat]
+  巡检报告模板填充:隐患汇总+整改建议
+      │
+      ▼
+python-docx 渲染 → artifacts/ 落盘 → 下载卡片
+(全程流式播报;任一步失败 → 错误信封 → 中文提示,不静默)
+</pre>
+<p class="small">这条链同时证明「多智能体协同」与「工作流自动化」两个评分点;做成确定性子图 = 彩排一百次成功一百次。其余请求仍由 Supervisor 动态路由,展示自主性。</p>
+</section>
+
+<section id="s7"><h2><span class="no">07</span>演示与三层兜底</h2>
+<ul>
+<li><b>一键启动:</b><code>docker-compose up</code> 冷启动 → 首条消息可答(W4 验收项)。</li>
+<li><b>兜底一:</b>手机热点备网络。<b>兜底二:</b>响应缓存——彩排跑过的演示路径断网可复演。<b>兜底三:</b>全程备份录屏。</li>
+<li><b>演示脚本:</b>问答引用 → 英雄链 → CAD 查询 → Schedule 自然语言 → Supervisor 轨迹可视化收尾;彩排 ×2,通过率 100%。</li>
+</ul>
+</section>
+
+<section id="s8"><h2><span class="no">08</span>测试计划(TDD + eval-first)</h2>
+<p>工具函数 / 解析器走 TDD;提示词走 <b>eval-first</b>(先定评测集与门槛再调 prompt)。E2E 断言只验结构(有隐患卡片 / 有下载链接 / 引用可见),不验 LLM 文案字面。</p>
+<pre>
+[核心] llm:正常/超时重试/429退避/缓存 ··············· 单测×4
+[核心] artifacts:往返/坏ID/路径穿越拒绝 ············· 单测×3
+[编排] 路由20条中文用例(≥90%)/熔断/未知意图 ········ EVAL+单测×2
+[英雄链] mock全链出docx / 真实链路 ··················· 集成+E2E
+[Safety] 30图评测(≥80%)/超限压缩→通过/压不下→拒/损坏图 · EVAL+单测×4
+[Knowledge] 20问答对引用命中(≥80%)/防编造/幂等 ······ EVAL+单测+集成
+[Schedule] CRUD×4/中文日期/空结果 ··················· 单测×6
+[Report] 模板×2/docx可打开/PDF降级 ·················· 单测×2+集成
+[CAD] DXF/GBK样例★/损坏文件/DWG引导/4类查询×2 ······· 单测×8
+[E2E] 英雄链/问答引用/CAD/超限报错/断网兜底/重复发送/冷启动冒烟 ×7
+合计:单测24 · 集成4 · E2E7 · 评测3套 | 覆盖率≥80% 进 CI
+</pre>
+<div class="callout"><b>评测门槛 = 里程碑验收(D15):</b>W2 末 Safety ≥80%(不达标 → 触发备案挂检测模型);W3 末路由 ≥90%、RAG ≥80%。达不到当周暴露、当周处理,不拖到演示周。</div>
+</section>
+
+<section id="s9"><h2><span class="no">09</span>失败模式(10/10 三有:有测试·有处理·用户可见)</h2>
+<div class="tscroll"><table>
+<tr><th>场景</th><th>处理</th><th>用户所见</th></tr>
+<tr><td>LLM API 限流 / 超时</td><td>重试 + 退避 + 缓存</td><td>「网络繁忙已重试」</td></tr>
+<tr><td>Supervisor 死循环</td><td>recursion_limit=8 熔断</td><td>友好报错,不烧额度</td></tr>
+<tr><td>GBK 中文 DXF</td><td>ezdxf 编码探测(GBK fixture 单测)</td><td>正常解析</td></tr>
+<tr><td>损坏 / 伪装 / 超限文件</td><td>照片超限先自动压缩;其余校验拒绝(D7/D10)</td><td>中文人话报错,可继续对话</td></tr>
+<tr><td>RAG 空检索</td><td>强制「知识库无依据」</td><td>诚实答复,不编造</td></tr>
+<tr><td>PDF 转换失败</td><td>降级 docx</td><td>「已提供 docx」</td></tr>
+<tr><td>演示断网</td><td>三层兜底</td><td>彩排路径可续演</td></tr>
+<tr><td>重复点击发送</td><td>去重</td><td>单任务</td></tr>
+<tr><td>工具失败被 LLM 圆谎</td><td>统一信封 + 提示词规则 + 评测抽查</td><td>如实转述</td></tr>
+<tr><td>新机器冷启动缺模型权重</td><td>BGE-M3 权重预烧进镜像 + 冷启动冒烟 E2E</td><td>正常启动,零下载</td></tr>
+</table></div>
+<p class="ok">关键缺口:0</p>
+</section>
+
+<section id="s10"><h2><span class="no">10</span>里程碑与双人泳道</h2>
+<div class="lane">
+<div class="col"><h4>X · 编排线</h4>
+W1 仓库+CI+core四件套+Supervisor熔断<br>W2 Knowledge(RAG+引用+防编造)<br>W3 Schedule+三处缓存+英雄链接线<br>W4 评测回归+录屏+一键启动打磨</div>
+<div class="col y"><h4>Y · 多模态工具线</h4>
+W1 演示数据集+30图标注+评测集定稿<br>W2 Safety(结构化清单+评测调优)<br>W3 CAD(4类查询+PNG)+Report(2模板)<br>W4 彩排×2+演示脚本+bug修复</div>
+</div>
+<div class="tscroll"><table>
+<tr><th>周</th><th>硬验收门槛</th></tr>
+<tr><td>W1</td><td>compose up 后 chat-ui 可对话;三套评测集就绪</td></tr>
+<tr><td>W2</td><td>RAG ≥80% · Safety ≥80%(否则触发备案)</td></tr>
+<tr><td>W3</td><td>路由 ≥90% · 7 条 E2E 全绿 · <b>功能冻结</b></td></tr>
+<tr><td>W4</td><td>彩排 100% 通过;(余力)TODO-1 云部署</td></tr>
+</table></div>
+<p class="small">冲突旗标:<code>graph.py</code> 仅 X 改;<code>ingest/</code> 按文件分人;英雄链联调是唯一双人协作点(W3 末)。每周交叉 code review 对方一个 Agent —— 两人学习面覆盖全部 6 个。</p>
+</section>
+
+<section id="s11"><h2><span class="no">11</span>边界:不做什么 · 复用什么</h2>
+<h3>NOT in scope(考虑过并明确延后)</h3>
+<ul>
+<li>7 个扩展 Agent(材料/质量/风险/考勤/采购/天气/语音)—— 源文档已定为后续。</li>
+<li>大文件异步队列 → TODO-2 · 用户体系 → TODO-3(建表已预留 project_id)· DWG 自动转换 → TODO-4 · 云部署主路 → TODO-1(W4 余力加分项)。</li>
+<li>自训视觉模型、GraphRAG、微调、模板编辑器、3D/BIM、多用户并发 —— 深度上限,收益不抵风险。</li>
+</ul>
+<h3>What already exists(零重造)</h3>
+<p>LangGraph supervisor · agent-chat-ui(省整个前端)· ezdxf · ODA Converter · Chroma+BGE-M3 · python-docx。自研仅三块:英雄链子图、CAD 查询工具集、六份 Agent 提示词 —— 全部是竞赛亮点本身。</p>
+</section>
+
+<section id="s12"><h2><span class="no">12</span>实施任务清单</h2>
+<div class="tscroll"><table>
+<tr><th>#</th><th>任务</th><th>P</th><th>人工/CC</th></tr>
+<tr><td>T1</td><td>单仓骨架 + docker-compose + CI(80% 门槛 + E2E job)+ BGE-M3 权重预烧</td><td>P1</td><td>1天 / 2h</td></tr>
+<tr><td>T2</td><td>core 四件套:双供应商 llm(重试/缓存)+ errors + artifacts + base_agent</td><td>P1</td><td>1天 / 2h</td></tr>
+<tr><td>T3</td><td>Supervisor + 熔断 + 路由评测集 20 条</td><td>P1</td><td>1天 / 3h</td></tr>
+<tr><td>T4</td><td>Knowledge:BGE-M3+Chroma 幂等入库 + 引用页码 + 防编造 + 评测</td><td>P1</td><td>2天 / 4h</td></tr>
+<tr><td>T5</td><td>Safety:Kimi vision 结构化清单 + 30 图评测 + 照片自动压缩;开工前 pin vision 型号</td><td>P1</td><td>2天 / 4h</td></tr>
+<tr><td>T6</td><td>CAD:ezdxf 解析 + GBK 样例测试 + 4 类查询 + PNG + 索引落盘</td><td>P1</td><td>3天 / 1天</td></tr>
+<tr><td>T7</td><td>Schedule:CRUD + 中文日期解析 + project_id 预留</td><td>P2</td><td>1天 / 2h</td></tr>
+<tr><td>T8</td><td>Report:2 模板 docx + PDF 降级</td><td>P1</td><td>1天 / 3h</td></tr>
+<tr><td>T9</td><td>英雄链确定性子图 + mock 全链集成测试</td><td>P1</td><td>1天 / 3h</td></tr>
+<tr><td>T10</td><td>chat-ui 接入 + 7 条 Playwright E2E(含冷启动冒烟)</td><td>P1</td><td>2天 / 4h</td></tr>
+<tr><td>T11</td><td>三层兜底 + 录屏 + 一键启动 + 演示脚本</td><td>P2</td><td>1天 / 3h</td></tr>
+<tr><td>T12</td><td>三套评测跑分脚本进 CI,门槛红线</td><td>P2</td><td>半天 / 1h</td></tr>
+</table></div>
+</section>
+
+<section id="s13"><h2><span class="no">13</span>选型依据(Sources)</h2>
+<ul class="small">
+<li><a href="https://subratpati.medium.com/langgraph-in-production-choosing-and-building-multi-agent-systems-c2b955f16429">LangGraph in Production: Multi-Agent Systems</a> —— supervisor 主流地位与「无熔断死循环」footgun</li>
+<li><a href="https://github.com/langchain-ai/agent-chat-ui">langchain-ai/agent-chat-ui</a> · <a href="https://docs.langchain.com/oss/python/langgraph/ui">LangChain Docs: Agent Chat UI</a></li>
+<li><a href="https://ezdxf.readthedocs.io/en/stable/addons/odafc.html">ezdxf ODA File Converter Support</a> · <a href="https://github.com/mozman/ezdxf">mozman/ezdxf</a></li>
+<li><a href="https://www.sciencedirect.com/science/article/abs/pii/S0957417424026368">VLM 安全合规细粒度检测研究</a>(裸用 VLM 精度不足 → 评测门槛必要)</li>
+<li><a href="https://www.sciencedirect.com/science/article/abs/pii/S1474034625007827">VLM+结构化输入工地安全检测(87.6%)</a>(备案:检测模型前置增强)</li>
+</ul>
+<p class="small">注:视觉研究基于 Qwen 系;本项目按负责人决定采用 Kimi vision,公开数据更少 → 评测门槛与备案机制因此更关键。</p>
+
+<div class="verdict">
+<h2>✅ GSTACK 评审结论</h2>
+<p><b>Eng Review:CLEAR</b> —— 四节评审(架构 4 项 / 代码质量 3 项 / 测试 3 项+37 缺口 / 性能 2 项)共 12 项决策全部裁决;验证性复审新增 2 项发现(BGE-M3 权重预烧、照片自动压缩)均已采纳入方案。0 项未决,0 个关键缺口;4 条 TODO 已记录;评测门槛绑定里程碑。<b>可以开工。</b></p>
+</div>
+</section>
+
+<div class="footer">工友通 AI Agent MVP · 完整技术方案 v1.1 · 2026-08-05 · 由 /plan-eng-review 产出 · 配套文件:工友通_AI_Agent_MVP_完整技术方案.md / TODOS.md / 测试计划工件(~/.gstack)</div>
+
+</div>
+</body>
+</html>
