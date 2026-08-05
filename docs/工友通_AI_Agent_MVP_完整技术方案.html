@@ -73,7 +73,7 @@ a{color:var(--blue)}
 <header class="hero">
   <div class="kicker">GONGYOUTONG · MULTI-AGENT MVP · ENG-REVIEWED PLAN</div>
   <h1>工友通 AI Agent MVP<br>完整技术方案</h1>
-  <div class="sub">v1.1 · 2026-08-05 · /plan-eng-review 四节评审 + 验证性复审产出;20 项决策与 2 项复审修正全部经负责人确认</div>
+  <div class="sub">v1.2 · 2026-08-05 · /plan-eng-review 四节评审 + 验证性复审产出;20 项决策与 2 项复审修正全部经负责人确认</div>
   <div class="chips">
     <span class="chip hot">2 人团队 · 双泳道</span><span class="chip">工期 3-4 周</span>
     <span class="chip">6 Agent + 深度上限</span><span class="chip">DeepSeek + Kimi</span>
@@ -113,7 +113,7 @@ a{color:var(--blue)}
 <div class="tscroll"><table>
 <tr><th>Agent</th><th>做到这就停</th><th>明确不做</th></tr>
 <tr><td><b>Supervisor</b></td><td>supervisor + 交接工具,recursion_limit=8 熔断</td><td>动态创建 Agent</td></tr>
-<tr><td><b>Safety</b></td><td>Kimi vision + 结构化检查清单 + 30 图评测(≥80%)</td><td>自训模型(不达标才挂现成检测模型)</td></tr>
+<tr><td><b>Safety</b></td><td>kimi-k3 视觉 + 结构化检查清单 + 30 图评测(≥80%)</td><td>自训模型(不达标才挂现成检测模型)</td></tr>
 <tr><td><b>Knowledge</b></td><td>10-20 份规范,检索 + 引用到页码,空结果防编造</td><td>GraphRAG、微调</td></tr>
 <tr><td><b>Schedule</b></td><td>SQLite CRUD + 中文自然语言查询,站内提醒</td><td>短信 / 日历推送</td></tr>
 <tr><td><b>Report</b></td><td>日报 + 巡检 2 模板,docx 必做 PDF 尽量</td><td>自定义模板编辑器</td></tr>
@@ -132,9 +132,9 @@ a{color:var(--blue)}
              ┌─────────────────▼───────────────────┐
              │        LangGraph Server(Python)      │
              │   ┌───────────────────────────┐     │
-             │   │ Supervisor(deepseek-chat)  │     │
-             │   │ 意图路由 + 结果综合            │     │
-             │   │ recursion_limit=8 熔断      │     │
+             │   │ Supervisor(deepseek-v4-flash) │     │
+             │   │ 意图路由 + 结果综合             │     │
+             │   │ recursion_limit=8 熔断       │     │
              │   └─┬────┬────┬────┬────┬────┬┘     │
              │     ▼    ▼    ▼    ▼    ▼    ▼      │
              │  Safety Know. Sched. Report CAD     │
@@ -172,21 +172,23 @@ a{color:var(--blue)}
 <div class="tscroll"><table>
 <tr><th>层</th><th>选型</th><th>说明</th></tr>
 <tr><td>语言 / 编排</td><td>Python 3.11+ · LangGraph(+supervisor)</td><td>2026 生产主流,LangSmith 可选观测</td></tr>
-<tr><td>文本 LLM</td><td>deepseek-chat</td><td>路由 / 任务 / 报告 / 知识综合默认模型</td></tr>
-<tr><td>视觉 LLM</td><td>Kimi vision(moonshot)</td><td><b>硬约束:DeepSeek 无视觉 API</b></td></tr>
-<tr><td>工具调用备胎</td><td>kimi-k2</td><td>某 Agent 评测不达标时 config 一行切换</td></tr>
+<tr><td>文本 LLM</td><td>deepseek-v4-flash</td><td>路由 / 任务 / 报告 / 知识综合默认模型</td></tr>
+<tr><td>视觉 LLM</td><td>kimi-k3(原生视觉,api.moonshot.ai/v1)</td><td><b>硬约束:DeepSeek 无视觉 API</b></td></tr>
+<tr><td>工具调用备胎</td><td>kimi-k3</td><td>某 Agent 评测不达标时 config 一行切换</td></tr>
 <tr><td>Embedding</td><td>BGE-M3(本地)</td><td>两家均无 embedding API;本地 = 免费 + 断网可用;<b>权重预烧进镜像,冷启动零下载</b></td></tr>
 <tr><td>向量 / 业务库</td><td>Chroma · SQLite(预留 project_id)</td><td>零运维,单用户演示足够</td></tr>
 <tr><td>CAD</td><td>ezdxf 1.4.x;ODA Converter 离线预转 DWG</td><td>绝不自己碰 DWG 二进制</td></tr>
 <tr><td>导出</td><td>python-docx;LibreOffice 转 PDF(失败降级)</td><td>docx 永远可用</td></tr>
 <tr><td>前端 / 交付</td><td>agent-chat-ui · docker-compose</td><td>一键冷启动是 W4 验收项</td></tr>
 </table></div>
+<div class="callout"><b>2026-08 型号变更备忘(T1 开工时联网核实):</b>两家供应商近期都换代了。DeepSeek 旧名 <code>deepseek-chat</code>/<code>deepseek-reasoner</code> 已于 2026-07-24 宣布弃用,当前为 <b>deepseek-v4-flash</b>(1M 上下文,内置思考模式);路由等低延迟场景须显式关思考 <code>extra_body={"thinking":{"type":"disabled"}}</code>。Kimi 侧 <code>kimi-latest</code>(2026-01-28)、<code>kimi-k2</code>(2026-05-25)、<code>moonshot-v1</code> 系列(2026-08-31)已全部停用/退役,当前唯一在用为 <b>kimi-k3</b>(2.8T,原生视觉,1M 上下文),base_url 同时从 <code>.cn</code> 改为 <code>https://api.moonshot.ai/v1</code>。<b>选型决策 D19 不变(文本 DeepSeek、视觉 Kimi),只是型号随换代刷新;型号全集中在 config.py,再变一处改完。</b></div>
+
 <h3>换模规则(评测驱动)</h3>
 <div class="tscroll"><table>
 <tr><th>任务</th><th>模型</th><th>换模触发条件</th></tr>
-<tr><td>Supervisor 路由 / Schedule</td><td>deepseek-chat</td><td>路由评测 &lt;90% → 试 kimi-k2</td></tr>
-<tr><td>Knowledge / Report 文笔</td><td>deepseek-chat</td><td>文本质量不满意 → kimi-k2</td></tr>
-<tr><td>Safety 识图 / CAD PNG 问答</td><td>Kimi vision</td><td>30 图评测 &lt;80% → 挂开源安全帽检测模型前置增强</td></tr>
+<tr><td>Supervisor 路由 / Schedule</td><td>deepseek-v4-flash</td><td>路由评测 &lt;90% → 试 kimi-k3</td></tr>
+<tr><td>Knowledge / Report 文笔</td><td>deepseek-v4-flash</td><td>文本质量不满意 → kimi-k3</td></tr>
+<tr><td>Safety 识图 / CAD PNG 问答</td><td>kimi-k3 视觉</td><td>30 图评测 &lt;80% → 挂开源安全帽检测模型前置增强</td></tr>
 <tr><td>向量化</td><td>BGE-M3 本地</td><td>召回差 → bge-large-zh / 混合 BM25</td></tr>
 </table></div>
 </section>
@@ -225,11 +227,11 @@ gongyoutong/
 用户上传工地照片(chat-ui)
       │ artifact_id
       ▼
-[Safety Agent · Kimi vision]
+[Safety Agent · kimi-k3 视觉]
   结构化检查清单 JSON:{违规项[], 位置, 等级, 建议}
       │ 确定性边(代码写死,不经 LLM 决策)
       ▼
-[Report Agent · deepseek-chat]
+[Report Agent · deepseek-v4-flash]
   巡检报告模板填充:隐患汇总+整改建议
       │
       ▼
@@ -317,7 +319,7 @@ W1 演示数据集+30图标注+评测集定稿<br>W2 Safety(结构化清单+评�
 <tr><td>T2</td><td>core 四件套:双供应商 llm(重试/缓存)+ errors + artifacts + base_agent</td><td>P1</td><td>1天 / 2h</td></tr>
 <tr><td>T3</td><td>Supervisor + 熔断 + 路由评测集 20 条</td><td>P1</td><td>1天 / 3h</td></tr>
 <tr><td>T4</td><td>Knowledge:BGE-M3+Chroma 幂等入库 + 引用页码 + 防编造 + 评测</td><td>P1</td><td>2天 / 4h</td></tr>
-<tr><td>T5</td><td>Safety:Kimi vision 结构化清单 + 30 图评测 + 照片自动压缩;开工前 pin vision 型号</td><td>P1</td><td>2天 / 4h</td></tr>
+<tr><td>T5</td><td>Safety:kimi-k3 视觉 结构化清单 + 30 图评测 + 照片自动压缩;开工前 pin vision 型号</td><td>P1</td><td>2天 / 4h</td></tr>
 <tr><td>T6</td><td>CAD:ezdxf 解析 + GBK 样例测试 + 4 类查询 + PNG + 索引落盘</td><td>P1</td><td>3天 / 1天</td></tr>
 <tr><td>T7</td><td>Schedule:CRUD + 中文日期解析 + project_id 预留</td><td>P2</td><td>1天 / 2h</td></tr>
 <tr><td>T8</td><td>Report:2 模板 docx + PDF 降级</td><td>P1</td><td>1天 / 3h</td></tr>
@@ -336,7 +338,7 @@ W1 演示数据集+30图标注+评测集定稿<br>W2 Safety(结构化清单+评�
 <li><a href="https://www.sciencedirect.com/science/article/abs/pii/S0957417424026368">VLM 安全合规细粒度检测研究</a>(裸用 VLM 精度不足 → 评测门槛必要)</li>
 <li><a href="https://www.sciencedirect.com/science/article/abs/pii/S1474034625007827">VLM+结构化输入工地安全检测(87.6%)</a>(备案:检测模型前置增强)</li>
 </ul>
-<p class="small">注:视觉研究基于 Qwen 系;本项目按负责人决定采用 Kimi vision,公开数据更少 → 评测门槛与备案机制因此更关键。</p>
+<p class="small">注:视觉研究基于 Qwen 系;本项目按负责人决定采用 kimi-k3 视觉,公开数据更少 → 评测门槛与备案机制因此更关键。</p>
 
 <div class="verdict">
 <h2>✅ GSTACK 评审结论</h2>
@@ -344,7 +346,7 @@ W1 演示数据集+30图标注+评测集定稿<br>W2 Safety(结构化清单+评�
 </div>
 </section>
 
-<div class="footer">工友通 AI Agent MVP · 完整技术方案 v1.1 · 2026-08-05 · 由 /plan-eng-review 产出 · 配套文件:工友通_AI_Agent_MVP_完整技术方案.md / TODOS.md / 测试计划工件(~/.gstack)</div>
+<div class="footer">工友通 AI Agent MVP · 完整技术方案 v1.2 · 2026-08-05 · 由 /plan-eng-review 产出 · 配套文件:工友通_AI_Agent_MVP_完整技术方案.md / TODOS.md / 测试计划工件(~/.gstack)</div>
 
 </div>
 </body>

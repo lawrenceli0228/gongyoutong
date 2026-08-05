@@ -1,6 +1,6 @@
 # 工友通 AI Agent MVP — 完整技术方案
 
-> 版本 v1.1 · 2026-08-05 · 由 `/plan-eng-review` 工程评审产出(20 项决策 D1-D20 逐条确认;v1.1 验证性复审采纳 2 项修正:BGE-M3 权重预烧、照片自动压缩)
+> 版本 v1.2 · 2026-08-05 · 由 `/plan-eng-review` 工程评审产出(20 项决策 D1-D20 逐条确认;v1.1 验证性复审采纳 2 项修正:BGE-M3 权重预烧、照片自动压缩)
 > 源文档:《工友通_AI_Agent_MVP_核心设计.md》 · 团队:2 人 · 工期:3-4 周 · 目标:竞赛可演示 MVP
 
 ---
@@ -22,7 +22,7 @@
 | 评分能力 | 实现载体 |
 |---|---|
 | Multi-Agent 协同调度 | LangGraph Supervisor + 6 子 Agent,调用轨迹在 chat-ui 实时可视化 |
-| 多模态(图片/文档/CAD) | Safety(Kimi vision)、Knowledge(文档)、CAD(ezdxf 解析 + PNG 预览) |
+| 多模态(图片/文档/CAD) | Safety(kimi-k3 视觉)、Knowledge(文档)、CAD(ezdxf 解析 + PNG 预览) |
 | RAG 知识库问答 | Chroma + 本地 BGE-M3,回答强制携带来源文档+页码 |
 | Tool Calling | 每 Agent 2-5 个工具函数,统一错误信封 |
 | 工作流自动化 | 「巡检英雄链」确定性子图:照片→隐患→报告→docx |
@@ -33,7 +33,7 @@
 | Agent | 做到这就停 | 明确不做 |
 |---|---|---|
 | Supervisor | LangGraph supervisor + 交接工具,recursion_limit=8 熔断 | 动态创建 Agent |
-| Safety | Kimi vision + 结构化检查清单输出 + 30 图评测集(≥80%) | 自训模型(不达标才挂现成安全帽检测模型) |
+| Safety | kimi-k3 视觉 + 结构化检查清单输出 + 30 图评测集(≥80%) | 自训模型(不达标才挂现成安全帽检测模型) |
 | Knowledge | 10-20 份规范文档,检索+引用到页码,空结果防编造 | GraphRAG、微调 |
 | Schedule | SQLite CRUD 工具 + 中文自然语言查询,站内提醒 | 短信/日历推送 |
 | Report | 日报+巡检 2 个模板,docx 必做,PDF 尽量(失败降级) | 自定义模板编辑器 |
@@ -52,9 +52,9 @@
                  ┌─────────────────▼───────────────────┐
                  │        LangGraph Server(Python)      │
                  │   ┌───────────────────────────┐     │
-                 │   │ Supervisor(deepseek-chat)  │     │
-                 │   │ 意图路由 + 结果综合            │     │
-                 │   │ recursion_limit=8 熔断      │     │
+                 │   │ Supervisor(deepseek-v4-flash) │     │
+                 │   │ 意图路由 + 结果综合             │     │
+                 │   │ recursion_limit=8 熔断       │     │
                  │   └─┬────┬────┬────┬────┬────┬┘     │
                  │     ▼    ▼    ▼    ▼    ▼    ▼      │
                  │  Safety Know. Sched. Report CAD     │
@@ -95,9 +95,9 @@
 |---|---|---|
 | 语言 | Python 3.11+ | 后端全部 |
 | 编排 | LangGraph(+ langgraph-supervisor) | supervisor 模式,LangSmith 可选观测 |
-| 文本 LLM | deepseek-chat(OpenAI 兼容 API) | 路由/任务/报告/知识综合默认模型 |
-| 视觉 LLM | Kimi(moonshot vision 模型) | Safety 识别、图纸 PNG 问答;**硬约束:DeepSeek 无视觉 API** |
-| 工具调用备胎 | kimi-k2 | 某 Agent 工具调用评测不达标时 config 一行切换 |
+| 文本 LLM | deepseek-v4-flash(OpenAI 兼容 API) | 路由/任务/报告/知识综合默认模型 |
+| 视觉 LLM | kimi-k3(原生视觉,`https://api.moonshot.ai/v1`) | Safety 识别、图纸 PNG 问答;**硬约束:DeepSeek 无视觉 API** |
+| 工具调用备胎 | kimi-k3 | 某 Agent 工具调用评测不达标时 config 一行切换 |
 | Embedding | BGE-M3(本地,FlagEmbedding/sentence-transformers) | 两家均无 embedding API;本地=免费+断网可用;**权重构建时经国内镜像源预烧进 docker 镜像,冷启动零下载** |
 | 向量库 | Chroma(本地持久化) | 零运维 |
 | CAD | ezdxf 1.4.x(DXF);ODA File Converter 离线预转 DWG | 绝不自己碰 DWG 二进制 |
@@ -107,13 +107,21 @@
 | 测试 | pytest + coverage(≥80% 门槛) + Playwright | 见 §8 |
 | 交付 | docker-compose 一键启动 | 冷启动即用是 W4 验收项 |
 
+> **2026-08 型号变更备忘(T1 开工时联网核实,已更新到本表):** 两家供应商都在近期换代过。
+> DeepSeek 旧名 `deepseek-chat` / `deepseek-reasoner` 于 2026-07-24 宣布弃用,当前为 **`deepseek-v4-flash`**
+> (1M 上下文,内置思考模式,$0.14/$0.28 每百万 token);路由等低延迟场景须显式关思考:
+> `extra_body={"thinking": {"type": "disabled"}}`。Kimi 侧 `kimi-latest`(2026-01-28)、`kimi-k2`(2026-05-25)、
+> `moonshot-v1` 系列(2026-08-31)已全部停用/退役,当前唯一在用为 **`kimi-k3`**(2.8T,原生视觉,1M 上下文),
+> base_url 同时从 `.cn` 改为 **`https://api.moonshot.ai/v1`**。**结论:选型决策 D19 不变(文本 DeepSeek、视觉 Kimi),
+> 只是型号随供应商换代刷新;型号全部集中在 `config.py`,后续再变一处改完。**
+
 ### 模型映射与换模规则(D19)
 
 | 任务 | 模型 | 换模触发条件 |
 |---|---|---|
-| Supervisor 路由 / Schedule | deepseek-chat | 路由评测 <90% → 试 kimi-k2 |
-| Knowledge 综合 / Report 文笔 | deepseek-chat | 人工评审文本质量不满意 → kimi-k2 |
-| Safety 识图 / CAD PNG 问答 | Kimi vision | 30 图评测 <80% → 挂开源安全帽检测模型做前置增强 |
+| Supervisor 路由 / Schedule | deepseek-v4-flash | 路由评测 <90% → 试 kimi-k3 |
+| Knowledge 综合 / Report 文笔 | deepseek-v4-flash | 人工评审文本质量不满意 → kimi-k3 |
+| Safety 识图 / CAD PNG 问答 | kimi-k3 视觉 | 30 图评测 <80% → 挂开源安全帽检测模型做前置增强 |
 | 向量化 | BGE-M3(本地) | 检索召回差 → 换 bge-large-zh / 混合 BM25 |
 
 全部模型名只在 `config.py` 一处定义;`core/llm.py` 是双供应商客户端(两套 key/base_url)。
@@ -123,7 +131,7 @@
 ```
 gongyoutong/
 ├── docker-compose.yml            # 一键起(D9)
-├── .env.example                  # DEEPSEEK_API_KEY / MOONSHOT_API_KEY;真 .env 不进 git
+├── .env.example                  # GYT_DEEPSEEK_API_KEY / GYT_MOONSHOT_API_KEY;真 .env 不进 git
 ├── backend/
 │   ├── src/gyt/
 │   │   ├── graph.py              # ★ LangGraph 拼装+Supervisor+英雄链子图(X)
@@ -160,11 +168,11 @@ gongyoutong/
 用户上传工地照片(chat-ui)
       │ artifact_id
       ▼
-[Safety Agent · Kimi vision]
+[Safety Agent · kimi-k3 视觉]
   结构化检查清单 JSON:{违规项[], 位置, 等级, 建议}
       │ 确定性边(代码写死,不经 LLM 决策)
       ▼
-[Report Agent · deepseek-chat]
+[Report Agent · deepseek-v4-flash]
   巡检报告模板填充:隐患汇总+整改建议+责任建议
       │
       ▼
@@ -260,7 +268,7 @@ python-docx 渲染 → artifacts/ 落盘 → chat-ui 下载卡片
 | 大文件异步队列 | D7:为不存在的负载建基础设施 → TODO-2 |
 | 用户体系/多租户 | D10:3-5 天换零评分 → TODO-3(建表预留 project_id) |
 | DWG 在线转换 | D6:演示图纸离线预转即可 → TODO-4 |
-| 自训视觉模型 | 评测驱动:Kimi vision 不达标才挂现成检测模型,绝不自训 |
+| 自训视觉模型 | 评测驱动:kimi-k3 视觉 不达标才挂现成检测模型,绝不自训 |
 | GraphRAG/微调/自定义模板编辑器/3D/BIM | 深度上限(§2),竞赛周期内收益不抵风险 |
 | 云部署(主路) | D9:本地主跑;云为 W4 余力加分项 → TODO-1 |
 | 多用户并发优化 | 单用户演示场景,SQLite 单写者足够 |
@@ -275,7 +283,7 @@ python-docx 渲染 → artifacts/ 落盘 → chat-ui 下载卡片
 | DWG→DXF | ODA File Converter(免费,离线预转) | [Layer 1] |
 | 向量检索 | Chroma + BGE-M3 | [Layer 1] |
 | docx 生成 | python-docx 模板 | [Layer 1] |
-| 视觉识别 | Kimi vision 提示词方案;备案=开源安全帽检测模型 | [Layer 2,评测把关] |
+| 视觉识别 | kimi-k3 视觉 提示词方案;备案=开源安全帽检测模型 | [Layer 2,评测把关] |
 
 自研只有三块:英雄链子图、CAD 查询工具集、六份 Agent 提示词——全部是竞赛亮点本身。
 
@@ -285,7 +293,7 @@ python-docx 渲染 → artifacts/ 落盘 → chat-ui 下载卡片
 - [ ] **T2 (P1, 人工~1天/CC~2h)** — core — 四件套:双供应商 llm.py(重试/缓存)、errors、artifacts、base_agent
 - [ ] **T3 (P1, 人工~1天/CC~3h)** — 编排 — Supervisor+recursion_limit=8+路由评测集 20 条
 - [ ] **T4 (P1, 人工~2天/CC~4h)** — Knowledge — ingest/rag.py(BGE-M3+Chroma+幂等)+引用页码+防编造+RAG 评测
-- [ ] **T5 (P1, 人工~2天/CC~4h)** — Safety — Kimi vision 结构化清单+30 图评测+照片自动压缩+超限/损坏处理;开工前 pin 具体 vision 型号并实测图片限制
+- [ ] **T5 (P1, 人工~2天/CC~4h)** — Safety — kimi-k3 视觉 结构化清单+30 图评测+照片自动压缩+超限/损坏处理;开工前 pin 具体 vision 型号并实测图片限制
 - [ ] **T6 (P1, 人工~3天/CC~1天)** — CAD — ezdxf 解析+GBK 样例测试+4 类查询+PNG 预览+索引落盘
 - [ ] **T7 (P2, 人工~1天/CC~2h)** — Schedule — SQLite CRUD+中文日期解析+project_id 预留
 - [ ] **T8 (P1, 人工~1天/CC~3h)** — Report — 2 模板 docx+PDF 降级
@@ -302,7 +310,7 @@ python-docx 渲染 → artifacts/ 落盘 → chat-ui 下载卡片
 - [VLM 安全合规细粒度检测(裸用 VLM 精度不足,微调后 89.4%)](https://www.sciencedirect.com/science/article/abs/pii/S0957417424026368)
 - [VLM+结构化输入的工地安全实时检测(87.6% 合规判定)](https://www.sciencedirect.com/science/article/abs/pii/S1474034625007827)
 
-> 注:视觉研究数据基于 Qwen 系;本项目按负责人决定改用 Kimi vision,公开数据更少 → §8 的评测门槛与备案机制因此更为关键。
+> 注:视觉研究数据基于 Qwen 系;本项目按负责人决定改用 kimi-k3 视觉,公开数据更少 → §8 的评测门槛与备案机制因此更为关键。
 
 ## GSTACK REVIEW REPORT
 
