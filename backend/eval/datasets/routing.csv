@@ -1,0 +1,13 @@
+id,type,user_input,expected_agent,note
+R01,positive,这张照片有没有安全隐患,safety,示例-可保留:最典型的识图请求
+R02,positive,帮我看看工地照片里有没有人没戴安全帽,safety,示例-可保留:换个说法,测同义表达
+R03,positive,脚手架立杆间距规范上是怎么要求的,knowledge,示例待替换:换成你们真实规范里的问题
+R04,positive,消防通道宽度有什么规定,knowledge,示例待替换
+R05,positive,下周三之前还有哪些任务没完成,schedule,示例-可保留:中文相对日期
+R06,positive,给我建一个任务:明天检查塔吊,schedule,示例-可保留:建任务而非查任务
+R07,positive,这张图纸上三号柱的截面尺寸是多少,cad,示例待替换:换成你们真实图纸里的构件
+R08,positive,图纸一共有几个图层,cad,示例-可保留
+R09,positive,把刚才的检查结果整理成巡检报告,report,示例-可保留
+R10,none,你好,none,示例-可保留:闲聊不该派给任何子 Agent
+R11,none,你能做什么,none,示例-可保留:能力询问由 supervisor 自己答
+R12,ambiguous,看一下这个,none,示例-可保留:信息不足应追问而非瞎派
