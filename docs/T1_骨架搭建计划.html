@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T1 骨架搭建计划 · 工友通</title>
+<style>
+:root{
+  --paper:#faf8f4; --ink:#1c1a17; --ink-soft:#57534b; --line:#e4e0d8;
+  --accent:#c2410c; --accent-soft:#fff1e8; --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#166534; --ok-soft:#ecf7ee; --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,monospace;
+  --sans:"PingFang SC","Noto Sans SC","Microsoft YaHei",-apple-system,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --paper:#191714; --ink:#ece8e1; --ink-soft:#a49e93; --line:#37332c;
+    --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+    --ok:#7fc98f; --ok-soft:#12241a; }
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.75;font-size:15.5px}
+.wrap{max-width:920px;margin:0 auto;padding:0 28px 96px}
+header.hero{border-bottom:3px solid var(--ink);padding:56px 0 26px}
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.22em;color:var(--accent);text-transform:uppercase}
+h1{font-size:clamp(28px,4.6vw,40px);line-height:1.2;margin:10px 0 6px}
+.sub{color:var(--ink-soft);font-size:15px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.chip{font-family:var(--mono);font-size:12px;border:1.5px solid var(--ink);padding:3px 10px;border-radius:999px}
+.chip.hot{background:var(--ink);color:var(--paper)}
+section{margin-top:48px}
+h2{font-size:21px;margin-bottom:12px;display:flex;align-items:baseline;gap:12px}
+h2 .no{font-family:var(--mono);font-size:13px;color:var(--paper);background:var(--accent);padding:2px 8px;border-radius:4px;transform:translateY(-2px)}
+h3{font-size:16px;margin:20px 0 8px;color:var(--blue)}
+p{margin-bottom:10px}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+th{font-family:var(--mono);font-size:12px;text-align:left;letter-spacing:.06em;color:var(--ink-soft);border-bottom:2px solid var(--ink);padding:6px 10px;white-space:nowrap}
+td{border-bottom:1px solid var(--line);padding:8px 10px;vertical-align:top}
+tr:hover td{background:var(--accent-soft)}
+.tscroll{overflow-x:auto}
+pre{font-family:var(--mono);font-size:12.5px;line-height:1.55;background:var(--blue-soft);border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:6px;padding:16px 18px;overflow-x:auto;margin:14px 0}
+code{font-family:var(--mono);font-size:.92em;background:var(--accent-soft);padding:1px 5px;border-radius:4px}
+pre code{background:none;padding:0}
+.callout{border:1.5px solid var(--ink);border-radius:8px;padding:13px 18px;margin:16px 0;background:var(--accent-soft)}
+.callout b:first-child{color:var(--accent)}
+.step{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:8px;padding:14px 18px;margin:14px 0}
+.step h4{font-family:var(--mono);font-size:14px;margin-bottom:6px}
+.step .verify{font-size:13px;color:var(--ok);font-family:var(--mono);margin-top:6px}
+.small{font-size:13px;color:var(--ink-soft)}
+ul,ol{padding-left:22px;margin-bottom:10px}
+li{margin-bottom:4px}
+.verdict{background:var(--ok-soft);border:2px solid var(--ok);border-radius:10px;padding:16px 20px;margin:20px 0}
+.footer{margin-top:64px;border-top:3px solid var(--ink);padding-top:14px;font-family:var(--mono);font-size:12px;color:var(--ink-soft)}
+@media print{body{font-size:12px}pre{white-space:pre-wrap}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="kicker">GONGYOUTONG · T1 · REPO SKELETON</div>
+  <h1>T1 骨架搭建计划</h1>
+  <div class="sub">依据《完整技术方案 v1.1》T1 任务展开 · 2026-08-05 · 主责:X 泳道(Y 并行做数据与评测集)</div>
+  <div class="chips">
+    <span class="chip hot">人工 ~1 天 / CC ~2h</span><span class="chip">7 个步骤 S1-S7</span>
+    <span class="chip">验收:冷启动可对话</span><span class="chip">含 BGE-M3 权重预烧</span>
+  </div>
+</header>
+
+<section><h2><span class="no">01</span>目标与验收</h2>
+<p><b>T1 做完后,任何一台装了 Docker 的新机器上:</b><code>git clone</code> → 填 <code>.env</code> → <code>docker compose up</code> → 打开 <code>localhost:3000</code> 就能和 Supervisor 对话(此时只有一个占位 Agent)。这是 W1 验收项,也是后面 5 个 Agent 全部往上挂的地基。</p>
+<div class="tscroll"><table>
+<tr><th>#</th><th>验收项(全部可自动化检查)</th><th>对应</th></tr>
+<tr><td>V1</td><td><code>docker compose up</code> 冷启动 → chat-ui 首条消息可答,<b>全程零下载</b>(权重已在镜像内)</td><td>E2E#7 冷启动冒烟</td></tr>
+<tr><td>V2</td><td><code>uv run pytest</code> 全绿,覆盖率门槛 ≥80% 生效(骨架期代码少,门槛照设)</td><td>D14</td></tr>
+<tr><td>V3</td><td>GitHub Actions 首条流水线绿:test + e2e 两个 job</td><td>CI</td></tr>
+<tr><td>V4</td><td>chat-ui 中能看到工具调用过程可视化与流式输出</td><td>D17 随案项</td></tr>
+<tr><td>V5</td><td><code>.env</code> 不在 git 内;<code>.env.example</code> 有两家 API Key 占位</td><td>安全基线</td></tr>
+</table></div>
+</section>
+
+<section><h2><span class="no">02</span>运行时架构(compose 拓扑)</h2>
+<pre>
+                     开发者/评委浏览器
+                          │ :3000
+              ┌───────────▼────────────┐
+              │  frontend(容器)         │
+              │  agent-chat-ui(Next.js) │
+              │  改动极少:品牌色/标题      │
+              └───────────┬────────────┘
+                          │ :2024(LangGraph API,SSE 流式)
+              ┌───────────▼────────────────────────┐
+              │  backend(容器)Python 3.11           │
+              │  langgraph dev/server               │
+              │  ┌────────────────────────────┐    │
+              │  │ graph.py:Supervisor        │    │
+              │  │  └─ ping_agent(T1 占位,     │    │
+              │  │     后续替换为 6 个真 Agent)  │    │
+              │  └────────────────────────────┘    │
+              │  镜像内已含:BGE-M3 权重(2.2GB)      │
+              └──────┬──────────────┬──────────────┘
+                     │ env_file     │ volume
+               ┌─────▼─────┐  ┌────▼─────────────────┐
+               │ .env       │  │ ./data(宿主机挂载)     │
+               │ DEEPSEEK_  │  │ sqlite/ chroma/       │
+               │ MOONSHOT_  │  │ uploads/ artifacts/   │
+               └───────────┘  └──────────────────────┘
+      外部依赖(唯一):DeepSeek API · Kimi API(经 core/llm.py 出口)
+</pre>
+<p class="small">日常开发不必走 Docker:后端 <code>uv run langgraph dev</code>、前端 <code>pnpm dev</code> 直跑更快;Docker 形态是交付与彩排形态,CI 里的冷启动冒烟专门守它。</p>
+</section>
+
+<section><h2><span class="no">03</span>镜像构建流水线(权重预烧,复审 D1 决议)</h2>
+<pre>
+backend/Dockerfile(多阶段)
+┌─────────────┐   ┌──────────────────┐   ┌───────────────────────────┐   ┌───────────┐
+│ S: base      │──▶│ S: deps           │──▶│ S: models                  │──▶│ S: app     │
+│ python:3.11  │   │ uv sync --frozen  │   │ ENV HF_ENDPOINT=           │   │ COPY src/  │
+│ -slim        │   │ (依赖层缓存)        │   │   https://hf-mirror.com    │   │ CMD serve  │
+└─────────────┘   └──────────────────┘   │ RUN 下载 BAAI/bge-m3        │   └───────────┘
+                                          │ → 权重固化进镜像层(~2.2GB)  │
+                                          └───────────────────────────┘
+要点:① models 层独立,改业务代码不触发权重重下 ② 国内镜像源,构建不翻墙
+     ③ 首次构建约 10-20 分钟属正常,之后层缓存秒级 ④ 镜像总体积 ~4GB,属预期
+</pre>
+</section>
+
+<section><h2><span class="no">04</span>T1 产出的目录骨架</h2>
+<pre>
+gongyoutong/
+├── docker-compose.yml            # backend + frontend 一键起
+├── .env.example                  # DEEPSEEK_API_KEY= / MOONSHOT_API_KEY=
+├── .github/workflows/ci.yml      # test(cov≥80%)+ e2e 两个 job
+├── backend/
+│   ├── Dockerfile                # 上图四阶段,含权重预烧
+│   ├── pyproject.toml  uv.lock   # uv 管依赖,锁版本
+│   ├── langgraph.json            # 指向 gyt.graph:graph
+│   ├── src/gyt/
+│   │   ├── graph.py              # Supervisor + ping 占位 Agent
+│   │   ├── config.py             # 常量唯一入口(模型名/上限/熔断)
+│   │   └── core/
+│   │       ├── llm.py            # 双供应商客户端+重试+内容哈希缓存
+│   │       ├── errors.py         # {ok, data, user_msg} 信封
+│   │       ├── artifacts.py      # 文件引用注册表
+│   │       └── base_agent.py     # create_agent 薄工厂
+│   └── tests/
+│       ├── unit/                 # core 四件套单测(T1 就写)
+│       └── e2e/test_cold_start.py# E2E#7 冷启动冒烟
+├── frontend/                     # agent-chat-ui(clone 后微调)
+├── data/demo/                    # Y 泳道:照片/规范/DXF 落这里
+└── docs/                         # 方案 v1.1、本计划(既有文件 T1 时挪入)
+</pre>
+<p class="small">既有根目录的 4 个文档在 S1 一并挪进 <code>docs/</code>,一个提交完成,历史可追。</p>
+</section>
+
+<section><h2><span class="no">05</span>分步执行(S1-S7,每步带验收)</h2>
+
+<div class="step"><h4>S1 · 目录与依赖底座(15min)</h4>
+建目录树;<code>uv init</code> + 依赖:<code>langgraph langgraph-supervisor langchain-openai pydantic-settings python-dotenv</code>,dev 组:<code>pytest pytest-cov pytest-asyncio langgraph-cli[inmem]</code>;写 <code>.env.example</code>;把 4 个文档挪入 <code>docs/</code>。
+<div class="verify">验收:uv sync 成功;git status 干净可提交</div></div>
+
+<div class="step"><h4>S2 · core 四件套 + 单测(45min,基座即 DRY 红线)</h4>
+<code>llm.py</code>:双供应商工厂(deepseek base_url / moonshot base_url,从 config 读模型名)+ 重试退避 + 内容哈希缓存(键含 prompt 版本);<code>errors.py</code> 信封;<code>artifacts.py</code> 注册/读取/路径穿越拒绝;<code>base_agent.py</code> 薄工厂。同步写单测(mock API,不真调)。
+<div class="verify">验收:pytest 全绿,coverage ≥80%</div></div>
+
+<div class="step"><h4>S3 · 最小 Supervisor 跑通(30min)</h4>
+<code>graph.py</code>:langgraph-supervisor + 一个 <code>ping_agent</code>(回声占位);<code>recursion_limit=8</code> 熔断进 config;<code>langgraph.json</code> 指向 graph。
+<div class="verify">验收:uv run langgraph dev 起在 :2024,curl 能拿到流式回复(需 DEEPSEEK key)</div></div>
+
+<div class="step"><h4>S4 · 前端接入(20min)</h4>
+clone <code>langchain-ai/agent-chat-ui</code> 到 <code>frontend/</code>;<code>.env</code> 指向 <code>http://localhost:2024</code> 与 graph id;标题/主色改成工友通。
+<div class="verify">验收:localhost:3000 发消息 → 流式回复 + 能看到 supervisor→ping_agent 的工具调用轨迹(V4)</div></div>
+
+<div class="step"><h4>S5 · Dockerfile + compose(30min)</h4>
+按 §03 四阶段写 <code>backend/Dockerfile</code>(models 层预烧 BGE-M3,HF_ENDPOINT 走国内镜像);frontend 用官方 Dockerfile;<code>docker-compose.yml</code> 两服务 + data 卷 + env_file。
+<div class="verify">验收:docker compose up 后 3000 可对话;docker compose down 再 up 不重新下权重</div></div>
+
+<div class="step"><h4>S6 · CI 流水线(20min)</h4>
+<code>.github/workflows/ci.yml</code>:job① test = uv sync → pytest --cov=gyt --cov-fail-under=80;job② e2e = 起服务跑冒烟(W1 期先跑 dev 模式冒烟,W3 接 Playwright 全量)。评测 job 占位注释,W2 启用。
+<div class="verify">验收:push 后 Actions 两个 job 全绿(V3)</div></div>
+
+<div class="step"><h4>S7 · 冷启动冒烟 E2E(20min,复审 D1 决议)</h4>
+<code>tests/e2e/test_cold_start.py</code>:compose up → 轮询后端就绪 → 发一条消息断言拿到流式回复 → 校验容器日志无 "Downloading"(证明零下载)。
+<div class="verify">验收:本地跑通;W4 彩排前它就是每日回归</div></div>
+</section>
+
+<section><h2><span class="no">06</span>CI 流水线图</h2>
+<pre>
+git push ──▶ GitHub Actions
+              ├─ job: test ──── uv sync → pytest --cov=gyt --cov-fail-under=80 ─▶ ❌即红
+              ├─ job: e2e ───── 起 backend(dev)→ 冒烟对话断言 ──────────────────▶ ❌即红
+              └─ job: eval ──── (占位,W2 启用:路由/Safety/RAG 三套门槛) ─────────▶ 红线
+   规则:main 分支必须全绿;评测门槛 = 里程碑验收(D15),不是装饰
+</pre>
+</section>
+
+<section><h2><span class="no">07</span>本周双人并行(不互相等)</h2>
+<div class="tscroll"><table>
+<tr><th>泳道</th><th>本周任务</th><th>产出落点</th></tr>
+<tr><td><b>X(本计划)</b></td><td>S1→S7 全部;完成后开 Knowledge Agent(W2)</td><td>backend/ frontend/ CI</td></tr>
+<tr><td><b>Y(并行)</b></td><td>30 张工地照片收集+标注(合规/违规/类型)、10-20 份施工规范 PDF、DXF 样例(必须含 GBK 中文的)、三套评测集 CSV 定稿</td><td>data/demo/ + backend/eval/</td></tr>
+</table></div>
+<p class="small">唯一交接点:Y 的评测集 CSV 格式和 X 在 S2 定的 config 常量名对齐,开工前对一次即可。每周交叉 code review 对方一个模块。</p>
+</section>
+
+<section><h2><span class="no">08</span>风险与注意</h2>
+<ul>
+<li><b>镜像体积 ~4GB、首次构建 10-20 分钟</b>:预期内,不要中途放弃;models 层缓存后不再重下。</li>
+<li><b>API Key</b>:两家各申请一个 key 放 <code>.env</code>;<code>.env</code> 已在 .gitignore,提交前 <code>git status</code> 确认它不在列表里。</li>
+<li><b>agent-chat-ui 尽量少改</b>:只动品牌与配置;改多了以后跟上游同步困难。</li>
+<li><b>S3 需要真实 DEEPSEEK key 才能看到回复</b>:没 key 前单测照跑(全 mock),联调等 key。</li>
+<li><b>Windows 队友</b>:如 Y 用 Windows,统一走 Docker 或 WSL2,避免路径/编码差异。</li>
+</ul>
+<div class="verdict"><b>完成定义:</b>V1-V5 全绿即 T1 关闭,进入 W2(X:Knowledge Agent;Y:Safety Agent)。任何范围外的新想法 → TODOS.md,不进 T1。</div>
+</section>
+
+<div class="footer">工友通 · T1 骨架搭建计划 · 2026-08-05 · 上游文档:docs/工友通_AI_Agent_MVP_完整技术方案.html(v1.1)</div>
+
+</div>
+</body>
+</html>
