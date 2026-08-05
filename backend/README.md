@@ -27,6 +27,121 @@ heredoc、`[[ ]]`)。Docker Desktop 记得开启 WSL2 集成;仓库要 clone 到
 
 所有命令都在**仓库根目录**执行(不是 `backend/`),`make` 会自己 `cd`。
 
+---
+
+### 0.5 Windows 用户:先装 WSL2(约 15 分钟,只需一次)
+
+没用过 WSL 的话照着走,每一步都有验证命令。**装完之后你和 macOS 用户敲的命令一模一样**,
+下面第 1 步开始的所有内容对你都适用,不用再区分平台。
+
+**① 装 WSL2 + Ubuntu**(管理员身份打开 PowerShell)
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+装完**重启电脑**。重启后 Ubuntu 会自动打开,让你设一个 Linux 用户名和密码
+(跟 Windows 账号无关,自己记住即可)。
+
+验证:PowerShell 里 `wsl -l -v`,应看到 `Ubuntu  Running  2`。**VERSION 必须是 2**,
+是 1 的话跑 `wsl --set-version Ubuntu 2`。
+
+**② 之后所有开发都在 Ubuntu 窗口里做**(开始菜单搜 "Ubuntu",或 Windows Terminal 选 Ubuntu 标签页)。
+
+```bash
+sudo apt update && sudo apt install -y git make curl unzip   # make 一般已自带
+curl -LsSf https://astral.sh/uv/install.sh | sh              # 装 uv
+source ~/.bashrc
+uv --version && make -v | head -1 && git --version           # 三个都要有输出
+```
+
+**③ 前端需要 Node**(只有要跑界面时才用得上,队友做 Knowledge/CAD 可以先跳过)
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+sudo corepack enable pnpm && pnpm --version
+```
+
+**④ Docker Desktop 开 WSL2 集成**
+
+在 Windows 里装 [Docker Desktop](https://www.docker.com/products/docker-desktop/),
+然后 **Settings → Resources → WSL Integration → 打开 Ubuntu 那一项 → Apply & Restart**。
+
+验证:回到 Ubuntu 窗口敲 `docker compose version`,有版本号就通了。
+**没开这一项的话,WSL 里根本看不到 docker 命令** —— 这是 Windows 上最常见的卡点。
+
+**⑤ clone 到 Linux 文件系统,不要放在 `/mnt/c`**
+
+```bash
+cd ~ && git clone git@github.com:lawrenceli0228/gongyoutong.git gyt && cd gyt
+```
+
+`/mnt/c/...` 是 Windows 磁盘的跨系统挂载,`uv sync`、`pnpm install`、`pytest`
+在上面都会慢一个量级(几百上千个小文件的 IO 全走转换层)。**务必放在 `~` 下。**
+
+**⑥ 把 Windows 里的素材拷进来**(你准备的 DXF 图纸、规范 PDF 多半在 Windows 侧)
+
+```bash
+cp /mnt/c/Users/你的Windows用户名/Desktop/图纸.dxf ~/gyt/data/demo/drawings/
+```
+
+反过来,在 Windows 文件资源管理器地址栏输入 `\\wsl$\Ubuntu\home\你的用户名\gyt`
+就能像普通文件夹一样浏览仓库,拖拽文件也行。
+
+**⑦ 中文别乱码**
+
+```bash
+sudo apt install -y language-pack-zh-hans
+echo 'export LANG=C.UTF-8' >> ~/.bashrc && source ~/.bashrc
+python3 -c "print('中文测试正常')"      # 这行必须正常显示
+```
+
+> **换行符不用你操心。** 仓库根的 `.gitattributes` 已经把策略钉死了:
+> 所有文本一律 LF、`.dxf` 和图片按二进制处理。
+> 这防的是两个具体的坑 —— `scripts/*.sh` 变 CRLF 后 bash 会报
+> `$'\r': command not found`(报错完全不提换行符,能查半天);
+> 以及**那份 GBK 编码的中文 DXF 样例被 git 转换后,CAD 的编码测试会变成假绿**
+> ——测的是被改坏的文件而不是真实图纸,这条测试的意义就没了。
+>
+> 保险起见首次 clone 前跑一次:`git config --global core.autocrlf input`
+
+**⑧ 编辑器**:装 VS Code 后再装 **WSL 扩展**,在 Ubuntu 窗口里敲 `code .`,
+就能用 Windows 的 VS Code 直接编辑 WSL 里的文件,体验和本机一样。
+
+#### 实在不想装 WSL?原生 Windows 的降级路线
+
+**能跑,但会在几个地方硌手,而且和队友环境不一致**(联调时「我这儿是好的」会变成常态)。
+`uv`、`pytest`、`docker compose` 在原生 Windows 上都正常;卡的是 `make` 和 bash 脚本。
+用 **PowerShell 7**(不是 cmd,cmd 默认 GBK 代码页会让中文输出乱码):
+
+| Makefile 目标 | PowerShell 等价命令 |
+|---|---|
+| `make setup` | `cd backend; uv sync` |
+| `make test` | `cd backend; uv run pytest` |
+| `make cov` | `cd backend; uv run pytest --cov=gyt --cov-fail-under=80` |
+| `make lint` | `cd backend; uv run ruff check .` |
+| `make fmt` | `cd backend; uv run ruff format .; uv run ruff check --fix .` |
+| `make dev` | `cd backend; uv run langgraph dev` |
+| `make up` | `mkdir data -Force; docker compose up -d` |
+| `make down` | `docker compose down --remove-orphans` |
+| `make frontend` | **没有等价命令** —— 脚本是 bash-only,只能手动: |
+| | `git clone --depth 1 https://github.com/langchain-ai/agent-chat-ui frontend` |
+| | 删掉 `frontend\.git`,新建 `frontend\.env` 写入两行:<br>`NEXT_PUBLIC_API_URL=http://localhost:2024`<br>`NEXT_PUBLIC_ASSISTANT_ID=gyt` |
+| `make lint-ci` | `docker run --rm -v "${PWD}:/repo" -w /repo rhysd/actionlint:latest -no-color .github/workflows/ci.yml` |
+
+再加一句防中文乱码(建议写进 PowerShell 配置文件):
+
+```powershell
+$env:PYTHONUTF8 = "1"
+```
+
+**做 CAD 这条线的人尤其建议用 WSL2** —— 你要处理 GBK 编码的中文 DXF,
+而 Windows 原生环境的默认编码本身就是 GBK,出问题时很难分清是「代码没处理好编码」
+还是「终端显示的问题」。WSL2 里环境统一是 UTF-8,变量少一个。
+
+---
+
 ### 1. 配密钥(必做,一次)
 
 ```bash

@@ -1,0 +1,45 @@
+# 换行符与二进制策略 —— 为 Windows 队友而设,macOS/Linux 上不影响任何东西。
+#
+# 为什么必须有这个文件:
+# Windows 上 git 默认 core.autocrlf=true,检出时把 LF 换成 CRLF。对本仓有两处致命影响:
+#   1. scripts/*.sh 被转成 CRLF 后,bash 会报 `$'\r': command not found` ——
+#      报错信息完全不提换行符,能让人查半天。
+#   2. data/demo/drawings/ 里那份**GBK 编码的中文 DXF 测试样例**一旦被 git 动过,
+#      CAD 的编码测试就会变成假绿:测的是被改坏的文件,而不是真实的中文图纸。
+#      这条测试的全部意义就在于守住中文编码,被污染等于白写。
+#
+# 策略:仓库内一律存 LF,检出时也一律 LF(现代编辑器都支持,Docker/WSL 里更是必须)。
+# 二进制与编码敏感的文件则彻底不让 git 碰。
+
+# 默认:文本按内容自动识别,统一 LF
+* text=auto eol=lf
+
+# 这些一旦变成 CRLF 就会直接坏掉,显式钉死
+*.sh        text eol=lf
+*.py        text eol=lf
+*.toml      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.csv       text eol=lf
+Makefile    text eol=lf
+Dockerfile  text eol=lf
+.env.example text eol=lf
+.gitignore  text eol=lf
+
+# 二进制:git 不做任何转换、不做 diff
+# ★ .dxf 尤其重要:它虽然是文本格式,但我们的样例是 GBK 编码的中文图纸,
+#   任何自动转换都会破坏编码测试的有效性。当成二进制处理最安全。
+*.dxf   binary
+*.dwg   binary
+*.jpg   binary
+*.jpeg  binary
+*.png   binary
+*.webp  binary
+*.pdf   binary
+*.docx  binary
+*.xlsx  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
