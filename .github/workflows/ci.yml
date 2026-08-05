@@ -17,11 +17,22 @@
 #        ( eval —— W2 启用,见文件末尾被注释掉的 job )
 #
 # -----------------------------------------------------------------------------
-# Action 版本核实记录(2026-08-05,curl api.github.com/repos/<仓库>/releases/latest):
-#   actions/checkout       v7.0.1   (2026-07-20)  → 用 @v7
-#   astral-sh/setup-uv     v9.0.0   (2026-07-21)  → 用 @v9
-#   actions/upload-artifact v7.0.1  (2026-04-10)  → 用 @v7
-# 注意:网上多数教程还停在 checkout@v3 / setup-uv@v1,那些是过期写法,别抄。
+# Action 版本核实记录(2026-08-06 修订):
+#   actions/checkout        → @v7      (有浮动大版本标签 v7)
+#   actions/upload-artifact → @v7      (有浮动大版本标签 v7)
+#   astral-sh/setup-uv      → @v9.0.0  (**没有** v9 浮动标签,只能钉全版本号)
+#
+# 这里踩过一次坑,记下来免得重犯:
+#   最初按 releases/latest 查到 v9.0.0,就写成了 @v9 —— CI 报
+#     Unable to resolve action `astral-sh/setup-uv@v9`, unable to find version `v9`
+#   原因是 GitHub Actions 解析的是 **git tag**,不是 release。
+#   很多 action 会额外推一个浮动的大版本 tag(v7 跟着 v7.0.1 走),但**不是所有**都推。
+#   astral-sh/setup-uv 的 tag 列表里只有 v9.0.0 / v8.3.2 / ...,没有裸 v9。
+#   → 核实方法要用 tags 而不是 releases:
+#       gh api "repos/<仓库>/tags?per_page=8" --jq '.[].name'
+#   → actionlint 抓不到这一类错(它只验语法,不联网核实标签是否存在),
+#     所以 `make lint-ci` 里额外加了一道 tag 存在性检查。
+# 另注:网上多数教程还停在 checkout@v3 / setup-uv@v1,那些是过期写法,别抄。
 # setup-uv v9 的输入项也已核实(action.yml):
 #   version / python-version / working-directory / enable-cache /
 #   cache-dependency-glob / cache-suffix 均存在且语义如下方使用方式。
@@ -119,7 +130,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: 安装 uv 与 Python
-        uses: astral-sh/setup-uv@v9
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           # 让 uv 装/选定指定版本的 Python(内部设置 UV_PYTHON)
           python-version: ${{ matrix.python-version }}
@@ -237,7 +248,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: 安装 uv 与 Python
-        uses: astral-sh/setup-uv@v9
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           # 与 backend/Dockerfile 的基础镜像版本对齐,冒烟要贴近线上
           python-version: "3.12"
@@ -356,7 +367,7 @@ jobs:
 #     - name: 检出代码
 #       uses: actions/checkout@v7
 #     - name: 安装 uv 与 Python
-#       uses: astral-sh/setup-uv@v9
+#       uses: astral-sh/setup-uv@v9.0.0
 #       with:
 #         python-version: "3.12"
 #         enable-cache: true

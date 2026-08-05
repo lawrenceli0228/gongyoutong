@@ -54,7 +54,22 @@ lint-ci: ## 校验 GitHub Actions 工作流语法(改过 .github/workflows/ 后�
 	@# 表现为 0 秒失败、无日志、check-runs API 也查不到注解 —— 靠 CI 自己是抓不到的。
 	@# 典型例子:job 级 env 里写 $${{ runner.temp }}(runner 上下文只在 step 级可用)。
 	@docker run --rm -v "$(PWD):/repo" -w /repo rhysd/actionlint:latest -no-color \
-		.github/workflows/*.yml && echo "actionlint 通过"
+		.github/workflows/*.yml && echo "[1/2] actionlint 语法检查通过"
+	@# 第二道:核实每个 uses: 引用的 tag 真实存在。
+	@# actionlint 不做这件事(它不联网),但 tag 不存在会让 job 挂在 "Set up job",
+	@# 报 "unable to find version" —— 而且要等 push 到 GitHub 才看得到。
+	@# 易错点:releases/latest 查到 v9.0.0 不代表存在浮动 tag v9,
+	@# 有的 action 推浮动大版本 tag,有的不推。必须查 tags 而不是 releases。
+	@grep -hoE 'uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+' .github/workflows/*.yml \
+		| sed 's/uses: //' | sort -u | while IFS='@' read -r repo ref; do \
+			if gh api "repos/$$repo/git/ref/tags/$$ref" >/dev/null 2>&1; then \
+				echo "  OK   $$repo@$$ref"; \
+			else \
+				echo "  FAIL $$repo@$$ref  <- 这个 tag 不存在,CI 会挂在 Set up job"; \
+				echo "       可用 tag:$$(gh api "repos/$$repo/tags?per_page=6" --jq '[.[].name]|join(\" \")' 2>/dev/null)"; \
+				exit 1; \
+			fi; \
+		done && echo "[2/2] action tag 存在性检查通过"
 
 fmt: ## 自动格式化 + 可自动修的 lint 问题(ruff)
 	cd $(BACKEND_DIR) && $(UV) run ruff format . && $(UV) run ruff check --fix .
