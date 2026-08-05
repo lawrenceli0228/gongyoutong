@@ -168,28 +168,32 @@ def test_model_name_from_settings(monkeypatch: pytest.MonkeyPatch, chat_spy: Spy
 
 @pytest.mark.parametrize(
     ("purpose", "expected"),
-    [("text", {"extra_body": THINKING_OFF}), ("vision", None), ("tool", None)],
+    [("text", THINKING_OFF), ("vision", None), ("tool", None)],
 )
 def test_thinking_disabled_only_for_text(
     chat_spy: SpyCalls, purpose: str, expected: dict[str, Any] | None
 ) -> None:
     """关思考是 DeepSeek 文本模型的低延迟需要(路由场景),不许误加到 Kimi 上。"""
     llm.get_chat_model(purpose)  # type: ignore[arg-type]
-    assert chat_spy[-1].get("model_kwargs") == expected
+    assert chat_spy[-1].get("extra_body") == expected
+    # 顺带钉死:不许退回 model_kwargs 那条会打 UserWarning 的路径
+    assert "model_kwargs" not in chat_spy[-1]
 
 
 def test_thinking_follows_config(monkeypatch: pytest.MonkeyPatch, chat_spy: SpyCalls) -> None:
     """配置里把「关思考」关掉后,就不该再传这个参数(留给需要深推理的场景)。"""
     _reset_settings(monkeypatch, GYT_DISABLE_THINKING_FOR_TEXT="false")
     llm.get_chat_model("text")
-    assert "model_kwargs" not in chat_spy[-1]
+    assert "extra_body" not in chat_spy[-1]
 
 
 def test_thinking_param_lands_on_real_model() -> None:
     """构造真 ChatOpenAI(不发请求),确认关思考的参数落在会被发送的位置上。"""
     with warnings.catch_warnings():
-        # langchain 把 extra_body 从 model_kwargs 提升到原生字段时会告警,预期之内。
-        warnings.simplefilter("ignore")
+        # 这里把告警升级为错误:走原生 extra_body= 就不该再有任何 UserWarning。
+        # 一旦有人改回 model_kwargs 写法,langchain 的提升告警会让这条测试当场红,
+        # 而不是把噪音一路带到演示日的启动日志里。
+        warnings.simplefilter("error", UserWarning)
         model = llm.get_chat_model("text")
     settings = get_settings()
     assert _effective_extra_body(model) == THINKING_OFF

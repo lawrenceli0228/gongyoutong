@@ -6,9 +6,11 @@
 
 依赖行为已核实(2026-08-05 解包 PyPI wheel 读源码,非凭记忆;langchain-openai 1.4.1 / core 1.5.3):
   · ChatOpenAI 的字段别名 model / api_key / base_url / timeout 均有效(populate_by_name=True)。
-  · 契约规定的 model_kwargs={"extra_body": {...}} 写法成立:langchain-core 的 _build_model_kwargs
-    发现 extra_body 本身也是声明字段,会把它从 model_kwargs 提升到原生 extra_body 字段(附一条
-    UserWarning),再由 _default_params 原样塞进请求体 —— 与直接写 extra_body= 等价,故不改契约。
+  · 关思考的参数直接写成原生 extra_body=,不走 model_kwargs。
+    两种写法行为等价(langchain-core 的 _build_model_kwargs 会把 model_kwargs 里的 extra_body
+    提升到原生字段),但 model_kwargs 那条路径每次建模型都会打一条 UserWarning ——
+    Supervisor 加各子 Agent,一次冷启动就是好几条。演示日的日志噪音会盖住真问题,
+    所以这里用不产生告警的写法。共享契约 v1 原本写的是 model_kwargs,已按此实测结论修订。
   · 显式钉死 use_responses_api=False:两家都只实现 /chat/completions,走 Responses API 必然失败。
 
 ⚠️⚠️ 图 0:本模块的重试/缓存**当前不在 Agent 的真实执行路径上**(T1 已知缺口,W2 前必须收口)
@@ -240,7 +242,7 @@ def get_chat_model(purpose: Purpose = "text", **overrides: Any) -> BaseChatModel
     # 路由这类场景要的是低延迟而不是长篇推理,所以文本模型默认关掉思考模式。
     # 字面量每次新建,不共享可变默认值(不可变优先)。
     if purpose == "text" and settings.disable_thinking_for_text:
-        params["model_kwargs"] = {"extra_body": {"thinking": {"type": "disabled"}}}
+        params["extra_body"] = {"thinking": {"type": "disabled"}}
     return ChatOpenAI(**{**params, **overrides})
 
 
