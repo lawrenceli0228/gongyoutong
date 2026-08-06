@@ -58,6 +58,21 @@ backend/data/
 .env.*
 !.env.example
 
+# 外部数据集的原始下载包与解压目录(Roboflow / Kaggle 等)。
+#
+# 为什么单列:这类包动辄几百 MB(construction-safety-monitor.v1i.yolov8.zip 是 421MB),
+# 而我们从里面**只挑 30 张**进 data/demo/photos/。整包进 git 会让仓库彻底没法 clone,
+# 而且 git 对二进制包不做增量,删掉也瘦不回去(历史里永远留着)。
+#
+# 流程约定:原始包留在本地当工作区,只把**选中并重新标注过**的图拷进 data/demo/photos/。
+# 数据来源与许可(CC BY 4.0 要署名)记在 data/demo/README.md 里。
+#
+# Roboflow 导出的命名规律是 <项目名>.v<版本>i.<格式>.zip
+*.v[0-9]*i.*.zip
+construction-safety-monitor*/
+/datasets/
+/*.zip
+
 # 编辑器与系统
 .idea/
 .vscode/
