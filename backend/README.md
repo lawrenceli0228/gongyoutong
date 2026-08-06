@@ -371,6 +371,16 @@ model = get_chat_model("text")  # "text" -> DeepSeek;"vision"/"tool" -> Kimi
 reply = await ainvoke(model, messages, cache_extra="safety")  # 带缓存 + 退避重试
 ```
 
+**两条路径,别搞混**(细节见 `core/llm.py` 顶部「图 0」):
+
+| | 谁走 | 缓存 | 重试 |
+|---|---|---|---|
+| 路径甲 Agent | Supervisor + 5 个子 Agent(演示主线) | langchain 全局缓存 `llm.GytDiskCache`,`get_chat_model()` 自动装 | `ChatOpenAI.max_retries` |
+| 路径乙 直调 | `await ainvoke(model, ...)`,评测打分 / 一次性抽取 | 同一个 `cache_dir`、同一套文件格式 | 自研指数退避 + 中文错误文案 |
+
+两条路径共用缓存目录但缓存键构成不同,互不串味。**建 Agent 时不要自己再包一层模型代理** ——
+缓存已经在模型层之下生效了,再包一层只会把工具集这一维从缓存键里弄丢。
+
 ### 2026-08 的型号变更(别用记忆里的旧名字)
 
 - DeepSeek `deepseek-chat` / `deepseek-reasoner`:2026-07-24 宣布弃用。
@@ -397,6 +407,7 @@ reply = await ainvoke(model, messages, cache_extra="safety")  # 带缓存 + 退�
 | fixture | 作用 |
 |---|---|
 | `_isolated_settings` | autouse,自动生效:清 `get_settings` 缓存、抹掉本机 `GYT_*`、`data_dir` 指到 `tmp_path`、塞两个假 Key |
+| `_isolated_llm_cache` | autouse,自动生效:每个用例从「没装 langchain 全局缓存」起步,结束后还原(那是个进程级模块变量,不还原会跨用例串) |
 | `fake_ai_message` | 一条假的 `AIMessage`,mock LLM 时当返回值用 |
 
 ```python

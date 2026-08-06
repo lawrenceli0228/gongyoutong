@@ -40,20 +40,48 @@
 > 以下由 T1 骨架交叉核对 / 三视角评审(2026-08-06)产出。已在代码里就地修掉的不再列,
 > 这里只留**需要人拍板或超出 T1 范围**的欠账。
 
-## TODO-5 让重试与缓存真正落在 Agent 执行路径上(W2 开工前必须收口)
-- **What:** `gyt.core.llm` 的磁盘缓存与自研指数退避,目前**只有单测在调**。真实路径是
-  `get_chat_model()` → 裸 `ChatOpenAI` → `create_agent` / `create_supervisor` 内部
-  直接 `model.ainvoke()`,绕开了 `llm.ainvoke()`。
-- **已做的止血:** `get_chat_model` 的 `max_retries` 已从契约写的 0 改回 `settings.llm_max_retries`
-  (**这是对共享契约 v1 的一处刻意偏离,需团队追认**),保证真实路径至少有一层重试。
-- **仍缺的:** 缓存不在路径上 → 「演示断网靠彩排缓存兜底」这个承诺目前是空的。
-- **两条方案(二选一,别两条都上):**
-  (a) 自定义 `BaseChatModel` 子类覆写 `_agenerate` 转调 `llm.ainvoke`,在 `get_chat_model`
-      返回前套上;注意 `create_supervisor` 需要 `bind_tools`,包装层必须原样转发。
-  (b) 换官方机制:`langchain_core.globals.set_llm_cache` + 自实现 `BaseCache`
-      (复用现成的 `cache_key` / `_cache_read` / `_cache_write`),重试保持交给 langchain。
-- **验收:** 补一个「真实 Agent 调用路径确实经过缓存/重试」的断言测试,否则这条链路会静默失效到演示日。
-- **Context:** 完整说明与 ASCII 图在 `backend/src/gyt/core/llm.py` 顶部「图 0」。
+## ~~TODO-5 让重试与缓存真正落在 Agent 执行路径上~~ ✅ 已收口(2026-08-06,W2 前置)
+- **结论:选了方案 (b)** —— `langchain_core.globals.set_llm_cache` + 自实现 `BaseCache`
+  (`llm.GytDiskCache`,复用现成的 `_cache_stamp` / `_cache_read` / `_cache_write`),
+  由 `get_chat_model()` 幂等装载。`base_agent.py` / `graph.py` 一行未改。
+- **为什么不是 (a):** 三组探针实测(见交付说明)表明 —— ① chat-ui 是流式的,而缓存查询在
+  `_agenerate_with_cache` 里发生在流式分支**之前**,(b) 天然覆盖 astream / astream_events /
+  `stream_mode="messages"` / v2 协议四条路径;② `llm_string` 自动含本次绑定的工具集,
+  (a) 得手工把工具揉进键,漏一次就是「safety 的答案被 report 取走」,比没缓存更糟;
+  ③ (a) 要覆写 `_agenerate` + `_astream` + `bind_tools` + `_get_ls_params` +
+  `with_structured_output` 五个面,两人团队养不起。
+- **额外必须做的一件事:** 算键前给 prompt 做归一化(`llm._strip_prompt_noise`)。langchain
+  命中缓存时会往 `AIMessage` 上盖 `usage_metadata.total_cost=0`,这条被改过的消息进入下一轮
+  prompt 会让第 2 轮键对不上 —— 不归一化的话彩排要跑三遍缓存才收敛。
+- **验收:** `backend/tests/unit/test_llm_cache.py`,数的是**内层模型被调了几次**。
+  已做变异测试:摘掉装载 / 摘掉归一化 / 键里去掉工具集,分别有 5 / 1 / 1 条用例转红。
+- **剩下的欠账(转 TODO-9):** 自研退避的中文错误文案仍只在「直调」路径(`llm.ainvoke`)上生效;
+  Agent 路径的重试由 `ChatOpenAI.max_retries` 承担,用户看到的是 openai SDK 的英文异常。
+- **演示 checklist 新增一条:** `llm_string` 含 `request_timeout` / `max_retries` / `extra_body`,
+  **彩排与演示的 `.env` 必须逐字一致**,改一个数字整份彩排缓存作废。
+- **Context:** 完整说明与 ASCII 图在 `backend/src/gyt/core/llm.py` 顶部「图 0 / 图 0.5」。
+
+## TODO-9 Agent 路径上的错误文案中文化(TODO-5 的剩余部分)
+- **What:** `llm._classify` / `_user_msg` 那套「工人看得懂的中文人话」目前只覆盖 `llm.ainvoke`
+  这条直调路径。Agent 路径的异常直接从 openai SDK 冒上来,是英文 traceback。
+- **How:** 在图的出口(`graph.py` 或一层 middleware)统一捕获并过一遍 `_classify` / `_user_msg`,
+  而**不要**再往模型层包一个代理 —— 那正是 TODO-5 评估后否掉的方案 (a)。
+- **Cons:** 约半天。**Depends:** 无,可与 W2 并行。
+
+## TODO-10 路径乙的重试是两层叠加的(自研退避 × SDK 退避)
+- **What:** `llm.ainvoke`(路径乙,评测打分 / 知识综合的单次抽取走它)外面有
+  `_invoke_with_retry`(1 + `llm_max_retries` = 4 次尝试),而 `get_chat_model` 造出来的
+  `ChatOpenAI` 自己还带 `max_retries=3`(openai SDK 的指数退避)。撞上 429 时同一次
+  **逻辑**调用最坏发出 4 × 4 = 16 个 HTTP 请求;30 条视觉评测(6 分钱一次)最坏 ≈ 29 元,
+  而且自研退避本身要睡 1+2+4 秒,再叠 SDK 的退避,CI 的 `timeout-minutes: 30` 很容易被吃穿。
+- **为什么没在 `_for_direct_call` 里顺手关掉(2026-08-06 实测):**
+  `max_retries` 是在 `validate_environment` 里被烤进 openai 客户端的
+  (`langchain_openai/chat_models/base.py:1265`),而 `model_copy` 不重跑它 ——
+  副本用的还是同一个客户端。实测字段 3 → 0,但 `root_async_client.max_retries` 仍是 3。
+- **临时办法:** 路径乙的调用方在**造模型时**就传 `get_chat_model("text", max_retries=0)`,
+  让「自研退避 + 中文文案」成为唯一那层;路径甲维持 SDK 自带重试不变(那是它唯一的一层)。
+- **根治:** 把重试整体下沉到模型层(与 TODO-9 同一次改动里做最省事)。
+- **Depends:** 无,但**在评测真正开始烧额度之前**必须处理。
 
 ## TODO-6 API Key 字段改用 `pydantic.SecretStr`(需改契约,要全员拍板)
 - **What:** `Settings.deepseek_api_key` / `moonshot_api_key` 目前是裸 `str`。
@@ -77,8 +105,11 @@
 - **Depends:** TODO-1 的硬前置。
 
 ## TODO-8 LLM 缓存条目加 HMAC 签名
-- **What:** 缓存正文现在会连同答案回写 `meta`(键/模型/提示词版本/消息摘要),读侧逐项核对,
-  能挡住「张冠李戴 + 整份伪造」。但挡不住「能改文件的人连 meta 一起编」。
+- **What:** 缓存正文现在会连同答案回写 `meta`(键/模型/提示词版本/消息摘要/**答案摘要**),
+  读侧逐项核对,能挡住「张冠李戴」「整份伪造」「改正文不改 meta」三种。
+  (`answer_digest` 是 2026-08-06 补的:前四项全是关于**问题**的,一项都不核对答案 ——
+  在补它之前,把 `message.content` 换掉、meta 一个字节不动,伪造内容就会零调用原样流出,
+  连编 meta 都不用。)但仍挡不住「能改文件的人连 answer_digest 一起重算」。
 - **Why:** `data/` 是宿主机绑定挂载,彩排缓存还会被打包在队员之间传递。
 - **How:** 对整份 payload 做 HMAC,密钥从 `Settings` 取且**不落在同目录**。
 - **Depends:** TODO-5 之后(缓存真正接进执行路径后这条才有实际意义)。

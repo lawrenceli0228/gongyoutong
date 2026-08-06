@@ -177,7 +177,8 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
         build=build_ping_agent,
     ),
     # W2/W3 在这里往下追加，一个 Agent 一行。改这里就等于改路由能力，
-    # 记得同步更新 D18 的路由评测集（backend/evals/routing/），别让门槛失守。
+    # 记得同步更新 D18 的路由评测集（backend/eval/datasets/routing.csv，
+    # 跑分入口 backend/eval/runner.py，`make eval SUITE=routing`），别让门槛失守。
 )
 """当前挂在 supervisor 下面的全部子 Agent。顺序 = 提示词里名单的顺序，不影响功能。"""
 

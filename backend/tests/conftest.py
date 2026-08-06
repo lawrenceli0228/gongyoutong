@@ -39,6 +39,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from langchain_core.globals import get_llm_cache, set_llm_cache
 from langchain_core.messages import AIMessage
 
 # 兜底:若 gyt 尚未以可编辑方式装进环境(有人直接 `pytest` 而没走 `uv run`),
@@ -137,6 +138,28 @@ def _isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Itera
     yield
     # 用例结束再清一次:本用例的 Settings 不许被下一个用例继承。
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_llm_cache() -> Iterator[None]:
+    """每个用例都从「没装全局缓存」起步,结束后把进程里原来那个原样放回去。
+
+    为什么必须有这条(autouse,所有人自动享受):
+        gyt.core.llm.install_llm_cache() 写的是 langchain_core.globals._llm_cache ——
+        一个**模块级变量**,不是实例属性。get_chat_model() 每次被调用都会顺手装上它,
+        于是第一个碰过模型的用例会把缓存留给后面所有用例:
+
+            用例 A: get_chat_model() ──► 全局缓存装上,指向 A 的 tmp_path/cache
+            用例 B: 没打算用缓存,却照样命中了 A 留下的缓存对象
+                    (更糟:A 的 tmp_path 已被 pytest 删掉,读写全落在不存在的目录上)
+
+        本 fixture 与 _isolated_settings 是一对:那条隔离"配置来源",这条隔离"全局单例"。
+        存旧值再还原(而不是无脑 set_llm_cache(None))是为了不破坏可能存在的外部装载。
+    """
+    previous = get_llm_cache()
+    set_llm_cache(None)
+    yield
+    set_llm_cache(previous)
 
 
 @pytest.fixture

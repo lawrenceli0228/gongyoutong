@@ -1,6 +1,6 @@
-id,type,user_input,expected_agent,note
+﻿id,type,user_input,expected_agent,note
 R01,positive,这张照片有没有安全隐患,safety,示例-可保留:最典型的识图请求
-R02,positive,帮我看看工地照片里有没有人没戴安全帽,safety,示例-可保留:换个说法,测同义表达
+R02,positive,帮我看看工地照片里有没有人没戴安全帽,safety,"示例-可保留:换个说法,测同义表达"
 R03,positive,脚手架立杆间距规范上是怎么要求的,knowledge,示例待替换:换成你们真实规范里的问题
 R04,positive,消防通道宽度有什么规定,knowledge,示例待替换
 R05,positive,下周三之前还有哪些任务没完成,schedule,示例-可保留:中文相对日期

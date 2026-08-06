@@ -65,7 +65,10 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 # CI 另外追加 --cov-fail-under=80 把覆盖率门槛真开起来;
 # 本地默认不带,免得别人单跑一个测试文件时被全局覆盖率卡住。
-addopts = "--cov=gyt --cov-report=term-missing"
+# eval 也必须进覆盖率尺子:它是三条评测门槛的执行者,自己判错分比模型答错更致命
+# (scorers.py 顶部原话:「判错了比不判更糟」)。只量 gyt 的话,W2 往 runner 里
+# 加接线/重试/报告格式时覆盖率掉到 0 也不会有一条 CI 变红。
+addopts = "--cov=gyt --cov=eval --cov-report=term-missing"
 
 [tool.coverage.report]
 exclude_lines = [

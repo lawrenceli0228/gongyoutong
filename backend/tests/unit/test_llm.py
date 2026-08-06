@@ -153,9 +153,12 @@ def test_purpose_selects_provider(
     assert kwargs["base_url"] == getattr(settings, url_field)
     assert kwargs["api_key"] == getattr(settings, key_field)
     assert kwargs["timeout"] == settings.llm_timeout_s
-    # 真实 Agent 路径绕开了本模块的 ainvoke(见 llm.py 顶部「图 0」),
-    # 所以 langchain 那层的 max_retries 是当前唯一活着的重试层,必须跟配置走,不能是 0。
+    # Agent 路径由 langchain 内部自己调模型(见 llm.py 顶部「图 0」路径甲),
+    # 所以 langchain 那层的 max_retries 是那条路径上唯一的重试层,必须跟配置走,不能是 0。
     assert kwargs["max_retries"] == settings.llm_max_retries
+    # 不许传 cache=:保持默认 None 才会走全局缓存,写成 False 会把整条缓存链路关掉
+    # (langchain 的判定是 `check_cache = self.cache or self.cache is None`)。
+    assert "cache" not in kwargs
     assert kwargs["use_responses_api"] is False  # 两家都只实现 /chat/completions
 
 

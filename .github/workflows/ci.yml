@@ -338,18 +338,32 @@ jobs:
 # =============================================================================
 # job: eval —— 三套评测门槛(W2 启用,现在先注释占位)
 #
-# 为什么现在不开:评测集(数据 + 打分脚本)还没建,开了必然一直红,
-# 红久了大家就学会无视 CI —— 那比没有 CI 更糟。
+# 打分脚本已经就位(backend/eval/runner.py,W2 前置 A2 交付),门槛也已经从
+# gyt.config 的 eval_threshold_* 读 —— 但**这段仍然保持注释**,理由见下面。
 #
-# W2 启用步骤:
-#   1. 准备评测集与 backend/evals/run_eval.py(输出 JSON:{"score": 0.93, ...});
-#   2. 把下面整段的注释符去掉,并加到 e2e 的 needs 里(或保持并行);
-#   3. 三条门槛值不要写死在这里,一律从 gyt.config 的 get_settings() 读:
-#        eval_threshold_routing = 0.90   路由准确率
-#        eval_threshold_safety  = 0.80   安全隐患识别
-#        eval_threshold_rag     = 0.80   知识问答召回
-#      脚本自己比对阈值,不达标就以非零码退出,CI 只负责红/绿。
-#   4. 评测同样全程 mock 或走离线缓存,绝不在 CI 里烧真实额度。
+# ---------------------------------------------------------------------------
+# 取消注释的前提(三条全满足才动手,少一条就别开)
+# ---------------------------------------------------------------------------
+#   前提 1:三套数据集都填够,且不再有"待替换/请替换"占位行。
+#           下限是方案定的:routing 20 条、safety 30 张、rag 20 组。
+#           runner 会把占位行剔掉;整套没有可判分的行时打印 SKIP 并以 0 退出 ——
+#           也就是说**现在开了不会红,但会绿得毫无意义**(什么都没测),
+#           那比红更危险:大家会以为门槛已经守住了。
+#
+#   前提 2:被测 Agent 接进来了。runner 不 import 任何具体 Agent,
+#           要靠 `--runners 模块:属性` 注入一张 {套名: async 函数} 的表
+#           (见 backend/eval/runner.py 的 load_runners)。没注入 = 全套 SKIP。
+#           所以启用前要先在后端某处导出这张表,并把下面的 --runners 参数填上。
+#
+#   前提 3:评测全程 mock 或走离线缓存,绝不在 CI 里烧真实额度。
+#           视觉调用一次约 6 分钱,30 张照片 × 每次 push = 账单会很难看。
+#
+# 满足后:去掉下面整段的注释符,并按需加到 e2e 的 needs 里(或保持并行)。
+# 三条门槛值**不要**写进本文件,runner 自己比对阈值、不达标就非零码退出,
+# CI 只负责红/绿:
+#     eval_threshold_routing = 0.90   路由准确率
+#     eval_threshold_safety  = 0.80   安全隐患识别
+#     eval_threshold_rag     = 0.80   知识问答召回
 #
 # eval:
 #   name: 评测门槛
@@ -359,6 +373,14 @@ jobs:
 #   defaults:
 #     run:
 #       working-directory: ${{ env.BACKEND_DIR }}
+#       # shell: bash 是**必须的**,不是风格问题:不写 shell 键时 GitHub 用的是
+#       # `bash -e {0}`(**不带 pipefail**),只有显式写了才换成
+#       # `bash --noprofile --norc -eo pipefail {0}`。下面几个 step 都是
+#       # `uv run ... | tee ...`,没有 pipefail 的话退出码取自 tee(恒为 0),
+#       # runner 因低于门槛而返回的 1 会被完全吃掉 —— 门槛形同虚设,
+#       # 而日志里的 FAIL 明细照常打印,没人会去看退出码。绿得毫无意义比红更危险。
+#       # 实测:bash -e -c 'exit 7 | tee /dev/null' → 0;加 -o pipefail → 7。
+#       shell: bash
 #   env:
 #     GYT_DEEPSEEK_API_KEY: ci-fake-deepseek-key
 #     GYT_MOONSHOT_API_KEY: ci-fake-moonshot-key
@@ -375,17 +397,30 @@ jobs:
 #         cache-suffix: eval
 #     - name: 同步依赖
 #       run: uv sync --frozen
+#     # 三套分三个 step,是为了在 GitHub 的 job 页上一眼看出是哪一套没过。
+#     # --runners 的值要换成真实导出点(见上面「前提 2」),留空则整套 SKIP。
+#     # 逐条明细走 stdout,tee 一份留档。退出码不被 tee 吃掉靠的是上面 defaults 里的
+#     # `shell: bash`(它才带 -o pipefail),**不是**默认行为 —— 别把那行删了。
 #     - name: 路由准确率(门槛 eval_threshold_routing)
-#       run: uv run python -m gyt.evals.run_eval --suite routing
+#       run: |
+#         mkdir -p eval-reports
+#         uv run python -m eval.runner --suite routing --runners 待填:RUNNERS \
+#           | tee eval-reports/routing.txt
 #     - name: 安全隐患识别(门槛 eval_threshold_safety)
-#       run: uv run python -m gyt.evals.run_eval --suite safety
+#       run: |
+#         mkdir -p eval-reports
+#         uv run python -m eval.runner --suite safety --runners 待填:RUNNERS \
+#           | tee eval-reports/safety.txt
 #     - name: 知识问答召回(门槛 eval_threshold_rag)
-#       run: uv run python -m gyt.evals.run_eval --suite rag
+#       run: |
+#         mkdir -p eval-reports
+#         uv run python -m eval.runner --suite rag --runners 待填:RUNNERS \
+#           | tee eval-reports/rag.txt
 #     - name: 上传评测明细
 #       if: always()
 #       uses: actions/upload-artifact@v7
 #       with:
 #         name: eval-reports
-#         path: ${{ env.BACKEND_DIR }}/evals/reports/
+#         path: ${{ env.BACKEND_DIR }}/eval-reports/
 #         if-no-files-found: ignore
 # =============================================================================

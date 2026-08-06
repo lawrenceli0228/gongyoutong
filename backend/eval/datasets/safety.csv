@@ -1,11 +1,11 @@
-id,type,image,label,violations,note
+﻿id,type,image,label,violations,note
 S01,positive,photo_01.jpg,violation,未戴安全帽,示例待替换:换成你们真实标注的照片
-S02,positive,photo_02.jpg,violation,未戴安全帽;未穿反光衣,示例待替换:一图多违规,分号分隔
+S02,positive,photo_02.jpg,violation,未戴安全帽;未穿反光衣,"示例待替换:一图多违规,分号分隔"
 S03,positive,photo_03.jpg,violation,高空作业未系安全带,示例待替换
 S04,positive,photo_04.jpg,violation,临边无防护,示例待替换
 S05,positive,photo_05.jpg,violation,消防通道堵塞,示例待替换
-S06,compliant,photo_06.jpg,compliant,,示例待替换:合规对照组必须有,否则模型只会喊违规也能满分
+S06,compliant,photo_06.jpg,compliant,,"示例待替换:合规对照组必须有,否则模型只会喊违规也能满分"
 S07,compliant,photo_07.jpg,compliant,,示例待替换
-S08,hard,photo_08.jpg,violation,未戴安全帽,示例待替换:模棱两可的难例(远景/背影/光线差),这类最能拉开差距
-S09,not_site,photo_09.jpg,not_site,,示例待替换:干扰项(办公室/街景),不该报任何违规
+S08,hard,photo_08.jpg,violation,未戴安全帽,"示例待替换:模棱两可的难例(远景/背影/光线差),这类最能拉开差距"
+S09,not_site,photo_09.jpg,not_site,,"示例待替换:干扰项(办公室/街景),不该报任何违规"
 S10,not_site,photo_10.jpg,not_site,,示例待替换:干扰项

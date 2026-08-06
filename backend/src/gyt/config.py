@@ -152,6 +152,14 @@ class Settings(BaseSettings):
     eval_threshold_safety: float = Field(default=0.80, ge=0.0, le=1.0)
     eval_threshold_rag: float = Field(default=0.80, ge=0.0, le=1.0)
 
+    # --- 评测最小样本量(条)-----------------------------------------------
+    # 光有门槛是不够的:可判分的行只剩 1 条时,「100%(1/1)」照样是 PASS + exit 0,
+    # 门槛形同虚设。这三个数是方案定的下限(eval/README.md 第一节第 3 条),
+    # 低于它跑分脚本会判 FAIL 并说清「这个百分比不作数」。
+    eval_min_rows_routing: int = Field(default=20, ge=1)
+    eval_min_rows_safety: int = Field(default=30, ge=1)
+    eval_min_rows_rag: int = Field(default=20, ge=1)
+
     # ------------------------------------------------------------------
     # 派生路径(只读 property)
     #

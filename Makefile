@@ -9,10 +9,16 @@ BACKEND_DIR    := backend
 UV             := uv
 PYTEST         := $(UV) run pytest
 COMPOSE        := docker compose
-COV_PACKAGE    := gyt
+# 覆盖率量哪些包。eval 也在内:它是三条评测门槛的执行者,判错分比模型答错更致命,
+# 不上锁的话 W2 改 runner 时覆盖率掉光也不会有一条 CI 变红。与 pyproject 的 addopts 同源。
+COV_PACKAGES   := gyt eval
 COV_MIN        := 80
 E2E_DIR        := tests/e2e
 E2E_FLAG       := GYT_E2E=1
+EVAL_MODULE    := eval.runner
+# 跑哪一套评测:all / routing / safety / rag。用 ?= 是为了 `make eval SUITE=safety` 能覆盖。
+# 三条门槛值不在这里 —— 一律由脚本从 gyt.config 的 eval_threshold_* 读,别在 Makefile 里抄第二份。
+SUITE          ?= all
 FRONTEND_SETUP := scripts/setup-frontend.sh
 FRONTEND_URL   := http://localhost:3000
 BACKEND_URL    := http://localhost:2024
@@ -24,7 +30,7 @@ DATA_UID       := 10001
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup dev test cov lint lint-ci fmt up down e2e frontend
+.PHONY: help setup dev test cov eval lint lint-ci fmt up down e2e frontend
 
 help: ## 打印所有可用目标
 	@echo "工友通 · 可用命令:"
@@ -42,9 +48,16 @@ test: ## 跑单元/集成测试(不含 E2E,秒级)
 	cd $(BACKEND_DIR) && $(PYTEST)
 
 cov: ## 跑测试 + 覆盖率报告,低于 80% 直接失败(与 CI 同一把尺子)
-	cd $(BACKEND_DIR) && $(PYTEST) --cov=$(COV_PACKAGE) --cov-report=term-missing \
+	cd $(BACKEND_DIR) && $(PYTEST) $(addprefix --cov=,$(COV_PACKAGES)) --cov-report=term-missing \
 		--cov-report=html --cov-fail-under=$(COV_MIN)
 	@echo "[报告] HTML 覆盖率:$(BACKEND_DIR)/htmlcov/index.html"
+
+eval: ## 跑评测门槛(默认三套全跑;make eval SUITE=safety 只跑一套)
+	@# 现在跑会全部打印 SKIP —— 这是**正常状态**,不是坏了:
+	@#   · 数据集还是仓库自带的示例占位行(标着"待替换",数字全是编的);
+	@#   · 被测 Agent 还没接进来(要用 --runners 模块:属性 注入)。
+	@# 等数据填完、Agent 接好,同一条命令就会真的出分,低于门槛自动 exit 非 0。
+	cd $(BACKEND_DIR) && $(UV) run python -m $(EVAL_MODULE) --suite $(SUITE)
 
 lint: ## 静态检查(ruff,只报不改)
 	cd $(BACKEND_DIR) && $(UV) run ruff check .

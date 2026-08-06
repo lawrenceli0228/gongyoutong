@@ -47,21 +47,29 @@ API 核实结论(2026-08-05 实测,不是凭记忆写的 import)
 结论四:create_agent 是**惰性**绑定工具的(工具在请求期由中间件 bind,不在建图期),
     所以单测里的假模型可以不实现 bind_tools。Supervisor 那层不一样,见 graph.py。
 
-⚠️ T1 已知缺口(W2 开工前必须收口,别让 5 个真 Agent 照着 ping 抄一遍):
-    本工厂把**裸的** ChatOpenAI 交给 create_agent,而 create_agent 是自己调 model 的。
-    结果是 gyt.core.llm 里那套磁盘缓存与自研退避重试(ainvoke / cache_key / _cache_*)
-    **在真实执行路径上一次都不会被走到** —— 它们目前只有单测在调。
+结论五(2026-08-06,TODO-5 收口):缓存**不在本文件里**,一行都不用写。
+    本工厂交给 create_agent 的仍然是裸 ChatOpenAI,而 create_agent 内部是自己调
+    model 的(factory.py:1467 `await model_.ainvoke(...)`)。缓存靠的是 langchain
+    的进程级全局缓存(`langchain_core.globals.set_llm_cache`),由
+    `llm.get_chat_model()` 在返回模型前顺手装上:
 
-        create_gyt_agent --> llm.get_chat_model() --> ChatOpenAI
-                                    |
-                                    +--> create_agent(model=...) --> langgraph 内部 model.ainvoke()
-                                                                     ↑ 绕开了 gyt.core.llm.ainvoke
+        create_gyt_agent --> llm.get_chat_model() --+-- install_llm_cache()(幂等)
+                                                    +-- ChatOpenAI
+                                  |
+                                  +--> create_agent(model=...)
+                                            |
+                                            +--> langgraph 内部 model.ainvoke()
+                                                      |
+                                                      +--> _agenerate_with_cache
+                                                            先查 GytDiskCache,命中就 0 次网络
+                                                            (流式路径同样先查,实测已钉死)
 
-    已做的止血:get_chat_model 里的 max_retries 已从契约写的 0 改回 settings.llm_max_retries,
-    保证真实路径至少有一层重试(否则一次 429 就把这一轮打穿)。
-    未做的部分:缓存仍不在路径上,"演示断网靠彩排缓存兜底"这个承诺目前是空的。
-    两条可选收口方案与后续要补的断言测试,统一写在 gyt/core/llm.py 顶部的「图 0」里,
-    动手前先读那一段,不要在这里另起炉灶。
+    所以这里**不要**再包一层自己的模型代理 —— 那正是当初评估后否掉的方案(a),
+    理由(流式覆盖、工具串味、bind_tools 形参坑)全部写在 gyt/core/llm.py 顶部
+    「图 0」里,动手改之前先读那一段。
+    重试仍由 ChatOpenAI 自带的 max_retries 承担(get_chat_model 里已设成配置值)。
+    对应的断言测试在 tests/unit/test_llm_cache.py —— 它数的是**内层模型被调了几次**,
+    因为这条链路一旦断开是完全静默的(答案照出、测试照绿,只是每次都在花钱)。
 
 来源:
     https://pypi.org/pypi/langchain/json

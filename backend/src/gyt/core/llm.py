@@ -13,32 +13,81 @@
     所以这里用不产生告警的写法。共享契约 v1 原本写的是 model_kwargs,已按此实测结论修订。
   · 显式钉死 use_responses_api=False:两家都只实现 /chat/completions,走 Responses API 必然失败。
 
-⚠️⚠️ 图 0:本模块的重试/缓存**当前不在 Agent 的真实执行路径上**(T1 已知缺口,W2 前必须收口)
+图 0:两条调用路径,以及缓存/重试各由谁负责(TODO-5 已收口,2026-08-06)
 
-    真实路径(Supervisor / 各子 Agent):
-        graph.py / base_agent.py --> get_chat_model() --> ChatOpenAI 实例
+    路径甲 —— Agent 真实执行路径(Supervisor / 5 个子 Agent,演示走的就是这条):
+
+        graph.py / base_agent.py --> get_chat_model() --+--> install_llm_cache()
+                                                        |      装上全局磁盘缓存(仅一次)
+                                                        +--> 裸 ChatOpenAI 实例
               |
-              +--> 交给 create_supervisor / create_agent
+              +--> create_supervisor / create_agent 内部直接 model.ainvoke(...)
                         |
-                        +--> langgraph 内部直接 model.ainvoke(...)   ← 本模块的 ainvoke 没被调用
-                                  |
-                                  +--> 唯一活着的重试层 = ChatOpenAI 自己的 max_retries
-                                       (所以 get_chat_model 里它必须 = settings.llm_max_retries,
-                                        契约 v1 写的 0 会导致线上零重试,比不做还差)
-                                  +--> 缓存:**没有**。_cache_read 一次都不会被调用,
-                                       "断网复演彩排路径"这个承诺目前不成立。
+                        v
+              BaseChatModel.ainvoke -> agenerate -> _agenerate_with_cache
+                        |
+                        +-- ① 先查全局缓存 GytDiskCache.alookup ── 命中 ──> 直接返回(0 次网络)
+                        |                                              v2 流式协议下还会把
+                        |                                              事件重放一遍,UI 观感不变
+                        +-- ② 未命中 --> 真调模型(流式或非流式)--> GytDiskCache.aupdate 落盘
+                        |
+                        +-- 重试层 = ChatOpenAI 自带的 max_retries(openai SDK 的指数退避,
+                            会读 Retry-After)。所以 get_chat_model 里它必须 = 配置值,
+                            契约 v1 写的 0 会导致线上零重试,比不做还差。
 
-    本模块 ainvoke() 路径(目前只有单测和将来的"直调"场景走):
-        ainvoke() --> 磁盘缓存 --> _invoke_with_retry(指数退避,见图 1)
+    路径乙 —— 本模块 ainvoke()「直调」路径(不经过 Agent 的场景:评测打分、
+              知识综合里的一次性问答等。README「直接调模型」那一节讲的就是它):
 
-    收口方案(二选一,W2 开工前定,别让 5 个真 Agent 照着 ping 抄一遍同样的空档):
-      (a) 下沉到模型层:自定义 BaseChatModel 子类覆写 _agenerate 转调本模块 ainvoke,
-          在 get_chat_model 返回前套上 —— create_agent / create_supervisor 内部调用自动享受;
-          注意 create_supervisor 需要 bind_tools,包装层必须原样转发。
-      (b) 换用官方机制:缓存改 langchain_core.globals.set_llm_cache(需自实现 BaseCache
-          复用本模块的 cache_key/_cache_read/_cache_write),重试保持交给 langchain。
-    无论选哪条,都要补一个「真实 Agent 调用路径确实经过缓存/重试」的断言测试,
-    否则这条链路会一直静默失效到演示日。
+        ainvoke() --> 磁盘缓存(同一个 cache_dir、同一套文件格式与身份核对,
+                  |            但键里带 cache_extra 而不带 llm_string)
+                  --> _for_direct_call:关掉库自带的全局缓存,免得两层键叠加串味
+                  --> _invoke_with_retry(自研指数退避 + 中文错误文案,见图 1)
+                      ⚠️ 这一层与 ChatOpenAI 自带的 max_retries 是**叠加**的,
+                         最坏 4×4=16 个 HTTP 请求。要单层就在造模型时传
+                         get_chat_model(..., max_retries=0),见 _for_direct_call。
+
+    为什么选「全局缓存」而不是「自定义 BaseChatModel 包装层」(2026-08-06 三组探针实测后的决策,
+    三个月后的人请先看完这段再动手改):
+      · 覆盖面:chat-ui 是流式的。实测 langchain 1.3.14 / core 1.5.3 的
+        _agenerate_with_cache(chat_models.py:2030-2059)**先查缓存、后分流式**,
+        所以 astream / astream_events / stream_mode="messages" / v2 消息协议
+        四条真实路径全都命中缓存。唯一绕开的是「直接对 chat model 调 .astream()」,
+        而 langchain/langgraph 的 Agent 节点里一处都没有这么写(实测 factory.py:1467
+        与 chat_agent_executor.py:705 都是 await model.ainvoke)。
+      · 正确性:缓存键的第二维 llm_string 由 _get_llm_string(stop, **kwargs) 生成,
+        **自动含本次绑定的工具集与 tool_choice**。包装层方案得自己把工具揉进键,
+        漏一次就是「safety 的答案被 report 原样取走」——比没有缓存更糟。
+      · 代码量:包装层方案要覆写 _agenerate + _astream + bind_tools(还得显式写出
+        parallel_tool_calls 形参,否则 langgraph_supervisor:60 的 inspect.signature
+        检查会静默判定「不支持关并行工具调用」)+ _get_ls_params + with_structured_output。
+        两人竞赛团队养不起这么多面。
+      代价(已知,别当成 bug):① 缓存命中时 v1 消息协议下没有逐字打字机效果,
+      整条 AIMessage 一次到达(v2 协议会重放事件,无差别);② llm_string 含
+      request_timeout / max_retries / extra_body —— 演示前改 .env 里这几项会让
+      整份彩排缓存作废,写进演示 checklist;③ 自研重试的中文文案仍只在路径乙上生效。
+
+图 0.5:为什么必须先给 prompt 做归一化,否则多轮/整图只能复演第一轮
+
+    (一)剥运行时噪声(_strip_prompt_noise)
+    langchain 命中缓存时会改写消息(chat_models.py:_convert_cached_generations):
+        gen.message = gen.message.model_copy(update={"usage_metadata": {..., "total_cost": 0}})
+    这条被改过的 AIMessage 会进入**下一轮**的 prompt,于是第 2 轮的键对不上、又打一次模型。
+    实测:不归一化时,彩排要跑三遍缓存才收敛;演示当天靠这个赌不起。
+    处置:算键前把 langchain 序列化消息里的运行时噪声(id / usage_metadata /
+    response_metadata / additional_kwargs 等)全剥掉,只留会改变答案的字段。
+
+    (二)工具调用 id 位置归一化(_renumber_tool_call_ids)
+    光剥噪声还不够 —— tool_call_id 与 tool_calls[].id 是「会改变答案」的字段(它们决定
+    哪条工具结果配哪次调用),不能整个剥掉;但库每一轮都会**新造 uuid4** 塞进去:
+        langgraph_supervisor/handoff.py:132  tool_call_id = str(uuid.uuid4())
+    这对合成消息(AIMessage「Transferring back to supervisor」+ 对应 ToolMessage)会进入
+    **supervisor 汇总那一次**调用的 prompt,于是整图跑第二遍时 supervisor 的最后一次调用
+    永远不可能命中 —— 子 Agent 复演得了,supervisor 说不出最后那句话,而用户在 chat-ui 上
+    看到的恰恰就是那句话。实测:未归一化时第二遍仍有 1 次真调,两遍 prompt 的 diff 只有
+    id / tool_call_id 两行。
+    处置:算键前把出现过的每个工具调用 id 按**首次出现顺序**映射成 tc0 / tc1 / ……
+    id 只需要在同一个 prompt 内部保持配对一致,不需要跨轮稳定,所以不损失任何正确性
+    (不同工具调用仍然落在不同序号上)。实测这一改之后第二遍新增真调 = 0。
 
 图 1:重试退避链(llm_max_retries=3, llm_retry_base_delay_s=1.0 时)
 
@@ -66,19 +115,29 @@
 
 图 3:缓存文件格式与读侧核对(防"谁能写这个目录谁说了算")
 
-    <hex>.json = {"meta": {key, model, prompt_version, messages_digest},
+    <hex>.json = {"meta": {key, model, prompt_version, messages_digest, answer_digest},
                   "message": {AIMessage 的 model_dump}}
 
-    读:命中文件 --> meta 四项与本次请求逐项比对 --+-- 全等 --> 返回 AIMessage
-                                                 +-- 任一不等 --> logger.warning + 按未命中处理
+    读:命中文件 --> meta 前四项与本次请求逐项比对 --+-- 任一不等 --> warning + 按未命中处理
+                    (这四项全是关于**问题**的)      |
+                                                    +-- 全等 --> 再比 answer_digest 与
+                                                                 **正文实际内容**
+                                                                 --+-- 不等 --> 按未命中处理
+                                                                   +-- 相等 --> 返回 AIMessage
 
     为什么必须核对:cache_dir 落在 ./data 这个宿主机绑定挂载里,而彩排缓存是要被打包、
     拷贝、在队员机器之间传递的"演示资产"。若读侧不核对,任何能往该目录写文件的人,
     只要本地算出同名 hex 再写一份 {"message": {"content": "照片中未发现安全隐患"}},
     Safety Agent 走到同一条消息序列时就会原样返回这句话 —— 零次模型调用,日志里
     只有一行"命中大模型缓存"。对一个判断工地危险的产品,这是不可接受的降级。
-    注意核对只防"张冠李戴/整份伪造",不防"能改文件的人连 meta 一起编"——
-    那需要 HMAC 签名(密钥不落在同目录),是 W2 之后的事,见 TODOS。
+
+    为什么 answer_digest 是单独一项:前四项(key / model / prompt_version /
+    messages_digest)**全是关于问题的,一项都不核对答案** —— 也就是说投毒者根本不用
+    编 meta,把 message.content 换掉、meta 一个字节不动就能原样流出。answer_digest
+    专门堵这个口子。
+    ⚠️ 现在的防护级别(别把它说高了):挡得住「改正文不改 meta」与「张冠李戴/整份伪造」;
+    **挡不住**能写这个目录的人连 meta 里的 answer_digest 一起重算 —— 那需要 HMAC 签名
+    (密钥不落在同目录),是 W2 之后的事,见 TODOS。
 """
 
 from __future__ import annotations
@@ -88,14 +147,22 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, TypeAlias
 from uuid import uuid4
 
+from langchain_core.caches import BaseCache
+from langchain_core.globals import get_llm_cache, set_llm_cache
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    message_chunk_to_message,
+)
+from langchain_core.outputs import ChatGeneration, Generation
 from langchain_openai import ChatOpenAI
 
 from gyt.config import Settings, get_settings
@@ -113,6 +180,19 @@ _BACKOFF_FACTOR = 2.0  # 第 n 次重试等待 base_delay * 2^n 秒
 _CACHE_SUFFIX, _CACHE_TMP_SUFFIX = ".json", ".tmp"
 _TMP_TOKEN_LEN = 8  # 临时文件名里的随机后缀长度,足够躲开并发写的撞名
 _SERVER_ERROR_MIN_STATUS = 500
+
+# --- langchain 全局缓存适配层用到的常量 ------------------------------------------
+# _get_llm_string 的格式是 `json.dumps(序列化后的模型) + "---" + str(sorted(调用参数))`。
+_LLM_STRING_SEPARATOR = "---"
+_UNKNOWN_MODEL_NAME = "unknown-model"  # 模型名抠不出来时的占位,只影响缓存文件里的 meta 可读性
+# langchain 序列化对象的两个标志字段:有 "lc" 说明这是个 Serializable,正文都在 "kwargs" 里。
+_LC_MARKER, _LC_KWARGS = "lc", "kwargs"
+# 参与缓存键的消息字段:只留「会改变模型答案」的那些,其余一律当噪声剥掉(理由见文件顶部图 0.5)。
+_SIGNIFICANT_MESSAGE_FIELDS = frozenset({"content", "type", "name", "tool_calls", "tool_call_id"})
+# 工具调用 id 的两个落点,以及归一化后的别名前缀(理由见文件顶部图 0.5 第二段)。
+_TOOL_CALL_ID_FIELD, _TOOL_CALLS_FIELD, _ID_FIELD = "tool_call_id", "tool_calls", "id"
+_TOOL_CALL_ID_ALIAS_PREFIX = "tc"
+_SINGLE_GENERATION = 1  # 本项目从不做 n>1 的多候选采样,缓存文件格式也只存一条
 
 # 「等一等就好」的状态码;5xx 由 _SERVER_ERROR_MIN_STATUS 统一兜底,不必逐个列。
 _RETRYABLE_STATUS: dict[int, ErrorCode] = {429: ErrorCode.RATE_LIMITED}
@@ -216,9 +296,18 @@ def get_chat_model(purpose: Purpose = "text", **overrides: Any) -> BaseChatModel
 
     overrides 直接透传 ChatOpenAI 且优先级最高;密钥没配抛 MissingAPIKeyError,用途写错抛 ValueError。
 
-    ⚠️ max_retries 的取值是**对契约 v1 的一处刻意偏离**,原因见下面的注释。
+    副作用(有意为之):顺手把磁盘缓存装成 langchain 的全局缓存。装在这里而不是
+    graph.py / base_agent.py,是因为**所有**拿模型的地方都必经此处 —— 谁都不会忘,
+    也不用让 5 个 Agent 各自记得调一次。详见文件顶部图 0。
+
+    ⚠️ 两处刻意行为,别顺手"修"掉:
+      1. max_retries = 配置值(对契约 v1 的偏离),原因见下面的注释;
+      2. **不传 cache=**。ChatOpenAI 的 cache 保持默认 None 才会走全局缓存 ——
+         langchain 的判定是 `check_cache = self.cache or self.cache is None`
+         (chat_models.py:2034),写成 cache=False 会把整条缓存链路关掉。
     """
     settings = get_settings()
+    install_llm_cache(settings)
     provider, model_name = _resolve_provider(purpose, settings)
     if not provider.api_key:
         raise MissingAPIKeyError(provider.display_name, _env_var_name(provider.key_field, settings))
@@ -332,7 +421,12 @@ def _cache_path(key: str, settings: Settings) -> Path:
 
 
 def _meta_matches(meta: Any, stamp: _CacheStamp) -> bool:
-    """核对缓存文件里自带的身份信息与本次请求是否一致。"""
+    """核对缓存文件里自带的身份信息与本次请求是否一致。
+
+    ⚠️ 这四项**全是关于「问题」的**,一项都不核对答案。答案正文由 _answer_matches
+    单独核对,两者缺一不可 —— 只核对这四项的话,把 message.content 换掉、meta
+    一个字节不动,伪造内容就会原样流出(见文件顶部图 3)。
+    """
     if not isinstance(meta, Mapping):
         return False
     return (
@@ -343,6 +437,23 @@ def _meta_matches(meta: Any, stamp: _CacheStamp) -> bool:
     )
 
 
+def _answer_digest(message_payload: Any) -> str:
+    """对答案正文(AIMessage 的 json 形态)算摘要,写侧落进 meta、读侧拿来比对。"""
+    raw = json.dumps(message_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _answer_matches(meta: Any, message_payload: Any) -> bool:
+    """核对正文没被人改过:meta 里的 answer_digest 必须与实际正文算出来的一致。
+
+    挡住「改正文不改 meta」这条最省事的投毒路径。挡不住连 answer_digest
+    一起重算的人 —— 那要 HMAC,见文件顶部图 3 的说明。
+    """
+    if not isinstance(meta, Mapping):
+        return False
+    return meta.get("answer_digest") == _answer_digest(message_payload)
+
+
 def _cache_read(stamp: _CacheStamp, settings: Settings) -> AIMessage | None:
     """读缓存并**核对身份**,对不上一律按未命中处理。
 
@@ -350,45 +461,53 @@ def _cache_read(stamp: _CacheStamp, settings: Settings) -> AIMessage | None:
                                       |
                                       +-- meta 四项与本次请求全等? --否--> warning + 未命中
                                       |                                   (不许拿来当答案)
-                                      +-- 是 --> AIMessage(**message)
+                                      +-- 是 --> answer_digest 与正文对得上? --否--> 未命中
+                                                        |
+                                                        +-- 是 --> AIMessage(**message)
 
-    任何异常(文件损坏/字段对不上/权限不足)同样降级成「未命中」——
-    缓存只是加速手段,坏了就当没有,绝不能让它把正事搞崩。
+    任何异常(文件损坏/字段对不上/权限不足/缓存目录整个建不出来)同样降级成「未命中」——
+    缓存只是加速手段,坏了就当没有,绝不能让它把正事搞崩。所以连 _cache_path
+    (它会 mkdir,失败抛 RuntimeError)也必须待在 try 里面。
     """
-    path = _cache_path(stamp.key, settings)
     try:
+        path = _cache_path(stamp.key, settings)
         if not path.is_file():
             return None
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, Mapping) or not _meta_matches(payload.get("meta"), stamp):
             # 可能是旧格式的遗留文件,也可能是有人往 cache_dir 里塞了伪造答案。
             # 两种情况都只有一个正确处理方式:当没命中,老老实实去问模型。
-            logger.warning("大模型缓存身份核对不通过,按未命中处理:%s", path)
+            logger.warning("大模型缓存身份核对不通过,按未命中处理(键 %s)", stamp.key)
+            return None
+        if not _answer_matches(payload.get("meta"), payload.get("message")):
+            logger.warning("大模型缓存正文与摘要对不上,疑似被改过,按未命中处理(键 %s)", stamp.key)
             return None
         return AIMessage(**payload["message"])
     except Exception:  # noqa: BLE001 —— 见 docstring:缓存故障必须降级,不许上抛
-        logger.warning("大模型缓存读取失败,按未命中处理:%s", path, exc_info=True)
+        logger.warning("大模型缓存读取失败,按未命中处理(键 %s)", stamp.key, exc_info=True)
         return None
 
 
 def _cache_write(stamp: _CacheStamp, message: AIMessage, settings: Settings) -> None:
     """原子写缓存:先写随机名 .tmp,再 os.replace 改名。写失败只告警,不影响已拿到的回答。
 
-    正文里连同答案一起落 meta(键 / 模型 / 提示词版本 / 消息摘要),供读侧核对。
+    正文里连同答案一起落 meta(键 / 模型 / 提示词版本 / 消息摘要 / **答案摘要**),供读侧核对。
+    与 _cache_read 同理:路径计算也在 try 里面,缓存目录建不出来只当没有缓存。
     """
-    path = _cache_path(stamp.key, settings)
-    tmp_path = path.with_name(f"{stamp.key}.{uuid4().hex[:_TMP_TOKEN_LEN]}{_CACHE_TMP_SUFFIX}")
+    tmp_path: Path | None = None
     try:
-        body = json.dumps(
-            {"meta": stamp._asdict(), "message": message.model_dump(mode="json")},
-            ensure_ascii=False,
-        )
+        path = _cache_path(stamp.key, settings)
+        tmp_path = path.with_name(f"{stamp.key}.{uuid4().hex[:_TMP_TOKEN_LEN]}{_CACHE_TMP_SUFFIX}")
+        dumped = message.model_dump(mode="json")
+        meta = {**stamp._asdict(), "answer_digest": _answer_digest(dumped)}
+        body = json.dumps({"meta": meta, "message": dumped}, ensure_ascii=False)
         tmp_path.write_text(body, encoding="utf-8")
         os.replace(tmp_path, path)
     except Exception:  # noqa: BLE001 —— 同上,缓存写失败不是业务失败
-        logger.warning("大模型缓存写入失败,主流程继续:%s", path, exc_info=True)
-        with suppress(OSError):
-            tmp_path.unlink()
+        logger.warning("大模型缓存写入失败,主流程继续(键 %s)", stamp.key, exc_info=True)
+        if tmp_path is not None:
+            with suppress(OSError):
+                tmp_path.unlink()
 
 
 def clear_cache() -> int:
@@ -406,6 +525,254 @@ def clear_cache() -> int:
         if path.suffix == _CACHE_SUFFIX:
             removed += 1
     return removed
+
+
+# ===========================================================================
+# langchain 全局缓存适配层(TODO-5 收口件)
+#
+# 这一层的全部工作,就是把 langchain 的 (prompt, llm_string) 二元组翻译成本模块
+# 上面那套 _cache_stamp / _cache_read / _cache_write。磁盘格式、原子写、身份核对
+# 一个字都不重写 —— 路径甲(Agent)与路径乙(直调)共用同一份实现与同一个目录。
+#
+#   langchain _agenerate_with_cache
+#         │  prompt   = dumps(消息列表,id 已被置 None)
+#         │  llm_string = _get_llm_string(stop, **kwargs)  ← 自动含 tools / tool_choice
+#         ▼
+#   GytDiskCache.alookup / aupdate
+#         │  prompt ──► json 解析 ──► _strip_prompt_noise(剥运行时噪声,见图 0.5)
+#         │  llm_string ──► 整串塞进 _cache_stamp 的 extra 维度(只参与算键,不落盘)
+#         ▼
+#   _cache_stamp ──► _cache_read / _cache_write ──► cache_dir/<sha256>.json
+# ===========================================================================
+
+
+def _strip_prompt_noise(value: Any) -> Any:
+    """递归剥掉 langchain 序列化消息里的运行时噪声,只留会改变模型答案的字段。
+
+    只对「带 lc 标志的序列化对象」动手,而且只筛它的 kwargs —— 对象自身那个
+    `"id": ["langchain","schema","messages","HumanMessage"]` 是**类型标识**,
+    跟消息 id 同名但不是一回事,剥错了 HumanMessage 和 AIMessage 就会撞进同一个键。
+
+        [{"lc":1,"id":[...类路径...],"kwargs":{content, type, id, usage_metadata,...}}]
+                     └── 保留 ──┘        └── 只留 _SIGNIFICANT_MESSAGE_FIELDS ──┘
+    """
+    if isinstance(value, list):
+        return [_strip_prompt_noise(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    is_lc_object = _LC_MARKER in value
+    stripped: dict[str, Any] = {}
+    for key, item in value.items():
+        if is_lc_object and key == _LC_KWARGS and isinstance(item, dict):
+            stripped[key] = {
+                k: _strip_prompt_noise(v)
+                for k, v in item.items()
+                if k in _SIGNIFICANT_MESSAGE_FIELDS
+            }
+            continue
+        stripped[key] = _strip_prompt_noise(item)
+    return stripped
+
+
+def _tool_call_alias(raw: str, aliases: dict[str, str]) -> str:
+    """把一个工具调用 id 换成「它在本 prompt 里第几个出现」的别名(tc0 / tc1 / …)。"""
+    if raw not in aliases:
+        aliases[raw] = f"{_TOOL_CALL_ID_ALIAS_PREFIX}{len(aliases)}"
+    return aliases[raw]
+
+
+def _renumber_one_tool_call(call: Any, aliases: dict[str, str]) -> Any:
+    """处理 tool_calls 列表里的单个工具调用:只换它的 id,其余字段原样递归。"""
+    if not isinstance(call, dict):
+        return _renumber_tool_call_ids(call, aliases)
+    return {
+        key: (
+            _tool_call_alias(item, aliases)
+            if key == _ID_FIELD and isinstance(item, str)
+            else _renumber_tool_call_ids(item, aliases)
+        )
+        for key, item in call.items()
+    }
+
+
+def _renumber_tool_call_ids(value: Any, aliases: dict[str, str]) -> Any:
+    """把工具调用 id 按首次出现顺序换成 tc0 / tc1 / ……(理由见文件顶部图 0.5 第二段)。
+
+        [AIMessage  tool_calls=[{id:"9f2c-…"}]      ]  ->  [{id:"tc0"}]
+         ToolMessage tool_call_id="9f2c-…"           ->   tool_call_id="tc0"
+         AIMessage  tool_calls=[{id:"6d82-…"}]       ->  [{id:"tc1"}]
+
+    只动这两个落点:``tool_call_id`` 字段,以及 ``tool_calls`` 列表里每一项的 ``id``。
+    别处的 ``id``(尤其是 lc 序列化对象自身那个类路径 id)一律不碰 —— 剥错了
+    HumanMessage 和 AIMessage 就会撞进同一个键。
+    """
+    if isinstance(value, list):
+        return [_renumber_tool_call_ids(item, aliases) for item in value]
+    if not isinstance(value, dict):
+        return value
+    renumbered: dict[str, Any] = {}
+    for key, item in value.items():
+        if key == _TOOL_CALL_ID_FIELD and isinstance(item, str):
+            renumbered[key] = _tool_call_alias(item, aliases)
+        elif key == _TOOL_CALLS_FIELD and isinstance(item, list):
+            renumbered[key] = [_renumber_one_tool_call(call, aliases) for call in item]
+        else:
+            renumbered[key] = _renumber_tool_call_ids(item, aliases)
+    return renumbered
+
+
+def _normalize_prompt(prompt: str) -> Any:
+    """把 langchain 传来的 prompt 字符串解析并归一化,失败就原样用。
+
+    两步:先剥运行时噪声,再把工具调用 id 按位置重编号(两步的理由都在文件顶部图 0.5)。
+
+    解析不了时**不**报错也**不**跳过缓存:原样参与算键,顶多少命中几次,
+    绝不会误命中别人的答案 —— 这是本模块贯穿始终的取舍。
+    """
+    try:
+        stripped = _strip_prompt_noise(json.loads(prompt))
+    except (ValueError, TypeError):
+        logger.debug("大模型缓存:prompt 不是合法 JSON,按原文参与算键")
+        return prompt
+    return _renumber_tool_call_ids(stripped, {})
+
+
+def _model_name_from_llm_string(llm_string: str) -> str:
+    """从 llm_string 里尽力抠出模型名,只为让缓存文件的 meta 可读、可排查。
+
+    抠不出来也无所谓:llm_string 整串已经在 extra 维度里参与算键了,
+    模型换了键一定会变,不依赖这里抠得准不准。
+    """
+    head = llm_string.split(_LLM_STRING_SEPARATOR, 1)[0]
+    try:
+        kwargs = json.loads(head).get(_LC_KWARGS)
+    except (ValueError, TypeError, AttributeError):
+        return _UNKNOWN_MODEL_NAME
+    if not isinstance(kwargs, Mapping):
+        return _UNKNOWN_MODEL_NAME
+    for field in ("model_name", "model"):
+        value = kwargs.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return _UNKNOWN_MODEL_NAME
+
+
+def _stamp_for_llm_cache(prompt: str, llm_string: str) -> _CacheStamp:
+    """langchain 的 (prompt, llm_string) -> 本模块的缓存身份(组成见文件顶部图 2)。"""
+    return _cache_stamp(
+        _model_name_from_llm_string(llm_string),
+        _normalize_prompt(prompt),
+        llm_string,
+    )
+
+
+def _single_ai_message(generations: Sequence[Generation]) -> AIMessage | None:
+    """从 langchain 的结果里取出唯一那条 AIMessage;取不到就返回 None(= 本次不缓存)。
+
+    只认「一问一答」:本项目从不用 n>1 的多候选采样,而缓存文件格式是一键一条。
+    真遇上多条,宁可不缓存,也不能落一份读回来会缺斤少两的答案。
+    流式路径攒出来的是 AIMessageChunk,先合并回普通 AIMessage 再落盘 ——
+    否则 chunk 独有的字段会让读侧 AIMessage(**payload) 直接炸,退化成"永远不命中"。
+    """
+    if len(generations) != _SINGLE_GENERATION:
+        logger.debug("大模型缓存:本次结果有 %d 条,不落盘", len(generations))
+        return None
+    message = getattr(generations[0], "message", None)
+    if isinstance(message, AIMessageChunk):
+        message = message_chunk_to_message(message)
+    return message if isinstance(message, AIMessage) else None
+
+
+class GytDiskCache(BaseCache):
+    """工友通的 langchain 全局缓存实现:一键一个 json 文件,落在 settings.cache_dir。
+
+    装上之后,create_agent / create_supervisor 内部的每一次模型调用都会先查这里 ——
+    这就是「演示断网时靠彩排跑过的缓存复演」(方案 D9 三层兜底的第二层)的兑现方式。
+
+    异步方法直接转调同步实现,没走 BaseCache 默认的 run_in_executor:
+    缓存文件是几 KB 的小 json,一次读写在微秒级,为它起线程池不划算,
+    而且线程池里再出异常的排查成本远高于省下的这点时间。
+
+    对 langchain 的契约:**这四个方法永不上抛**。它们被接在
+    _agenerate_with_cache 上,一旦抛异常就会把用户正在进行中的那一轮对话打穿,
+    而缓存本该只是个可有可无的加速层。所以最外层再兜一道 except。
+    """
+
+    def lookup(self, prompt: str, llm_string: str) -> Sequence[Generation] | None:
+        """查缓存。返回 None = 未命中,langchain 会照常去问模型。"""
+        try:
+            settings = get_settings()
+            if not settings.llm_cache_enabled:
+                return None
+            stamp = _stamp_for_llm_cache(prompt, llm_string)
+            cached = _cache_read(stamp, settings)
+            if cached is None:
+                return None
+            logger.debug("命中大模型缓存(Agent 路径):%s", stamp.key)
+            return [ChatGeneration(message=cached)]
+        except Exception:  # noqa: BLE001 —— 见类 docstring:对 langchain 永不上抛
+            logger.warning("大模型缓存查询异常,按未命中处理", exc_info=True)
+            return None
+
+    def update(self, prompt: str, llm_string: str, return_val: Sequence[Generation]) -> None:
+        """写缓存。写失败只告警,不影响已经拿到的回答(_cache_write 内部已保证)。"""
+        try:
+            settings = get_settings()
+            if not settings.llm_cache_enabled:
+                return
+            message = _single_ai_message(return_val)
+            if message is None:
+                return
+            _cache_write(_stamp_for_llm_cache(prompt, llm_string), message, settings)
+        except Exception:  # noqa: BLE001 —— 同上
+            logger.warning("大模型缓存写入异常,主流程继续", exc_info=True)
+
+    def clear(self, **_kwargs: Any) -> None:
+        """清空缓存目录(与 clear_cache() 同一实现,别再造第二份删除逻辑)。"""
+        clear_cache()
+
+    async def alookup(self, prompt: str, llm_string: str) -> Sequence[Generation] | None:
+        """异步查缓存 —— Agent 路径走的是这一条,必须自己实现,理由见类 docstring。"""
+        return self.lookup(prompt, llm_string)
+
+    async def aupdate(self, prompt: str, llm_string: str, return_val: Sequence[Generation]) -> None:
+        """异步写缓存 —— 同上。"""
+        self.update(prompt, llm_string, return_val)
+
+    async def aclear(self, **kwargs: Any) -> None:
+        """异步清空缓存。"""
+        self.clear(**kwargs)
+
+
+def install_llm_cache(settings: Settings | None = None) -> BaseCache | None:
+    """把 GytDiskCache 装成 langchain 的进程级全局缓存,返回当前生效的缓存对象。
+
+    幂等:已经装过就原样返回,不会每建一个模型就换一个新实例。
+    配置里关掉缓存时会**只**卸掉自己装的那个 —— 别人(比如测试或未来的其它模块)
+    装的缓存不动,这个全局单例不归我们独占。
+
+        llm_cache_enabled?
+            │否── 当前是我们装的? ──是──► set_llm_cache(None),返回 None
+            │                    └─否──► 什么都不做,返回 None
+            └是── 当前是我们装的? ──是──► 原样返回
+                                 └─否──► set_llm_cache(GytDiskCache())
+    """
+    settings = settings if settings is not None else get_settings()
+    current = get_llm_cache()
+    if not settings.llm_cache_enabled:
+        if isinstance(current, GytDiskCache):
+            set_llm_cache(None)
+        return None
+    if isinstance(current, GytDiskCache):
+        return current
+    cache = GytDiskCache()
+    set_llm_cache(cache)
+    # 这里**故意不打 settings.cache_dir**:日志实参是立即求值的,而 cache_dir 是个会
+    # mkdir 的属性,建不出来就抛 RuntimeError。本函数被 get_chat_model 无条件调用,
+    # 一旦从这里抛出去,缓存目录有问题就会让整张图连建都建不出来 ——
+    # 直接违反「缓存只是加速手段,坏了就当没有」这条铁律。目录到底在哪由 data_dir 推得出来。
+    logger.debug("已装载大模型磁盘缓存(目录由 data_dir 派生:%s)", settings.data_dir)
+    return cache
 
 
 def _status_code_of(exc: BaseException) -> int | None:
@@ -511,10 +878,53 @@ async def _invoke_with_retry(
     raise (last_error or LLMCallError(_user_msg(upstream), upstream)) from last_exc
 
 
+def _for_direct_call(model: BaseChatModel) -> BaseChatModel:
+    """给路径乙做一份关掉全局缓存的模型副本(不改调用方手里那个实例)。
+
+    为什么必须关:全局缓存的键是 (prompt, llm_string),里面**没有 cache_extra**。
+    不关的话,两个 cache_extra 不同、消息相同的调用在外层各算各的键(看起来隔开了),
+    到了内层却撞进同一条全局缓存 —— 第二个调用方原样取走第一个的答案,零次网络调用,
+    日志里只有一行 debug。评测打分器与知识抽取正是这么用路径乙的,串了就是
+    「拿上一次的摘要文本当判分结果」。关掉之后路径乙只剩自己那一层键(带 cache_extra),
+    顺带也消除了「一次问答落 3 个缓存文件」的双写。
+
+    判定见 chat_models.py:2034 `check_cache = self.cache or self.cache is None`:
+    **False 才关得掉**,None 反而是"走全局"—— 别顺手把它改成 None。
+
+    ⚠️ 这里**不**顺手关 max_retries(2026-08-06 实测过,关不掉):
+        ChatOpenAI 的 max_retries 是在 validate_environment 里被烤进 openai 客户端的
+        (base.py:1265 `client_params["max_retries"] = self.max_retries`),
+        而 model_copy 不会重跑 validate_environment,副本用的还是同一个客户端对象。
+        实测:字段 3 -> 0,但 root_async_client.max_retries 仍然是 3。
+        也就是说路径乙目前仍是「自研退避 4 次 × SDK 退避 4 次」两层叠加,
+        最坏 16 个 HTTP 请求。要真关掉只能在**造模型时**传
+        `get_chat_model("text", max_retries=0)`,调用方按需自己传;
+        或者等以后把重试整体下沉到模型层(见 TODOS)。
+
+    不是 pydantic 模型、或没有 cache 字段就原样返回 —— 传进来的可能是测试替身,
+    也可能是以后换供应商时的别家实现,不能因为"改不动"就把调用打断。
+    """
+    if "cache" not in getattr(type(model), "model_fields", {}):
+        return model
+    if not hasattr(model, "model_copy"):
+        return model
+    return model.model_copy(update={"cache": False})
+
+
 async def ainvoke(
     model: BaseChatModel, messages: MessagesInput, *, cache_extra: str = ""
 ) -> AIMessage:
-    """调用大模型:先查缓存,未命中再走带退避的真实调用,成功后回写缓存。
+    """**直调**大模型:先查缓存,未命中再走带退避的真实调用(图 1),成功后回写缓存。
+
+    ⚠️ 适用范围(别搞混,见文件顶部图 0):这是**路径乙**,给「不经过 Agent 的一次性问答」用 ——
+    评测打分、知识综合里的单次抽取之类。Supervisor 和 5 个子 Agent 走的是路径甲
+    (langchain 内部自己调模型 + GytDiskCache 全局缓存),**不会**经过这个函数,
+    所以这里的中文错误文案在 Agent 路径上是看不到的。
+
+    两条路径共用同一个缓存目录与同一套文件格式/身份核对,但缓存键的构成维度不同
+    (路径甲的键里有 llm_string 没有 cache_extra,路径乙反之)。为了让这两套键**不叠加**,
+    路径乙调模型前会先把库自带的全局缓存关掉,详见 _for_direct_call ——
+    不关的话 cache_extra 这个防串味维度会被内层全局缓存整个架空。
 
     cache_extra 是参与缓存键的额外维度(如 Agent 名),防串味;失败抛 LLMCallError,.user_msg 是中文。
     """
@@ -527,13 +937,14 @@ async def ainvoke(
             logger.debug("命中大模型缓存:%s", stamp.key)
             return cached
 
-    message = await _invoke_with_retry(model, messages, settings)
+    message = await _invoke_with_retry(_for_direct_call(model), messages, settings)
     if stamp is not None:
         _cache_write(stamp, message, settings)
     return message
 
 
 __all__ = [
+    "GytDiskCache",
     "LLMCallError",
     "MessagesInput",
     "MissingAPIKeyError",
@@ -542,4 +953,5 @@ __all__ = [
     "cache_key",
     "clear_cache",
     "get_chat_model",
+    "install_llm_cache",
 ]
