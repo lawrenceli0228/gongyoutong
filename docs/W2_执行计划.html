@@ -106,8 +106,7 @@ knowledge     cad          safety        schedule      report
 </section>
 
 <section id="s2"><h2><span class="no">02</span>开工前必须清掉的三件事</h2>
-<p><b>这三件不做完,W2 的验收门槛无从谈起。</b>前两件建议 W2 第一天解决(都在你手上,同属共享基座),
-第三件是人工标注,两人周一就要开始滚动做。</p>
+<p><b>前两件已做完(见下方绿框),只剩第三件人工标注。</b>标注是 W2 末验收的硬前提,两人现在就要开始滚动做。</p>
 
 <div class="callout"><b>顺带说清楚 T1 交付的测试边界,免得误会:</b>
 T1 的骨架代码测满了 —— 117 个测试函数、182 个执行用例、覆盖率 98%。
@@ -116,6 +115,21 @@ T1 的骨架代码测满了 —— 117 个测试函数、182 个执行用例、�
 E2E 测的东西还不存在。它们会随 W2/W3 的 Agent 一起落地 —— 这也是为什么评测框架要在 W2 第一天搭好,
 而不是等到要出分的那一刻才现写。</div>
 
+<div class="verdict"><b>✅ 前置 A 与 A2 已完成(2026-08-06)。</b>
+TODO-5 选定方案 (b)(<code>set_llm_cache</code> + 自实现 <code>BaseCache</code>),缓存已真正接进
+Agent 与 Supervisor 的执行路径,整图断网复演有专门的回归测试守着;
+<code>backend/eval/</code> 跑分框架已可用(<code>make eval</code>,数据填多少跑多少)。
+当前 <b>318 passed / 覆盖率 98% / CI 全绿</b>。<b>剩下的只有前置 B 的人工标注。</b></div>
+
+<div class="callout warn"><b>⚠️ 演示日铁律(TODO-5 带出来的,W4 彩排必须遵守)</b><br>
+缓存键里含 <code>llm_string</code>,而它包含 <code>request_timeout</code> / <code>max_retries</code> /
+<code>extra_body</code> 这些模型参数。也就是说 ——
+<b>彩排时用的 <code>.env</code> 和演示时用的 <code>.env</code> 必须逐字一致</b>。
+临场改一个超时数字、调一次重试次数,<b>整份彩排缓存全部作废</b>,
+「断网兜底」当场失效,而且失效时毫无征兆(只是变成每句都真调模型)。
+W4 的彩排清单里要写死这一条:<b>彩排之后到演示之前,<code>.env</code> 一个字都不许动。</b></div>
+
+<details><summary style="cursor:pointer;font-weight:600;margin:12px 0">前置 A 原文(已完成,留档备查)</summary>
 <div class="callout warn"><b>前置 A · 收口 TODO-5(半天,你做)</b><br>
 <code>gyt.core.llm</code> 的磁盘缓存与自研退避<b>目前只有单测在调</b>。真实路径是
 <code>get_chat_model()</code> → 裸 <code>ChatOpenAI</code> → <code>create_agent</code> 内部直接调模型,绕开了那一层。
@@ -141,6 +155,7 @@ CI 里的 eval job 现在还是注释占位。
 <li>Makefile 加 <code>make eval</code>;CI 的 eval job 取消注释,W2 末生效</li>
 </ul>
 <b>顺手一起做的理由:</b>你 W2 第一天本来就在动 <code>core/</code>(收口 TODO-5),评测框架同属共享基座,一次做完。</div>
+</details>
 
 <div class="callout warn"><b>前置 B · 评测集(各自准备自己 Agent 的,人工活)</b><br>
 新分工后<b>数据集责任跟着 Agent 走</b>,比原来清晰:
