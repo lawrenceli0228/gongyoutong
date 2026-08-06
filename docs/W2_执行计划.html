@@ -292,6 +292,36 @@ CI 里的 eval job 现在还是注释占位。
 </section>
 
 <section id="s7"><h2><span class="no">07</span>协作规则(就这几条,记住)</h2>
+
+<h3>分支:一个 Agent 一条,做完就合并删掉</h3>
+<p>2026-08-06 起改为分支开发,不再直接推 <code>main</code>。命名沿用队友先建的那套
+<code>&lt;名字&gt;/&lt;agent&gt;-agent</code>,现有四条:</p>
+<pre>
+main                          基线,永远保持 CI 全绿
+├── cfan/knowledge-agent      队友
+├── cfan/cad-agent            队友
+├── lawrence/safety-agent     你
+└── lawrence/schedule-agent   你
+</pre>
+<p>为什么按 Agent 而不是按人开一条长期分支:<b>一个 Agent 是天然的交付单元</b>,
+有明确的完成定义(评测达标 + 测试全绿),做完就合并、分支活不过几天。
+长期泳道分支会越漂越远,合并那天是场灾难。</p>
+
+<div class="tscroll"><table>
+<tr><th>步骤</th><th>命令 / 做法</th></tr>
+<tr><td>开工</td><td><code>git switch main &amp;&amp; git pull &amp;&amp; git switch &lt;你的分支&gt; &amp;&amp; git rebase main</code><br><span class="small">先跟上 main 再干活,别在过时的基线上写一整天</span></td></tr>
+<tr><td>提交前</td><td><code>make lint &amp;&amp; make test</code> 必过;改过 workflow 再加 <code>make lint-ci</code></td></tr>
+<tr><td>推送</td><td><code>git push -u origin &lt;你的分支&gt;</code></td></tr>
+<tr><td>合并</td><td><b>开 PR</b>(不是直接 merge)。CI 已配置在 PR 上跑,<b>绿了再合</b>;<br>顺便让对方看一眼 —— 计划里那条「每周交叉 review」就靠这个落实,不用另找时间</td></tr>
+<tr><td>合完</td><td>删分支(GitHub 上点 Delete branch,本地 <code>git branch -d</code>)</td></tr>
+</table></div>
+
+<div class="callout"><b>⚠️ 有一个冲突是必然会发生的,提前知道就不慌:</b>
+两人都要往 <code>graph.py</code> 的 <code>AGENT_REGISTRY</code> 加自己那行,
+<b>后合并的那个人一定会遇到冲突</b>。这是设计上就接受的代价(挂载点只有这一处才不会各写各的)。
+解法很简单:<b>保留双方的行</b>,顺序无所谓。别删对方的,也别顺手重排。</div>
+
+<h3>其余文件归属</h3>
 <div class="tscroll"><table>
 <tr><th>文件</th><th>规则</th><th>为什么</th></tr>
 <tr><td><code>graph.py</code> 的 <code>AGENT_REGISTRY</code></td><td><b>唯一共享写入点</b>。各加各的行,不重排别人的行,冲突了保留双方</td><td>W2 两人各加一行,是本周唯一的冲突面</td></tr>
