@@ -40,3 +40,26 @@ sips -Z 2048 data/demo/photos/*.jpg   # macOS 批量压到长边 2048
 ```
 
 怎么填标注、判分规则、违规项受控词表,全在 `backend/eval/README.md`。
+
+## 照片来源与许可(2026-08-07)
+
+`photos/` 里的 27 张来自 Roboflow Universe 的公开数据集,**许可 CC BY 4.0(署名即可商用/修改)**:
+
+- 项目:`lawrence-lee-0i2uj/construction-safety-monitor-mlpd4-mwpvq` v1
+- 原始规模 5170 张,11 个类(helmet/no-helmet、vest/no-vest、boots/gloves/goggles 及其负类、person)
+
+**我们只用它的图,标注是自己重打的。** 原因有三,都写在 `backend/eval/prefilter.py` 顶部:
+粒度不同(它是逐对象框,我们要整张照片一个判断)、词表不同(它有 boots/gloves/goggles,
+我们的 8 项受控词表里没有)、它的标注没为我们的评测门槛做过质量保证。
+
+筛选过程可复现:
+
+```bash
+cd backend && uv run python -m eval.prefilter --src <解压目录> --dry-run   # 先看分桶
+cd backend && uv run python -m eval.prefilter --src <解压目录>            # 拷图+出草稿
+```
+
+> **赛后若把仓库转公开(TODO-1),这段署名必须保留** —— CC BY 4.0 的唯一义务就是署名。
+
+还差 3 张**非工地干扰项**(办公室/街景/室内),公开的工地数据集里没有,要自己找。
+没有干扰项的话,一个把任何画面都当工地的模型也能拿高分。
