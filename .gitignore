@@ -62,3 +62,6 @@ backend/data/
 .idea/
 .vscode/
 *.swp
+
+# 本机的 Claude Code 项目说明
+/CLAUDE.md
