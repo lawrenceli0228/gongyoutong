@@ -26,3 +26,6 @@ S24,hard,photo_24.jpg,violation,未戴安全帽;未穿反光衣,"待人工确认
 S25,hard,photo_25.jpg,violation,未穿反光衣,"待人工确认 | 源标注: goggles×3, helmet×3, no-vest×1, vest×2 | 原名: image_1001"
 S26,hard,photo_26.jpg,violation,未戴安全帽,"待人工确认 | 源标注: boots×2, gloves×2, helmet×1, no-helmet×1, vest×1 | 原名: image_211"
 S27,hard,photo_27.jpg,violation,未穿反光衣,"待人工确认 | 源标注: helmet×2, no-vest×1 | 原名: ppe_0898"
+S28,not_site,photo_28.jpg,not_site,,"非工地干扰项:空置住宅客厅,画面无人 —— 测「没人时不许编造违规」| 来源: Pexels 6835102"
+S29,not_site,photo_29.jpg,not_site,,"非工地干扰项:办公室内 4 人办公,均未戴安全帽/未穿反光衣 —— 测「见人无 PPE 不许乱报」| 来源: Pexels 6804068"
+S30,not_site,photo_30.jpg,not_site,,"非工地干扰项:城市街道行人过街,均无 PPE —— 同上但换成室外场景 | 来源: Pexels 12938735"
