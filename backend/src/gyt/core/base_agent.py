@@ -94,6 +94,7 @@ from langgraph.graph.state import CompiledStateGraph
 # 用「导入模块」而不是「导入函数」,这样单测 monkeypatch.setattr(llm, "get_chat_model", ...)
 # 能真正生效 —— 若写成 from ... import get_chat_model,名字会在导入时被绑死在本模块命名空间里。
 from gyt.core import llm
+from gyt.core.focus import FocusOnOwnWork
 from gyt.core.llm import Purpose
 
 # 每个 Agent 包里提示词文件的固定文件名。提示词一律外置成 .md,不许写死在 .py 里。
@@ -209,6 +210,12 @@ def create_gyt_agent(
         tools=list(tools),
         system_prompt=prompt,
         name=name,
+        # 子 Agent 与 Supervisor 共享同一份 messages,于是它能看到 Supervisor
+        # 说过的每一句话 —— 包括「我这就安排 safety 同事看一下」。实测子 Agent
+        # 会跟着模仿那个语气、把活推回去而不干,两边互相等,用户永远收不到答复。
+        # 这道中间件在**喂给模型之前**把别的 Agent 的纯文本滤掉(不改 state),
+        # 让它只看见「用户要什么」和「自己做过什么」。详见 core/focus.py。
+        middleware=[FocusOnOwnWork(name)],
     )
 
 

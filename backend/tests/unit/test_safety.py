@@ -842,3 +842,28 @@ async def test_预处理失败会变成中文信封而不是异常(monkeypatch: 
     assert result["ok"] is False
     assert result["error_code"] == ErrorCode.FILE_CORRUPT.value
     assert "系统开小差" not in result["user_msg"]
+
+
+def test_提示词明确挡住把活推回去的说法() -> None:
+    """**这个失败模式在真实前端里出现过三次**,单元测试和评测都碰不到它。
+
+    表现:safety 不调工具,而是说「照片已经转给负责安全检查的同事了,请稍等」
+    然后 transfer_back_to_supervisor —— 而 supervisor 又在等 safety 的结果,
+    两边互相等,用户永远等不到答复。
+
+    机理不是随机性(temperature=0 之后照样出现),是 **few-shot 污染**:
+    add_handoff_messages=True 让 supervisor 那句「我这就安排 safety 同事看一下」
+    进了 safety 的消息历史,它跟着模仿了那个语气,却不知道那个"同事"就是自己。
+
+    所以提示词里必须**点名**这件事,光说「这是你的活」不够 ——
+    前一版就是那么写的,照样复发。
+    """
+    from gyt.agents.safety.tools import SAFETY_DIR
+    from gyt.core.base_agent import PROMPT_FILENAME, load_prompt
+
+    body = load_prompt(SAFETY_DIR, PROMPT_FILENAME)
+    # 必须把「那个 safety 同事就是你」这层窗户纸捅破
+    assert "指的就是你" in body
+    # 必须给出反例,而不是只讲正面要求 —— 模型照着反例避坑比照着要求推理更可靠
+    assert "转给负责安全检查的同事" in body
+    assert "没有收件人" in body or "没有第二个" in body
