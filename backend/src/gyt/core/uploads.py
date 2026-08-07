@@ -74,17 +74,48 @@ EXT_BY_MIME: Final[dict[str, str]] = {
 
 _UNSUPPORTED_HINT: Final[str] = "(这张图的格式暂时打不开,请转成 JPG 或 PNG 再传一次)"
 
+_PDF_HINT: Final[str] = (
+    "(你传的是 PDF —— 看规范文档的功能还没做好,现在只能看现场照片。"
+    "如果 PDF 里就是照片,麻烦先截个图再传)"
+)
+
 
 def _decode_image_part(part: dict[str, Any]) -> tuple[bytes, str] | None:
-    """从一个 image_url content 块里取出 (字节, 扩展名)。取不出来返回 None。
+    """从一个图片 content 块里取出 (字节, 扩展名)。取不出来返回 None。
 
-    只认 base64 data URI —— 月之暗面本来也只收这个(公网 http/https 图片链接不支持)。
+    **图片块在野外有两大类写法,都必须接住** —— 少认一种的表现是
+    「图片被静默丢掉,用户看到『请转成 JPG 或 PNG』然后一脸茫然」,
+    而他传的本来就是 JPG。(这个坑真踩过:我照 OpenAI 的形状写,
+    而 agent-chat-ui 发的是 LangChain 的形状,两者一个字段都对不上。)
+
+    甲、LangChain content block(**agent-chat-ui 用的就是这个**,
+        见 frontend/src/lib/multimodal-utils.ts):
+
+            {"type": "image", "mimeType": "image/jpeg", "data": "<纯 base64>"}
+
+        注意 ① 字段叫 data 而不是 url;② base64 **不带** "data:...;base64," 前缀;
+        ③ MIME 的键是驼峰 mimeType(LangChain 自己序列化时又会写成 mime_type,
+        所以两种都认)。
+
+    乙、OpenAI 兼容格式:
+
+            {"image_url": {"url": "data:image/jpeg;base64,..."}}
+            {"image_url": "data:..."}   /   {"url": "data:..."}
     """
-    # image content 块在野外有三种写法,三种都要接住 —— 少认一种的表现是
-    # 「图片被静默丢掉,用户等一个永远不来的答复」:
-    #   {"image_url": {"url": "data:..."}}   OpenAI 兼容格式,agent-chat-ui 用的就是它
-    #   {"image_url": "data:..."}            LangChain 也接受的简写
-    #   {"url": "data:..."}                  少数客户端把 url 提到了顶层
+    # 甲:裸 base64 + 单独的 MIME 字段
+    data = part.get("data")
+    if isinstance(data, str) and data:
+        mime = part.get("mimeType") or part.get("mime_type") or ""
+        ext = EXT_BY_MIME.get(str(mime).lower())
+        if ext is None:
+            return None
+        try:
+            return base64.b64decode(data, validate=True), ext
+        except (binascii.Error, ValueError):
+            logger.warning("上传图片的 base64 解不开(mime=%s),已忽略", mime)
+            return None
+
+    # 乙:data URI
     raw = part.get("image_url")
     url = raw.get("url") if isinstance(raw, dict) else raw
     if not isinstance(url, str):
@@ -112,6 +143,7 @@ def _rewrite(message: HumanMessage) -> HumanMessage | None:
     texts: list[str] = []
     ids: list[str] = []
     rejected = 0
+    pdf_rejected = 0
     for part in message.content:
         if isinstance(part, str):
             texts.append(part)
@@ -121,6 +153,11 @@ def _rewrite(message: HumanMessage) -> HumanMessage | None:
         kind = part.get("type")
         if kind == "text":
             texts.append(str(part.get("text") or ""))
+        elif kind == "file" and str(part.get("mimeType") or "").lower() == "application/pdf":
+            # 前端的上传按钮写着「Upload PDF or Image」,所以用户真的会传 PDF。
+            # 那是 knowledge Agent 的活(队友泳道,还没接)。给一句**准确**的话 ——
+            # 说"请转成 JPG"是错的,他传 PDF 本来就是这个按钮允许的。
+            pdf_rejected += 1
         elif kind in ("image_url", "image"):
             decoded = _decode_image_part(part)
             if decoded is None:
@@ -131,8 +168,8 @@ def _rewrite(message: HumanMessage) -> HumanMessage | None:
                 artifacts.register(payload, kind=ArtifactKind.PHOTO, original_name=f"upload{ext}")
             )
 
-    if not ids and not rejected:
-        return None  # 没有图片,原样放行
+    if not ids and not rejected and not pdf_rejected:
+        return None  # 没有附件,原样放行
 
     body = " ".join(t.strip() for t in texts if t.strip())
     if ids:
@@ -141,6 +178,8 @@ def _rewrite(message: HumanMessage) -> HumanMessage | None:
         logger.info("已把 %d 张上传图片登记为产物:%s", len(ids), listed)
     if rejected:
         body = f"{body} {_UNSUPPORTED_HINT}"
+    if pdf_rejected:
+        body = f"{body} {_PDF_HINT}"
 
     return HumanMessage(content=body, id=message.id)
 

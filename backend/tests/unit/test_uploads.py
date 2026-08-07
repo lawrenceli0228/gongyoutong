@@ -206,3 +206,82 @@ def test_非data_uri的图片链接被拒并提示() -> None:
     }
     rewritten = ingest_uploads(state)["messages"][1]
     assert "转成 JPG 或 PNG" in rewritten.content
+
+
+# ---------------------------------------------------------------------------
+# agent-chat-ui 真正发出来的形状
+#
+# 这一节是照着 frontend/src/lib/multimodal-utils.ts 的源码写的,不是猜的。
+# 之前正是因为照 OpenAI 的形状写、没去读前端源码,导致用户传 JPG 却被告知
+# 「请转成 JPG 或 PNG」—— 上面那些 image_url 用例全绿,这条路照样是断的。
+# ---------------------------------------------------------------------------
+
+
+def _ui_image_part(payload: bytes, mime: str = "image/jpeg") -> dict[str, Any]:
+    """agent-chat-ui 的 fileToContentBlock 真正产出的形状。
+
+    注意三点都和 OpenAI 格式不同:字段叫 data 不叫 url;base64 **不带**
+    "data:...;base64," 前缀;MIME 的键是驼峰 mimeType。
+    """
+    return {
+        "type": "image",
+        "mimeType": mime,
+        "data": base64.b64encode(payload).decode("ascii"),
+        "metadata": {"name": "photo.jpg"},
+    }
+
+
+def test_前端真实格式的图片能被登记() -> None:
+    payload = _jpeg()
+    state = {
+        "messages": [
+            HumanMessage(
+                content=[{"type": "text", "text": "查安全隐患"}, _ui_image_part(payload)], id="u1"
+            )
+        ]
+    }
+
+    rewritten = ingest_uploads(state)["messages"][1]
+    ids = _ids_in(rewritten.content)
+    assert len(ids) == 1, "前端格式没被认出来 —— 用户会看到「请转成 JPG」而他传的就是 JPG"
+    assert artifacts.resolve(ids[0]).read_bytes() == payload
+
+
+def test_前端格式也支持下划线写法的mime() -> None:
+    """LangChain 自己序列化 content block 时会写成 mime_type(下划线)。"""
+    payload = _jpeg()
+    part = _ui_image_part(payload)
+    part["mime_type"] = part.pop("mimeType")
+    state = {"messages": [HumanMessage(content=[part], id="u1")]}
+
+    ids = _ids_in(ingest_uploads(state)["messages"][1].content)
+    assert len(ids) == 1
+
+
+def test_传PDF时给出准确的话而不是让人转成JPG() -> None:
+    """上传按钮上明写着「Upload PDF or Image」,所以用户真的会传 PDF。
+
+    看规范文档是 knowledge Agent 的活(还没接)。这时候说「请转成 JPG 或 PNG」
+    是**错的** —— 他传 PDF 本来就是这个按钮允许的操作,那句话会让他以为自己搞错了。
+    """
+    state = {
+        "messages": [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "看看这个规范"},
+                    {"type": "file", "mimeType": "application/pdf", "data": "JVBERi0="},
+                ],
+                id="u1",
+            )
+        ]
+    }
+
+    rewritten = ingest_uploads(state)["messages"][1]
+    assert "PDF" in rewritten.content
+    assert "还没做好" in rewritten.content
+    assert "转成 JPG 或 PNG" not in rewritten.content
+
+
+def test_前端格式里不支持的图片类型仍会被拒() -> None:
+    state = {"messages": [HumanMessage(content=[_ui_image_part(_jpeg(), "image/gif")], id="u1")]}
+    assert "转成 JPG 或 PNG" in ingest_uploads(state)["messages"][1].content
