@@ -134,10 +134,13 @@ class Settings(BaseSettings):
     # 也就是说 60 秒不是"余量小",是**演示日随便一张手机照片就会 TIMEOUT**。
     # 延迟同时受尺寸与判断复杂度影响,两者都会把工地照片推向上限。
     #
-    # ⚠️ 改这个值会让**全部现有缓存失效** —— llm_string 里含 request_timeout(见 TODO-5)。
-    # 所以它只能在彩排开始**之前**定下来,焐过缓存之后一个数字都不许再动。
-    # 等 TODO-12 的降采样做完(4K→2K),延迟会降下来,届时可以回调这个值,
-    # 但同样要赶在彩排前。
+    # ⚠️ 改这个值只让**路径甲**(Agent 对话)的缓存失效,**不影响视觉缓存**。
+    #    两条路径的键构成不同,实测确认过(2026-08-07):
+    #      路径甲 GytDiskCache 的键含 llm_string,而 llm_string 里有 request_timeout;
+    #      路径乙 llm.ainvoke 的键 = (model, prompt_version, messages, extra),**不含 timeout**。
+    #    Safety 的视觉调用走路径乙,所以改这个数字**不会**冲掉预热好的照片缓存。
+    #    (这里原先写的是"会让全部缓存失效",是错的,TODO-11 的演示日铁律据此修正过。)
+    #    真正会冲掉视觉缓存的是:改 vision_prompt.md 的正文、改 prompt_version、换模型。
     llm_timeout_s: float = Field(default=150.0, gt=0)
     llm_max_retries: int = Field(default=3, ge=0)  # 0 = 不重试
     llm_retry_base_delay_s: float = Field(default=1.0, ge=0)  # 0 = 测试里免等待

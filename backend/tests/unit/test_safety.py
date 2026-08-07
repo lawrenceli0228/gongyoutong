@@ -26,6 +26,7 @@ from gyt.agents.safety import SAFETY_AGENT_NAME, build_safety_agent
 from gyt.agents.safety.tools import (
     CACHE_EXTRA,
     MIME_BY_EXT,
+    VISION_MAX_ATTEMPTS,
     _as_violation_list,
     _extract_json_object,
     _summarize,
@@ -73,10 +74,21 @@ def _patch_llm(
         recorded["overrides"] = overrides
         return _RecordingModel(**overrides)
 
-    async def fake_ainvoke(model: Any, messages: Any, *, cache_extra: str = "") -> AIMessage:
+    async def fake_ainvoke(
+        model: Any,
+        messages: Any,
+        *,
+        cache_extra: str = "",
+        is_usable: Any = None,
+        max_attempts: int | None = None,
+    ) -> AIMessage:
         recorded["model"] = model
         recorded["messages"] = messages
         recorded["cache_extra"] = cache_extra
+        recorded["max_attempts"] = max_attempts
+        # 把闸门函数也录下来:调用方**有没有传**这道闸,本身就是要断言的行为
+        # (不传就会把解析不出的回答写进缓存,那句「请再试一次」永远不会成功)。
+        recorded["is_usable"] = is_usable
         if isinstance(reply, BaseException):
             raise reply
         return AIMessage(content=reply)
@@ -395,6 +407,14 @@ async def test_视觉调用带了防串味的缓存维度(monkeypatch: pytest.Mo
     assert recorded["cache_extra"] == CACHE_EXTRA
     assert CACHE_EXTRA
 
+    # 同时必须传写缓存前的闸门,否则解析不出的回答会被永久钉住(见
+    # test_解析不出的回答不写缓存_重试真的能成功)。这里只断言"传了且判据正确",
+    # 端到端效果由那条测试用真实 ainvoke 验。
+    gate = recorded["is_usable"]
+    assert gate is not None, "没传 is_usable,坏回答会进缓存"
+    assert gate(AIMessage(content='{"label":"compliant","violations":[],"note":""}')) is True
+    assert gate(AIMessage(content="这张照片挺好的")) is False
+
 
 async def test_受控词表外的违规项原样透传_不做过滤(monkeypatch: pytest.MonkeyPatch) -> None:
     """**刻意不过滤**。模型答「未佩戴安全帽」(多一个"佩"字)时原样传出去。
@@ -469,6 +489,28 @@ def test_受控词表八项都写进了视觉提示词() -> None:
     assert not missing, f"视觉提示词里缺了这些受控词:{sorted(missing)}"
 
 
+def test_视觉提示词必须写明输出契约的三个字段名() -> None:
+    """**这条锁的是一种静默漏报。**
+
+    提示词是给非工程师队友改的。把 vision_prompt.md 里的 `violations`
+    顺手写成 `items` 之后:模型照新契约输出 → tools.py 用 KEY_VIOLATIONS
+    取到空 → label=violation 的照片返回 violations=[] 且 ok=True →
+    Agent 按 prompt.md 的规定对工人说「这张照片里没看到明显的安全问题」。
+
+    **一张明确判了违规的照片被讲成没问题,全程零报错。**
+    加这条之前,把字段名改掉不会有任何一条测试转红。
+    """
+    from gyt.agents.safety.tools import OUTPUT_KEYS, SAFETY_DIR, VISION_PROMPT_FILENAME
+    from gyt.core.base_agent import load_prompt
+
+    body = load_prompt(SAFETY_DIR, VISION_PROMPT_FILENAME)
+    missing = [key for key in OUTPUT_KEYS if f'"{key}"' not in body]
+    assert not missing, (
+        f"视觉提示词里没有逐字出现这些字段名:{missing}。"
+        "模型会按提示词里写的名字输出,而 tools.py 按 OUTPUT_KEYS 取值,对不上就是静默漏报。"
+    )
+
+
 def test_safety已挂进登记表并带能力说明() -> None:
     from gyt.graph import AGENT_REGISTRY
 
@@ -476,6 +518,10 @@ def test_safety已挂进登记表并带能力说明() -> None:
     assert spec is not None, "safety 没挂进 AGENT_REGISTRY,Supervisor 永远派不到它"
     # summary 是 supervisor 判断「这活派给谁」的唯一依据(D18 路由门槛 0.90 靠它)
     assert "照片" in spec.summary
+    # 「并给了照片编号」曾经写在 summary 里,supervisor 会把它读成路由前提 ——
+    # 而 routing.csv 里 expected_agent=safety 的行原文都不带编号,于是全判错。
+    # 缺编号的追问归 safety/prompt.md 管,不该在路由这一层重复把关。
+    assert "并给了照片编号" not in spec.summary
 
 
 def test_safety在路由评测集的合法取值里() -> None:
@@ -564,6 +610,76 @@ async def test_换一张照片不会错误命中上一张的缓存(monkeypatch: 
     assert b["data"]["label"] == "compliant"
 
 
+async def test_解析不出的回答不写缓存_重试真的能成功(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**这条锁的是一个真出过的 blocker。**
+
+    不加 is_usable 那道闸时:抠不出 JSON 的回答照样被写进缓存,于是那句
+    「请再试一次」永远不可能成功 —— 第二次直接命中坏缓存,0 次网络调用、
+    0.005 秒、一字不差的同一句失败,这张照片对该 prompt_version 被永久钉死。
+    重试次数再多都没用,因为根本没发出请求。
+
+    更糟的是缓存键算在**消息内容**上(图片以 base64 进 messages),所以让用户
+    「重新传一次同一个文件」也逃不掉:新 artifact_id、同一个缓存键。
+    只有重新拍一张(字节不同)才行。
+
+    而唯一的清理手段(clear_cache / 换 prompt_version)会烧掉**整份**缓存,
+    与 TODO-11「演示日必须预热缓存」正面冲突 —— 为救一张图得毁掉全部预热。
+    """
+    bad = AIMessage(content="我觉得这张照片挺好的,没什么问题。")  # 纯文本,抠不出 JSON
+    good = AIMessage(content='{"label":"violation","violations":["未戴安全帽"],"note":"n"}')
+    model = _ScriptedModel([bad, good])
+    _patch_model_only(monkeypatch, model)
+
+    artifact_id = _register_photo()
+
+    first = await _call(artifact_id)
+    assert first["ok"] is False
+    assert first["error_code"] == ErrorCode.UPSTREAM_ERROR.value
+    assert model.calls == 1
+
+    # 第二次必须**真的**再问一遍模型,而不是取走上一次那条坏回答
+    second = await _call(artifact_id)
+    assert model.calls == 2, "坏回答被缓存了,「请再试一次」永远不可能成功"
+    assert second["ok"] is True
+    assert second["data"]["violations"] == ["未戴安全帽"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_label"),
+    [
+        # 模型在答案后面补一句带花括号的说明 —— 贪婪正则会把整段吃掉判成失败
+        (
+            '{"label":"compliant","violations":[],"note":"x"}\n参考格式:{"label":"violation"}',
+            "compliant",
+        ),
+        # 引子里带花括号 —— 只试第一段的话会卡在 {规范} 上
+        ('根据 {规范} 判断:\n{"label":"not_site","violations":[],"note":"y"}', "not_site"),
+        # note 里含花括号,整体仍是**一个**对象,不能被切开
+        (
+            '{"label":"violation","violations":["未戴安全帽"],"note":"见 {GB50720} 第3条"}',
+            "violation",
+        ),
+        # note 里带转义引号,**且整段不是合法 JSON**(前面有引子)——
+        # 这样才会真的走到配平扫描。扫描必须认得 \\" 不是字符串结束,
+        # 否则会误判成"出了字符串",note 里那个 { 就被当成新对象的开头,整段解析失败。
+        (
+            '判断如下:\n{"label":"violation","violations":["未戴安全帽"],'
+            '"note":"他说\\"忘带了\\",{待复核}"}',
+            "violation",
+        ),
+    ],
+)
+def test_模型爱加的各种壳都能剥掉(raw: str, expected_label: str) -> None:
+    """每多剥掉一种壳,就少一次「答案其实是好的、却被当成失败」。
+
+    这直接省钱也省事故:解析失败会触发重试(视觉档 $3/M、一次几十秒),
+    而在修好 is_usable 之前它还会被永久缓存。
+    """
+    parsed = _extract_json_object(raw)
+    assert parsed is not None, f"这段输出本来是可用的,却没解析出来:{raw[:60]}"
+    assert parsed["label"] == expected_label
+
+
 async def test_可重试错误耗尽后返回中文信封(monkeypatch: pytest.MonkeyPatch) -> None:
     """必须打桩 _sleep:真实退避是 1+2+4=7 秒,不打桩这一条就要让整个测试套多跑 7 秒。
 
@@ -587,7 +703,10 @@ async def test_可重试错误耗尽后返回中文信封(monkeypatch: pytest.Mo
 
     assert result["ok"] is False
     assert result["data"] is None
-    assert model.calls == 1 + get_settings().llm_max_retries
+    # 视觉档刻意压到 VISION_MAX_ATTEMPTS(2)而不是默认的 1 + llm_max_retries(4):
+    # 重试次数是**乘在超时上**的,超时 150 秒 × 4 次 = 10 分钟对着空界面干等。
+    assert model.calls == VISION_MAX_ATTEMPTS
+    assert VISION_MAX_ATTEMPTS < 1 + get_settings().llm_max_retries
     # 退避曲线应当是递增的,而不是每次都睡同样长
     assert delays == sorted(delays) and len(set(delays)) == len(delays)
     # 给工人的必须是中文人话,不能是 openai SDK 的英文异常

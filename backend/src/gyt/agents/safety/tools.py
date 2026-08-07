@@ -49,6 +49,7 @@ import base64
 import json
 import logging
 import re
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final
@@ -87,15 +88,42 @@ MIME_BY_EXT: Final[dict[str, str]] = {
 """扩展名 → MIME。键集合必须是 config.ALLOWED_IMAGE_EXT 的超集,
 下面有个模块级断言在 import 时就把两者对不上的情况炸出来(见文件末尾)。"""
 
+KEY_LABEL: Final[str] = "label"
+KEY_VIOLATIONS: Final[str] = "violations"
+KEY_NOTE: Final[str] = "note"
+OUTPUT_KEYS: Final[tuple[str, ...]] = (KEY_LABEL, KEY_VIOLATIONS, KEY_NOTE)
+"""模型输出契约的三个字段名。**vision_prompt.md 里必须逐字出现这三个名字。**
+
+为什么要提成常量并加测试守着:提示词是给非工程师队友改的(见 base_agent.load_prompt)。
+把 `violations` 顺手改成 `items` 之后 —— 模型照新契约输出、这里 get("violations")
+取到空、于是 label=violation 的照片返回 violations=[] 且 ok=True,
+Agent 按 prompt.md 的规定对工人说「这张照片里没看到明显的安全问题」。
+**一张明确判了违规的照片被讲成没问题,全程零报错、零测试转红。**
+这是安全类产品最坏的一种失败:静默漏报。
+守卫在 tests/unit/test_safety.py::test_视觉提示词必须写明输出契约的三个字段名。
+"""
+
+VISION_MAX_ATTEMPTS: Final[int] = 2
+"""视觉调用最多尝试几次(1 次首发 + 1 次重试),而不是默认的 1 + llm_max_retries = 4。
+
+**重试次数是乘在超时上的。** 视觉调用本身就慢(实测 4K 工地照片 59.7 秒),
+超时又被调到 150 秒,按默认 4 次算:4 × 150 + 退避 7 秒 = **607 秒(10 分钟)**
+用户对着一个没有任何反馈的界面干等 —— 演示日这等同于死机。压到 2 次是 301 秒,
+仍然长,但至少在"人愿意等"的量级里。
+
+为什么不干脆压到 1 次(不重试):偶发的网络抖动重试一次确实救得回来,
+而那正是演示现场最常见的故障。真正该被砍掉的是"超时后还重试"——
+同一张图、同一个模型,150 秒都没返回,再试一次大概率还是超时。
+但区分"超时不重试、限流才重试"要改 _classify 的分类逻辑,影响面比这里大,
+留给 TODO-12 的降采样一起做:图小了延迟自然下来,这个洞就不存在了。
+"""
+
 _USER_TEXT: Final[str] = "请看这张工地照片,按系统提示词要求的 JSON 格式给出判断。"
 
 _FENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*```(?:json)?\s*(?P<body>.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE
 )
 """剥 ```json ... ``` 代码块。模型很爱加这层壳,提示词里已要求不加,但不能只靠它守规矩。"""
-
-_OBJECT_RE: Final[re.Pattern[str]] = re.compile(r"\{.*\}", re.DOTALL)
-"""兜底:从一段夹杂说明文字的输出里抠出最外层的 {...}。贪婪匹配,取最长的一段。"""
 
 _BYTES_PER_MB: Final[int] = 1024 * 1024
 
@@ -111,30 +139,86 @@ def _vision_prompt() -> str:
     return load_prompt(SAFETY_DIR, VISION_PROMPT_FILENAME)
 
 
+def _iter_balanced_objects(text: str) -> Iterator[str]:
+    """按花括号配平,依次吐出文本里每一段独立的 ``{...}``。
+
+    为什么不用正则:原先写的是贪婪的 ``\\{.*\\}``,它会把
+    ``{答案}\\n参考格式:{示例}`` 整段吃成一个候选,于是**一个本来完全可用的答案**
+    被判成解析失败。而模型在答案后面补一句带花括号的说明是很常见的。
+    改成非贪婪也不对 —— 那会在第一个嵌套的 ``}`` 处截断。
+
+    扫描时跳过字符串字面量内部的花括号与转义符,所以
+    ``{"note": "见 {GB50720} 第3条"}`` 会被正确地当作**一个**对象。
+    """
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                yield text[start : index + 1]
+
+
+def _message_text(message: Any) -> str:
+    """取出一条模型回复的正文。
+
+    ``.text`` 在 langchain-core 1.x 是 property(旧版是方法,调用它会刷弃用告警)。
+    取到的不是 str 就退回 ``.content`` —— 覆盖旧版本与测试替身两种情况。
+    """
+    raw = getattr(message, "text", None)
+    return raw if isinstance(raw, str) else str(getattr(message, "content", ""))
+
+
 def _extract_json_object(text: str) -> dict[str, Any] | None:
     """从模型输出里抠出 JSON 对象。抠不出来返回 None(由调用方转成失败信封)。
 
         原始输出
           │ ① 整段就是 ```json ... ``` → 剥掉外壳
           │ ② 直接 json.loads 试一次
-          │ ③ 还不行 → 正则抠出最外层 {...} 再 loads
+          │ ③ 还不行 → 按花括号配平扫出每一段 {...},**逐段**试,取第一个能解析成 dict 的
           ▼
         dict / None
 
+    ③ 必须逐段试而不是只试第一段:模型爱在正文前先写一句引子
+    (「根据《规范》判断:」),引子里若带花括号,第一段就不是 JSON。
+    只试第一段的话这类输出仍然解析失败。
+
     只接受 dict:模型偶尔会返回一个顶层数组(把 violations 直接吐出来),
     那种结构下游取不到 label,当解析失败处理比硬适配更安全。
+
+    ⚠️ 这个函数的返回值决定了**要不要把这次回答写进缓存**
+    (见 analyze_site_photo 里传给 llm.ainvoke 的 validate)。
+    它每放宽一点,就少一次「答案其实是好的、却被永久缓存成失败」。
     """
     body = text.strip()
     fenced = _FENCE_RE.match(body)
     if fenced:
         body = fenced.group("body").strip()
 
-    for candidate in (body, None):
-        if candidate is None:
-            match = _OBJECT_RE.search(body)
-            if not match:
-                return None
-            candidate = match.group(0)
+    try:
+        parsed = json.loads(body)
+        if isinstance(parsed, dict):
+            return parsed
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    for candidate in _iter_balanced_objects(body):
         try:
             parsed = json.loads(candidate)
         except (json.JSONDecodeError, ValueError):
@@ -278,17 +362,25 @@ async def analyze_site_photo(artifact_id: str) -> Envelope:
         logger.error("视觉模型的接口密钥没配置:%s", exc)
         return fail(ErrorCode.INTERNAL, user_msg=str(exc))
 
+    # is_usable 是**写缓存前的最后一道闸**:抠不出 JSON 的回答照常返回给这里处理,
+    # 但不落盘。不加这道闸的话,那句「请再试一次」永远不可能成功 ——
+    # 坏回答会被缓存,第二次直接命中、0 次网络调用、一字不差的同一句失败,
+    # 这张照片对该 prompt_version 就被永久钉死了(2026-08-07 实测确认)。
+    # 而且缓存键算在图片**内容**上,让用户重传同一个文件也逃不掉。
     try:
-        answer = await llm.ainvoke(model, messages, cache_extra=CACHE_EXTRA)
+        answer = await llm.ainvoke(
+            model,
+            messages,
+            cache_extra=CACHE_EXTRA,
+            is_usable=lambda msg: _extract_json_object(_message_text(msg)) is not None,
+            max_attempts=VISION_MAX_ATTEMPTS,
+        )
     except LLMCallError as exc:
         # 属性名是 error_code(不是 code),user_msg 已经是中文人话,原样透传给工人。
         logger.warning("视觉模型调用失败:%s", exc)
         return fail(exc.error_code, user_msg=str(exc.user_msg))
 
-    # .text 在 langchain-core 1.x 是 property(旧版是方法,调用它会刷弃用告警)。
-    # 取到的不是 str 就退回 content —— 覆盖旧版本与测试替身两种情况。
-    raw_text = getattr(answer, "text", None)
-    text = raw_text if isinstance(raw_text, str) else str(answer.content)
+    text = _message_text(answer)
     parsed = _extract_json_object(text)
     if parsed is None:
         logger.warning("视觉模型输出不是 JSON,原文前 200 字:%s", text[:200])
@@ -298,12 +390,12 @@ async def analyze_site_photo(artifact_id: str) -> Envelope:
             detail=f"模型输出无法解析为 JSON:{text[:500]}",
         )
 
-    label = str(parsed.get("label") or "").strip()
-    violations = _as_violation_list(parsed.get("violations"))
-    note = str(parsed.get("note") or "").strip()
+    label = str(parsed.get(KEY_LABEL) or "").strip()
+    violations = _as_violation_list(parsed.get(KEY_VIOLATIONS))
+    note = str(parsed.get(KEY_NOTE) or "").strip()
 
     return ok(
-        data={"label": label, "violations": violations, "note": note},
+        data={KEY_LABEL: label, KEY_VIOLATIONS: violations, KEY_NOTE: note},
         user_msg=_summarize(label, violations),
     )
 
@@ -332,4 +424,4 @@ if _MISSING_MIME:  # pragma: no cover —— 配置写错才会走到,正常永�
         "两处必须同时改:gyt.config.ALLOWED_IMAGE_EXT 与本文件的 MIME_BY_EXT。"
     )
 
-__all__ = ["CACHE_EXTRA", "MIME_BY_EXT", "SAFETY_TOOLS", "analyze_site_photo"]
+__all__ = ["CACHE_EXTRA", "MIME_BY_EXT", "OUTPUT_KEYS", "SAFETY_TOOLS", "analyze_site_photo"]
