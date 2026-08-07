@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import base64
+import io
 from pathlib import Path
 from typing import Any
 
@@ -38,9 +39,25 @@ from gyt.core.artifacts import ArtifactKind
 from gyt.core.errors import ErrorCode
 from gyt.core.llm import LLMCallError
 
-# 一小段 JPEG 魔数开头的字节。工具不解码图片内容(没装 Pillow),
-# 所以内容是不是真图片对它没影响 —— 但用真魔数能让失败时的排查少走一步弯路。
-FAKE_JPEG: bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 64
+
+def _make_jpeg(
+    width: int = 64, height: int = 48, color: tuple[int, int, int] = (110, 130, 90)
+) -> bytes:
+    """造一张**真的**小 JPEG。
+
+    以前这里是一串手写的 JPEG 魔数(b"\xff\xd8\xff\xe0..."),因为那时工具只看扩展名、
+    不解码图片。加了 _prepare_image 的真伪校验之后那串字节会被正确地判成损坏 ——
+    夹具必须跟着变成真图片,否则测的就不是业务逻辑而是"假数据被拦住了"。
+    (它被拦住这件事本身,由 test_改名成jpg的非图片文件会被挡下 单独守着。)
+    """
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+FAKE_JPEG: bytes = _make_jpeg()
 
 
 def _register_photo(data: bytes = FAKE_JPEG, name: str = "photo.jpg") -> str:
@@ -603,7 +620,7 @@ async def test_换一张照片不会错误命中上一张的缓存(monkeypatch: 
     _patch_model_only(monkeypatch, model)
 
     a = await _call(_register_photo(data=FAKE_JPEG))
-    b = await _call(_register_photo(data=FAKE_JPEG + b"\x01"))  # 内容差一个字节
+    b = await _call(_register_photo(data=_make_jpeg(color=(30, 60, 200))))  # 换一张,内容不同
 
     assert model.calls == 2, "两张不同的照片应当各请求一次"
     assert a["data"]["label"] == "violation"
@@ -712,3 +729,116 @@ async def test_可重试错误耗尽后返回中文信封(monkeypatch: pytest.Mo
     # 给工人的必须是中文人话,不能是 openai SDK 的英文异常
     assert result["user_msg"]
     assert not result["user_msg"].isascii()
+
+
+# ---------------------------------------------------------------------------
+# 六、图片预处理(_prepare_image)—— 降采样 / 挡动图 / 验真伪
+#
+# 这三件事只能靠**解码图片本身**来做,光看扩展名一件都做不到。
+# ---------------------------------------------------------------------------
+
+
+def _png_bytes(width: int, height: int, *, frames: int = 1, fmt: str = "PNG") -> bytes:
+    """造一张测试图。frames>1 时造动图(GIF/WebP),用来验证动图会被挡下。"""
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    base = Image.new("RGB", (width, height), (120, 140, 90))
+    if frames > 1:
+        seq = [Image.new("RGB", (width, height), (i * 40, 100, 100)) for i in range(frames)]
+        base.save(buffer, format=fmt, save_all=True, append_images=seq, duration=100, loop=0)
+    else:
+        base.save(buffer, format=fmt)
+    return buffer.getvalue()
+
+
+def test_没超限的图原样返回_不做重编码() -> None:
+    """重编码只会白白损失画质,而「有没有戴安全帽」经不起反复有损压缩。
+
+    这条同时锁住:返回的 MIME 必须跟着**原扩展名**走,不能一律说成 jpeg。
+    """
+    from gyt.agents.safety.tools import _prepare_image
+
+    raw = _png_bytes(800, 600)
+    out, mime = _prepare_image(raw, ".png")
+    assert out is raw or out == raw, "没超限却被重新编码了"
+    assert mime == "image/png"
+
+
+def test_超过长边上限的图会被等比缩小(monkeypatch: pytest.MonkeyPatch) -> None:
+    """视觉 token 按**像素面积**计。实测 4000×2430 的工地照片端到端 59.7 秒,
+    而 1600×1067 的同类只要 10.1 秒 —— 手机原图正好是前者那个量级。"""
+    from PIL import Image
+
+    from gyt.agents.safety.tools import _prepare_image
+    from gyt.config import get_settings
+
+    monkeypatch.setenv("GYT_PHOTO_COMPRESS_MAX_EDGE_PX", "512")
+    get_settings.cache_clear()
+
+    out, mime = _prepare_image(_png_bytes(2000, 1200), ".png")
+    with Image.open(io.BytesIO(out)) as image:
+        assert max(image.size) == 512
+        assert image.size == (512, 307), "必须等比缩放,不能拉伸变形"
+    # 缩放后统一转成 JPEG(体积最小),MIME 要跟着改,否则上游按 png 解会失败
+    assert mime == "image/jpeg"
+
+
+def test_动图会被挡下() -> None:
+    """**这是只看扩展名绝对挡不住的一类。**
+
+    animated gif / webp 的 MIME 与静态图完全相同,格式白名单必然放行;
+    而月之暗面可能把动图当**视频**解码计费 —— 账单是静态图的几十倍,且完全静默。
+    """
+    from gyt.agents.safety.tools import ImageRejected, _prepare_image
+
+    with pytest.raises(ImageRejected) as caught:
+        _prepare_image(_png_bytes(200, 200, frames=3, fmt="WEBP"), ".webp")
+    assert caught.value.code == ErrorCode.FILE_UNSUPPORTED
+    assert "动图" in caught.value.user_msg
+
+
+def test_改名成jpg的非图片文件会被挡下() -> None:
+    """在加这道校验之前,只看扩展名 —— 一个改名成 .jpg 的文本文件
+    照样会被 base64 发给视觉模型,白花一次钱换回一句听不懂的话。"""
+    from gyt.agents.safety.tools import ImageRejected, _prepare_image
+
+    with pytest.raises(ImageRejected) as caught:
+        # 前 4 字节是 JPEG 魔数,后面是纯文本 —— 靠魔数骗过扩展名检查,但解不开
+        _prepare_image(b"\xff\xd8\xff\xe0 not really an image, just named .jpg", ".jpg")
+    assert caught.value.code == ErrorCode.FILE_CORRUPT
+    assert "打不开" in caught.value.user_msg
+
+
+def test_体积超标时逐档降质量(monkeypatch: pytest.MonkeyPatch) -> None:
+    """尺寸没超但体积超(高质量大图)也要压,否则 base64 之后请求体会很大。"""
+    from gyt.agents.safety.tools import _prepare_image
+    from gyt.config import get_settings
+
+    monkeypatch.setenv("GYT_PHOTO_COMPRESS_TARGET_MB", "0.02")  # 20KB
+    get_settings.cache_clear()
+
+    # 造一张噪声图:纯色图压完太小,测不出降质量这条路径
+    from PIL import Image
+
+    noise = Image.effect_noise((900, 900), 60).convert("RGB")
+    buffer = io.BytesIO()
+    noise.save(buffer, format="PNG")
+    raw = buffer.getvalue()
+
+    out, mime = _prepare_image(raw, ".png")
+    assert len(out) < len(raw), "体积超标却没被压"
+    assert mime == "image/jpeg"
+
+
+async def test_预处理失败会变成中文信封而不是异常(monkeypatch: pytest.MonkeyPatch) -> None:
+    """端到端:ImageRejected 要被接住转成信封,不能让它冒到 tool_guard 变成
+    「系统开小差了」—— 那句话对工人毫无帮助,他不知道该换张图还是重传。"""
+    _patch_llm(monkeypatch, reply='{"label":"compliant","violations":[],"note":""}')
+    artifact_id = _register_photo(data=b"\xff\xd8\xff\xe0 not an image at all")
+
+    result = await _call(artifact_id)
+
+    assert result["ok"] is False
+    assert result["error_code"] == ErrorCode.FILE_CORRUPT.value
+    assert "系统开小差" not in result["user_msg"]

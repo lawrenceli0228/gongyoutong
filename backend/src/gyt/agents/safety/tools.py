@@ -46,6 +46,7 @@ Agent 本体用 create_gyt_agent(purpose="text") 走 DeepSeek,只有这一个工
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import re
@@ -56,6 +57,7 @@ from typing import Any, Final
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
+from PIL import Image
 
 from gyt.config import ALLOWED_IMAGE_EXT, get_settings
 from gyt.core import artifacts, llm
@@ -126,6 +128,14 @@ _FENCE_RE: Final[re.Pattern[str]] = re.compile(
 """剥 ```json ... ``` 代码块。模型很爱加这层壳,提示词里已要求不加,但不能只靠它守规矩。"""
 
 _BYTES_PER_MB: Final[int] = 1024 * 1024
+
+_JPEG_QUALITY_STEPS: Final[tuple[int, ...]] = (85, 75, 65, 55)
+"""压体积时逐档下调的 JPEG 质量。
+
+从 85 起步而不是更低:判断「有没有戴安全帽」「腰上有没有挂钩」靠的是细节,
+过度压缩会把远处的小目标糊掉 —— 那是在用画质换钱,而漏报一个隐患的代价远高于几分钱。
+最低只到 55;真到了这一档还超限,就让它超 —— 上游真正的硬限是整个请求体 100MB,
+离得远得很,没必要为了一个软目标把图压烂。"""
 
 
 @lru_cache(maxsize=1)
@@ -243,6 +253,84 @@ def _as_violation_list(raw: Any) -> list[str]:
     return [str(raw).strip()]
 
 
+class ImageRejected(Exception):
+    """图片过不了预处理这一关。code 决定给工人的中文文案。"""
+
+    def __init__(self, code: ErrorCode, user_msg: str) -> None:
+        self.code = code
+        self.user_msg = user_msg
+        super().__init__(user_msg)
+
+
+def _prepare_image(payload: bytes, ext: str) -> tuple[bytes, str]:
+    """把原始字节整成「能安全喂给视觉模型」的样子,返回 (字节, MIME)。
+
+        原始字节
+          │ ① Pillow 打不开 ──────────────▶ ImageRejected(FILE_CORRUPT)
+          │    在此之前只看扩展名 —— 一个改名成 .jpg 的文本文件照样会被 base64 发出去
+          ▼
+          │ ② 帧数 > 1(动图)────────────▶ ImageRejected(FILE_UNSUPPORTED)
+          │    animated gif/webp 的 MIME 与静态图**完全相同**,只看扩展名必然放行;
+          │    而月之暗面可能把它当视频解码计费 —— 账单是静态图的几十倍,且完全静默
+          ▼
+          │ ③ 长边 > photo_compress_max_edge_px → 等比缩小
+          │    视觉 token 按**像素面积**计。实测 4000×2430 的工地照片端到端 59.7 秒,
+          │    而 1600×1067 的同类只要 10.1 秒 —— 手机原图正好是前者那个量级
+          ▼
+          │ ④ 仍大于 photo_compress_target_mb → 逐档降 JPEG 质量
+          ▼
+        (处理后的字节, MIME)
+
+    **没超限的图原样返回**,连重编码都不做 —— 重编码只会白白损失画质,
+    而判断「有没有戴安全帽」经不起反复有损压缩。
+    """
+    settings = get_settings()
+    try:
+        with Image.open(io.BytesIO(payload)) as probe:
+            probe.load()
+            width, height = probe.size
+            frames = getattr(probe, "n_frames", 1)
+            fmt = (probe.format or "").upper()
+    except Exception as exc:  # noqa: BLE001 —— Pillow 的异常类型很杂,一律当损坏处理
+        raise ImageRejected(
+            ErrorCode.FILE_CORRUPT,
+            "这张照片打不开,可能传的时候坏了,或者根本不是图片。请重新传一次。",
+        ) from exc
+
+    if frames > 1:
+        raise ImageRejected(
+            ErrorCode.FILE_UNSUPPORTED,
+            f"这是一张动图({frames} 帧),看不了。请传静态照片(截一帧再发也行)。",
+        )
+
+    max_edge = settings.photo_compress_max_edge_px
+    limit_bytes = int(settings.photo_compress_target_mb * _BYTES_PER_MB)
+    if max(width, height) <= max_edge and len(payload) <= limit_bytes:
+        return payload, MIME_BY_EXT[ext]
+
+    with Image.open(io.BytesIO(payload)) as image:
+        image = image.convert("RGB")  # 统一丢掉 alpha/调色板,JPEG 存不了它们
+        if max(width, height) > max_edge:
+            image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+        for quality in _JPEG_QUALITY_STEPS:
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=quality, optimize=True)
+            data = buffer.getvalue()
+            if len(data) <= limit_bytes:
+                break
+    logger.info(
+        "照片已预处理:%dx%d %.1fMB → %dx%d %.1fMB(原格式 %s)",
+        width,
+        height,
+        len(payload) / _BYTES_PER_MB,
+        image.width,
+        image.height,
+        len(data) / _BYTES_PER_MB,
+        fmt or "?",
+    )
+    return data, "image/jpeg"
+
+
 _ANALYZE_DESCRIPTION = (
     "看一张工地现场照片,判断是不是工地、有没有安全违规。"
     "参数 artifact_id 是照片的产物编号(32 位十六进制),由用户上传照片后系统给出。"
@@ -332,7 +420,13 @@ async def analyze_site_photo(artifact_id: str) -> Envelope:
             ),
         )
 
-    data_uri = f"data:{MIME_BY_EXT[ext]};base64,{base64.b64encode(payload).decode('ascii')}"
+    try:
+        prepared, mime = _prepare_image(payload, ext)
+    except ImageRejected as exc:
+        logger.info("产物 %s 预处理未通过:%s", cleaned, exc.user_msg)
+        return fail(exc.code, user_msg=exc.user_msg)
+
+    data_uri = f"data:{mime};base64,{base64.b64encode(prepared).decode('ascii')}"
     messages = [
         SystemMessage(content=_vision_prompt()),
         HumanMessage(
@@ -424,4 +518,11 @@ if _MISSING_MIME:  # pragma: no cover —— 配置写错才会走到,正常永�
         "两处必须同时改:gyt.config.ALLOWED_IMAGE_EXT 与本文件的 MIME_BY_EXT。"
     )
 
-__all__ = ["CACHE_EXTRA", "MIME_BY_EXT", "OUTPUT_KEYS", "SAFETY_TOOLS", "analyze_site_photo"]
+__all__ = [
+    "CACHE_EXTRA",
+    "MIME_BY_EXT",
+    "OUTPUT_KEYS",
+    "SAFETY_TOOLS",
+    "ImageRejected",
+    "analyze_site_photo",
+]
