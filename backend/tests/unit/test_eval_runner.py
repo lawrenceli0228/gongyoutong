@@ -12,7 +12,7 @@ from __future__ import annotations
 import csv
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from eval import runner as runner_mod
@@ -1270,16 +1270,37 @@ def test_main_verbose_flag_prints_passing_rows(
     assert "R01" in capsys.readouterr().out
 
 
-def test_shipped_datasets_are_readable_and_currently_placeholders() -> None:
-    """仓库里现有的三份 CSV 必须能读、表头齐全,且此刻仍是占位状态。
+FILLED_DATASETS: Final[dict[str, int]] = {"safety": 30}
+"""已经填完真数据的套 → 应有的可判分行数。
 
-    这条用例是给「填数据的人」用的进度指示器:等他们把示例行换成真数据,
-    本用例会红,提醒回来把断言改成对真实条数的检查。
+safety 于 2026-08-07 填完(27 张人工标注 + 3 张自备干扰项)。
+routing / rag 仍是占位状态,由各自泳道负责人填完后往这里加一行。
+数字必须 ≥ config 里的 eval_min_rows_*,否则跑分脚本会直接判不通过。
+"""
+
+
+def test_shipped_datasets_are_readable() -> None:
+    """仓库里现有的三份 CSV 必须能读、表头齐全。
+
+    这条用例同时是给「填数据的人」用的进度指示器:
+      · 还没填的套 —— 必须仍能看出是占位状态(有「待替换」字样);
+      · 填完的套 —— 登记进 FILLED_DATASETS,改为断言**真实可判分条数**。
+    等谁把 routing / rag 填完,本用例会红并提示往 FILLED_DATASETS 里加一行 ——
+    那正是提醒他顺手核对条数够不够门槛的时机。
     """
-    for spec in SUITES.values():
+    for name, spec in SUITES.items():
         rows = load_rows(spec)
         assert rows, f"{spec.dataset} 一行数据都没有"
+
+        if name in FILLED_DATASETS:
+            scorable = [row for row in rows if not is_placeholder(row)]
+            assert len(scorable) == FILLED_DATASETS[name], (
+                f"{spec.dataset} 可判分行数是 {len(scorable)},"
+                f"登记的却是 {FILLED_DATASETS[name]} —— 改了数据集就同步改这里。"
+            )
+            continue
+
         assert any(is_placeholder(row) for row in rows), (
             f"{spec.dataset} 已经没有占位行了 —— 数据看来填好了,"
-            "请把本用例改成断言真实条数(路由 20 / 安全 30 / 知识 20)"
+            f"请往本文件的 FILLED_DATASETS 里加一行 {name!r}: 真实条数。"
         )
