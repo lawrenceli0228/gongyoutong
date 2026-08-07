@@ -128,11 +128,13 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph_supervisor import create_supervisor
 
 from gyt.agents.ping import PING_AGENT_NAME, build_ping_agent
+from gyt.agents.safety import SAFETY_AGENT_NAME, build_safety_agent
 from gyt.config import get_settings
 
 # 导入模块而非函数：单测要用 monkeypatch.setattr(llm, "get_chat_model", ...) 把模型换成假的，
 # 写成 from gyt.core.llm import get_chat_model 的话名字会在导入时绑死，打桩就失效了。
 from gyt.core import llm
+from gyt.core.uploads import ingest_uploads
 
 # —— 模块级常量：禁止在函数体里散落字面量 ——
 
@@ -175,6 +177,21 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             "只有当用户明确要求「测试」「ping」「看看通不通」时才派给它，别的活它一概不会。"
         ),
         build=build_ping_agent,
+    ),
+    AgentSpec(
+        name=SAFETY_AGENT_NAME,
+        summary=(
+            "工地照片安全检查。用户发来现场照片时派给它，它能看出照片里有没有"
+            "未戴安全帽、未穿反光衣、高空作业未系安全带、临边无防护、消防通道堵塞、"
+            "材料堆放混乱、用电隐患、动火作业无监护这八类问题，也能认出照片根本不是工地。"
+            "**不管用户有没有给出照片编号**，只要是在问现场照片里有没有问题就派给它；"
+            "编号缺失由它自己向用户追问。它**只**看照片，不回答规范条文该怎么写。"
+            # 「并给了照片编号」这个合取条件曾经写在这里，是错的:routing.csv 里
+            # expected_agent=safety 的行(「这张照片有没有安全隐患」等)原文里都没有编号，
+            # supervisor 会把它读成路由前提，于是自己反问要编号、不生成 transfer_to_safety。
+            # 缺编号的追问本来就归 safety/prompt.md 管，supervisor 不该在路由层重复把关。
+        ),
+        build=build_safety_agent,
     ),
     # W2/W3 在这里往下追加，一个 Agent 一行。改这里就等于改路由能力，
     # 记得同步更新 D18 的路由评测集（backend/eval/datasets/routing.csv，
@@ -308,6 +325,13 @@ def build_graph(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> CompiledStateGra
         prompt=build_supervisor_prompt(specs),
         supervisor_name=SUPERVISOR_NAME,
         output_mode=OUTPUT_MODE,
+        # 聊天界面的「Upload Image」按钮会把图片作为多模态 content 块塞进消息,
+        # 而这里的模型是 DeepSeek 文本档 —— 收到 image 块直接 400,
+        # 前端还不渲染这个错,用户只看到"点了发送没反应"。
+        # 这个钩子在调模型之前把图片存成产物、把消息换成一句带编号的文本,
+        # 于是文本档见不到图片,而 Safety 工具拿到的正是它要的 artifact_id。
+        # 详见 core/uploads.py 顶部。
+        pre_model_hook=ingest_uploads,
     )
 
     return builder.compile(name=GRAPH_NAME).with_config(

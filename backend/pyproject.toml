@@ -43,6 +43,13 @@ dependencies = [
     # 镜像用 `uv sync --no-dev` 安装,而容器的启动命令就是 `langgraph dev`,
     # 放进 dev 组的话 --no-dev 会把它剥掉,镜像构建期的守卫会直接 exit 1。
     "langgraph-cli[inmem]>=0.4.31,<0.5",
+    # Pillow:Safety Agent 喂图给视觉模型之前要做三件事,每件都只能靠解码图片本身 ——
+    # ① 降采样(视觉 token 按**像素面积**计,手机原图 4000×3000 贴着 4K 线,
+    #    实测这类图端到端 59.7 秒,而 1600px 的同类只要 10 秒);
+    # ② 挡动图(animated gif/webp 的 MIME 与静态图完全相同,只看扩展名必然放行,
+    #    而月之暗面可能把它当视频解码计费,账单是静态图的几十倍且完全静默);
+    # ③ 验真伪(在此之前只看扩展名 —— 一个改名成 .jpg 的文本文件照样会被 base64 发出去)。
+    "pillow>=11.0,<13",
 ]
 
 [dependency-groups]

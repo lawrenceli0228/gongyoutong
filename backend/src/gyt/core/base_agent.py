@@ -94,6 +94,7 @@ from langgraph.graph.state import CompiledStateGraph
 # 用「导入模块」而不是「导入函数」,这样单测 monkeypatch.setattr(llm, "get_chat_model", ...)
 # 能真正生效 —— 若写成 from ... import get_chat_model,名字会在导入时被绑死在本模块命名空间里。
 from gyt.core import llm
+from gyt.core.focus import FocusOnOwnWork
 from gyt.core.llm import Purpose
 
 # 每个 Agent 包里提示词文件的固定文件名。提示词一律外置成 .md,不许写死在 .py 里。
@@ -115,8 +116,8 @@ __all__ = [
 ]
 
 
-def load_prompt(agent_dir: Path) -> str:
-    """读取某个 Agent 目录下的 prompt.md,剥掉 HTML 注释后返回正文。
+def load_prompt(agent_dir: Path, filename: str = PROMPT_FILENAME) -> str:
+    """读取某个 Agent 目录下的提示词文件,剥掉 HTML 注释后返回正文。
 
     为什么要剥注释:prompt.md 里会写给队友看的维护说明(改动记录、评测集位置、
     "这段话别删,评测集依赖它" 之类)。这些说明对模型是纯噪音,还白烧 token,
@@ -138,20 +139,26 @@ def load_prompt(agent_dir: Path) -> str:
 
     参数:
         agent_dir: Agent 包所在目录,一般传 Path(__file__).parent。
+        filename:  提示词文件名,默认 prompt.md(Agent 本体那份)。
+                   传别的名字是给「同一个 Agent 需要不止一份提示词」的场景用的 ——
+                   safety 就有两份:prompt.md 给本体(文本档),vision_prompt.md
+                   给工具内部那次视觉调用。两份职责不同、模型不同,不能合成一份。
+                   ⚠️ 无论几份,都必须外置成 .md,不许写死进 .py ——
+                   提示词是要被非工程师队友改的,埋在代码里就改不动了。
 
     返回:
         剥注释、去首尾空白之后的提示词正文。
 
     抛出:
-        FileNotFoundError: 目录下没有 prompt.md。
+        FileNotFoundError: 目录下没有这个文件。
         ValueError: 文件不是 UTF-8,或剥完注释后内容为空。
     """
-    prompt_path = Path(agent_dir) / PROMPT_FILENAME
+    prompt_path = Path(agent_dir) / filename
     try:
         raw = prompt_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise FileNotFoundError(
-            f"找不到提示词文件:{prompt_path}。每个 Agent 目录下必须有一份 {PROMPT_FILENAME}。"
+            f"找不到提示词文件:{prompt_path}。每个 Agent 目录下必须有一份 {filename}。"
         ) from exc
     except UnicodeDecodeError as exc:
         raise ValueError(
@@ -203,6 +210,12 @@ def create_gyt_agent(
         tools=list(tools),
         system_prompt=prompt,
         name=name,
+        # 子 Agent 与 Supervisor 共享同一份 messages,于是它能看到 Supervisor
+        # 说过的每一句话 —— 包括「我这就安排 safety 同事看一下」。实测子 Agent
+        # 会跟着模仿那个语气、把活推回去而不干,两边互相等,用户永远收不到答复。
+        # 这道中间件在**喂给模型之前**把别的 Agent 的纯文本滤掉(不改 state),
+        # 让它只看见「用户要什么」和「自己做过什么」。详见 core/focus.py。
+        middleware=[FocusOnOwnWork(name)],
     )
 
 

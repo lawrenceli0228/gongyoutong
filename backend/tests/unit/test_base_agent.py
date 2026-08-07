@@ -309,3 +309,79 @@ def test_create_gyt_agent_参数不合法时根本不去造模型(
 
 
 __all__ = ["FakeChatModel", "ModelStub"]
+
+
+# ===========================================================================
+# 子 Agent 的上下文聚焦(FocusOnOwnWork)
+#
+# 这一节守的是一个**真实故障**:子 Agent 看到 Supervisor 说「我这就安排 safety
+# 同事看一下」之后,跟着演了调度者的角色 —— 不调工具、把活推回去,而 Supervisor
+# 又在等它的结果。两边互相等,用户永远收不到答复,界面上还看不出任何错误。
+# ===========================================================================
+
+
+def test_子agent的上下文里滤掉了别人的闲聊() -> None:
+    """Supervisor 的转述对子 Agent 干活没有信息量,却会被当成"该怎么说话"的示范。
+
+    这是 few-shot 污染,不是随机性 —— temperature=0 之后照样复发,
+    把提示词写成「你就是那个同事」也照样复发。历史里那句现成的示范,
+    比提示词里的告诫更有说服力,所以只能从上下文里摘掉。
+    """
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from gyt.core.focus import keep_focused
+
+    history = [
+        HumanMessage(content="看看这张照片 abc"),
+        AIMessage(content="我这就安排 safety 同事看一下。", name="supervisor"),
+        AIMessage(
+            content="",
+            name="supervisor",
+            tool_calls=[{"name": "transfer_to_safety", "args": {}, "id": "t1"}],
+        ),
+        ToolMessage(content="Successfully transferred to safety", tool_call_id="t1"),
+        AIMessage(content="这张照片有 1 处问题", name="safety"),
+    ]
+
+    kept = keep_focused(history, own_name="safety")
+
+    texts = [m.content for m in kept]
+    assert "我这就安排 safety 同事看一下。" not in texts, "别人的转述必须滤掉"
+    assert "看看这张照片 abc" in texts, "用户消息是任务来源,不能丢"
+    assert "这张照片有 1 处问题" in texts, "自己说过的话要留着"
+
+
+def test_带工具调用的消息一律保留即使不是自己的() -> None:
+    """**这是实现这类裁剪最容易踩的坑。**
+
+    紧跟在 AIMessage 之后的 ToolMessage 要靠它的 tool_call_id 配对。
+    把带 tool_calls 的 AIMessage 滤掉,就留下一条孤立的 tool 消息,上游直接 400 ——
+    而那个错会以「An internal error occurred」的面目出现,极难定位到是裁剪干的。
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from gyt.core.focus import keep_focused
+
+    history = [
+        AIMessage(
+            content="",
+            name="supervisor",
+            tool_calls=[{"name": "transfer_to_safety", "args": {}, "id": "t1"}],
+        ),
+        ToolMessage(content="ok", tool_call_id="t1"),
+    ]
+
+    kept = keep_focused(history, own_name="safety")
+
+    assert len(kept) == 2, "带 tool_calls 的消息不能滤,否则 ToolMessage 会变成孤儿"
+    assert kept[0].tool_calls[0]["id"] == "t1"
+
+
+def test_没有名字的消息不会被误滤() -> None:
+    """单 Agent 场景或旧数据里的 AIMessage 可能没有 name,不该被当成"别人的"。"""
+    from langchain_core.messages import AIMessage
+
+    from gyt.core.focus import keep_focused
+
+    history = [AIMessage(content="上一轮的回答")]
+    assert len(keep_focused(history, own_name="safety")) == 1

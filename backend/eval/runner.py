@@ -349,6 +349,59 @@ async def run_suites(
 # ---------------------------------------------------------------------------
 
 
+def format_diagnostics(results: Sequence[RowScore]) -> list[str]:
+    """算「集合类答案」的诊断指标。**不参与判定红绿,只帮人看清失败长什么样。**
+
+    为什么需要:判分是集合完全相等、不给部分分,于是「一项没答对」与
+    「三项答对两项」在分数上都是 0。一个 43% 的报告里分不清模型是压根不会,
+    还是每张只差一项 —— 而这两种的修法完全相反(换模型 vs 改提示词措辞)。
+
+    两个指标:
+      · 平均重合度 = 各行 Jaccard(交集/并集)的平均。**只统计 label 判对的行** ——
+        label 都答错的行,比违规项没有意义。
+      · 逐类召回 = 每个违规词「被标注了几次 / 其中模型答中几次」。
+        新引入的类别就靠它看清是「完全没概念」还是「认得但措辞对不上」。
+    """
+    usable = [r for r in results if r.expected_items is not None and r.actual_items is not None]
+    if not usable:
+        return []
+
+    lines: list[str] = []
+    # label 对了才谈违规项的重合度
+    scored = [r for r in usable if "判断结论就不对" not in r.reason]
+    if scored:
+        total = 0.0
+        for item in scored:
+            exp, got = item.expected_items or frozenset(), item.actual_items or frozenset()
+            union = exp | got
+            total += 1.0 if not union else len(exp & got) / len(union)
+        lines.append(f"  平均重合度 {total / len(scored):.1%}(仅统计结论判对的 {len(scored)} 行)")
+
+    hit: dict[str, int] = {}
+    seen: dict[str, int] = {}
+    for item in usable:
+        for word in item.expected_items or frozenset():
+            seen[word] = seen.get(word, 0) + 1
+            if word in (item.actual_items or frozenset()):
+                hit[word] = hit.get(word, 0) + 1
+    if seen:
+        lines.append("  逐类召回(标注里出现过的类):")
+        for word in sorted(seen, key=lambda w: (-seen[w], w)):
+            got = hit.get(word, 0)
+            lines.append(f"      {word:<12s} {got}/{seen[word]}")
+
+    # 模型报了、但标注里从没出现过的词 —— 过触发的信号
+    over: dict[str, int] = {}
+    for item in usable:
+        for word in (item.actual_items or frozenset()) - (item.expected_items or frozenset()):
+            over[word] = over.get(word, 0) + 1
+    if over:
+        lines.append("  多报的类(标注没有、模型报了):")
+        for word in sorted(over, key=lambda w: -over[w]):
+            lines.append(f"      {word:<12s} {over[word]} 次")
+    return lines
+
+
 def format_report(report: SuiteReport, *, verbose: bool = False) -> str:
     """把一套的结果渲染成人能读的文本。默认只展开挂掉的条目。"""
     lines = [f"===== {report.suite} [{report.status}] ====="]
@@ -365,6 +418,7 @@ def format_report(report: SuiteReport, *, verbose: bool = False) -> str:
         f"  得分 {report.score:.1%}({report.passed_count}/{report.total})"
         f"  门槛 {report.threshold:.0%}"
     )
+    lines.extend(format_diagnostics(report.results))
     shown = [r for r in report.results if verbose or not r.passed]
     if not shown:
         lines.append("  全部通过。")
@@ -482,6 +536,7 @@ __all__ = [
     "SuiteReport",
     "SuiteSpec",
     "exit_code_of",
+    "format_diagnostics",
     "format_report",
     "format_summary",
     "is_placeholder",

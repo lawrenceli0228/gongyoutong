@@ -12,7 +12,7 @@ from __future__ import annotations
 import csv
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from eval import runner as runner_mod
@@ -26,6 +26,7 @@ from eval.runner import (
     Status,
     SuiteReport,
     exit_code_of,
+    format_diagnostics,
     format_report,
     format_summary,
     is_placeholder,
@@ -1270,16 +1271,115 @@ def test_main_verbose_flag_prints_passing_rows(
     assert "R01" in capsys.readouterr().out
 
 
-def test_shipped_datasets_are_readable_and_currently_placeholders() -> None:
-    """仓库里现有的三份 CSV 必须能读、表头齐全,且此刻仍是占位状态。
+FILLED_DATASETS: Final[dict[str, int]] = {"safety": 30}
+"""已经填完真数据的套 → 应有的可判分行数。
 
-    这条用例是给「填数据的人」用的进度指示器:等他们把示例行换成真数据,
-    本用例会红,提醒回来把断言改成对真实条数的检查。
+safety 于 2026-08-07 填完(27 张人工标注 + 3 张自备干扰项)。
+routing / rag 仍是占位状态,由各自泳道负责人填完后往这里加一行。
+数字必须 ≥ config 里的 eval_min_rows_*,否则跑分脚本会直接判不通过。
+"""
+
+
+def test_shipped_datasets_are_readable() -> None:
+    """仓库里现有的三份 CSV 必须能读、表头齐全。
+
+    这条用例同时是给「填数据的人」用的进度指示器:
+      · 还没填的套 —— 必须仍能看出是占位状态(有「待替换」字样);
+      · 填完的套 —— 登记进 FILLED_DATASETS,改为断言**真实可判分条数**。
+    等谁把 routing / rag 填完,本用例会红并提示往 FILLED_DATASETS 里加一行 ——
+    那正是提醒他顺手核对条数够不够门槛的时机。
     """
-    for spec in SUITES.values():
+    for name, spec in SUITES.items():
         rows = load_rows(spec)
         assert rows, f"{spec.dataset} 一行数据都没有"
+
+        if name in FILLED_DATASETS:
+            scorable = [row for row in rows if not is_placeholder(row)]
+            assert len(scorable) == FILLED_DATASETS[name], (
+                f"{spec.dataset} 可判分行数是 {len(scorable)},"
+                f"登记的却是 {FILLED_DATASETS[name]} —— 改了数据集就同步改这里。"
+            )
+            continue
+
         assert any(is_placeholder(row) for row in rows), (
             f"{spec.dataset} 已经没有占位行了 —— 数据看来填好了,"
-            "请把本用例改成断言真实条数(路由 20 / 安全 30 / 知识 20)"
+            f"请往本文件的 FILLED_DATASETS 里加一行 {name!r}: 真实条数。"
         )
+
+
+# ===========================================================================
+# 九、诊断指标(format_diagnostics)—— 不参与判定红绿,只让失败可诊断
+# ===========================================================================
+
+
+def _diag_row(
+    row_id: str, expected: set[str], actual: set[str], *, label_ok: bool = True
+) -> RowScore:
+    return RowScore(
+        row_id=row_id,
+        passed=expected == actual and label_ok,
+        expected="violation / ...",
+        actual="violation / ...",
+        reason="结论与违规项全部对上。"
+        if label_ok
+        else "判断结论就不对:该是 violation,模型说是 compliant。",
+        expected_items=frozenset(expected),
+        actual_items=frozenset(actual),
+    )
+
+
+def test_diagnostics_are_empty_without_set_fields() -> None:
+    """routing / rag 的 RowScore 不填集合字段,诊断段应当整段不出现。"""
+    plain = RowScore(row_id="R01", passed=True, expected="safety", actual="safety", reason="对")
+    assert format_diagnostics([plain]) == []
+
+
+def test_diagnostics_overlap_counts_partial_credit() -> None:
+    """判分不给部分分,但诊断要看得见「差多远」。
+
+    这正是加这个指标的理由:三项答对两项与一项没答对,在分数上都是 0,
+    修法却完全相反(改提示词措辞 vs 换模型)。
+    """
+    rows = [
+        _diag_row("S01", {"未戴安全帽", "未穿反光衣", "用电隐患"}, {"未戴安全帽", "未穿反光衣"}),
+        _diag_row("S02", {"未戴安全帽"}, {"未戴安全帽"}),
+    ]
+    text = "\n".join(format_diagnostics(rows))
+    # S01 Jaccard = 2/3,S02 = 1 → 平均 (0.667+1)/2 ≈ 83.3%
+    assert "83.3%" in text
+    assert "2 行" in text
+
+
+def test_diagnostics_skip_rows_whose_label_was_wrong() -> None:
+    """label 都答错的行,比违规项没有意义 —— 会把重合度稀释成看不懂的数字。"""
+    rows = [
+        _diag_row("S01", {"未戴安全帽"}, {"未戴安全帽"}),
+        _diag_row("S02", {"用电隐患"}, set(), label_ok=False),
+    ]
+    text = "\n".join(format_diagnostics(rows))
+    assert "100.0%" in text
+    assert "仅统计结论判对的 1 行" in text
+
+
+def test_diagnostics_report_per_class_recall() -> None:
+    """新引入的类别靠这个看清是「完全没概念」还是「认得但措辞对不上」。"""
+    rows = [
+        _diag_row("S01", {"临边无防护"}, set()),
+        _diag_row("S02", {"临边无防护"}, {"临边无防护"}),
+        _diag_row("S03", {"未戴安全帽"}, {"未戴安全帽"}),
+    ]
+    text = "\n".join(format_diagnostics(rows))
+    assert "临边无防护" in text and "1/2" in text
+    assert "未戴安全帽" in text and "1/1" in text
+
+
+def test_diagnostics_surface_over_reporting() -> None:
+    """标注里从没有、模型却报了的词 —— 过触发的信号,必须单独列出来。
+
+    提示词把 8 个词都摆在模型面前,它有动机去凑。不单列的话,
+    这种行为会混在「违规项对不上」里看不出来。
+    """
+    rows = [_diag_row("S01", {"未戴安全帽"}, {"未戴安全帽", "消防通道堵塞"})]
+    text = "\n".join(format_diagnostics(rows))
+    assert "多报的类" in text
+    assert "消防通道堵塞" in text

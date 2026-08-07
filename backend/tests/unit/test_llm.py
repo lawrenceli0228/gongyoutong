@@ -448,3 +448,24 @@ async def test_dirty_result_and_inner_error(sleep_log: list[float]) -> None:
     with pytest.raises(llm.LLMCallError) as caught:
         await llm.ainvoke(model, OTHER_QUESTION)
     assert caught.value is inner and model.calls == 1 and sleep_log == []
+
+
+def test_文本档设了确定性温度而视觉档不传采样参数() -> None:
+    """两件事一起锁,因为它们的理由相反,分开写容易被人"顺手统一"掉。
+
+    文本档 temperature=0:它承担的是**执行类**任务(派活、把工具结果转述成人话),
+    不需要创造性。实测过不设的后果 —— 同一张照片跑两次,一次 safety 正常调工具、
+    一次它说"我已经把话传给 safety 了"就把活推回去;一次如实说"这照片不像工地",
+    一次说成"没有发现明显安全隐患"。后者是危险的语义漂移:
+    「不是工地」被说成「没有隐患」,工人会据此以为现场是安全的。
+
+    视觉档**不传**采样参数:kimi-k3 官方要求 temperature/top_p/n/presence_penalty/
+    frequency_penalty 一律从请求里省略(它们是固定值),传了可能 400。
+    """
+    from gyt.config import get_settings
+
+    text_model = llm.get_chat_model("text")
+    vision_model = llm.get_chat_model("vision")
+
+    assert text_model.temperature == get_settings().text_temperature == 0.0
+    assert vision_model.temperature is None, "kimi-k3 要求省略采样参数,不能传 temperature"

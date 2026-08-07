@@ -334,6 +334,41 @@ CMD ["node_modules/.bin/next", "start", "--hostname", "0.0.0.0", "--port", "@@FR
 DOCKERFILE
 
 # -----------------------------------------------------------------------------
+# 步骤 2.5:套用项目自己的界面覆盖件
+# -----------------------------------------------------------------------------
+# 上游把每次工具调用渲染成一个带边框的大方块:原始工具名 + 一长串 UUID + 原始返回值。
+# 对开发调试有用,但工友通给的是工地师傅,演示时评委看到的也是这个界面 ——
+# 满屏 `transfer_back_to_supervisor` 和 `call_00_bWobucJo6Os...` 会把
+# 「拍张照就知道有什么隐患」这件事本身淹掉。
+#
+# 覆盖件放在 scripts/frontend-overrides/,**进 git**;frontend/ 本身不进。
+# 所以改界面只改覆盖件,换机器重跑本脚本就还在 —— 直接改 frontend/ 里那份会丢。
+log_step "套用界面覆盖件"
+
+OVERRIDES_DIR="${REPO_ROOT}/scripts/frontend-overrides"
+
+apply_override() {
+  local src="${OVERRIDES_DIR}/$1"
+  local dst="${FRONTEND_DIR}/$2"
+
+  [[ -f "${src}" ]] || { log_warn "覆盖件不存在,跳过:$1"; return 0; }
+  if [[ ! -f "${dst}" ]]; then
+    # 目标不存在 = 上游改了目录结构。这时候**不能**闷头拷进去 ——
+    # 那样只会多出一个没人 import 的孤儿文件,而界面看起来"没生效",很难查。
+    log_warn "上游没有 $2,可能已重构;跳过覆盖(界面会退回上游样式)"
+    return 0
+  fi
+  if cmp -s "${src}" "${dst}"; then
+    log_skip "$(basename -- "$2") 已是最新"
+    return 0
+  fi
+  cp -- "${src}" "${dst}" || die "拷贝覆盖件失败:$2"
+  log_ok "已覆盖 $2"
+}
+
+apply_override "tool-calls.tsx" "src/components/thread/messages/tool-calls.tsx"
+
+# -----------------------------------------------------------------------------
 # 步骤 3:收尾提示
 # -----------------------------------------------------------------------------
 log_step "完成"
@@ -355,6 +390,7 @@ cat <<NEXTSTEPS
 
   提醒:
    · frontend/ 是从上游 clone 下来的快照,不进 git;换机器重跑本脚本即可。
+   · 界面改动请改 scripts/frontend-overrides/(那些进 git),别直接改 frontend/。
    · 后端的 API Key 在仓库根目录的 .env 里(GYT_ 前缀),别往前端塞密钥。
 
 NEXTSTEPS

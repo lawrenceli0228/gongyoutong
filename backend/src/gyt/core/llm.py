@@ -147,7 +147,7 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, TypeAlias
@@ -332,6 +332,12 @@ def get_chat_model(purpose: Purpose = "text", **overrides: Any) -> BaseChatModel
     # 字面量每次新建,不共享可变默认值(不可变优先)。
     if purpose == "text" and settings.disable_thinking_for_text:
         params["extra_body"] = {"thinking": {"type": "disabled"}}
+    # 采样温度只给文本档。视觉档(kimi-k3)官方要求把采样参数**从请求里省略**
+    # (temperature/top_p/n/presence_penalty/frequency_penalty 都是固定值),传了可能 400。
+    # 文本档要的是确定性:派活与转述都是执行类任务,不确定性在这里只有害处 ——
+    # 详见 config.text_temperature 上方那段实测记录。
+    if purpose == "text":
+        params["temperature"] = settings.text_temperature
     return ChatOpenAI(**{**params, **overrides})
 
 
@@ -842,10 +848,18 @@ def _ensure_ai_message(result: Any) -> AIMessage:
 
 
 async def _invoke_with_retry(
-    model: BaseChatModel, messages: MessagesInput, settings: Settings
+    model: BaseChatModel,
+    messages: MessagesInput,
+    settings: Settings,
+    max_attempts: int | None = None,
 ) -> AIMessage:
-    """带指数退避的实际调用(流程见文件顶部图 1)。"""
-    total_attempts = 1 + max(0, settings.llm_max_retries)
+    """带指数退避的实际调用(流程见文件顶部图 1)。
+
+    max_attempts 不传就用 1 + llm_max_retries(默认 4 次)。
+    调用方在**单次调用本身就很慢**时应该压低它 —— 重试次数是乘在超时上的,
+    详见 ainvoke 的同名参数。
+    """
+    total_attempts = max(1, max_attempts or (1 + max(0, settings.llm_max_retries)))
     last_error: LLMCallError | None = None
     last_exc: BaseException | None = None
 
@@ -912,7 +926,12 @@ def _for_direct_call(model: BaseChatModel) -> BaseChatModel:
 
 
 async def ainvoke(
-    model: BaseChatModel, messages: MessagesInput, *, cache_extra: str = ""
+    model: BaseChatModel,
+    messages: MessagesInput,
+    *,
+    cache_extra: str = "",
+    is_usable: Callable[[AIMessage], bool] | None = None,
+    max_attempts: int | None = None,
 ) -> AIMessage:
     """**直调**大模型:先查缓存,未命中再走带退避的真实调用(图 1),成功后回写缓存。
 
@@ -927,6 +946,28 @@ async def ainvoke(
     不关的话 cache_extra 这个防串味维度会被内层全局缓存整个架空。
 
     cache_extra 是参与缓存键的额外维度(如 Agent 名),防串味;失败抛 LLMCallError,.user_msg 是中文。
+
+    ``is_usable`` 是**写缓存前的最后一道闸**:返回 False 的回答照常返回给调用方,
+    但**不落盘**。不传就是原行为(一律缓存),所以对既有调用方完全无影响。
+
+    为什么需要它(2026-08-07 实测确认的一个真洞):
+        调用方拿到回答后往往还要再解析一层(safety 要从里面抠 JSON)。解析失败时
+        它会返回「这次没看明白,请再试一次」——**但用户照做也永远不会成功**:
+        那条坏回答已经被写进缓存,第二次直接命中,0 次网络调用、0.005 秒,
+        一字不差的同一句失败。这张照片对该 prompt_version 就被永久钉死了。
+        重试次数再多也没用,因为根本没发出请求。
+
+        更糟的是缓存键算在**消息内容**上(图片以 base64 进 messages),
+        所以让用户「重新传一次同一个文件」也逃不掉 —— 新的 artifact_id、
+        同一个缓存键。只有重新拍一张(字节不同)才行。
+
+        而唯一的清理手段(clear_cache 或换 prompt_version)会把**整份**缓存烧掉,
+        与 TODO-11「演示日必须预热缓存」正面冲突:为救一张图得毁掉全部预热。
+        何况预热跑的就是这条路径 —— 预热时抽到一次坏输出,就把失败烤进去了。
+
+        自觉的代价:提示词系统性坏掉时,每一次调用都会真的掏钱问模型,
+        而不是"坏答案缓存一次了事"。这个取舍是对的 —— 正确性优先于省钱,
+        而且它与预热是正向配合:带闸的预热会拒绝把失败烤进缓存。
     """
     settings = get_settings()
     stamp: _CacheStamp | None = None
@@ -937,9 +978,12 @@ async def ainvoke(
             logger.debug("命中大模型缓存:%s", stamp.key)
             return cached
 
-    message = await _invoke_with_retry(_for_direct_call(model), messages, settings)
+    message = await _invoke_with_retry(_for_direct_call(model), messages, settings, max_attempts)
     if stamp is not None:
-        _cache_write(stamp, message, settings)
+        if is_usable is None or is_usable(message):
+            _cache_write(stamp, message, settings)
+        else:
+            logger.info("回答未通过调用方校验,不写缓存(避免把失败永久钉住):%s", stamp.key)
     return message
 
 

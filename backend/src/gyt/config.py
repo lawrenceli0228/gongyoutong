@@ -54,16 +54,33 @@ _CHROMA_SUBDIR: Final[str] = "chroma"
 _SQLITE_FILENAME: Final[str] = "gyt.sqlite3"
 
 
+_ENSURED_DIRS: set[Path] = set()
+"""已经建过的目录。**这是个性能护栏,不是缓存语义。**
+
+为什么需要:下面那几个 `*_dir` 属性是「访问即创建」的,而 `llm._cache_read` /
+`_cache_write` 每次调用都会访问 `cache_dir` —— 也就是每问一句话就 mkdir 好几次。
+在 async 上下文里这是同步阻塞 IO,`langgraph dev` 的 blockbuster 会直接抛
+BlockingError,把整条缓存链路打断(表现:每次都真调模型,而日志只说 run succeeded)。
+
+代价说清楚:目录若在进程运行期间被外部删掉(比如有人 rm -rf data/),
+这里不会重建。权衡下来可以接受 —— 那属于异常运维操作,而每次问答都做几次
+无谓 syscall 是常态开销。
+"""
+
+
 def _ensure_dir(path: Path) -> Path:
-    """确保目录存在(含各级父目录)并返回它。
+    """确保目录存在(含各级父目录)并返回它。同一个目录只真的建一次。
 
     失败时不静默吞掉:先记日志(带真实系统错误),再抛出一句工人看得懂的中文。
     """
+    if path in _ENSURED_DIRS:
+        return path
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:  # 磁盘满、只读挂载、权限不足等
         logger.error("创建数据目录失败: path=%s, err=%s", path, exc)
         raise RuntimeError(f"数据目录创建失败,请检查磁盘空间和目录权限:{path}") from exc
+    _ENSURED_DIRS.add(path)
     return path
 
 
@@ -123,10 +140,42 @@ class Settings(BaseSettings):
     # 文本模型默认关思考模式:路由这类场景要的是低延迟,不是长篇推理。
     disable_thinking_for_text: bool = True
 
+    # 文本档的采样温度。**默认 0 = 尽可能确定**。
+    #
+    # 为什么必须是 0(2026-08-07 起全栈实测后加的):文本档承担的是**执行类**任务 ——
+    # Supervisor 判断"这活派给谁"、子 Agent 把工具结果转述成人话。这两件事都不需要
+    # 任何创造性,而不确定性在这里是纯粹的伤害:同一张照片跑两次,
+    #   · 一次 safety 正常调工具,一次它说"我已经把话传给 safety 了"然后把活推回去;
+    #   · 一次如实转述"这照片不像工地,是不是发错了",一次说成"没有发现明显安全隐患"。
+    # 后者尤其危险 —— 「不是工地」被说成「没有隐患」,语义完全变了,
+    # 而工人会据此以为现场是安全的。
+    #
+    # 演示日更受不了这个:同一张图可能对可能错,等于没法预演。
+    #
+    # ⚠️ 只作用于**文本档**。视觉档(kimi-k3)官方明确要求
+    # 「temperature/top_p/n/presence_penalty/frequency_penalty 是固定值,请从请求里省略」,
+    # 传了可能 400,所以 get_chat_model 里只在 purpose=="text" 时注入。
+    text_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+
     # --- 调度与调用鲁棒性 -------------------------------------------------
     # 熔断上限:Supervisor 转来转去超过这个步数就停,防死循环烧额度。
     supervisor_recursion_limit: int = Field(default=8, ge=1)
-    llm_timeout_s: float = Field(default=60.0, gt=0)
+    # 150 而不是契约 v1 写的 60 —— **对契约的刻意偏离,需团队追认**(同 max_retries 那处)。
+    # 2026-08-07 真调 kimi-k3 实测三张,视觉判断比文本慢一个量级:
+    #     1600×1067 办公室(一眼判定不是工地)      10.1 秒
+    #       440×293 工地(要逐项分辨违规)          42.9 秒
+    #      4000×2430 工地(手机原图尺寸,超 4K 线)  59.7 秒  ← 距 60 秒只剩 0.26 秒
+    # 也就是说 60 秒不是"余量小",是**演示日随便一张手机照片就会 TIMEOUT**。
+    # 延迟同时受尺寸与判断复杂度影响,两者都会把工地照片推向上限。
+    #
+    # ⚠️ 改这个值只让**路径甲**(Agent 对话)的缓存失效,**不影响视觉缓存**。
+    #    两条路径的键构成不同,实测确认过(2026-08-07):
+    #      路径甲 GytDiskCache 的键含 llm_string,而 llm_string 里有 request_timeout;
+    #      路径乙 llm.ainvoke 的键 = (model, prompt_version, messages, extra),**不含 timeout**。
+    #    Safety 的视觉调用走路径乙,所以改这个数字**不会**冲掉预热好的照片缓存。
+    #    (这里原先写的是"会让全部缓存失效",是错的,TODO-11 的演示日铁律据此修正过。)
+    #    真正会冲掉视觉缓存的是:改 vision_prompt.md 的正文、改 prompt_version、换模型。
+    llm_timeout_s: float = Field(default=150.0, gt=0)
     llm_max_retries: int = Field(default=3, ge=0)  # 0 = 不重试
     llm_retry_base_delay_s: float = Field(default=1.0, ge=0)  # 0 = 测试里免等待
 

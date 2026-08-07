@@ -136,9 +136,21 @@ def test_登记表里的名字与_Agent_编译后的名字一致(graph_module: G
         )
 
 
-def test_supervisor_自己的模型走_text_档(graph_module: GraphFixture) -> None:
-    # ping 走 text，supervisor 也走 text（DeepSeek，默认关思考保低延迟）
-    assert graph_module.purposes == ["text", "text"]
+def test_建图期只取_text_档模型(graph_module: GraphFixture) -> None:
+    """每个子 Agent 各取一次模型，supervisor 自己再取一次，**全部**走 text 档。
+
+    两层意思，都要锁住：
+      · supervisor 走 text（DeepSeek，默认关思考保低延迟）；
+      · **建图期不许出现 vision** —— safety 的视觉调用发生在工具内部、
+        真的要看图的那一刻，不在建图期。这里一旦冒出 vision，说明有人
+        把某个 Agent 的 purpose 写成了视觉档，那会让每一轮对话都按
+        $3/M 计价（text 档是 $0.14/M），而且是静默的。
+
+    刻意按登记表长度算而不是写死数字：写死的话每加一个 Agent 这条就红，
+    改起来的人只会把数字 +1，久而久之没人记得它本来要守的是什么。
+    """
+    expected_calls = len(graph_module.module.AGENT_REGISTRY) + 1  # +1 是 supervisor 自己
+    assert graph_module.purposes == ["text"] * expected_calls
 
 
 # ===========================================================================

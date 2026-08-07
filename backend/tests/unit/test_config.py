@@ -84,7 +84,9 @@ def test_default_runtime_knobs(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # Assert
     assert settings.supervisor_recursion_limit == 8
-    assert settings.llm_timeout_s == 60.0
+    # 150 而非契约 v1 的 60:2026-08-07 实测一张 4000×2430 的工地照片要 59.7 秒,
+    # 距 60 秒只剩 0.26 秒。理由与实测数据写在 config.py 该字段上方。
+    assert settings.llm_timeout_s == 150.0
     assert settings.llm_max_retries == 3
     assert settings.llm_retry_base_delay_s == 1.0
     assert settings.llm_cache_enabled is True
