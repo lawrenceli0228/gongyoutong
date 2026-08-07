@@ -146,11 +146,16 @@ def test_建图期只取_text_档模型(graph_module: GraphFixture) -> None:
         把某个 Agent 的 purpose 写成了视觉档，那会让每一轮对话都按
         $3/M 计价（text 档是 $0.14/M），而且是静默的。
 
-    刻意按登记表长度算而不是写死数字：写死的话每加一个 Agent 这条就红，
-    改起来的人只会把数字 +1，久而久之没人记得它本来要守的是什么。
+    刻意不写死数字:写死的话每加一个 Agent 这条就红,改起来的人只会把数字 +1,
+    久而久之没人记得它本来要守的是什么。也不再假设「一个登记项 = 一个模型」——
+    inspection(英雄链)是复合 Agent,内部装着 safety+report 两个模型,
+    所以只锁两件真正要守的事:总数不少于「登记项 + supervisor」,且**一个 vision 都没有**。
     """
-    expected_calls = len(graph_module.module.AGENT_REGISTRY) + 1  # +1 是 supervisor 自己
-    assert graph_module.purposes == ["text"] * expected_calls
+    minimum = len(graph_module.module.AGENT_REGISTRY) + 1  # +1 是 supervisor 自己
+    assert len(graph_module.purposes) >= minimum
+    assert set(graph_module.purposes) == {"text"}, (
+        "建图期出现了非 text 档,谁把 purpose 写成视觉档了?"
+    )
 
 
 # ===========================================================================

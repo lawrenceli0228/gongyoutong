@@ -50,6 +50,9 @@ dependencies = [
     #    而月之暗面可能把它当视频解码计费,账单是静态图的几十倍且完全静默);
     # ③ 验真伪(在此之前只看扩展名 —— 一个改名成 .jpg 的文本文件照样会被 base64 发出去)。
     "pillow>=11.0,<13",
+    # python-docx:Report Agent 渲染巡检记录/日报落盘(方案 D 决策里定的产物形态)。
+    # 主依赖而非 dev:容器里 `uv sync --no-dev` 也要能渲染。
+    "python-docx>=1.1,<2",
 ]
 
 [dependency-groups]

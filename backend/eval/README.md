@@ -48,12 +48,12 @@
 | `id` | R01、R02……唯一即可 |
 | `type` | `positive` 正常请求 / `none` 不该派给任何子 Agent / `ambiguous` 信息不足应追问 |
 | `user_input` | **工人真会说的话**,不是规范书面语。多写几种同义说法 |
-| `expected_agent` | `safety` / `knowledge` / `schedule` / `cad` / `report` / `none` |
+| `expected_agent` | `safety` / `inspection` / `knowledge` / `schedule` / `cad` / `report` / `none` |
 | `note` | 这条测什么,可空 |
 
 判分:实际派给的 Agent == `expected_agent` 即算对。`none` 表示 supervisor 应自己回答或追问。
 
-> **`expected_agent` 只能填上面那六个词之一,拼错会当场炸**(`scorers.ROUTING_AGENTS`,与本表同源)。
+> **`expected_agent` 只能填上面那七个词之一,拼错会当场炸**(`scorers.ROUTING_AGENTS`,与本表同源)。
 > 不拦的话,`knowlege`(漏了 d)那一行永远不可能被判对,而报告写的是「派错人了」——
 > 矛头指向模型。routing 门槛是三套里最高的 90%,20 条里错标 2 条就直接把上限压到 90%。
 > 要加新 Agent,这张表和 `ROUTING_AGENTS` 一起改。

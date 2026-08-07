@@ -69,7 +69,8 @@ API 核实结论（2026-08-05 实测，逐个从 PyPI 下 wheel 解包读源码�
     https://reference.langchain.com/python/langgraph-supervisor/supervisor/create_supervisor
 ===========================================================================
 
-图 1：T1 当前拓扑（本文件此刻真正构建出来的东西）
+图 1：T1 初始拓扑（**历史快照**,当前真实名单以下方 AGENT_REGISTRY 为准 ——
+      已含 safety 与 inspection 英雄链;英雄链内部结构见 build_inspection_chain）
 
         START
           │
@@ -124,10 +125,12 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
+from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph_supervisor import create_supervisor
 
 from gyt.agents.ping import PING_AGENT_NAME, build_ping_agent
+from gyt.agents.report import build_report_agent
 from gyt.agents.safety import SAFETY_AGENT_NAME, build_safety_agent
 from gyt.config import get_settings
 
@@ -151,6 +154,36 @@ OUTPUT_MODE = "last_message"
 选它而不是 "full_history"，是因为工地场景里子 Agent 的中间步骤（检索到的 20 段原文、
 DXF 里的几百个实体）对调度决策没用，全带回来只会把 supervisor 的上下文撑爆、烧掉额度。
 """
+
+
+INSPECTION_AGENT_NAME = "inspection"
+"""巡检英雄链在图里的名字。它同时是交接工具名(transfer_to_inspection)与
+路由评测 expected_agent 的合法取值之一(scorers.ROUTING_AGENTS,已同步)。"""
+
+
+def build_inspection_chain() -> CompiledStateGraph:
+    """组装「巡检英雄链」:safety ──硬边──► report,编译成一个可当 Agent 挂的子图。
+
+        START ──► safety(看照片,判隐患)──► report(渲染巡检记录 docx)──► END
+
+    为什么必须是**写死的图边**而不是让 Supervisor 决策两次(方案 D 决策原文):
+    「拍照识违规 → 自动出巡检报告」是演示主线,交给 LLM 判断第二跳,
+    演示当场就会随机漏掉出报告那一环。硬边把这个环节从概率变成必然。
+
+    数据在两环之间怎么保真:report 的工具**不读** safety 的话,而是拿同一个
+    照片编号重新调 analyze(提示词已冻结 → 缓存必中 → 与 safety 的判断
+    逐字节一致,零成本)。LLM 在链里只搬运编号。详见 agents/report/tools.py 顶部。
+
+    两个子 Agent 都是已编译的 Pregel,直接当节点挂;状态走 MessagesState,
+    messages 键靠 add_messages 归并,与 create_agent 的 AgentState 兼容。
+    """
+    builder = StateGraph(MessagesState)
+    builder.add_node(SAFETY_AGENT_NAME, build_safety_agent())
+    builder.add_node("report", build_report_agent())
+    builder.add_edge(START, SAFETY_AGENT_NAME)
+    builder.add_edge(SAFETY_AGENT_NAME, "report")  # ← 英雄链的那条硬边
+    builder.add_edge("report", END)
+    return builder.compile(name=INSPECTION_AGENT_NAME)
 
 
 class AgentSpec(NamedTuple):
@@ -185,13 +218,24 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             "未戴安全帽、未穿反光衣、高空作业未系安全带、临边无防护、消防通道堵塞、"
             "材料堆放混乱、用电隐患、动火作业无监护这八类问题，也能认出照片根本不是工地。"
             "**不管用户有没有给出照片编号**，只要是在问现场照片里有没有问题就派给它；"
-            "编号缺失由它自己向用户追问。它**只**看照片，不回答规范条文该怎么写。"
+            "编号缺失由它自己向用户追问。它**只**看照片,不出文档、不回答规范条文 ——"
+            "用户要「出巡检记录」「留档」时别派它,派 inspection。"
             # 「并给了照片编号」这个合取条件曾经写在这里，是错的:routing.csv 里
             # expected_agent=safety 的行(「这张照片有没有安全隐患」等)原文里都没有编号，
             # supervisor 会把它读成路由前提，于是自己反问要编号、不生成 transfer_to_safety。
             # 缺编号的追问本来就归 safety/prompt.md 管，supervisor 不该在路由层重复把关。
         ),
         build=build_safety_agent,
+    ),
+    AgentSpec(
+        name=INSPECTION_AGENT_NAME,
+        summary=(
+            "巡检出记录(一条龙):先看照片查隐患,然后**自动**生成一份可存档的"
+            "巡检记录文档(Word),不用再单独交代。用户说「巡检」「出个记录」"
+            "「出报告」「留档」「检查完给我份文件」时派它。"
+            "只想看看照片有没有问题、不要文档的,派 safety。"
+        ),
+        build=build_inspection_chain,
     ),
     # W2/W3 在这里往下追加，一个 Agent 一行。改这里就等于改路由能力，
     # 记得同步更新 D18 的路由评测集（backend/eval/datasets/routing.csv，
