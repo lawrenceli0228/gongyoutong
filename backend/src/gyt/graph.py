@@ -134,6 +134,7 @@ from gyt.config import get_settings
 # 导入模块而非函数：单测要用 monkeypatch.setattr(llm, "get_chat_model", ...) 把模型换成假的，
 # 写成 from gyt.core.llm import get_chat_model 的话名字会在导入时绑死，打桩就失效了。
 from gyt.core import llm
+from gyt.core.uploads import ingest_uploads
 
 # —— 模块级常量：禁止在函数体里散落字面量 ——
 
@@ -324,6 +325,13 @@ def build_graph(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> CompiledStateGra
         prompt=build_supervisor_prompt(specs),
         supervisor_name=SUPERVISOR_NAME,
         output_mode=OUTPUT_MODE,
+        # 聊天界面的「Upload Image」按钮会把图片作为多模态 content 块塞进消息,
+        # 而这里的模型是 DeepSeek 文本档 —— 收到 image 块直接 400,
+        # 前端还不渲染这个错,用户只看到"点了发送没反应"。
+        # 这个钩子在调模型之前把图片存成产物、把消息换成一句带编号的文本,
+        # 于是文本档见不到图片,而 Safety 工具拿到的正是它要的 artifact_id。
+        # 详见 core/uploads.py 顶部。
+        pre_model_hook=ingest_uploads,
     )
 
     return builder.compile(name=GRAPH_NAME).with_config(
