@@ -128,6 +128,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph_supervisor import create_supervisor
 
 from gyt.agents.ping import PING_AGENT_NAME, build_ping_agent
+from gyt.agents.safety import SAFETY_AGENT_NAME, build_safety_agent
 from gyt.config import get_settings
 
 # 导入模块而非函数：单测要用 monkeypatch.setattr(llm, "get_chat_model", ...) 把模型换成假的，
@@ -175,6 +176,17 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             "只有当用户明确要求「测试」「ping」「看看通不通」时才派给它，别的活它一概不会。"
         ),
         build=build_ping_agent,
+    ),
+    AgentSpec(
+        name=SAFETY_AGENT_NAME,
+        summary=(
+            "工地照片安全检查。用户发来现场照片时派给它，它能看出照片里有没有"
+            "未戴安全帽、未穿反光衣、高空作业未系安全带、临边无防护、消防通道堵塞、"
+            "材料堆放混乱、用电隐患、动火作业无监护这八类问题，也能认出照片根本不是工地。"
+            "只要用户提到「看看这张照片」「这儿有没有问题」「查一下隐患」并给了照片编号，"
+            "就派给它。它**只**看照片，不回答规范条文该怎么写。"
+        ),
+        build=build_safety_agent,
     ),
     # W2/W3 在这里往下追加，一个 Agent 一行。改这里就等于改路由能力，
     # 记得同步更新 D18 的路由评测集（backend/eval/datasets/routing.csv，

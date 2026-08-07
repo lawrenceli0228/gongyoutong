@@ -115,8 +115,8 @@ __all__ = [
 ]
 
 
-def load_prompt(agent_dir: Path) -> str:
-    """读取某个 Agent 目录下的 prompt.md,剥掉 HTML 注释后返回正文。
+def load_prompt(agent_dir: Path, filename: str = PROMPT_FILENAME) -> str:
+    """读取某个 Agent 目录下的提示词文件,剥掉 HTML 注释后返回正文。
 
     为什么要剥注释:prompt.md 里会写给队友看的维护说明(改动记录、评测集位置、
     "这段话别删,评测集依赖它" 之类)。这些说明对模型是纯噪音,还白烧 token,
@@ -138,20 +138,26 @@ def load_prompt(agent_dir: Path) -> str:
 
     参数:
         agent_dir: Agent 包所在目录,一般传 Path(__file__).parent。
+        filename:  提示词文件名,默认 prompt.md(Agent 本体那份)。
+                   传别的名字是给「同一个 Agent 需要不止一份提示词」的场景用的 ——
+                   safety 就有两份:prompt.md 给本体(文本档),vision_prompt.md
+                   给工具内部那次视觉调用。两份职责不同、模型不同,不能合成一份。
+                   ⚠️ 无论几份,都必须外置成 .md,不许写死进 .py ——
+                   提示词是要被非工程师队友改的,埋在代码里就改不动了。
 
     返回:
         剥注释、去首尾空白之后的提示词正文。
 
     抛出:
-        FileNotFoundError: 目录下没有 prompt.md。
+        FileNotFoundError: 目录下没有这个文件。
         ValueError: 文件不是 UTF-8,或剥完注释后内容为空。
     """
-    prompt_path = Path(agent_dir) / PROMPT_FILENAME
+    prompt_path = Path(agent_dir) / filename
     try:
         raw = prompt_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise FileNotFoundError(
-            f"找不到提示词文件:{prompt_path}。每个 Agent 目录下必须有一份 {PROMPT_FILENAME}。"
+            f"找不到提示词文件:{prompt_path}。每个 Agent 目录下必须有一份 {filename}。"
         ) from exc
     except UnicodeDecodeError as exc:
         raise ValueError(
