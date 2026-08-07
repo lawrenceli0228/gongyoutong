@@ -341,7 +341,12 @@ async def test_工具内部抛异常也会变成信封(monkeypatch: pytest.Monke
 # ---------------------------------------------------------------------------
 
 
-async def test_成功路径返回三个字段(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_成功路径返回交接契约的五个键(monkeypatch: pytest.MonkeyPatch) -> None:
+    """这份 data 就是 safety → report(W3)的交接契约,键名一个都不许变。
+
+    severity / max_severity 是**代码算的**(severity.py 映射表),不经过模型 ——
+    模型只回答"看见了什么",级别是管理口径,同一违规项永远同一级。
+    """
     _patch_llm(
         monkeypatch,
         reply='{"label":"violation","violations":["未戴安全帽"],"note":"两人头部裸露"}',
@@ -352,6 +357,8 @@ async def test_成功路径返回三个字段(monkeypatch: pytest.MonkeyPatch) -
     assert result["data"] == {
         "label": "violation",
         "violations": ["未戴安全帽"],
+        "severity": {"未戴安全帽": "一般"},
+        "max_severity": "一般",
         "note": "两人头部裸露",
     }
     assert "未戴安全帽" in result["user_msg"]
@@ -467,7 +474,13 @@ async def test_缺字段时补成空值而不是报错(monkeypatch: pytest.Monke
     _patch_llm(monkeypatch, reply='{"label":"compliant"}')
     result = await _call(_register_photo())
     assert result["ok"] is True
-    assert result["data"] == {"label": "compliant", "violations": [], "note": ""}
+    assert result["data"] == {
+        "label": "compliant",
+        "violations": [],
+        "severity": {},
+        "max_severity": None,
+        "note": "",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -867,3 +880,53 @@ def test_提示词明确挡住把活推回去的说法() -> None:
     # 必须给出反例,而不是只讲正面要求 —— 模型照着反例避坑比照着要求推理更可靠
     assert "转给负责安全检查的同事" in body
     assert "没有收件人" in body or "没有第二个" in body
+
+
+# ---------------------------------------------------------------------------
+# 七、隐患定级(severity.py)—— 确定性映射,不经过模型
+# ---------------------------------------------------------------------------
+
+
+def test_定级表与受控词表完全同步() -> None:
+    """词表加词、定级表漏配的表现是:新词全部「待定级」,报表上看着像 bug,
+    实际是漏配 —— 提前在单测里炸掉,别等安全员在报告里发现。"""
+    from eval.scorers import VIOLATION_VOCAB
+
+    from gyt.agents.safety.severity import SEVERITY_BY_VIOLATION
+
+    assert set(SEVERITY_BY_VIOLATION) == set(VIOLATION_VOCAB)
+
+
+def test_定级只有约定的四档() -> None:
+    from gyt.agents.safety.severity import SEVERITY_BY_VIOLATION, SEVERITY_ORDER
+
+    assert set(SEVERITY_BY_VIOLATION.values()) <= set(SEVERITY_ORDER)
+
+
+def test_词表外的违规项定为待定级而不是瞎猜() -> None:
+    """词表外的词本来就刻意原样透传(提示词失守的诊断信号),
+    给它随便扣一档等于把信号抹掉一半。"""
+    from gyt.agents.safety.severity import grade, worst
+
+    assert grade(["未佩戴安全帽"]) == {"未佩戴安全帽": "待定级"}
+    assert worst(["未佩戴安全帽"]) == "待定级"
+
+
+def test_整张照片取最重一档() -> None:
+    from gyt.agents.safety.severity import grade, worst
+
+    assert worst(["未穿反光衣", "动火作业无监护"]) == "重大"
+    assert worst(["材料堆放混乱", "用电隐患"]) == "较大"
+    assert worst([]) is None
+    # 已知与待定级混着时,已知的最重档说了算(待定级 ≠ 更严重)
+    assert worst(["未戴安全帽", "没戴手套"]) == "一般"
+    assert grade(["未戴安全帽", "没戴手套"])["没戴手套"] == "待定级"
+
+
+def test_一句话结论重的排前面() -> None:
+    """工人扫一眼要先看到最要命的那条 —— 顺序就是信息。直接测纯函数即可。"""
+    from gyt.agents.safety.tools import _summarize
+
+    text = _summarize("violation", ["未穿反光衣", "高空作业未系安全带"])
+    assert "最高级别:重大" in text
+    assert text.index("高空作业未系安全带") < text.index("未穿反光衣")

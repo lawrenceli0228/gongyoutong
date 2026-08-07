@@ -59,6 +59,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from PIL import Image
 
+from gyt.agents.safety.severity import grade, worst
 from gyt.config import ALLOWED_IMAGE_EXT, get_settings
 from gyt.core import artifacts, llm
 from gyt.core.base_agent import load_prompt
@@ -488,10 +489,31 @@ async def analyze_site_photo(artifact_id: str) -> Envelope:
     violations = _as_violation_list(parsed.get(KEY_VIOLATIONS))
     note = str(parsed.get(KEY_NOTE) or "").strip()
 
+    # severity / max_severity 是给下游(Agent 话术、W3 的 Report/Schedule)用的
+    # **确定性字段**:由 severity.py 的映射表算出,不经过模型,同一违规项永远同一级。
+    # 键恒存在(空 dict / None),下游不用做"有没有这个键"的分支。
+    # ⚠️ 这份 data 就是 safety → report 的交接契约:label / violations / severity /
+    #    max_severity / note 五个键。改任何一个键名都是改契约,要连着 W3 一起动。
     return ok(
-        data={KEY_LABEL: label, KEY_VIOLATIONS: violations, KEY_NOTE: note},
+        data={
+            KEY_LABEL: label,
+            KEY_VIOLATIONS: violations,
+            "severity": grade(violations),
+            "max_severity": worst(violations),
+            KEY_NOTE: note,
+        },
         user_msg=_summarize(label, violations),
     )
+
+
+def _severity_rank(level: str) -> int:
+    """级别 → 排序权重(重的小)。找不到就排最后,别因为一个新级别名把整句话炸了。"""
+    from gyt.agents.safety.severity import SEVERITY_ORDER
+
+    try:
+        return SEVERITY_ORDER.index(level)
+    except ValueError:
+        return len(SEVERITY_ORDER)
 
 
 def _summarize(label: str, violations: list[str]) -> str:
@@ -499,7 +521,14 @@ def _summarize(label: str, violations: list[str]) -> str:
     if label == "not_site":
         return "这张照片看着不像工地。"
     if violations:
-        return f"发现 {len(violations)} 处问题:{'、'.join(violations)}。"
+        level = worst(violations)
+        graded = grade(violations)
+        # 重的排前面:工人扫一眼就先看到最要命的那条
+        ordered = sorted(violations, key=lambda v: _severity_rank(graded[v]))
+        head = f"发现 {len(ordered)} 处问题"
+        if level:
+            head += f"(最高级别:{level})"
+        return f"{head}:{'、'.join(ordered)}。"
     if label == "compliant":
         return "这张照片里没看到明显的安全问题。"
     return "已看过这张照片,但模型没给出标准结论,请人工再确认一下。"
