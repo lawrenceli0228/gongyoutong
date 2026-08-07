@@ -54,16 +54,33 @@ _CHROMA_SUBDIR: Final[str] = "chroma"
 _SQLITE_FILENAME: Final[str] = "gyt.sqlite3"
 
 
+_ENSURED_DIRS: set[Path] = set()
+"""已经建过的目录。**这是个性能护栏,不是缓存语义。**
+
+为什么需要:下面那几个 `*_dir` 属性是「访问即创建」的,而 `llm._cache_read` /
+`_cache_write` 每次调用都会访问 `cache_dir` —— 也就是每问一句话就 mkdir 好几次。
+在 async 上下文里这是同步阻塞 IO,`langgraph dev` 的 blockbuster 会直接抛
+BlockingError,把整条缓存链路打断(表现:每次都真调模型,而日志只说 run succeeded)。
+
+代价说清楚:目录若在进程运行期间被外部删掉(比如有人 rm -rf data/),
+这里不会重建。权衡下来可以接受 —— 那属于异常运维操作,而每次问答都做几次
+无谓 syscall 是常态开销。
+"""
+
+
 def _ensure_dir(path: Path) -> Path:
-    """确保目录存在(含各级父目录)并返回它。
+    """确保目录存在(含各级父目录)并返回它。同一个目录只真的建一次。
 
     失败时不静默吞掉:先记日志(带真实系统错误),再抛出一句工人看得懂的中文。
     """
+    if path in _ENSURED_DIRS:
+        return path
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:  # 磁盘满、只读挂载、权限不足等
         logger.error("创建数据目录失败: path=%s, err=%s", path, exc)
         raise RuntimeError(f"数据目录创建失败,请检查磁盘空间和目录权限:{path}") from exc
+    _ENSURED_DIRS.add(path)
     return path
 
 

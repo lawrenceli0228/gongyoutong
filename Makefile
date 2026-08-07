@@ -51,7 +51,14 @@ setup: ## 安装后端依赖(uv sync,含 dev 组)
 	@echo "[完成] 依赖就绪。下一步:把 .env.example 复制为 .env 并填两家 API Key。"
 
 dev: ## 本地起后端(LangGraph dev server,:2024,改代码自动重载)
-	cd $(BACKEND_DIR) && $(UV) run langgraph dev
+	@# --allow-blocking 必须加,而且要与 backend/Dockerfile 的启动命令保持一致。
+	@# 不加的话 langgraph 的 blockbuster 会把同步 IO 判成违规并抛 BlockingError,
+	@# 而 config.cache_dir / artifacts_dir 是「访问即 mkdir」的属性 ——
+	@# 结果是**磁盘缓存的读写全部失败**,每次提问都真的掏钱调模型,
+	@# 而日志里只有一句 "Background run succeeded",看不出任何异常。
+	@# (踩过:本地 make dev 里 Safety Agent 每次都要等 60 秒,而 docker 里是秒回,
+	@#  差别就在这一个参数上。)
+	cd $(BACKEND_DIR) && $(UV) run langgraph dev --allow-blocking
 
 test: ## 跑单元/集成测试(不含 E2E,秒级)
 	cd $(BACKEND_DIR) && $(PYTEST)
