@@ -332,6 +332,12 @@ def get_chat_model(purpose: Purpose = "text", **overrides: Any) -> BaseChatModel
     # 字面量每次新建,不共享可变默认值(不可变优先)。
     if purpose == "text" and settings.disable_thinking_for_text:
         params["extra_body"] = {"thinking": {"type": "disabled"}}
+    # 采样温度只给文本档。视觉档(kimi-k3)官方要求把采样参数**从请求里省略**
+    # (temperature/top_p/n/presence_penalty/frequency_penalty 都是固定值),传了可能 400。
+    # 文本档要的是确定性:派活与转述都是执行类任务,不确定性在这里只有害处 ——
+    # 详见 config.text_temperature 上方那段实测记录。
+    if purpose == "text":
+        params["temperature"] = settings.text_temperature
     return ChatOpenAI(**{**params, **overrides})
 
 

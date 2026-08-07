@@ -140,6 +140,23 @@ class Settings(BaseSettings):
     # 文本模型默认关思考模式:路由这类场景要的是低延迟,不是长篇推理。
     disable_thinking_for_text: bool = True
 
+    # 文本档的采样温度。**默认 0 = 尽可能确定**。
+    #
+    # 为什么必须是 0(2026-08-07 起全栈实测后加的):文本档承担的是**执行类**任务 ——
+    # Supervisor 判断"这活派给谁"、子 Agent 把工具结果转述成人话。这两件事都不需要
+    # 任何创造性,而不确定性在这里是纯粹的伤害:同一张照片跑两次,
+    #   · 一次 safety 正常调工具,一次它说"我已经把话传给 safety 了"然后把活推回去;
+    #   · 一次如实转述"这照片不像工地,是不是发错了",一次说成"没有发现明显安全隐患"。
+    # 后者尤其危险 —— 「不是工地」被说成「没有隐患」,语义完全变了,
+    # 而工人会据此以为现场是安全的。
+    #
+    # 演示日更受不了这个:同一张图可能对可能错,等于没法预演。
+    #
+    # ⚠️ 只作用于**文本档**。视觉档(kimi-k3)官方明确要求
+    # 「temperature/top_p/n/presence_penalty/frequency_penalty 是固定值,请从请求里省略」,
+    # 传了可能 400,所以 get_chat_model 里只在 purpose=="text" 时注入。
+    text_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+
     # --- 调度与调用鲁棒性 -------------------------------------------------
     # 熔断上限:Supervisor 转来转去超过这个步数就停,防死循环烧额度。
     supervisor_recursion_limit: int = Field(default=8, ge=1)
