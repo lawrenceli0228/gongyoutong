@@ -194,6 +194,14 @@ class RowScore:
         actual:   模型实际给了什么(人可读的一行)
         reason:   为什么判成这样。**挂了的时候必须写清楚**,
                   只说「错了」对调提示词没有任何帮助
+        expected_items / actual_items:
+                  **诊断专用,不参与判分。** 只有 safety 这种「答案是一个集合」的套会填。
+
+                  为什么需要:判分是集合完全相等、不给部分分(理由见 score_safety),
+                  于是「一项都没答对」和「三项答对两项」在分数上完全一样,都是 0。
+                  一个 30% 的报告里,你分不清模型是压根不会,还是每张只差一项 ——
+                  而这两种情况的修法完全相反(换模型 vs 调提示词措辞)。
+                  这两个字段让 runner 能额外算出重合度与逐类召回,把这件事分开。
     """
 
     row_id: str
@@ -201,6 +209,8 @@ class RowScore:
     expected: str
     actual: str
     reason: str
+    expected_items: frozenset[str] | None = None
+    actual_items: frozenset[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -422,17 +432,27 @@ def score_safety(row: Mapping[str, str], actual: Any) -> RowScore:
 
     if got_label != expected_label:
         reason = f"判断结论就不对:该是 {expected_label},模型说是 {got_label or '空'}。"
-        return RowScore(row_id, False, expected_desc, actual_desc, reason)
+        return RowScore(
+            row_id, False, expected_desc, actual_desc, reason, expected_items, got_items
+        )
 
     if got_items == expected_items:
-        return RowScore(row_id, True, expected_desc, actual_desc, "结论与违规项全部对上。")
+        return RowScore(
+            row_id,
+            True,
+            expected_desc,
+            actual_desc,
+            "结论与违规项全部对上。",
+            expected_items,
+            got_items,
+        )
 
     missed = _describe(expected_items - got_items)
     extra = _describe(got_items - expected_items)
     reason = f"违规项对不上:漏报 {missed};误报 {extra}。"
     if unknown:
         reason += f" 其中 {_describe(unknown)} 不在受控词表里,提示词的输出约束没生效。"
-    return RowScore(row_id, False, expected_desc, actual_desc, reason)
+    return RowScore(row_id, False, expected_desc, actual_desc, reason, expected_items, got_items)
 
 
 # ---------------------------------------------------------------------------

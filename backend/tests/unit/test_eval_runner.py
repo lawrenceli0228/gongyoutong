@@ -26,6 +26,7 @@ from eval.runner import (
     Status,
     SuiteReport,
     exit_code_of,
+    format_diagnostics,
     format_report,
     format_summary,
     is_placeholder,
@@ -1304,3 +1305,81 @@ def test_shipped_datasets_are_readable() -> None:
             f"{spec.dataset} 已经没有占位行了 —— 数据看来填好了,"
             f"请往本文件的 FILLED_DATASETS 里加一行 {name!r}: 真实条数。"
         )
+
+
+# ===========================================================================
+# 九、诊断指标(format_diagnostics)—— 不参与判定红绿,只让失败可诊断
+# ===========================================================================
+
+
+def _diag_row(
+    row_id: str, expected: set[str], actual: set[str], *, label_ok: bool = True
+) -> RowScore:
+    return RowScore(
+        row_id=row_id,
+        passed=expected == actual and label_ok,
+        expected="violation / ...",
+        actual="violation / ...",
+        reason="结论与违规项全部对上。"
+        if label_ok
+        else "判断结论就不对:该是 violation,模型说是 compliant。",
+        expected_items=frozenset(expected),
+        actual_items=frozenset(actual),
+    )
+
+
+def test_diagnostics_are_empty_without_set_fields() -> None:
+    """routing / rag 的 RowScore 不填集合字段,诊断段应当整段不出现。"""
+    plain = RowScore(row_id="R01", passed=True, expected="safety", actual="safety", reason="对")
+    assert format_diagnostics([plain]) == []
+
+
+def test_diagnostics_overlap_counts_partial_credit() -> None:
+    """判分不给部分分,但诊断要看得见「差多远」。
+
+    这正是加这个指标的理由:三项答对两项与一项没答对,在分数上都是 0,
+    修法却完全相反(改提示词措辞 vs 换模型)。
+    """
+    rows = [
+        _diag_row("S01", {"未戴安全帽", "未穿反光衣", "用电隐患"}, {"未戴安全帽", "未穿反光衣"}),
+        _diag_row("S02", {"未戴安全帽"}, {"未戴安全帽"}),
+    ]
+    text = "\n".join(format_diagnostics(rows))
+    # S01 Jaccard = 2/3,S02 = 1 → 平均 (0.667+1)/2 ≈ 83.3%
+    assert "83.3%" in text
+    assert "2 行" in text
+
+
+def test_diagnostics_skip_rows_whose_label_was_wrong() -> None:
+    """label 都答错的行,比违规项没有意义 —— 会把重合度稀释成看不懂的数字。"""
+    rows = [
+        _diag_row("S01", {"未戴安全帽"}, {"未戴安全帽"}),
+        _diag_row("S02", {"用电隐患"}, set(), label_ok=False),
+    ]
+    text = "\n".join(format_diagnostics(rows))
+    assert "100.0%" in text
+    assert "仅统计结论判对的 1 行" in text
+
+
+def test_diagnostics_report_per_class_recall() -> None:
+    """新引入的类别靠这个看清是「完全没概念」还是「认得但措辞对不上」。"""
+    rows = [
+        _diag_row("S01", {"临边无防护"}, set()),
+        _diag_row("S02", {"临边无防护"}, {"临边无防护"}),
+        _diag_row("S03", {"未戴安全帽"}, {"未戴安全帽"}),
+    ]
+    text = "\n".join(format_diagnostics(rows))
+    assert "临边无防护" in text and "1/2" in text
+    assert "未戴安全帽" in text and "1/1" in text
+
+
+def test_diagnostics_surface_over_reporting() -> None:
+    """标注里从没有、模型却报了的词 —— 过触发的信号,必须单独列出来。
+
+    提示词把 8 个词都摆在模型面前,它有动机去凑。不单列的话,
+    这种行为会混在「违规项对不上」里看不出来。
+    """
+    rows = [_diag_row("S01", {"未戴安全帽"}, {"未戴安全帽", "消防通道堵塞"})]
+    text = "\n".join(format_diagnostics(rows))
+    assert "多报的类" in text
+    assert "消防通道堵塞" in text
