@@ -67,8 +67,22 @@ class HandoffAwareFakeModel(BaseChatModel):
         return {"model_id": self.model_id}
 
     def _handoff_tool_name(self) -> str | None:
-        for spec in self.bound_tools:
-            name = spec.get("function", {}).get("name", "") if isinstance(spec, dict) else ""
+        """优先派给 ping,找不到才退回「第一个交接工具」。
+
+        为什么必须钉死派活对象:本文件测的是**缓存**行为,派给谁本该无关紧要 ——
+        但「取第一个」会随登记表变化漂移。inspection(英雄链)入表后它被抓成了
+        第一个,路径从 supervisor→ping→supervisor(3 次调用)变成走整条链
+        (4 次),FULL_GRAPH_CALLS 全部对不上。ping 是专为连通性自检设计的
+        最小路径,把它钉成首选,登记表再怎么长这条测试的账都不变。
+        """
+        names = [
+            spec.get("function", {}).get("name", "") if isinstance(spec, dict) else ""
+            for spec in self.bound_tools
+        ]
+        preferred = f"{HANDOFF_TOOL_PREFIX}ping"
+        if preferred in names:
+            return preferred
+        for name in names:
             if name.startswith(HANDOFF_TOOL_PREFIX):
                 return name
         return None

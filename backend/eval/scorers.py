@@ -55,7 +55,7 @@ AGENT_NONE: Final[str] = "none"
 """路由集里「不该派给任何子 Agent」的取值。模型没派活时也归一到它。"""
 
 ROUTING_AGENTS: Final[frozenset[str]] = frozenset(
-    {"safety", "knowledge", "schedule", "cad", "report", AGENT_NONE}
+    {"safety", "inspection", "knowledge", "schedule", "cad", "report", AGENT_NONE}
 )
 """路由集 expected_agent 的合法取值,**与 eval/README.md 的 routing 小节同源,要改一起改**。
 
