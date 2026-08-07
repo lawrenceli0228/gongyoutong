@@ -126,7 +126,19 @@ class Settings(BaseSettings):
     # --- 调度与调用鲁棒性 -------------------------------------------------
     # 熔断上限:Supervisor 转来转去超过这个步数就停,防死循环烧额度。
     supervisor_recursion_limit: int = Field(default=8, ge=1)
-    llm_timeout_s: float = Field(default=60.0, gt=0)
+    # 150 而不是契约 v1 写的 60 —— **对契约的刻意偏离,需团队追认**(同 max_retries 那处)。
+    # 2026-08-07 真调 kimi-k3 实测三张,视觉判断比文本慢一个量级:
+    #     1600×1067 办公室(一眼判定不是工地)      10.1 秒
+    #       440×293 工地(要逐项分辨违规)          42.9 秒
+    #      4000×2430 工地(手机原图尺寸,超 4K 线)  59.7 秒  ← 距 60 秒只剩 0.26 秒
+    # 也就是说 60 秒不是"余量小",是**演示日随便一张手机照片就会 TIMEOUT**。
+    # 延迟同时受尺寸与判断复杂度影响,两者都会把工地照片推向上限。
+    #
+    # ⚠️ 改这个值会让**全部现有缓存失效** —— llm_string 里含 request_timeout(见 TODO-5)。
+    # 所以它只能在彩排开始**之前**定下来,焐过缓存之后一个数字都不许再动。
+    # 等 TODO-12 的降采样做完(4K→2K),延迟会降下来,届时可以回调这个值,
+    # 但同样要赶在彩排前。
+    llm_timeout_s: float = Field(default=150.0, gt=0)
     llm_max_retries: int = Field(default=3, ge=0)  # 0 = 不重试
     llm_retry_base_delay_s: float = Field(default=1.0, ge=0)  # 0 = 测试里免等待
 
