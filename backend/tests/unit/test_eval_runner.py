@@ -1271,7 +1271,7 @@ def test_main_verbose_flag_prints_passing_rows(
     assert "R01" in capsys.readouterr().out
 
 
-FILLED_DATASETS: Final[dict[str, int]] = {"safety": 30}
+FILLED_DATASETS: Final[dict[str, int]] = {"safety": 30, "routing": 22}
 """已经填完真数据的套 → 应有的可判分行数。
 
 safety 于 2026-08-07 填完(27 张人工标注 + 3 张自备干扰项)。

@@ -113,11 +113,14 @@ def test_模块级_graph_是已编译的图且名字与_langgraph_json_一致(
 # ===========================================================================
 
 
-def test_图里_supervisor_与_ping_两个节点都在(graph_module: GraphFixture) -> None:
+def test_图里有supervisor_且ping已被摘除(graph_module: GraphFixture) -> None:
+    """ping 于 2026-08-08 从登记表摘除(路由基线三连实锤:空正域条目的 summary
+    每个词都是钩子,图纸/模糊请求接连被钓去回声探针)。这条测试锁住摘除本身 ——
+    谁把它挂回来,先去读 graph.py 登记表里的摘除说明再动手。"""
     node_names = set(graph_module.module.graph.nodes)
 
     assert graph_module.module.SUPERVISOR_NAME in node_names
-    assert PING_AGENT_NAME in node_names
+    assert PING_AGENT_NAME not in node_names
 
 
 def test_登记表里的每个名字都能在图里找到对应节点(graph_module: GraphFixture) -> None:

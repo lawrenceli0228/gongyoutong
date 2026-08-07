@@ -129,7 +129,6 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph_supervisor import create_supervisor
 
-from gyt.agents.ping import PING_AGENT_NAME, build_ping_agent
 from gyt.agents.report import build_report_agent
 from gyt.agents.safety import SAFETY_AGENT_NAME, build_safety_agent
 from gyt.config import get_settings
@@ -203,14 +202,14 @@ class AgentSpec(NamedTuple):
 
 
 AGENT_REGISTRY: tuple[AgentSpec, ...] = (
-    AgentSpec(
-        name=PING_AGENT_NAME,
-        summary=(
-            "连通性自检。把用户说的话原样回显一遍，用来确认系统是否正常。"
-            "只有当用户明确要求「测试」「ping」「看看通不通」时才派给它，别的活它一概不会。"
-        ),
-        build=build_ping_agent,
-    ),
+    # ⚠️ ping(T1 连通性探针)已于 2026-08-08 从登记表**摘除**,包本身保留(工具写法样板)。
+    # 摘除依据是路由基线的三连实锤:它的正域是空的,于是 summary 里每个词都成了钩子 ——
+    #   第一版「看看通不通」→「看看柱距」「看一下这个」被钓来;
+    #   第二版否定句「带照片/图纸/任务的不派」→ 三条图纸请求全被钓来
+    #     (「不要 X」里的 X 照样吸引词法匹配);
+    #   第三版砍到只剩「自检」→ 图纸请求和模糊请求**还是**被钓来。
+    # 三轮措辞收不住,说明这不是措辞问题:空正域条目不该占路由位。
+    # 要测连通性,直接问 supervisor「系统通不通」由它自答即可。
     AgentSpec(
         name=SAFETY_AGENT_NAME,
         summary=(
@@ -234,6 +233,12 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             "巡检记录文档(Word),不用再单独交代。用户说「巡检」「出个记录」"
             "「出报告」「留档」「检查完给我份文件」时派它。"
             "只想看看照片有没有问题、不要文档的,派 safety。"
+            "**不管用户有没有给出照片编号**,只要是「查照片并要文档」就派它,"
+            "编号缺失由它自己向用户追问。"
+            "它和 safety 一样**只看照片**,不回答规范条文、标准数值该是多少 ——"
+            "问「多高才合规」「规范怎么要求」是条文问题,不归它。"
+            # 路由基线实测(2026-08-08):「临边防护栏杆得多高才合规」被派到 inspection ——
+            # 规范问题撞上「临边」关键词。safety 的 summary 一直带条文免责句,这里此前漏了。
         ),
         build=build_inspection_chain,
     ),
@@ -266,7 +271,8 @@ _SUPERVISOR_PROMPT_TEMPLATE = """\
 3. 如果没有哪位同事能干这活，**如实告诉用户「这个我们暂时做不了」**，
    并说清目前能做什么。绝对不许自己硬答一个看起来像模像样的答案。
 4. 如果用户说得太模糊、派不下去（比如只说「看看这个」却没给照片），
-   就用一句短话反问清楚，别猜。
+   就用一句短话反问清楚，别猜。**反问也是你自己处理**——
+   不要为了"总得派个人"而随便挑一位同事把模糊请求塞过去。
 
 # 汇报规则（红线，违反会出安全事故）
 
