@@ -21,7 +21,7 @@ S19,compliant,photo_19.jpg,compliant,,"源标注: boots×2, gloves×2, helmet×1
 S20,compliant,photo_20.jpg,compliant,,"源标注: goggles×2, helmet×2, vest×2 · 原名: image_724"
 S21,compliant,photo_21.jpg,compliant,,"源标注: helmet×3, vest×3 · 原名: ppe_0339"
 S22,compliant,photo_22.jpg,compliant,,"源标注: helmet×1, vest×2 · 原名: ppe_0893"
-S23,violation,photo_23.jpg,violation,动火作业无监护;未穿反光衣,"工人独自在钢梁上用割炬切割,火花与熔渣喷出,画面内无灭火器无监护人 来源: Pexels pexels-35383408。 没有反光衣"
+S23,violation,photo_23.jpg,violation,动火作业无监护;未戴安全帽;未穿反光衣,"工人独自在钢梁上用割炬切割,火花与熔渣喷出,画面内无灭火器无监护人 来源: Pexels pexels-35383408。戴的是鸭舌帽不是安全帽(画面右下角地上就放着一顶黄色安全帽),也没穿反光衣"
 S24,violation,photo_24.jpg,violation,动火作业无监护;未戴安全帽,"工人独自骑在屋面钢梁上切割,大量火花向下倾泻,无灭火器无监护人 来源: Pexels pexels-9074493。没有安全帽"
 S25,hard,photo_25.jpg,violation,未穿反光衣,"中间的人没有穿反光衣 | 源标注: goggles×3, helmet×3, no-vest×1, vest×2 · 原名: image_1001"
 S26,violation,photo_26.jpg,violation,未戴安全帽;未穿反光衣,"基坑内钢筋网作业面上约 8-9 人,无一人戴安全帽(戴的是毛线帽/布帽) 来源: Pexels pexels_19408681。没有反光衣"
