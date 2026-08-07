@@ -164,3 +164,111 @@ def test_照片目录指向仓库里的演示素材() -> None:
     assert PHOTOS_DIR.name == "photos"
     assert PHOTOS_DIR.parent.name == "demo"
     assert PHOTOS_DIR.is_absolute()
+
+
+# ---------------------------------------------------------------------------
+# routing runner —— 只取 supervisor 第一跳,派活瞬间掐断流式
+# ---------------------------------------------------------------------------
+
+
+class _FakeGraph:
+    """替身:按剧本吐 astream 更新,并记录流式是否被提前关掉。"""
+
+    def __init__(self, updates: list[dict[str, Any]]) -> None:
+        self.updates = updates
+        self.yielded = 0
+        self.closed_early = False
+
+    async def astream(self, _input: Any, stream_mode: str = "updates") -> Any:
+        try:
+            for update in self.updates:
+                self.yielded += 1
+                yield update
+        except GeneratorExit:
+            self.closed_early = True
+            raise
+
+
+def _supervisor_update(*, tool: str | None = None, text: str = "") -> dict[str, Any]:
+    from langchain_core.messages import AIMessage
+
+    calls = [{"name": tool, "args": {}, "id": "t1"}] if tool else []
+    return {"supervisor": {"messages": [AIMessage(content=text, tool_calls=calls)]}}
+
+
+def _patch_graph(monkeypatch: pytest.MonkeyPatch, fake: _FakeGraph) -> None:
+    import gyt.graph as graph_module
+
+    monkeypatch.setattr(graph_module, "graph", fake)
+
+
+async def test_路由取supervisor第一跳并当场停流(monkeypatch: pytest.MonkeyPatch) -> None:
+    """拿到派活对象后子 Agent 一步都不该跑 —— inspection 一旦启动就是整条英雄链。"""
+    from eval.hooks import run_routing_row
+
+    fake = _FakeGraph(
+        [
+            _supervisor_update(tool="transfer_to_inspection", text="我这就安排巡检。"),
+            {"inspection": {"messages": []}},  # 这条不该被消费到
+        ]
+    )
+    _patch_graph(monkeypatch, fake)
+
+    got = await run_routing_row({"id": "R05", "user_input": "查一下这张照片,顺便出份巡检记录"})
+
+    assert got == "inspection"
+    assert fake.yielded == 1, "拿到第一跳就该停,不该把子 Agent 的更新也消费掉"
+
+
+async def test_同一条消息里铺垫话加工具调用时工具优先(monkeypatch: pytest.MonkeyPatch) -> None:
+    """supervisor 常在一条消息里既写「我来安排」又发交接调用 ——
+    顺序反了会把铺垫话误判成 none,整套路由分数系统性偏低。"""
+    from eval.hooks import run_routing_row
+
+    _patch_graph(
+        monkeypatch,
+        _FakeGraph(
+            [
+                _supervisor_update(tool="transfer_to_safety", text="好的,这就安排同事看照片。"),
+            ]
+        ),
+    )
+    assert await run_routing_row({"id": "R01", "user_input": "这张有没有隐患"}) == "safety"
+
+
+async def test_supervisor纯文本回答判为none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """自答、追问、婉拒都算「没派」—— none 行(闲聊/超范围/信息不足)的标准答案。"""
+    from eval.hooks import run_routing_row
+
+    _patch_graph(
+        monkeypatch,
+        _FakeGraph(
+            [
+                _supervisor_update(text="师傅,你要看哪张照片?把编号发我一下。"),
+            ]
+        ),
+    )
+    assert await run_routing_row({"id": "R21", "user_input": "看一下这个"}) == "none"
+
+
+async def test_忽略非supervisor节点的更新(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pre_model_hook(上传改写)等节点也会出更新,不能把它们当成路由决策。"""
+    from eval.hooks import run_routing_row
+
+    _patch_graph(
+        monkeypatch,
+        _FakeGraph(
+            [
+                {"pre_model_hook": {"messages": []}},
+                _supervisor_update(tool="transfer_to_ping"),
+            ]
+        ),
+    )
+    assert await run_routing_row({"id": "RX", "user_input": "测试一下"}) == "ping"
+
+
+async def test_没填user_input时炸而不是静默判none(monkeypatch: pytest.MonkeyPatch) -> None:
+    from eval.hooks import run_routing_row
+
+    with pytest.raises(EvalRunnerError, match="user_input"):
+        await run_routing_row({"id": "RX", "user_input": "  "})

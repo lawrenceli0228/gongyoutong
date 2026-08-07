@@ -1,13 +1,23 @@
-﻿id,type,user_input,expected_agent,note
-R01,positive,这张照片有没有安全隐患,safety,示例-可保留:最典型的识图请求
-R02,positive,帮我看看工地照片里有没有人没戴安全帽,safety,"示例-可保留:换个说法,测同义表达"
-R03,positive,脚手架立杆间距规范上是怎么要求的,knowledge,示例待替换:换成你们真实规范里的问题
-R04,positive,消防通道宽度有什么规定,knowledge,示例待替换
-R05,positive,下周三之前还有哪些任务没完成,schedule,示例-可保留:中文相对日期
-R06,positive,给我建一个任务:明天检查塔吊,schedule,示例-可保留:建任务而非查任务
-R07,positive,这张图纸上三号柱的截面尺寸是多少,cad,示例待替换:换成你们真实图纸里的构件
-R08,positive,图纸一共有几个图层,cad,示例-可保留
-R09,positive,把刚才的检查结果整理成巡检报告,report,示例-可保留
-R10,none,你好,none,示例-可保留:闲聊不该派给任何子 Agent
-R11,none,你能做什么,none,示例-可保留:能力询问由 supervisor 自己答
-R12,ambiguous,看一下这个,none,示例-可保留:信息不足应追问而非瞎派
+id,type,user_input,expected_agent,note
+R01,positive,这张照片有没有安全隐患,safety,最典型的识图请求
+R02,positive,帮我看看工地照片里有没有人没戴安全帽,safety,点名具体违规项的问法
+R03,positive,"瞅瞅这照片,现场有没有啥事",safety,"工人口语,README 点名要测的那种说法"
+R04,positive,"这张图里工人穿戴齐不齐,给我把把关",safety,不出现「安全」二字也要认得出
+R05,positive,"查一下这张照片,顺便出份巡检记录",inspection,"查+出文档 → 英雄链,不该拆成两次派活"
+R06,positive,"这张拍完给我留个档,回头检查组要看",inspection,「留档」是 inspection 的关键信号
+R07,positive,把刚才那张照片的检查结果整理成巡检报告,inspection,"补出文档也走英雄链(safety 重跑=缓存命中,无额外成本)"
+R08,positive,脚手架立杆间距规范上是怎么要求的,knowledge,标准规范问法
+R09,positive,临边防护栏杆得多高才合规,knowledge,数值类条文
+R10,positive,高空干活安全带国标咋要求的,knowledge,口语化的条文询问
+R11,positive,"动火作业要办什么手续,哪条规范说的",knowledge,"程序类条文,并要出处"
+R12,positive,下周三之前还有哪些任务没完成,schedule,中文相对日期查询
+R13,positive,给我建个任务:明天上午复检三层钢筋,schedule,建任务
+R14,positive,后天的模板验收改到周五,schedule,"改期,不出现「任务」二字"
+R15,positive,这张图纸上三号柱的截面尺寸是多少,cad,构件查询
+R16,positive,图纸里KL3那道梁跨度多少,cad,构件编号式问法
+R17,positive,"打开地下室那张图,看看柱距多大",cad,先定位图纸再查数据
+R18,none,你好,none,寒暄不派活
+R19,none,你能做什么,none,能力询问由 supervisor 自己答
+R20,none,帮我算算这个月工资能拿多少,none,"超范围请求:该如实说做不了,不该硬塞给谁"
+R21,ambiguous,看一下这个,none,"没说看什么,应追问而非瞎派"
+R22,ambiguous,那个问题处理一下,none,"无指代,应追问"

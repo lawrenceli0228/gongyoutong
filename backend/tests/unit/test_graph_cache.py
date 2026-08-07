@@ -79,9 +79,16 @@ class HandoffAwareFakeModel(BaseChatModel):
             spec.get("function", {}).get("name", "") if isinstance(spec, dict) else ""
             for spec in self.bound_tools
         ]
-        preferred = f"{HANDOFF_TOOL_PREFIX}ping"
-        if preferred in names:
-            return preferred
+        # ping 已从登记表摘除(2026-08-08,见 graph.py 的摘除说明),优先项自然落空,
+        # 走下面的「第一个交接工具」兜底 —— 登记表首位是 safety(假模型不真调工具,
+        # 路径仍是 supervisor→子 Agent→supervisor 三次调用,FULL_GRAPH_CALLS 不变)。
+        # 逐级优先:ping(已摘除,留着以防回归)→ safety(单模型,路径最短)→ 第一个。
+        # 不能依赖"第一个":create_supervisor 呈现工具的顺序与登记表顺序无关,
+        # 实测抓到过 inspection(复合 Agent,内部两个模型),3 次调用变 4 次。
+        for preferred_suffix in ("ping", "safety"):
+            preferred = f"{HANDOFF_TOOL_PREFIX}{preferred_suffix}"
+            if preferred in names:
+                return preferred
         for name in names:
             if name.startswith(HANDOFF_TOOL_PREFIX):
                 return name
