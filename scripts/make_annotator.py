@@ -48,8 +48,10 @@ LABELS: Final[tuple[tuple[str, str], ...]] = (
     ("compliant", "合规"),
     ("not_site", "非工地"),
 )
-DONE_IDS: Final[frozenset[str]] = frozenset({"S28", "S29", "S30"})
-"""这三张干扰项是选图时就逐张看过并定稿的,不需要再确认 —— 标出来免得白看。"""
+PENDING_MARK: Final[str] = "待人工确认"
+"""草稿行的标记。带这个词的才需要人看,其余是已经定稿的 —— 免得每次都从头翻 30 张。
+
+比硬编码一串 id 好:换了哪几张只体现在 CSV 里,这边自动跟着走,不会忘了同步。"""
 
 
 def _thumb_data_uri(path: Path, workdir: Path) -> str:
@@ -93,7 +95,7 @@ def build_rows() -> list[dict[str, Any]]:
                     "violations": [v for v in raw["violations"].split(";") if v],
                     "hint": hint,
                     "reason": reason,
-                    "done": raw["id"] in DONE_IDS,
+                    "done": PENDING_MARK not in raw.get("note", ""),
                     "src": _thumb_data_uri(photo, workdir),
                 })
         return rows
@@ -248,7 +250,7 @@ code{font-family:var(--mono);font-size:.88em;background:var(--surface);
 
 <script>
 const ROWS = __ROWS__, VOCAB = __VOCAB__, LABELS = __LABELS__;
-const KEY = "gyt.annotator.v1";
+const KEY = "gyt.annotator.v2";
 const saved = JSON.parse(localStorage.getItem(KEY) || "{}");
 const state = ROWS.map(r => ({
   ...r,
