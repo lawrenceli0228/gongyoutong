@@ -158,10 +158,37 @@
 
 ## 三、怎么跑
 
-> 跑分脚本 `runner.py` **尚未实现**,是 W2 第一天的活(见 `docs/W2_执行计划.html` 前置 A2)。
-> 它是共享基座,由一个人搭、两人共用 —— 各写各的会得到两套不可横向比较的口径。
+> **safety 已经接通了(2026-08-07)**,`make eval SUITE=safety` 会真的调 kimi-k3 出分。
+> routing / rag 还没接,跑起来打印 SKIP —— 那是正常状态,不是坏了。
+>
+> 接线点只有一个:`backend/eval/hooks.py` 的 `RUNNERS`(套名 → async 函数)。
+> **加自己的 Agent 只改那一处**,`runner.py` 一个 Agent 都不 import,别去动它。
+>
+> ```python
+> # eval/hooks.py
+> RUNNERS = {"safety": run_safety_row}   # ← 往这里加 "rag": run_rag_row
+> ```
+>
+> 被测函数的契约:`async def f(row: Mapping[str, str]) -> Any`,
+> 收一行 CSV,返回**判分函数要读的那个形状**(safety 是 `{"label","violations"}`)。
+> 拿不到可判分的输出就 **raise**,别返回空 —— runner 会把异常文本原样写进报告的
+> `actual` 字段,「第 7 条为什么挂了」才能一眼看见;返回空只会显示「空 / (无)」。
 
-实现时要满足的契约:
+### 先探链路,别一上来就押全量
+
+```bash
+make eval-smoke          # 1 张照片,几十秒,几毛钱 —— 只确认「照片找得到 / Key 有效 / 判分接得上」
+make eval SUITE=safety   # 全量 30 张,串行约 22 分钟,真花钱
+```
+
+**为什么强调这个顺序:** 30 张串行要 22 分钟(实测单张 10~60 秒)。
+链路上任何一个环节配错(照片名对不上、Key 没配、列名写错),都会在跑到那一行时才炸,
+而你已经等了十几分钟。`eval-smoke` 花几十秒就能把这些排掉。
+
+第二轮起会命中磁盘缓存,秒级返回、零花费 —— 但**改了 `vision_prompt.md` 正文或
+`prompt_version` 会让缓存全失效**,又是一轮 22 分钟(见 TODOS 的 TODO-11)。
+
+原始契约(实现时要满足的,现已满足):
 
 - 读 `datasets/*.csv`,编码用 `utf-8-sig`(这样 Excel 存出来带 BOM 的文件也能读)
 - 逐条调被测 Agent → 交给该套的判分函数 → 汇总

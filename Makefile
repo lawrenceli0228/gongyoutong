@@ -19,6 +19,15 @@ EVAL_MODULE    := eval.runner
 # 跑哪一套评测:all / routing / safety / rag。用 ?= 是为了 `make eval SUITE=safety` 能覆盖。
 # 三条门槛值不在这里 —— 一律由脚本从 gyt.config 的 eval_threshold_* 读,别在 Makefile 里抄第二份。
 SUITE          ?= all
+# 被测函数表。runner.py 自己一个 Agent 都不 import,全靠这一处注入(见 eval/hooks.py 顶部)。
+EVAL_RUNNERS   := eval.hooks:RUNNERS
+# eval-smoke 用的小样本数据集目录(1 行),只为探通链路,不是验收。
+EVAL_SMOKE_DIR := eval/datasets/smoke
+# 评测要真调模型,必须有真 Key。而 `python -m` 不像 langgraph-cli 那样会自己加载
+# langgraph.json 里的 "env": "../.env" —— Settings 的 env_file 是按**进程工作目录**
+# 解析的,评测在 backend/ 下跑,根本看不见仓库根的 .env。所以这里显式 --env-file。
+# (真踩过:不加的话报的是 MissingAPIKeyError,而 Key 其实好好地填在 .env 里。)
+CHECK_ENV       = test -f $(ENV_FILE) || { echo "[错误] 找不到 $(ENV_FILE)。评测要真调模型,先 cp $(ENV_TEMPLATE) $(ENV_FILE) 并填两家 Key。"; exit 1; }
 FRONTEND_SETUP := scripts/setup-frontend.sh
 FRONTEND_URL   := http://localhost:3000
 BACKEND_URL    := http://localhost:2024
@@ -30,7 +39,7 @@ DATA_UID       := 10001
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup dev test cov eval lint lint-ci fmt up down e2e frontend
+.PHONY: help setup dev test cov eval eval-smoke lint lint-ci fmt up down e2e frontend
 
 help: ## 打印所有可用目标
 	@echo "工友通 · 可用命令:"
@@ -53,11 +62,22 @@ cov: ## 跑测试 + 覆盖率报告,低于 80% 直接失败(与 CI 同一把尺�
 	@echo "[报告] HTML 覆盖率:$(BACKEND_DIR)/htmlcov/index.html"
 
 eval: ## 跑评测门槛(默认三套全跑;make eval SUITE=safety 只跑一套)
-	@# 现在跑会全部打印 SKIP —— 这是**正常状态**,不是坏了:
-	@#   · 数据集还是仓库自带的示例占位行(标着"待替换",数字全是编的);
-	@#   · 被测 Agent 还没接进来(要用 --runners 模块:属性 注入)。
-	@# 等数据填完、Agent 接好,同一条命令就会真的出分,低于门槛自动 exit 非 0。
-	cd $(BACKEND_DIR) && $(UV) run python -m $(EVAL_MODULE) --suite $(SUITE)
+	@# safety 已接上(eval/hooks.py:RUNNERS);routing / rag 还没接,会打印 SKIP —— 那是正常状态。
+	@# ⚠️ safety 会**真的调 kimi-k3 并真的花钱**:实测单张 10~60 秒,30 张串行约 22 分钟。
+	@#    第二轮起命中磁盘缓存,秒级返回、零花费 —— 但改了 vision_prompt.md 正文
+	@#    或 prompt_version 会让缓存全失效,又是一轮 22 分钟(见 TODO-11)。
+	@#    先用 `make eval-smoke` 拿 1 张探链路,别一上来就押 22 分钟。
+	@$(CHECK_ENV)
+	cd $(BACKEND_DIR) && $(UV) run --env-file ../$(ENV_FILE) \
+		python -m $(EVAL_MODULE) --suite $(SUITE) --runners $(EVAL_RUNNERS)
+
+eval-smoke: ## 只跑 1 张照片探通链路(几毛钱,几十秒),别拿全量试水
+	@# 把样本量下限临时压到 1,并用一个只有 1 行的临时数据集目录。
+	@# 这条**不是**验收,只用来确认「照片找得到 / Key 有效 / 判分接得上」。
+	@$(CHECK_ENV)
+	cd $(BACKEND_DIR) && GYT_EVAL_MIN_ROWS_SAFETY=1 $(UV) run --env-file ../$(ENV_FILE) \
+		python -m $(EVAL_MODULE) --suite safety --runners $(EVAL_RUNNERS) \
+		--datasets-dir $(EVAL_SMOKE_DIR) --verbose
 
 lint: ## 静态检查(ruff,只报不改)
 	cd $(BACKEND_DIR) && $(UV) run ruff check .
