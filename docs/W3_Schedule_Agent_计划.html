@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Schedule Agent 落地计划 · 工友通 W3</title>
+<style>
+:root{
+  --paper:#faf8f4; --ink:#1c1a17; --ink-soft:#57534b; --line:#e4e0d8;
+  --accent:#c2410c; --accent-soft:#fff1e8; --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec; --warn:#b45309; --warn-soft:#fdf3e2;
+  --sans:"PingFang SC","Hiragino Sans GB","Noto Sans SC",system-ui,-apple-system,sans-serif;
+  --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --paper:#191714; --ink:#ece8e1; --ink-soft:#a49e93; --line:#37332c;
+    --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+    --ok:#6fbf8f; --ok-soft:#12271a; --warn:#e0a34e; --warn-soft:#2b2010; }
+}
+:root[data-theme="light"]{ --paper:#faf8f4; --ink:#1c1a17; --ink-soft:#57534b; --line:#e4e0d8;
+  --accent:#c2410c; --accent-soft:#fff1e8; --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec; --warn:#b45309; --warn-soft:#fdf3e2; }
+:root[data-theme="dark"]{ --paper:#191714; --ink:#ece8e1; --ink-soft:#a49e93; --line:#37332c;
+  --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+  --ok:#6fbf8f; --ok-soft:#12271a; --warn:#e0a34e; --warn-soft:#2b2010; }
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.75;font-size:15.5px}
+.wrap{max-width:920px;margin:0 auto;padding:0 28px 90px}
+header.hero{border-bottom:3px solid var(--ink);padding:54px 0 24px}
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.22em;color:var(--accent);text-transform:uppercase}
+h1{font-size:clamp(28px,4.5vw,40px);line-height:1.2;margin:10px 0 8px;text-wrap:balance}
+.sub{color:var(--ink-soft);font-size:15px;max-width:62ch}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.chip{font-family:var(--mono);font-size:12px;border:1.5px solid var(--ink);padding:3px 10px;border-radius:999px}
+.chip.hot{background:var(--ink);color:var(--paper)}
+section{margin-top:46px}
+h2{font-size:21px;display:flex;align-items:center;gap:10px;border-bottom:1.5px solid var(--line);padding-bottom:8px;text-wrap:balance}
+h2 .no{font-family:var(--mono);font-size:13px;color:var(--paper);background:var(--accent);padding:2px 8px;border-radius:4px;transform:translateY(-1px)}
+h3{font-size:16px;margin:22px 0 8px}
+p{margin:10px 0}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th{font-family:var(--mono);font-size:12px;text-align:left;letter-spacing:.06em;color:var(--ink-soft);border-bottom:2px solid var(--ink);padding:6px 10px;white-space:nowrap}
+td{border-bottom:1px solid var(--line);padding:8px 10px;vertical-align:top}
+tr:hover td{background:var(--accent-soft)}
+pre{font-family:var(--mono);font-size:12.5px;line-height:1.55;background:var(--blue-soft);border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:6px;padding:16px 18px;overflow-x:auto;margin:14px 0}
+code{font-family:var(--mono);font-size:.92em;background:var(--accent-soft);padding:1px 5px;border-radius:4px}
+pre code{background:none;padding:0}
+.callout{border:1.5px solid var(--ink);border-radius:8px;padding:13px 18px;margin:16px 0;background:var(--accent-soft)}
+.callout b:first-child{color:var(--accent)}
+.callout.blue{background:var(--blue-soft)}
+.callout.blue b:first-child{color:var(--blue)}
+.callout.warn{background:var(--warn-soft)}
+.callout.warn b:first-child{color:var(--warn)}
+.verdict{background:var(--ok-soft);border:2px solid var(--ok);border-radius:10px;padding:16px 20px;margin:20px 0}
+.verdict b{color:var(--ok)}
+ul{padding-left:1.3em}
+li{margin:6px 0}
+.small{font-size:13px;color:var(--ink-soft)}
+.num{font-variant-numeric:tabular-nums}
+.check{list-style:none;padding-left:0}
+.check li{padding-left:30px;position:relative}
+.check li::before{content:"☐";position:absolute;left:4px;color:var(--accent);font-size:16px}
+.tag{font-family:var(--mono);font-size:11px;border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:var(--ink-soft);white-space:nowrap}
+.tag.green{color:var(--ok);border-color:var(--ok)}
+.tag.red{color:var(--accent);border-color:var(--accent)}
+footer{margin-top:70px;border-top:1.5px solid var(--line);padding-top:16px;font-size:13px;color:var(--ink-soft)}
+a{color:var(--blue)}
+@media (max-width:640px){ .wrap{padding:0 16px 60px} th,td{padding:6px 6px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="kicker">工友通 GongYouTong · W3 · 你泳道收官件</div>
+  <h1>Schedule Agent 落地计划</h1>
+  <p class="sub">工地任务台账：记任务、查任务、改期限、销项。中文相对日期在<b>代码</b>里算，不让模型算。routing 的 R12/R13/R14 三条在等它翻绿。</p>
+  <div class="chips">
+    <span class="chip hot">分支 lawrence/schedule-agent</span>
+    <span class="chip">预算 CC ~2.5h</span>
+    <span class="chip">今天 = 2026-08-08 周六</span>
+    <span class="chip">routing 12/22 → 15/22</span>
+  </div>
+</header>
+
+<div class="verdict">
+  <b>一页结论</b> —— 三层结构：<code>dates.py</code>（纯函数中文日历）→ <code>db/tasks.py</code>（SQLite CRUD）→ <code>tools.py</code>（4 个单一职责工具）。
+  验收 = 方案单测×6 起步（实际按 safety 惯例拉满，新模块行覆盖 100%）+ routing 15/22 且已绿 12 条零回归 + 真机四步脚本。
+  <b>零代码协同亮点</b>：英雄链出完巡检记录 → 「给这条隐患记个整改任务，周五之前」→ supervisor 派 schedule——多轮对话天然打通，评委看到的就是多 Agent 协同。
+</div>
+
+<section>
+<h2><span class="no">0</span>方案里已锁死的口径（不重新讨论）</h2>
+<div class="tablewrap"><table>
+<tr><th>出处</th><th>内容</th></tr>
+<tr><td>方案 §2 范围表</td><td>SQLite CRUD 工具 + 中文自然语言查询 + 站内提醒；<b>短信/日历推送不做</b></td></tr>
+<tr><td>方案 §4 选型</td><td>业务库 SQLite，建表<b>预留 <code>project_id</code></b>（单用户演示足够）</td></tr>
+<tr><td>方案 §5 模型分派</td><td>Schedule 走 <code>deepseek-v4-flash</code> 文本档（temp=0 已全局生效）</td></tr>
+<tr><td>方案目录树</td><td>SQLite 模型放 <code>backend/src/gyt/db/</code>——不进 core（D12 护栏）、不藏在 agent 包里</td></tr>
+<tr><td>方案红线 4</td><td>SQL 全参数化；列表查询一次取全；禁循环内逐条查</td></tr>
+<tr><td>方案覆盖图</td><td><code>[Schedule] CRUD×4 / 中文日期 / 空结果 ─ 单测×6</code>（这是<b>底线</b>不是目标）</td></tr>
+<tr><td>config.py 现状</td><td><code>settings.sqlite_path</code> → <code>data/gyt.sqlite3</code> 已就位（父目录自动建，文件交给 sqlite 建）</td></tr>
+<tr><td>本计划裁定</td><td>「站内提醒」落地形态 = 查询结果里<b>主动标出已逾期/今天到期</b>，不做任何主动推送</td></tr>
+</table></div>
+</section>
+
+<section>
+<h2><span class="no">1</span>真实场景（为什么这块值得做）</h2>
+<ul>
+<li>routing.csv 三条在等它：<b>R12</b> 查期限「下周三之前还有哪些任务没完成」· <b>R13</b> 建任务「明天上午复检三层钢筋」· <b>R14</b> 改期「后天的模板验收改到周五」（不出现「任务」二字）。</li>
+<li>TODO-21 场景②（安全员日常巡检）：条文归 knowledge、<b>排整改期限归 schedule</b>，走真实路由——原规划内的 W3 联动。</li>
+<li>演示脚本（方案 §7）已排「Schedule 自然语言查任务」一环。</li>
+</ul>
+</section>
+
+<section>
+<h2><span class="no">2</span>总体结构</h2>
+<pre>用户:「后天的模板验收改到周五」
+        │ supervisor: transfer_to_schedule
+        ▼
+schedule 本体(deepseek 文本档, temp=0, FocusOnOwnWork 中间件)
+   │ ① list_tasks()                    ← 先查后改:找到 T3「模板验收」8-10
+   │ ② reschedule_task("T3", "周五")   ← 日期原话透传,模型不换算
+   │       │ dates.parse_due("周五", today=2026-08-08) → 2026-08-14
+   │       ▼ db.tasks.set_due(3, "2026-08-14")   ← 参数化 SQL,每操作独立连接
+   ▼
+回复:「模板验收改到 8月14日(周五)了。」 ← 必须复述 due_display(代码算的,照抄)</pre>
+<div class="tablewrap"><table>
+<tr><th>层</th><th>文件</th><th>职责</th><th>测法</th></tr>
+<tr><td>日历</td><td><code>agents/schedule/dates.py</code></td><td>中文日期短语 → <code>date</code>；注入 <code>today</code></td><td>表驱动纯函数测试</td></tr>
+<tr><td>存储</td><td><code>db/tasks.py</code>（新包 <code>gyt/db/</code>）</td><td>同步 sqlite3 CRUD，每操作一连接</td><td>直接调同步函数，<code>tmp_path</code> 库</td></tr>
+<tr><td>工具</td><td><code>agents/schedule/tools.py</code></td><td>信封契约、参数校验、<code>asyncio.to_thread</code> 包存储层</td><td><code>ainvoke</code> 假库测试</td></tr>
+</table></div>
+</section>
+
+<section>
+<h2><span class="no">3</span>定案表（本计划新决策 + 理由）</h2>
+<div class="tablewrap"><table>
+<tr><th>#</th><th>决策</th><th>定案</th><th>为什么</th></tr>
+<tr><td class="num">1</td><td>日期谁算</td><td><b>代码算，模型禁止换算</b></td><td>LLM 的星期数学不可靠；提示词明令「把用户原话传给工具，工具里有日历」；表驱动可测</td></tr>
+<tr><td class="num">2</td><td>工具形态</td><td>4 个单一职责：add / list / reschedule / finish</td><td>弱模型参数越少越稳（safety 经验）；不做万能 update_task</td></tr>
+<tr><td class="num">3</td><td>改期怎么定位</td><td><b>先查后改</b>，按 T 号改</td><td>LLM 只搬编号（报告编号同哲学）；多条相似→把候选念给用户挑，不许猜</td></tr>
+<tr><td class="num">4</td><td>复述闭环</td><td>建/改后必须念出 <code>due_display</code>（「8月14日(周五)」，代码格式化）</td><td>解析错了用户当场能纠——日期歧义的最后防线；模型照抄，杜绝它把 ISO 转错星期</td></tr>
+<tr><td class="num">5</td><td>任务号</td><td>整数 rowid，展示为 T3；工具收参剥 T/t 前缀</td><td>电话里报得清；容错放代码不放提示词</td></tr>
+<tr><td class="num">6</td><td>db 并发姿势</td><td>同步 sqlite3 + 每操作独立连接；工具里 <code>asyncio.to_thread</code></td><td>无共享连接 = 无线程扯皮；过 blockbuster，不赖 <code>--allow-blocking</code></td></tr>
+<tr><td class="num">7</td><td>无期限任务</td><td>due NULL 合法；期限查询时<b>单列一桶</b></td><td>「下周三之前」不该吞掉没定期限的活，也不该混在一起误导</td></tr>
+<tr><td class="num">8</td><td>逾期标注</td><td>list 结果带 overdue 标志</td><td>「站内提醒」的落地形态</td></tr>
+<tr><td class="num">9</td><td>finish 幂等</td><td>已完成再销 → ok +「这条本来就完成了」</td><td>多轮重复指令不该报错吓人</td></tr>
+<tr><td class="num">10</td><td>时区</td><td>演示机本地日期（北京时间）；today 参数注入</td><td>测试可控；不引时区库</td></tr>
+<tr><td class="num">11</td><td>project_id</td><td>建表即预留、恒 NULL、<b>不进工具参数</b></td><td>方案要求预留；多项目 UI 是 YAGNI</td></tr>
+</table></div>
+</section>
+
+<section>
+<h2><span class="no">4</span>数据模型（db/tasks.py）</h2>
+<pre>CREATE TABLE IF NOT EXISTS tasks (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  title      TEXT NOT NULL,
+  due_date   TEXT,                 -- ISO YYYY-MM-DD;NULL = 无期限
+  status     TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done')),
+  project_id TEXT,                 -- 方案预留,MVP 恒 NULL
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);</pre>
+<ul>
+<li>每个操作：connect → <code>CREATE TABLE IF NOT EXISTS</code>（幂等、廉价）→ 参数化语句 → commit → close。无模块级连接、无全局状态。</li>
+<li>存储层函数（同步、纯参数进出）：<code>create(title, due) → int</code> · <code>fetch(task_id)</code> · <code>list_rows(cutoff, include_done)</code>（一次取全）· <code>set_due(task_id, due)</code> · <code>set_done(task_id)</code>。</li>
+</ul>
+</section>
+
+<section>
+<h2><span class="no">5</span>工具契约（信封 {ok, data, user_msg}，与全项目一致）</h2>
+<div class="tablewrap"><table>
+<tr><th>工具</th><th>签名</th><th>成功 data</th><th>典型失败（user_msg 必须是人话）</th></tr>
+<tr><td><code>add_task</code></td><td>(title, due="")</td><td>{task_id:"T7", title, due_date, due_display}</td><td>空标题；日期看不懂（列出支持写法）</td></tr>
+<tr><td><code>list_tasks</code></td><td>(within="", include_done=False)</td><td>{tasks:[{id:"T3",title,due_date,due_display,overdue,status}…], undated:[…], today}</td><td>日期看不懂</td></tr>
+<tr><td><code>reschedule_task</code></td><td>(task_id, due)</td><td>{task_id, title, old_due, new_due, due_display}</td><td>T 号不存在（提示先查清单）；日期为空/看不懂；任务已完成</td></tr>
+<tr><td><code>finish_task</code></td><td>(task_id)</td><td>{task_id, title, was_done}</td><td>T 号不存在</td></tr>
+</table></div>
+<p class="small"><code>within="下周三"</code> → 截止 ≤ 2026-08-12 的未完成任务 + undated 桶单列。排序：期限升序、逾期在最前；due_display 全部由代码生成。</p>
+</section>
+
+<section>
+<h2><span class="no">6</span>中文日期词表 v1（冻结在 dates.py docstring）</h2>
+<p class="small">示例按今天 = 2026-08-08（周六）推算。</p>
+<div class="tablewrap"><table>
+<tr><th>写法</th><th>解析结果</th><th>备注</th></tr>
+<tr><td>（空）</td><td>None</td><td>无期限任务</td></tr>
+<tr><td>今天/今日 · 明天/明日 · 后天 · 大后天</td><td class="num">8-08 · 8-09 · 8-10 · 8-11</td><td></td></tr>
+<tr><td>N天后 / N天内</td><td class="num">3天后 → 8-11</td><td>两种说法同义处理</td></tr>
+<tr><td>周X / 星期X / 礼拜X</td><td class="num">周三 → 8-12；周六 → <b>8-08（今天）</b></td><td><b>未来最近，含今天</b></td></tr>
+<tr><td>本周X / 这周X</td><td class="num">本周日 → 8-09；本周三 → <b>报错</b></td><td>周一为一周起点；已过<b>报错不猜</b></td></tr>
+<tr><td>下周X</td><td class="num">下周三 → 8-12；下周日 → 8-16</td><td>下个日历周</td></tr>
+<tr><td>下下周X</td><td class="num">下下周三 → 8-19</td><td></td></tr>
+<tr><td>月底 / 本月底 · 下月底</td><td class="num">8-31 · 9-30</td><td>当月最后一天</td></tr>
+<tr><td>X月X号 / X月X日</td><td class="num">9月1号 → 2026-09-01</td><td><b>一律今年</b>；已过 → 报错提示补年份</td></tr>
+<tr><td>YYYY-MM-DD</td><td>原样校验通过</td><td>假日期（2-30）报错</td></tr>
+<tr><td>时段词 上午/下午/晚上/中午/早上</td><td class="num">剥掉：「明天上午」→ 8-09</td><td>台账只到天粒度</td></tr>
+<tr><td>之前/以前 后缀</td><td class="num">剥掉：「下周三之前」→ 8-12</td><td>供 within 用</td></tr>
+<tr><td>昨天/前天 等历史日期</td><td>不支持</td><td>台账记未来期限；补录历史 = YAGNI</td></tr>
+</table></div>
+<div class="callout"><b>歧义约定</b>（写进 docstring + prompt.md 各一份，措辞同源）：「周X」= 未来最近含今天；「本周X」已过则报错——宁可让用户换个说法，不做静默猜测。</div>
+</section>
+
+<section>
+<h2><span class="no">7</span>提示词要点（prompt.md）</h2>
+<ul>
+<li>身份：工地<b>任务台账员</b>。反甩锅段沿用 safety 措辞骨架——「记任务这件事就是你的活，后面没有人了」。</li>
+<li>铁律五条：① 日期不许自己算，用户原话传给工具；② 改期/销项<b>先查后改</b>、必须带 T 号；③ 结果复述 due_display，一个字不改；④ 工具失败如实转述 user_msg；⑤ 多条相似任务把候选念给用户挑，不许猜。</li>
+<li>台账外话题（照片/规范/图纸）不接——<code>create_gyt_agent</code> 统一挂的 FocusOnOwnWork 中间件 + 提示词双保险。</li>
+</ul>
+</section>
+
+<section>
+<h2><span class="no">8</span>路由接线（AGENT_REGISTRY 追加一行）</h2>
+<div class="callout blue"><b>Summary 草案</b>（正域饱满 + 免责尾巴，吸取 ping 三连教训）：<br>
+「工地任务台账：记任务、改期限、销任务、查『某天之前还有啥没干完』。用户说『记一下／建个任务』『XX改到周五』『XX干完了』『下周三之前还有哪些任务』这类<b>安排活儿和期限</b>的话，派给它。它只管任务台账，不看照片、不答规范条文。」</div>
+<ul>
+<li>预期：R12/R13/R14 翻绿 → <b>15/22 = 68.2%</b>；剩余 7 条红全是 knowledge(4)/cad(3)，队友泳道落地后冲 0.90 门槛。</li>
+<li>回归纪律：routing <b>全量重跑</b>逐行对比，已绿 12 条必须仍绿。重点盯 R06（「留个档」vs「记一下」词法相近）；被钩走就按 ping 的处置流程改措辞重测。</li>
+<li>成本：纯文本档，22 条一遍几分钱；<b>不碰视觉缓存</b>（vision_prompt.md / 视觉模型均未动）。</li>
+</ul>
+</section>
+
+<section>
+<h2><span class="no">9</span>TDD 步骤（RED → GREEN，严格顺序）</h2>
+<div class="tablewrap"><table>
+<tr><th>步</th><th>内容</th><th>规模</th></tr>
+<tr><td class="num">1</td><td><code>test_schedule_dates.py</code> 表驱动 → <code>dates.py</code>。边界：周日说「下周三」、12月说「月底」、跨年月日、假日期</td><td>~30 例</td></tr>
+<tr><td class="num">2</td><td><code>test_db_tasks.py</code> → <code>db/tasks.py</code>。往返、过滤、<code>'; DROP TABLE</code> 当标题存原样、undated、project_id NULL</td><td>~10 例</td></tr>
+<tr><td class="num">3</td><td><code>test_schedule_tools.py</code> → <code>tools.py</code>。信封、剥 T、坏号、空标题、解析失败人话、排序、overdue、幂等销项、改已完成拒绝、due_display</td><td>~18 例</td></tr>
+<tr><td class="num">4</td><td><code>prompt.md</code> + <code>__init__.py</code>（build_schedule_agent，text 档）+ registry 接线 + <code>test_graph.py</code> 适配</td><td>~5 例</td></tr>
+<tr><td class="num">5</td><td><code>make eval SUITE=routing</code> 全量对比；真机四步脚本：记 → 查 → 改期 → 销项；协同一手：巡检后「记个整改任务」</td><td>真机</td></tr>
+<tr><td class="num">6</td><td>ruff + 全套 + 覆盖率 → merge main</td><td></td></tr>
+</table></div>
+<p class="small">方案底线单测×6；本计划落点 <b>~60 条新增</b>（safety 惯例），新模块行覆盖 100% 目标、CI 总覆盖 ≥80% 不降。</p>
+</section>
+
+<section>
+<h2><span class="no">10</span>明确不做（记录在案，防范围爬行）</h2>
+<p>重复任务（「每周三例会」）· 主动推送提醒 · 删除任务（销项即闭环；记错就销掉重记）· 改标题 · 时刻粒度（上午/下午剥掉）· 多项目切换 · 整改自动关联（violation→task 外键——多轮对话已可演协同，外键是赛后活）· 历史日期补录。</p>
+</section>
+
+<section>
+<h2><span class="no">11</span>风险与对策</h2>
+<div class="tablewrap"><table>
+<tr><th>风险</th><th>对策</th></tr>
+<tr><td>R14 两步链（list→reschedule）是全计划唯一的多跳工具调用</td><td>提示词把流程写死 + 真机重点验证；若 flaky，备案 = 给 reschedule 加 keyword 参数（记录在案，不预先做）</td></tr>
+<tr><td>「记一下」与 inspection 的「留档」词法相近，可能钩走 R06</td><td>回归全量对比；犯了改 summary 措辞（有 ping 处置先例）</td></tr>
+<tr><td>日期歧义伤演示</td><td>复述闭环 + due_display 兜底；演示脚本只用词表内说法</td></tr>
+<tr><td>blockbuster 阻塞报错</td><td><code>asyncio.to_thread</code> 根治，不依赖 <code>--allow-blocking</code></td></tr>
+<tr><td><code>data/gyt.sqlite3</code> 混进 git</td><td>提交前验证被 .gitignore 覆盖</td></tr>
+</table></div>
+</section>
+
+<section>
+<h2><span class="no">12</span>验收清单</h2>
+<ul class="check">
+<li>新增单测全绿；全套（448 + 新增）全绿；ruff 干净</li>
+<li><code>dates.py</code> / <code>db/tasks.py</code> / <code>tools.py</code> 行覆盖 100%；CI 总覆盖 ≥80% 不降</li>
+<li>routing 全量 15/22；已绿 12 条零回归（逐行对比留档）</li>
+<li>真机四步脚本通过 + 巡检→整改任务协同一手跑通</li>
+<li>TODOS.md 更新（场景②联动状态）；merge 到 main</li>
+</ul>
+</section>
+
+<footer>
+工友通 · W3 · Schedule Agent 落地计划 —— 同目录 <code>W3_Schedule_Agent_计划.md</code> 为同内容源文件。<br>
+生成于 2026-08-08；所有日期示例按当日（周六）推算。
+</footer>
+
+</div>
+</body>
+</html>

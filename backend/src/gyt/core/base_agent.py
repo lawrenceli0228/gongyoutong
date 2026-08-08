@@ -83,11 +83,12 @@ API 核实结论(2026-08-05 实测,不是凭记忆写的 import)
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware
 from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
@@ -180,6 +181,7 @@ def create_gyt_agent(
     prompt: str,
     tools: list[BaseTool | Callable[..., Any]],
     purpose: Purpose = "text",
+    extra_middleware: Sequence[AgentMiddleware] = (),
 ) -> CompiledStateGraph:
     """组装一个工友通子 Agent(已编译,可直接挂给 Supervisor)。
 
@@ -213,9 +215,11 @@ def create_gyt_agent(
         # 子 Agent 与 Supervisor 共享同一份 messages,于是它能看到 Supervisor
         # 说过的每一句话 —— 包括「我这就安排 safety 同事看一下」。实测子 Agent
         # 会跟着模仿那个语气、把活推回去而不干,两边互相等,用户永远收不到答复。
-        # 这道中间件在**喂给模型之前**把别的 Agent 的纯文本滤掉(不改 state),
-        # 让它只看见「用户要什么」和「自己做过什么」。详见 core/focus.py。
-        middleware=[FocusOnOwnWork(name)],
+        # 这道中间件在**喂给模型之前**把调度中枢的派活腔滤掉(不改 state),
+        # 让它只看见「用户要什么」「同事查到什么」和「自己做过什么」。详见 core/focus.py。
+        # extra_middleware 追加在 Focus **之后**(= 内层):先裁上下文,再做各 Agent
+        # 自己的行为守卫(例如 schedule 的 RequireLedgerTool 防假账件)。
+        middleware=[FocusOnOwnWork(name), *extra_middleware],
     )
 
 

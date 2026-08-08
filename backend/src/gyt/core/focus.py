@@ -40,33 +40,47 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Final
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, BaseMessage
 
 logger = logging.getLogger(__name__)
 
+SUPERVISOR_NAME: Final[str] = "supervisor"
+"""调度中枢的节点名。⚠️ 与 graph.SUPERVISOR_NAME 手工保持一致 ——
+core 层不许反向 import 编排层,所以这里只能抄一份;改名要两处同步。"""
+
 
 def keep_focused(messages: list[BaseMessage], own_name: str) -> list[BaseMessage]:
-    """滤掉「别的 Agent 说的纯文本」,其余原样保留。
+    """滤掉**调度中枢的纯文本发言**,其余原样保留。
 
     保留:
       · 用户消息(它才是任务的来源)
       · 工具结果
       · 自己说过的话
+      · **兄弟 Agent 的发言** —— 那是协同要用的数据,见下面的教训
       · **任何带 tool_calls 的 AIMessage**(哪怕是别人的)—— 见文件顶部的配对说明
 
     丢掉:
-      · 其它 Agent(含 Supervisor)的纯文本发言 —— 那是给用户看的转述,
-        对子 Agent 干活没有信息量,却会被它当成"该怎么说话"的示范。
+      · Supervisor 的纯文本 ——「我这就安排 XX 同事」这类派活腔正是
+        few-shot 污染源,子 Agent 读到就会跟着演调度者、把活推回去。
+
+    为什么兄弟 Agent 的话必须留(2026-08-08 真机教训):
+        巡检英雄链跑完,用户说「把这些隐患记成整改任务」。第一版滤网把
+        safety 报的隐患清单也滤了,schedule 两眼一抹黑,只能反问
+        「你说的隐患具体是什么?」—— 跨 Agent 协同当场断裂。
+        这个滤网防的是**派活腔的传染**,不是**信息的流动**。
     """
     kept: list[BaseMessage] = []
     for message in messages:
-        if isinstance(message, AIMessage) and not message.tool_calls:
-            name = getattr(message, "name", None)
-            if name is not None and name != own_name:
-                continue
+        if (
+            isinstance(message, AIMessage)
+            and not message.tool_calls
+            and getattr(message, "name", None) == SUPERVISOR_NAME
+            and own_name != SUPERVISOR_NAME
+        ):
+            continue
         kept.append(message)
     return kept
 
