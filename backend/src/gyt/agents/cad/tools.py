@@ -43,6 +43,18 @@ _PREVIEW_NAME: Final[str] = "preview.png"
 # --- 图名解析与展示名 ---------------------------------------------------------
 
 
+async def _ensure_registered() -> None:
+    """把「首次预注册」这步的阻塞 IO 挪进线程池。
+
+    get_demo_drawings 第一次被调用时会扫目录、读 DXF、写 artifacts —— 全是同步阻塞 IO。
+    若在 async 工具里直接同步调它,`langgraph dev` 的 blockbuster 会抛 BlockingError,
+    工具被 tool_guard 兜成 INTERNAL 失败(现象:cad「没返回结果」)。这里用 to_thread
+    先把 lru_cache 焐热;之后 _resolve_drawing / _display_name 里的同步调用都是纯缓存命中
+    (只返回 dict,不碰盘),不再阻塞事件循环。每个工具入口调一次即可。
+    """
+    await asyncio.to_thread(get_demo_drawings)
+
+
 def _available_names() -> list[str]:
     return list(get_demo_drawings().keys())
 
@@ -83,6 +95,7 @@ async def _load_index(drawing: str) -> tuple[dict[str, Any] | None, str, Envelop
 
     返回 (索引, drawing_id, 失败信封)。成功时失败信封为 None;失败时索引为 None。
     """
+    await _ensure_registered()  # 首次预注册的阻塞 IO 挪进线程池,防 blockbuster
     resolved = _resolve_drawing(drawing)
     if isinstance(resolved, dict):  # 已经是 Envelope(NOT_FOUND)
         return None, "", resolved
@@ -144,6 +157,7 @@ _LIST_DESCRIPTION = (
 @tool_guard
 async def list_drawings() -> Envelope:
     """返回当前预注册的演示图纸名字清单。"""
+    await _ensure_registered()  # 首次预注册的阻塞 IO 挪进线程池,防 blockbuster
     names = _available_names()
     if not names:
         return fail(
