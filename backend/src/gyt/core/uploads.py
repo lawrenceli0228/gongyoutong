@@ -1,4 +1,8 @@
-"""把聊天界面里**直接上传的图片**接进产物注册表。
+"""把聊天界面里**直接上传的图片 / DXF 图纸**接进产物注册表。
+
+（图纸是方案 A:前端 override 后会把 .dxf 作为 file 块发上来,这里认出来登记成 DRAWING 产物,
+把消息改写成带「图纸编号」的纯文本,cad Agent 按编号查图。DXF 一律按 .dxf 后缀认,不信 MIME。
+下面的说明以图片为主线,图纸走的是同一条「登记产物→消息里只留编号」的路子。）
 
 ===========================================================================
 为什么需要这一层
@@ -51,11 +55,13 @@ from typing import Any, Final
 
 from langchain_core.messages import HumanMessage, RemoveMessage
 
-from gyt.config import ALLOWED_IMAGE_EXT
+from gyt.config import ALLOWED_IMAGE_EXT, get_settings
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind
 
 logger = logging.getLogger(__name__)
+
+_BYTES_PER_MB: Final[int] = 1024 * 1024
 
 _DATA_URI_RE: Final[re.Pattern[str]] = re.compile(
     r"^data:(?P<mime>image/[a-z0-9.+-]+);base64,(?P<payload>.+)$", re.IGNORECASE | re.DOTALL
@@ -78,6 +84,40 @@ _PDF_HINT: Final[str] = (
     "(你传的是 PDF —— 看规范文档的功能还没做好,现在只能看现场照片。"
     "如果 PDF 里就是照片,麻烦先截个图再传)"
 )
+
+_DRAWING_TOO_LARGE_HINT: Final[str] = "(你传的图纸太大了,先精简一下再传一次)"
+
+
+def _decode_dxf_part(part: dict[str, Any]) -> tuple[bytes, str] | None:
+    """从一个上传附件块里认出 DXF 图纸,取出 (字节, 落盘用文件名)。不是 DXF 返回 None。
+
+    **一律按文件名 `.dxf` 结尾判,不信 MIME** —— 浏览器给 .dxf 的类型极不稳定
+    (常是空串或 application/octet-stream,偶尔才 image/vnd.dxf)。前端(override 后)发的是
+    LangChain 的 file 块,与 PDF 同形:
+
+        {"type": "file", "mimeType": "image/vnd.dxf", "data": "<裸base64>",
+         "metadata": {"filename": "首层平面图.dxf"}}
+
+    data 是**不带** "data:;base64," 前缀的裸 base64(前端 fileToBase64 已剥掉前缀)。
+    落盘文件名保留原名(带 .dxf),让 artifacts._safe_ext 能取到 .dxf(白名单已含 ALLOWED_CAD_EXT);
+    万一没拿到文件名就兜底成 upload.dxf,保证扩展名在。
+    """
+    meta = part.get("metadata") or {}
+    filename = str(meta.get("filename") or meta.get("name") or "")
+    mime = str(part.get("mimeType") or part.get("mime_type") or "").lower()
+    if not (filename.lower().endswith(".dxf") or "dxf" in mime):
+        return None
+
+    data = part.get("data")
+    if not isinstance(data, str) or not data:
+        return None
+    try:
+        payload = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError):
+        logger.warning("上传图纸的 base64 解不开,已忽略")
+        return None
+    name = filename if filename.lower().endswith(".dxf") else "upload.dxf"
+    return payload, name
 
 
 def _decode_image_part(part: dict[str, Any]) -> tuple[bytes, str] | None:
@@ -141,9 +181,12 @@ def _rewrite(message: HumanMessage) -> HumanMessage | None:
         return None
 
     texts: list[str] = []
-    ids: list[str] = []
+    photo_ids: list[str] = []
+    drawing_ids: list[str] = []
     rejected = 0
     pdf_rejected = 0
+    oversized = 0
+    drawing_limit = int(get_settings().drawing_max_mb * _BYTES_PER_MB)
     for part in message.content:
         if isinstance(part, str):
             texts.append(part)
@@ -153,33 +196,55 @@ def _rewrite(message: HumanMessage) -> HumanMessage | None:
         kind = part.get("type")
         if kind == "text":
             texts.append(str(part.get("text") or ""))
-        elif kind == "file" and str(part.get("mimeType") or "").lower() == "application/pdf":
-            # 前端的上传按钮写着「Upload PDF or Image」,所以用户真的会传 PDF。
-            # 那是 knowledge Agent 的活(队友泳道,还没接)。给一句**准确**的话 ——
-            # 说"请转成 JPG"是错的,他传 PDF 本来就是这个按钮允许的。
-            pdf_rejected += 1
+        elif kind == "file":
+            # file 块可能是 DXF 图纸(方案 A),也可能是 PDF。先按文件名认 DXF ——
+            # DXF 的 MIME 不可靠,只信 .dxf 后缀(见 _decode_dxf_part)。
+            dxf = _decode_dxf_part(part)
+            if dxf is not None:
+                payload, filename = dxf
+                if len(payload) > drawing_limit:
+                    # 在入口就挡超限,别等到 cad 查询才 FILE_TOO_LARGE(体验差)。
+                    oversized += 1
+                else:
+                    drawing_ids.append(
+                        artifacts.register(
+                            payload, kind=ArtifactKind.DRAWING, original_name=filename
+                        )
+                    )
+            elif str(part.get("mimeType") or "").lower() == "application/pdf":
+                # 上传按钮允许 PDF,那是 knowledge Agent 的活(队友泳道,还没接)。
+                # 给一句**准确**的话 —— 说"请转成 JPG"是错的,传 PDF 本就是按钮允许的。
+                pdf_rejected += 1
         elif kind in ("image_url", "image"):
             decoded = _decode_image_part(part)
             if decoded is None:
                 rejected += 1
                 continue
             payload, ext = decoded
-            ids.append(
+            photo_ids.append(
                 artifacts.register(payload, kind=ArtifactKind.PHOTO, original_name=f"upload{ext}")
             )
 
-    if not ids and not rejected and not pdf_rejected:
+    if not photo_ids and not drawing_ids and not rejected and not pdf_rejected and not oversized:
         return None  # 没有附件,原样放行
 
     body = " ".join(t.strip() for t in texts if t.strip())
-    if ids:
-        listed = "、".join(ids)
+    if photo_ids:
+        listed = "、".join(photo_ids)
         body = f"{body}\n(照片编号:{listed})" if body else f"看看这张照片。(照片编号:{listed})"
-        logger.info("已把 %d 张上传图片登记为产物:%s", len(ids), listed)
+        logger.info("已把 %d 张上传图片登记为产物:%s", len(photo_ids), listed)
+    if drawing_ids:
+        # 图纸编号与照片编号分开 —— cad/prompt.md 按「图纸编号」这个词把 id 传给工具,
+        # 别和照片编号串(safety 认照片编号)。
+        listed = "、".join(drawing_ids)
+        body = f"{body}\n(图纸编号:{listed})" if body else f"看看这张图纸。(图纸编号:{listed})"
+        logger.info("已把 %d 张上传图纸登记为产物:%s", len(drawing_ids), listed)
     if rejected:
         body = f"{body} {_UNSUPPORTED_HINT}"
     if pdf_rejected:
         body = f"{body} {_PDF_HINT}"
+    if oversized:
+        body = f"{body} {_DRAWING_TOO_LARGE_HINT}"
 
     return HumanMessage(content=body, id=message.id)
 
