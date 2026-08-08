@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import csv
 import json
+import sqlite3
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -137,12 +139,10 @@ m = ask(b2, "帮我算算这个月工资能拿多少")
 check(not transfers(m), "B2 超范围如实说做不了,不硬塞")
 
 print("=== 线程 C:英雄链 + 协同 ===")
-import sys
-
 sys.path.insert(0, str(REPO / "backend" / "src"))
 with (REPO / "backend/eval/datasets/safety.csv").open(encoding="utf-8") as f:
     row = next(r for r in csv.DictReader(f) if r["label"] == "violation")
-from gyt.core import artifacts  # noqa: E402
+from gyt.core import artifacts  # noqa: E402  (必须等 sys.path 指到 backend/src 之后)
 
 aid = artifacts.register(
     (REPO / "data/demo/photos" / row["image"]).read_bytes(),
@@ -160,8 +160,6 @@ whole = final(m) + sched_text(m)
 check("8月10日(周一)" in whole and ("T" in whole), "C3 协同:巡检后一句话记整改任务(下周一→8月10日)")
 
 print("=== 库级断言:回执说什么不算,库里有没有才算 ===")
-import sqlite3
-
 conn = sqlite3.connect(str(REPO / "backend" / "data" / "gyt.sqlite3"))
 rows = {r[1]: r for r in conn.execute("SELECT id,title,due_date,status FROM tasks")}
 t1 = rows.get("复检三层钢筋")
