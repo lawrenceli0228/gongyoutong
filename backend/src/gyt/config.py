@@ -51,6 +51,7 @@ _UPLOADS_SUBDIR: Final[str] = "uploads"
 _ARTIFACTS_SUBDIR: Final[str] = "artifacts"
 _CACHE_SUBDIR: Final[str] = "cache"
 _CHROMA_SUBDIR: Final[str] = "chroma"
+_CAD_INDEX_SUBDIR: Final[str] = "cad_index"
 _SQLITE_FILENAME: Final[str] = "gyt.sqlite3"
 
 
@@ -220,6 +221,7 @@ class Settings(BaseSettings):
     #     +-- artifacts/           <- artifacts_dir  产物注册表落盘(core/artifacts.py)
     #     +-- cache/               <- cache_dir      LLM 响应缓存(core/llm.py)
     #     +-- chroma/              <- chroma_dir     向量库持久化(RAG)
+    #     +-- cad_index/           <- cad_index_dir  CAD 图纸解析索引落盘(agents/cad/index.py)
     #     +-- gyt.sqlite3          <- sqlite_path    业务库文件
     #                                 (只保证父目录存在,不预先创建空文件,
     #                                  留给 sqlite 自己建,免得建出个坏库)
@@ -244,6 +246,11 @@ class Settings(BaseSettings):
     def chroma_dir(self) -> Path:
         """向量库持久化目录(访问即创建)。"""
         return _ensure_dir(self.data_dir / _CHROMA_SUBDIR)
+
+    @property
+    def cad_index_dir(self) -> Path:
+        """CAD 图纸解析索引落盘目录(访问即创建),一张图一份 <drawing_id>.json。"""
+        return _ensure_dir(self.data_dir / _CAD_INDEX_SUBDIR)
 
     @property
     def sqlite_path(self) -> Path:
