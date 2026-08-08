@@ -19,8 +19,9 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronRight, ArrowRightLeft, Check, Wrench } from "lucide-react";
 
-/** 子 Agent 的中文名。加新 Agent 时往这里补一行,不补也不会坏(会退回显示英文名)。 */
-const AGENT_NAMES: Record<string, string> = {
+/** 子 Agent 的中文名。加新 Agent 时往这里补一行,不补也不会坏(会退回显示英文名)。
+ *  导出给 ai.tsx 覆盖件用(子 Agent 正文折叠行也要念中文名)。 */
+export const AGENT_NAMES: Record<string, string> = {
   supervisor: "调度中枢",
   safety: "安全巡检员",
   ping: "连通性自检",
@@ -68,8 +69,9 @@ function isComplexValue(value: any): boolean {
   return Array.isArray(value) || (typeof value === "object" && value !== null);
 }
 
-/** 一行可展开的痕迹条。折叠时只有一行灰字,不抢正文的注意力。 */
-function Trace({
+/** 一行可展开的痕迹条。折叠时只有一行灰字,不抢正文的注意力。
+ *  导出给 ai.tsx 覆盖件复用:子 Agent 的原始汇报也折叠成这种行。 */
+export function Trace({
   icon,
   label,
   children,

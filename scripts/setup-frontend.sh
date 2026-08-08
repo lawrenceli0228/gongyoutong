@@ -367,6 +367,7 @@ apply_override() {
 }
 
 apply_override "tool-calls.tsx" "src/components/thread/messages/tool-calls.tsx"
+apply_override "ai.tsx" "src/components/thread/messages/ai.tsx"
 
 # -----------------------------------------------------------------------------
 # 步骤 3:收尾提示

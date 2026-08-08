@@ -397,6 +397,13 @@ def build_graph(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> CompiledStateGra
         prompt=build_supervisor_prompt(specs),
         supervisor_name=SUPERVISOR_NAME,
         output_mode=OUTPUT_MODE,
+        # 子 Agent 干完活时,库默认往状态里**注入**一对装饰消息:
+        #   AIMessage("Transferring back to supervisor") + ToolMessage("Successfully ...")
+        # 它们不是模型说的话,却算 token、进上下文、还会被 chat-ui 当正文渲染成
+        # 一句突兀的英文(2026-08-08 真机截图实锤)。关掉:交回本身走图边,不靠这对消息。
+        # 注意只关"回程"——去程的 transfer_to_* 是 supervisor 模型真实的工具调用,
+        # 保留着给 chat-ui 画「转给 XX」的轨迹,也是路由评测 runner 的判分依据。
+        add_handoff_back_messages=False,
         # 聊天界面的「Upload Image」按钮会把图片作为多模态 content 块塞进消息,
         # 而这里的模型是 DeepSeek 文本档 —— 收到 image 块直接 400,
         # 前端还不渲染这个错,用户只看到"点了发送没反应"。
