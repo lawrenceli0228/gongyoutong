@@ -131,6 +131,7 @@ from langgraph_supervisor import create_supervisor
 
 from gyt.agents.report import build_report_agent
 from gyt.agents.safety import SAFETY_AGENT_NAME, build_safety_agent
+from gyt.agents.schedule import SCHEDULE_AGENT_NAME, build_schedule_agent
 from gyt.config import get_settings
 
 # 导入模块而非函数：单测要用 monkeypatch.setattr(llm, "get_chat_model", ...) 把模型换成假的，
@@ -242,6 +243,20 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
         ),
         build=build_inspection_chain,
     ),
+    AgentSpec(
+        name=SCHEDULE_AGENT_NAME,
+        summary=(
+            "工地任务台账:记任务、改期限、销任务、查「某天之前还有啥没干完」。"
+            "用户说「记一下/建个任务」「XX改到周五」「XX干完了」"
+            "「下周三之前还有哪些任务」这类**安排活儿和期限**的话,派给它。"
+            "它只管任务台账,不看照片、不答规范条文。"
+            # 「安排活儿和期限」是这条的正域锚点:schedule 的正域天然饱满
+            # (记/查/改/销四类都有高频口语说法),不必像 ping 那样靠空泛词占位。
+            # 结尾免责句与 safety/inspection 同款 —— 防「验收」「复检」这类词
+            # 把照片/条文请求钓过来(路由回归时若 R06 被钓走,先查这条的措辞)。
+        ),
+        build=build_schedule_agent,
+    ),
     # W2/W3 在这里往下追加，一个 Agent 一行。改这里就等于改路由能力，
     # 记得同步更新 D18 的路由评测集（backend/eval/datasets/routing.csv，
     # 跑分入口 backend/eval/runner.py，`make eval SUITE=routing`），别让门槛失守。
@@ -270,9 +285,16 @@ _SUPERVISOR_PROMPT_TEMPLATE = """\
    就拆开、按顺序一位一位派，不要一次全撒出去。
 3. 如果没有哪位同事能干这活，**如实告诉用户「这个我们暂时做不了」**，
    并说清目前能做什么。绝对不许自己硬答一个看起来像模像样的答案。
-4. 如果用户说得太模糊、派不下去（比如只说「看看这个」却没给照片），
+4. 如果用户**意图不明**（比如只说「看一下这个」「那个处理一下」，根本不知道他要干什么），
    就用一句短话反问清楚，别猜。**反问也是你自己处理**——
    不要为了"总得派个人"而随便挑一位同事把模糊请求塞过去。
+   注意：「意图清楚、只是材料还没发来」**不算模糊**——比如他要查照片里有没有戴安全帽、
+   照片却还没发，这就照派管照片的同事，照片让同事自己向用户要（谁管要材料，
+   同事名单里都写了）。
+5. 你说出口的每一句话都是**直接讲给用户听的**，不是自言自语的盘算。
+   决定反问，就把问题本身写出来；决定「做不了」，就把做不了和现在能做什么写出来——
+   这两种情况写完就停，**严禁再调任何交接工具**。嘴上说着「派不下去/做不了」
+   手上却发了交接，系统只认你的手，结果就是派错人。
 
 # 汇报规则（红线，违反会出安全事故）
 

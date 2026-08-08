@@ -25,6 +25,7 @@ import pytest
 
 from gyt.agents.ping import PING_AGENT_NAME
 from gyt.agents.ping import tools as ping_tools
+from gyt.agents.schedule import SCHEDULE_AGENT_NAME
 from gyt.config import get_settings
 from gyt.core import llm
 from gyt.core.errors import ErrorCode
@@ -121,6 +122,16 @@ def test_图里有supervisor_且ping已被摘除(graph_module: GraphFixture) -> 
 
     assert graph_module.module.SUPERVISOR_NAME in node_names
     assert PING_AGENT_NAME not in node_names
+
+
+def test_schedule已挂上登记表(graph_module: GraphFixture) -> None:
+    """W3 台账泳道的接线锁:routing.csv 的 R12~R14 三条以 schedule 为标准答案,
+    谁把它从登记表摘掉,路由分数会**静默**掉回 12/22 —— 这条让摘除在单测阶段就红。"""
+    node_names = set(graph_module.module.graph.nodes)
+    registry_names = {spec.name for spec in graph_module.module.AGENT_REGISTRY}
+
+    assert SCHEDULE_AGENT_NAME in registry_names
+    assert SCHEDULE_AGENT_NAME in node_names
 
 
 def test_登记表里的每个名字都能在图里找到对应节点(graph_module: GraphFixture) -> None:

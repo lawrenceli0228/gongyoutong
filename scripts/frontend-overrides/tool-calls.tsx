@@ -33,6 +33,11 @@ const AGENT_NAMES: Record<string, string> = {
 /** 业务工具的中文名。 */
 const TOOL_NAMES: Record<string, string> = {
   analyze_site_photo: "查看现场照片",
+  render_inspection_report: "生成巡检记录",
+  add_task: "记任务",
+  list_tasks: "查任务清单",
+  reschedule_task: "改期限",
+  finish_task: "任务销项",
   echo: "回声自检",
 };
 
