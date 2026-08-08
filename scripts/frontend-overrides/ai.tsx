@@ -65,6 +65,33 @@ function CustomComponent({
   );
 }
 
+/** markdown 表格块的判定:表头行 + 分隔行。 */
+const TABLE_BLOCK_RE = /(^|\n)\s*\|[^\n]+\|\s*\n\s*\|[\s:|-]+\|/;
+
+/** 裁掉 supervisor 对台账的复读,保留真正的增量短评。
+ *
+ * 为什么裁两种形态:提示词摁不住 DeepSeek 的「最终回答要自包含」本能 ——
+ * 实测三连:让它照搬表格,它有时只说「见上表」;禁止它重抄,它硬抄;
+ * 再禁,它把表格改写成编号清单。所以渲染层同时裁:
+ *   ① markdown 表格行(|…|)
+ *   ② 带任务号(T\d+)的列表行 —— 它复述任务必带 T 号,这是可靠指纹
+ * 「最近要赶的是 T4」这类**非列表**的点评句会保留,那是它真正的增量价值。
+ * 收尾:指着被裁内容的冒号改成句号,多余空行合并。 */
+function stripLedgerEcho(md: string): string {
+  const kept = md
+    .split("\n")
+    .filter(
+      (line) =>
+        !/^\s*\|.*\|\s*$/.test(line) &&
+        !/^\s*(\d+[.、]|[-*•])\s.*T\d+/.test(line),
+    );
+  return kept
+    .join("\n")
+    .replace(/[:：]\s*(\n|$)/g, "。$1")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function parseAnthropicStreamedToolCalls(
   content: MessageContentComplex[],
 ): AIMessage["tool_calls"] {
@@ -174,6 +201,38 @@ export function AssistantMessage({
       ? message.name
       : undefined;
 
+  // 例外:带 markdown 表格的子 Agent 消息**不折叠**。
+  // 教训(2026-08-08 真机,两个方向都踩过):表格折叠后靠 supervisor 重抄 ——
+  // 它有时不抄(只说「见上表」,用户什么都看不到),有时又违令硬抄(表格出现两次)。
+  // 提示词两头都摁不住,所以结构性定死:表格谁产谁展示,supervisor 消息里的表格
+  // 在渲染层裁掉(见下面 turnHasVisibleAgentTable)。表格恰好出现一次,不赌模型。
+  const hasMarkdownTable = TABLE_BLOCK_RE.test(contentString);
+
+  // supervisor 消息的复读剔重:本轮(上一条 human 之后)已有子 Agent 的表格
+  // 展示在上面时,supervisor 正文里的表格行与带 T 号的清单行全部裁掉,只留短评。
+  const turnHasVisibleAgentTable = (() => {
+    if (subAgentName || message?.type !== "ai") return false;
+    const idx = thread.messages.findIndex((m) => m.id === message.id);
+    for (let i = idx - 1; i >= 0; i--) {
+      const m = thread.messages[i];
+      if (m.type === "human") break;
+      if (
+        m.type === "ai" &&
+        "name" in m &&
+        m.name &&
+        m.name !== "supervisor" &&
+        TABLE_BLOCK_RE.test(getContentString(m.content ?? []))
+      ) {
+        return true;
+      }
+    }
+    return false;
+  })();
+
+  const displayString = turnHasVisibleAgentTable
+    ? stripLedgerEcho(contentString)
+    : contentString;
+
   if (isToolResult && hideToolCalls) {
     return null;
   }
@@ -192,8 +251,11 @@ export function AssistantMessage({
           </>
         ) : (
           <>
-            {contentString.length > 0 &&
-              (subAgentName ? (
+            {(subAgentName && !hasMarkdownTable
+              ? contentString
+              : displayString
+            ).length > 0 &&
+              (subAgentName && !hasMarkdownTable ? (
                 <Trace
                   label={`${AGENT_NAMES[subAgentName] ?? subAgentName} · 已把结果交给调度中枢`}
                   icon={
@@ -206,7 +268,7 @@ export function AssistantMessage({
                 </Trace>
               ) : (
                 <div className="py-1">
-                  <MarkdownText>{contentString}</MarkdownText>
+                  <MarkdownText>{displayString}</MarkdownText>
                 </div>
               ))}
 
