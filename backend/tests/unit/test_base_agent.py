@@ -377,6 +377,28 @@ def test_带工具调用的消息一律保留即使不是自己的() -> None:
     assert kept[0].tool_calls[0]["id"] == "t1"
 
 
+def test_兄弟agent的成果保留_协同要靠它取数() -> None:
+    """2026-08-08 真机教训:第一版滤网连兄弟 Agent 的发言也滤掉,巡检后让
+    schedule「把这些隐患记成整改任务」,它看不见 safety 报的隐患清单,
+    只能反问用户 —— 跨 Agent 协同当场断裂。
+    滤网防的是 supervisor 派活腔的传染,不是信息流:兄弟的**成果**必须留着。"""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from gyt.core.focus import keep_focused
+
+    history = [
+        HumanMessage(content="查一下这张照片"),
+        AIMessage(content="发现 1 处重大隐患:高空作业未系安全带", name="safety"),
+        HumanMessage(content="把这些隐患记成整改任务,周五之前"),
+    ]
+
+    kept = keep_focused(history, own_name="schedule")
+
+    assert any("高空作业未系安全带" in str(m.content) for m in kept), (
+        "兄弟 Agent 的成果被滤掉,协同就断了"
+    )
+
+
 def test_没有名字的消息不会被误滤() -> None:
     """单 Agent 场景或旧数据里的 AIMessage 可能没有 name,不该被当成"别人的"。"""
     from langchain_core.messages import AIMessage

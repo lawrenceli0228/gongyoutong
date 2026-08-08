@@ -12,6 +12,7 @@ from pathlib import Path
 
 from langgraph.graph.state import CompiledStateGraph
 
+from gyt.agents.schedule.guard import RequireLedgerTool
 from gyt.agents.schedule.tools import SCHEDULE_TOOLS
 from gyt.core.base_agent import create_gyt_agent, load_prompt
 
@@ -41,4 +42,6 @@ def build_schedule_agent() -> CompiledStateGraph:
         tools=list(SCHEDULE_TOOLS),
         # 纯文字台账,走便宜的 DeepSeek;这个包里不存在视觉调用。
         purpose="text",
+        # 防假账结构件:回合首答必须带工具调用,否则打回重试(guard.py 有案情)。
+        extra_middleware=(RequireLedgerTool(),),
     )

@@ -305,6 +305,8 @@ _SUPERVISOR_PROMPT_TEMPLATE = """\
    不许用你自己的知识去填这个空。
 3. 引用规范条文、图纸数据、任务记录时，只能照抄同事给回来的内容，一个字都不要改，
    编号和页码尤其不许自己「顺手补全」。
+   同事记任务/改期/销项的回执，转述时**任务号（T几）和日期必须一起带上**，
+   照抄他的写法——用户要拿着 T 号跟工友对活，你把号吞了他就对不上了。
 4. 同事的结果里带**表格**时，那张表格用户在上面**已经看到了**——你只补一两句短话
    （一句结论，或者下一步怎么办），**严禁**把表格或清单内容重抄一遍，
    也不要逐条复述表格里的行。编号、日期以表格里的为准，你的短话里别再报数字。
@@ -400,13 +402,15 @@ def build_graph(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> CompiledStateGra
         prompt=build_supervisor_prompt(specs),
         supervisor_name=SUPERVISOR_NAME,
         output_mode=OUTPUT_MODE,
-        # 子 Agent 干完活时,库默认往状态里**注入**一对装饰消息:
-        #   AIMessage("Transferring back to supervisor") + ToolMessage("Successfully ...")
-        # 它们不是模型说的话,却算 token、进上下文、还会被 chat-ui 当正文渲染成
-        # 一句突兀的英文(2026-08-08 真机截图实锤)。关掉:交回本身走图边,不靠这对消息。
-        # 注意只关"回程"——去程的 transfer_to_* 是 supervisor 模型真实的工具调用,
-        # 保留着给 chat-ui 画「转给 XX」的轨迹,也是路由评测 runner 的判分依据。
-        add_handoff_back_messages=False,
+        # ⚠️ 必须保持开启(显式写出来防止有人再"优化"掉)。
+        # 2026-08-08 踩过一次大坑:嫌「Transferring back to supervisor」这对消息
+        # 是英文装饰、还烧 token,曾把它关掉 —— 结果它其实是 supervisor 的**收工信号**。
+        # 关掉后上下文里只剩「Successfully transferred to schedule + 子 Agent 的回复」,
+        # 没有「已交回」标记,DeepSeek 会把这读成「交接还在进行」,于是对同一件事
+        # **再转一次**,循环到 recursion_limit=8 熔断(记任务这句真机连炸两发,
+        # 而查询类问法碰巧都没踩 —— 属于抽样运气,不是没病)。
+        # 英文观感问题归前端管:ai.tsx 覆盖件按内容把这对消息折叠成灰行。
+        add_handoff_back_messages=True,
         # 聊天界面的「Upload Image」按钮会把图片作为多模态 content 块塞进消息,
         # 而这里的模型是 DeepSeek 文本档 —— 收到 image 块直接 400,
         # 前端还不渲染这个错,用户只看到"点了发送没反应"。

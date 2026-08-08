@@ -420,3 +420,13 @@
   真机验证在库里留了 T1(已销)/T2(整改任务)两条,正式彩排前按需清掉。
 - **日期词表 v1 冻结在 agents/schedule/dates.py 的 docstring:** 改词表要同步
   prompt.md 的日期红线与演示脚本;「本周X已过报错不猜」是有意设计,别当 bug 修。
+- **当天下午真机测试追加的三条结构性教训(都有测试/脚本钉死):**
+  ① `add_handoff_back_messages` 是**收工信号不是装饰**——关掉它 supervisor 会
+     对同一件事复转直到熔断(graph.py 有血泪注释,英文观感由前端 ai.tsx 折叠解决);
+  ② FocusOnOwnWork 滤网收窄为「只滤 supervisor 派活腔」——第一版连兄弟 Agent
+     的成果也滤,巡检→记整改任务的协同当场断裂(core/focus.py 记录了案情);
+  ③ **防假账结构件** agents/schedule/guard.py(RequireLedgerTool):多轮后模型
+     会不调工具、照上文回执「补」一条(嘴上销了库里没销,库为证)——回合首答
+     必须带工具调用,否则打回重试一次。提示词红线只是概率生效,结构件才兜得住。
+- **真机验收脚本进仓库:** `backend/scripts/live_acceptance.py`(19 断言,
+  含库级铁证组 D),演示彩排前跑一遍;跑法见脚本头注。

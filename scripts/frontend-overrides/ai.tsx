@@ -233,6 +233,12 @@ export function AssistantMessage({
     ? stripLedgerEcho(contentString)
     : contentString;
 
+  // 「Transferring back to supervisor」是 langgraph_supervisor 注入的**收工信号**,
+  // 后端必须保留(关掉会让 supervisor 复转直至熔断,graph.py 有血泪注释)。
+  // 按**内容**兜底判定而不是只看 name:流式期间消息可能还没带 name,
+  // 只按 name 折叠的话,这句英文会先裸奔一会儿(真机截图踩过)。
+  const isBackHandoff = /^Transferring back to /.test(contentString.trim());
+
   if (isToolResult && hideToolCalls) {
     return null;
   }
@@ -251,13 +257,17 @@ export function AssistantMessage({
           </>
         ) : (
           <>
-            {(subAgentName && !hasMarkdownTable
+            {((subAgentName || isBackHandoff) && !hasMarkdownTable
               ? contentString
               : displayString
             ).length > 0 &&
-              (subAgentName && !hasMarkdownTable ? (
+              ((subAgentName || isBackHandoff) && !hasMarkdownTable ? (
                 <Trace
-                  label={`${AGENT_NAMES[subAgentName] ?? subAgentName} · 已把结果交给调度中枢`}
+                  label={
+                    isBackHandoff
+                      ? "交回调度中枢"
+                      : `${AGENT_NAMES[subAgentName ?? ""] ?? subAgentName} · 已把结果交给调度中枢`
+                  }
                   icon={
                     <MessageSquareText className="h-3.5 w-3.5 shrink-0 text-gray-400" />
                   }
