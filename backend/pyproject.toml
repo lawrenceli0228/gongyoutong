@@ -53,6 +53,11 @@ dependencies = [
     # python-docx:Report Agent 渲染巡检记录/日报落盘(方案 D 决策里定的产物形态)。
     # 主依赖而非 dev:容器里 `uv sync --no-dev` 也要能渲染。
     "python-docx>=1.1,<2",
+    # ezdxf:CAD Agent 解析 DXF 图纸(纯 Python,绝不碰 DWG 二进制)。
+    # matplotlib:ezdxf.addons.drawing 渲染 DXF→PNG 的后端,CAD 预览要用。
+    # 都是主依赖:容器 `uv sync --no-dev` 也要能解析/渲染。
+    "ezdxf>=1.4,<2",
+    "matplotlib>=3.9,<4",
 ]
 
 [dependency-groups]

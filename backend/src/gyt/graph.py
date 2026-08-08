@@ -129,6 +129,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph_supervisor import create_supervisor
 
+from gyt.agents.cad import CAD_AGENT_NAME, build_cad_agent
 from gyt.agents.report import build_report_agent
 from gyt.agents.safety import SAFETY_AGENT_NAME, build_safety_agent
 from gyt.agents.schedule import SCHEDULE_AGENT_NAME, build_schedule_agent
@@ -256,6 +257,21 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             # 把照片/条文请求钓过来(路由回归时若 R06 被钓走,先查这条的措辞)。
         ),
         build=build_schedule_agent,
+    ),
+    AgentSpec(
+        name=CAD_AGENT_NAME,
+        summary=(
+            "看 DXF 图纸:查图纸上标注的尺寸、数构件在哪个图层、列图层清单、出图纸 PNG 预览。"
+            "用户问「首层平面图有哪些图层」「这道梁标注多长」「KZ1 在哪层」"
+            "「看看结构图」「打开某张图看柱距」这类**看图纸**的话,派给它。"
+            "它只看图纸,不看现场照片、不答规范条文该是多少 —— "
+            "「柱距多少才合规」是条文问题,不归它。"
+            # 正域写足(尺寸/构件/图层/预览四类的口语说法),结尾带同款条文免责句。
+            # routing R15-R17 的 expected_agent 已是 cad,这条一上线就把误派/空派归位。
+            # ⚠️ 别去改 safety 的 summary 救 R17(TODO-23 明令禁止);若演示图没标柱距,
+            #    query_dimension 会如实说做不了 —— 路由对了、能力边界也诚实,可接受。
+        ),
+        build=build_cad_agent,
     ),
     # W2/W3 在这里往下追加，一个 Agent 一行。改这里就等于改路由能力，
     # 记得同步更新 D18 的路由评测集（backend/eval/datasets/routing.csv，
