@@ -130,6 +130,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph_supervisor import create_supervisor
 
 from gyt.agents.cad import CAD_AGENT_NAME, build_cad_agent
+from gyt.agents.knowledge import KNOWLEDGE_AGENT_NAME, build_knowledge_agent
 from gyt.agents.report import build_report_agent
 from gyt.agents.safety import SAFETY_AGENT_NAME, build_safety_agent
 from gyt.agents.schedule import SCHEDULE_AGENT_NAME, build_schedule_agent
@@ -273,6 +274,20 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
         ),
         build=build_cad_agent,
     ),
+    AgentSpec(
+        name=KNOWLEDGE_AGENT_NAME,
+        summary=(
+            "查施工规范条文:消防/防火/安全/施工的规范要求是什么、数值是多少、要办什么手续。"
+            "用户问「消防车道要多宽」「疏散距离怎么要求」「防火分区最大多少平米」"
+            "「XX 规范上怎么规定的」「XX 合规标准是多少」这类**规范条文/标准数值**的话,派给它。"
+            "它答的是**规范里写了什么**,并给出处页码;查不到会如实说没有。"
+            "它只查条文,不看现场照片、不看图纸、不排期 —— "
+            "「这张照片合不合规」是看照片的活、「这张图尺寸多少」是看图纸的活,不归它。"
+            # routing R08-R11 的 expected_agent 已是 knowledge,这条一上线就把这几条空派归位。
+            # 正域写足(消防/防火/安全/施工 + 数值/程序/标准的口语说法),结尾带同款免责句。
+        ),
+        build=build_knowledge_agent,
+    ),
     # W2/W3 在这里往下追加，一个 Agent 一行。改这里就等于改路由能力，
     # 记得同步更新 D18 的路由评测集（backend/eval/datasets/routing.csv，
     # 跑分入口 backend/eval/runner.py，`make eval SUITE=routing`），别让门槛失守。
@@ -406,6 +421,13 @@ def build_graph(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> CompiledStateGra
     """
     _validate_registry(specs)
     settings = get_settings()
+
+    # 方案 B 知识库启动预置:开关默认 False(见 config),开了才在起服务时自动建规范索引。
+    # import 放进守卫内 —— 关的时候连 knowledge/ingest 都不碰。已建好则秒过(manifest 命中)。
+    if settings.knowledge_prebuild_at_startup:
+        from gyt.agents.knowledge.ingest import ensure_index_built
+
+        ensure_index_built()
 
     # 先把子 Agent 一个个造出来。任何一个造不出来（缺 Key、提示词文件丢了）都直接抛，
     # 绝不「跳过坏的、剩下的照常挂」—— 少挂一个 Agent 意味着那类问题会被 supervisor

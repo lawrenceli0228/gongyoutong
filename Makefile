@@ -72,6 +72,18 @@ cov: ## 跑测试 + 覆盖率报告,低于 80% 直接失败(与 CI 同一把尺�
 		--cov-report=html --cov-fail-under=$(COV_MIN)
 	@echo "[报告] HTML 覆盖率:$(BACKEND_DIR)/htmlcov/index.html"
 
+build-knowledge: ## 建/更新规范知识库(PDF 切分 + BGE-M3 向量化 → data/chroma)
+	@# 规范 PDF 放 data/demo/docs/。首次约 15 分钟(下 2.2GB 权重 + 抽嵌全书),
+	@# 之后 manifest 命中秒过(规范文件有增改才重嵌)。幂等,可反复跑。
+	@# 读默认数据目录(backend/data),与 make dev 一致;自定义了 GYT_DATA_DIR 就带上它。
+	@#
+	@# 容器/生产:改用 `$(COMPOSE) run --rm backend python -m gyt.agents.knowledge.ingest`
+	@#   把挂载的 ./data 卷先建好,再 make up。
+	@#   ⚠️ **别在容器里靠 GYT_KNOWLEDGE_PREBUILD_AT_STARTUP 启动时自动建** ——
+	@#      15 分钟的启动建库会拖垮 healthcheck(start_period 120s)→ 容器反复重启永不 healthy。
+	@#      而镜像构建期烤索引也没用:./data 是绑定挂载,运行期会把镜像里那份盖掉。
+	cd $(BACKEND_DIR) && $(UV) run python -m gyt.agents.knowledge.ingest
+
 eval: ## 跑评测门槛(默认三套全跑;make eval SUITE=safety 只跑一套)
 	@# safety 已接上(eval/hooks.py:RUNNERS);routing / rag 还没接,会打印 SKIP —— 那是正常状态。
 	@# ⚠️ safety 会**真的调 kimi-k3 并真的花钱**:实测单张 10~60 秒,30 张串行约 22 分钟。

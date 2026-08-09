@@ -151,8 +151,55 @@ async def run_routing_row(row: Mapping[str, str]) -> Any:
     return "none"
 
 
+async def run_rag_row(row: Mapping[str, str]) -> Any:
+    """跑知识集的一行:把 question 丢进检索工具,交出 {answer, source, page} 给 score_rag。
+
+        row["question"] ──► search_regulation(query)
+              │ ok=True  ─► {answer: 命中原文拼接, source: 完整文件名, page: 命中页码}
+              │ EMPTY    ─► {answer: 「查不到」的人话, source: "", page: ""}  ← no_answer 判定用
+              │ 其它失败  ─► raise EvalRunnerError
+
+    为什么直接调**工具**而不是走完整 knowledge Agent(与 safety 同源):
+      rag 测的是**检索准不准、有没有编造**(eval/README.md 原话),不是「Agent 会不会说话」。
+      走本体会多引入两层噪音(可能不调工具、可能把原文改写得走样),还多烧一轮 DeepSeek。
+      工具返回的 passages 本来就带 source/page,正是 score_rag 要读的三要素来源。
+      代价同 safety:**Agent 本体那层(会不会照抄出处/会不会扩写)没被这套覆盖** ——
+      那部分靠 routing 套 + 人工过演示话术兜。
+
+    answer 用命中原文的拼接(要点应当逐字在原文里),所以 rag.csv 的 expected_answer_points
+    要按**原文里真实出现的字样**填(原文有 OCR 噪声,别填一个原文里没有的漂亮说法)。
+    page 把命中的几页都给上(score_rag 只要求与 expected_page 有交集),别自己缩成一页反而漏。
+    """
+    question = str(row.get("question") or "").strip()
+    if not question:
+        raise EvalRunnerError("这一行没填 question,没法测检索。")
+
+    # 惰性导入:import 会带进 knowledge.store(向量库/embedding 的门面)。放模块顶部会拖累
+    # 只想跑 safety/routing 的场景。真正加载 2.2GB 模型是在工具第一次被调时。
+    from gyt.agents.knowledge.tools import search_regulation
+
+    envelope = await search_regulation.ainvoke({"query": question})
+    if not isinstance(envelope, Mapping):
+        raise EvalRunnerError(f"检索工具没返回信封,而是 {type(envelope).__name__}。")
+
+    if not envelope.get("ok"):
+        if envelope.get("error_code") == "EMPTY_RESULT":
+            # 检索判「无依据」→ 交出「承认查不到、无出处」的形状,给 score_rag 的 no_answer 判定。
+            return {"answer": str(envelope.get("user_msg") or ""), "source": "", "page": ""}
+        raise EvalRunnerError(
+            f"检索失败({envelope.get('error_code')}):{envelope.get('user_msg')}"
+        )
+
+    passages = (envelope.get("data") or {}).get("passages") or []
+    return {
+        "answer": " ".join(str(p.get("text") or "") for p in passages),
+        "source": str(passages[0].get("source") or "") if passages else "",
+        "page": ",".join(str(p.get("page")) for p in passages if p.get("page") is not None),
+    }
+
+
 RUNNERS: Final[Mapping[str, Any]] = MappingProxyType(
-    {"safety": run_safety_row, "routing": run_routing_row}
+    {"safety": run_safety_row, "routing": run_routing_row, "rag": run_rag_row}
 )
 """套名 → 被测函数。**这是加新 Agent 时唯一要改的地方。**
 
@@ -163,4 +210,11 @@ W2/W3 往下加:
     "rag": 队友的 knowledge Agent(W2 末验收)
 """
 
-__all__ = ["PHOTOS_DIR", "RUNNERS", "EvalRunnerError", "run_routing_row", "run_safety_row"]
+__all__ = [
+    "PHOTOS_DIR",
+    "RUNNERS",
+    "EvalRunnerError",
+    "run_rag_row",
+    "run_routing_row",
+    "run_safety_row",
+]

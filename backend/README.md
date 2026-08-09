@@ -195,6 +195,34 @@ make frontend                      # 拉取并初始化 agent-chat-ui
 docker compose --profile ui up -d  # 前端在 http://localhost:3000
 ```
 
+### 3.5 知识库(RAG)首次建库(问规范前必做一次)
+
+规范检索(knowledge Agent)靠一个**本地向量库**:把 `data/demo/docs/` 里的规范 PDF 切分、
+用本地 BGE-M3 向量化,写进 `data/chroma/`。**建库是生成物,不进 git**(和 `frontend/`、
+BGE-M3 权重一个道理:提交「源 PDF + 建库代码」,各处重建),所以**每台机器、每个部署都要建一次**。
+
+```bash
+make build-knowledge   # 首次约 15 分钟(下 2.2GB 权重 + 抽嵌全书);之后 manifest 命中秒过
+```
+
+- **本地开发**:上面这条即可(建到 `backend/data/chroma`,与 `make dev` 同一目录)。
+  嫌手动麻烦,也可以在 `.env` 里设 `GYT_KNOWLEDGE_PREBUILD_AT_STARTUP=true` ——
+  `make dev` 首次启动会自动建(会卡那 15 分钟一次),之后每次秒起。
+- **容器 / 生产**:**先把挂载的 `./data` 卷建好,再起服务**:
+  ```bash
+  docker compose run --rm backend python -m gyt.agents.knowledge.ingest   # 建到 ./data/chroma
+  make up
+  ```
+  `./data` 是绑定挂载,建一次就持久,容器重建不丢。
+
+> ⚠️ **容器里千万别开 `GYT_KNOWLEDGE_PREBUILD_AT_STARTUP`**:15 分钟的启动建库会拖垮
+> healthcheck(`start_period` 120s)→ 容器判成 unhealthy → `restart: on-failure:3` 反复重启,
+> 永远建不完。**镜像构建期烤索引也没用**:`./data` 绑定挂载运行期会把镜像里那份盖掉。
+> 所以生产的正解就是上面那条「先 `run --rm` 建卷、再 `up`」。
+>
+> 加了新规范 PDF、或想换 embedding 模型,重跑 `make build-knowledge`(换模型加 `--rebuild`);
+> 换模型还要同步 `backend/Dockerfile` 的 `ARG EMBEDDING_MODEL` 与 `config.embedding_model`。
+
 ### 4. 跑测试
 
 ```bash

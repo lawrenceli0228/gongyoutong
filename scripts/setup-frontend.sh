@@ -377,6 +377,10 @@ apply_override "multimodal-utils.ts" "src/lib/multimodal-utils.ts"
 apply_override "MultimodalPreview.tsx" "src/components/thread/MultimodalPreview.tsx"
 apply_override "thread-index.tsx" "src/components/thread/index.tsx"
 
+# 上游 LangGraph logo 用了 JSX 里非法的 clip-path(应为 clipPath),控制台每次报
+# "Invalid DOM property `clip-path`"。这里改成 clipPath 消掉这个警告。
+apply_override "langgraph.tsx" "src/components/icons/langgraph.tsx"
+
 # -----------------------------------------------------------------------------
 # 步骤 3:收尾提示
 # -----------------------------------------------------------------------------
