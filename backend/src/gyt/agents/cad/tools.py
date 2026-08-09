@@ -376,6 +376,21 @@ async def render_preview(drawing: str) -> Envelope:
         return error
     assert idx is not None
 
+    name = _display_name(drawing_id)
+    # 渲染前先按图元数拦一道:真实工程图上千图元,matplotlib 逐个画会卡几分钟(实测 268s),
+    # 而且大地坐标系的真图渲染出来常是空白。超阈值就**不渲染、如实说**,别硬撑到超时。
+    entities_total = sum(idx["entities_by_kind"].values())
+    max_entities = get_settings().drawing_render_max_entities
+    if entities_total > max_entities:
+        return fail(
+            ErrorCode.FILE_TOO_LARGE,
+            user_msg=(
+                f"{name}图元太多({entities_total} 个),生成预览会很慢,这次先没出。"
+                "不过图层、构件、标注尺寸都能正常查——你想看哪样直接说。"
+            ),
+            detail=f"render 跳过:entities={entities_total} > {max_entities}",
+        )
+
     path = await asyncio.to_thread(artifacts.resolve, drawing_id)
     try:
         png_bytes = await asyncio.to_thread(render.to_png, path)
@@ -390,10 +405,12 @@ async def render_preview(drawing: str) -> Envelope:
     png_id = await asyncio.to_thread(
         artifacts.register, png_bytes, kind=ArtifactKind.OTHER, original_name=_PREVIEW_NAME
     )
-    name = _display_name(drawing_id)
     return ok(
         data={"png_id": png_id, "layers_count": len(idx["layers"])},
-        user_msg=f"{name}的预览图出好了(编号 {png_id}),{len(idx['layers'])} 个图层都画上了。",
+        user_msg=(
+            f"{name}的预览图渲染好了(编号 {png_id})。"
+            "注:预览图暂时不在聊天里直接显示,这个编号先留着备用。"
+        ),
     )
 
 
