@@ -203,6 +203,13 @@ class Settings(BaseSettings):
     # 用法:dev 在 .env、生产在 compose 里设 GYT_KNOWLEDGE_PREBUILD_AT_STARTUP=true;
     # 生产更推荐的是「镜像构建期烤索引」(同 BGE-M3 权重的烤法),那样零冷启动。
     knowledge_prebuild_at_startup: bool = False
+    # 检索返回多少条候选(top-k)。真图 top-1 不一定是答案条文(条文说明常排更前),
+    # 给 agent 几条挑,别只给一条。
+    knowledge_top_k: int = Field(default=5, ge=1)
+    # 「无依据」判定阈值:Chroma 返回的是**距离(越小越近)**;最近的一条都比这个还远
+    # 就判「知识库没有」,不许硬答。默认值按 GB50016 语料标定(正例命中 ~0.35-0.6,
+    # 无关问题更大)。换语料/换 embedding 要重标。
+    knowledge_max_distance: float = Field(default=0.85, gt=0)
 
     # --- 缓存 -------------------------------------------------------------
     llm_cache_enabled: bool = True
