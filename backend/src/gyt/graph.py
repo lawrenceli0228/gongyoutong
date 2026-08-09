@@ -407,6 +407,13 @@ def build_graph(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> CompiledStateGra
     _validate_registry(specs)
     settings = get_settings()
 
+    # 方案 B 知识库启动预置:开关默认 False(见 config),开了才在起服务时自动建规范索引。
+    # import 放进守卫内 —— 关的时候连 knowledge/ingest 都不碰。已建好则秒过(manifest 命中)。
+    if settings.knowledge_prebuild_at_startup:
+        from gyt.agents.knowledge.ingest import ensure_index_built
+
+        ensure_index_built()
+
     # 先把子 Agent 一个个造出来。任何一个造不出来（缺 Key、提示词文件丢了）都直接抛，
     # 绝不「跳过坏的、剩下的照常挂」—— 少挂一个 Agent 意味着那类问题会被 supervisor
     # 静默地答不上来，比起动直接失败要难查得多。

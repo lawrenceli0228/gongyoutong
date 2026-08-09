@@ -196,6 +196,14 @@ class Settings(BaseSettings):
     photo_compress_target_mb: float = Field(default=4.0, gt=0)  # 压到多大再喂视觉模型
     photo_compress_max_edge_px: int = Field(default=2048, ge=1)  # 长边像素上限
 
+    # --- 知识库(RAG)-----------------------------------------------------
+    # 方案 B 启动预置:开则起服务时若规范索引缺失/有改动,自动建库(agents/knowledge/ingest)。
+    # **默认 False**——两个原因:① 保护测试(测试 chroma_dir 是 tmp,一开必触发 2.2GB 建库);
+    # ② 首次建库会阻塞启动约 15 分钟,该由 dev/生产显式接受。
+    # 用法:dev 在 .env、生产在 compose 里设 GYT_KNOWLEDGE_PREBUILD_AT_STARTUP=true;
+    # 生产更推荐的是「镜像构建期烤索引」(同 BGE-M3 权重的烤法),那样零冷启动。
+    knowledge_prebuild_at_startup: bool = False
+
     # --- 缓存 -------------------------------------------------------------
     llm_cache_enabled: bool = True
     # 提示词版本号,是 LLM 缓存键的组成部分:改了提示词就把它 +1,
