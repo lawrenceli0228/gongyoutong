@@ -105,6 +105,9 @@ li b{color:var(--ink)}
 .task .id{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent)}
 .task .p1{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;background:var(--bad-soft);color:var(--bad)}
 .task .p2{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;background:var(--warn-soft);color:var(--warn)}
+.task .pd{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;background:var(--ok-soft);color:var(--ok)}
+.task.done{border-color:var(--ok);background:linear-gradient(to right,var(--ok-soft) 0 3px,var(--card) 3px)}
+.task.done .id{color:var(--ok)}
 .task .ef{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-left:auto}
 .task .ti{font-weight:600;font-size:15px}
 .task dl{margin:6px 0 0;font-size:13px;display:grid;grid-template-columns:auto 1fr;gap:3px 12px}
@@ -127,6 +130,7 @@ footer{padding-top:24px;font-size:13px;color:var(--ink-faint)}
   <a href="#fail"><b>09</b>失败模式</a>
   <a href="#ck"><b>10</b>演示 checklist</a>
   <a href="#task"><b>11</b>任务清单</a>
+  <a href="#log"><b>12</b>执行记录</a>
 </nav>
 
 <main>
@@ -479,26 +483,32 @@ Lane E(收尾):  T5  ARTIFACTS_DIR / .PHONY / TOOL_NAMES
 
 执行:<b>A ∥ B ∥ (D→E) 并行 → B 完成后接 C → 合并 → T6 → 彩排</b></pre>
 
-  <div class="task"><div class="hd"><span class="id">T1</span><span class="p1">P1</span><span class="ti">torch 换 CPU-only 索引并重新 lock</span><span class="ef">human ~1h / CC ~20min</span></div>
+  <div class="task done"><div class="hd"><span class="id">T1</span><span class="pd">已完成</span><span class="ti">torch 换 CPU-only 索引并重新 lock</span><span class="ef">2026-08-10</span></div>
     <dl><dt>由来</dt><dd>D5;Linux 轮子 3.31GB 里 2.4GB 是永不加载的 CUDA</dd>
-    <dt>验证</dt><dd><code>uv lock --check</code> + 镜像 &lt; 5GB</dd></dl></div>
+    <dt>实测</dt><dd>CUDA 包 <b>19 → 0</b>;linux 轮子 <b>526.6MB → 191.8MB</b>;<code>uv lock --check</code> exit 0;容器内 <code>torch 2.13.0+cpu</code> 且 <code>torch.version.cuda is None</code></dd>
+    <dt>纠正</dt><dd>marker 一度写成 <code>linux or win32</code>。实测 Windows 侧 torch <b>本来就不带 nvidia 依赖</b>(靠 METADATA 的 <code>platform_system</code> marker 分流),改道只省 0.12MB 却把队友挪到另一个 CDN —— 已收窄回 linux-only</dd>
+    <dt>体积</dt><dd><code>docker history</code> 各层加总 <b>4.44GB</b>(达标),但 <code>docker images</code> 报 <b>6.38GB</b>,差值恰等于 venv 层,疑似 buildkit 重复计数,<b>未查实</b>。旧的 4.19GB 不是有效基线(那是 CAD/knowledge 合并前、压根没装 torch 的镜像)</dd></dl></div>
 
-  <div class="task"><div class="hd"><span class="id">T2</span><span class="p1">P1</span><span class="ti">data_dir 统一到仓库根 + 搬迁 + 两个 agent 改读配置</span><span class="ef">human ~1.5h / CC ~25min</span></div>
+  <div class="task done"><div class="hd"><span class="id">T2</span><span class="pd">已完成</span><span class="ti">data_dir 统一到仓库根 + 搬迁 + 两个 agent 改读配置</span><span class="ef">2026-08-10</span></div>
     <dl><dt>由来</dt><dd>D2/D4;两条路径两份数据,缓存/台账/知识库/产物全分裂</dd>
-    <dt>文件</dt><dd><code>config.py</code>、<code>knowledge/ingest.py</code>、<code>cad/demo_registry.py</code>、搬迁 <code>backend/data/*</code></dd>
-    <dt>验证</dt><dd><code>docker compose exec backend python -c "from gyt.config import get_settings as g; print(g().demo_assets_dir)"</code> → <code>/app/data/demo</code></dd></dl></div>
+    <dt>实测</dt><dd>容器内 <code>demo_assets_dir = /app/data/demo</code>,规范 PDF 1 份 / 图纸 DXF 3 张都找得到;<code>sqlite_path</code> 存在 —— 本机与容器现在读<b>同一份</b>数据</dd>
+    <dt>搬迁</dt><dd>新增 <code>scripts/migrate_data_dir.py</code>(默认只演练)。已执行:<b>1399 个文件 86.1MB</b> 并入仓库根;3 处同名缓存冲突(同 key 不同采样,两份都有效)按 mtime 取新</dd>
+    <dt>连带</dt><dd>堵掉一个<b>假绿灯</b>:<code>live_acceptance.py</code> 原来写死读 <code>backend/data/gyt.sqlite3</code>,改完后会读旧库陈年快照 —— D1~D4「库级铁证」会全绿而什么都没验。现在从配置取路径 + 只读 URI 打开</dd></dl></div>
 
   <div class="task"><div class="hd"><span class="id">T3</span><span class="p1">P1</span><span class="ti">ingest 分开退出码 + 明确原因</span><span class="ef">human ~1h / CC ~15min</span></div>
     <dl><dt>由来</dt><dd>D3;「没找到 PDF」和「已入库」压成同一句话+同一个退出码</dd>
     <dt>验证</dt><dd>故意把 <code>GYT_DATA_DIR</code> 指到空目录,<b>必须 exit 1 且打印具体路径</b></dd></dl></div>
 
-  <div class="task"><div class="hd"><span class="id">T4</span><span class="p1">P1</span><span class="ti">dev override + make dev-docker</span><span class="ef">human ~1h / CC ~15min</span></div>
+  <div class="task done"><div class="hd"><span class="id">T4</span><span class="pd">已完成</span><span class="ti">dev override + make dev-docker / test-docker</span><span class="ef">2026-08-10</span></div>
     <dl><dt>由来</dt><dd>D6;compose 只挂 data 不挂源码,改一行要重建</dd>
-    <dt>验证</dt><dd>起容器后改 <code>prompt.md</code>,不重建即生效</dd></dl></div>
+    <dt>判据</dt><dd><b>按实况降级了</b>:uvicorn 的 reload 监视清单写死 <code>*.py</code>(查过源码),所以「改 <code>prompt.md</code> 不重建即生效」<b>不成立</b>。真实判据 —— 改 <code>.py</code> 自动重载(秒级);改 <code>.md</code> 要 <code>restart backend</code>(秒级);两者都<b>不用重建镜像</b>(分钟级)</dd>
+    <dt>实测</dt><dd>改宿主 <code>ping/tools.py</code> 后 <b>0.9 秒</b>容器日志出现 <code>WatchFiles detected changes ... Reloading...</code>,重载后 <code>/ok</code> 恢复、healthcheck 回 healthy。macOS 绑定挂载确实把 inotify 传进去了(Windows/WSL2 未验,收不到就用 <code>GYT_WATCH_POLLING=1</code>)</dd>
+    <dt>纠正</dt><dd>第一版 <code>up -d</code> 漏了 <code>--build</code>。挂载换的是<b>源码</b>、换不掉镜像层里的<b>依赖</b>,镜像旧一步容器就在图加载期 <code>ModuleNotFoundError</code> —— 而 <code>up -d</code> 返回 0,照打「[已启动]」</dd></dl></div>
 
-  <div class="task"><div class="hd"><span class="id">T5</span><span class="p2">P2</span><span class="ti">ARTIFACTS_DIR / .PHONY / TOOL_NAMES 收尾</span><span class="ef">human ~20min / CC ~5min</span></div>
+  <div class="task done"><div class="hd"><span class="id">T5</span><span class="pd">已完成</span><span class="ti">ARTIFACTS_DIR / .PHONY / TOOL_NAMES 收尾</span><span class="ef">2026-08-10</span></div>
     <dl><dt>由来</dt><dd>合并残留 + 审查发现</dd>
-    <dt>验证</dt><dd>界面展开痕迹显示中文工具名</dd></dl></div>
+    <dt>实测</dt><dd>三件都随 T4/T2 顺手做掉:<code>ARTIFACTS_DIR</code> 改挂 <code>DATA_DIR</code>;<code>.PHONY</code> 补齐(含漏掉的 <code>build-knowledge</code>);<code>TOOL_NAMES</code> 补上队友 7 个工具的中文名,现共 14 个全覆盖</dd>
+    <dt>剩余</dt><dd>界面上的实际显示效果还没在浏览器里看过</dd></dl></div>
 
   <div class="task"><div class="hd"><span class="id">T6</span><span class="p1">P1</span><span class="ti">live_acceptance 补 E/F 两组</span><span class="ef">human ~3h / CC ~30min</span></div>
     <dl><dt>由来</dt><dd>D7;19 断言只覆盖 5 个 Agent 里的 3 个</dd>
@@ -513,9 +523,58 @@ Lane E(收尾):  T5  ARTIFACTS_DIR / .PHONY / TOOL_NAMES
     <dt>验证</dt><dd>新人照 README 能起来</dd></dl></div>
 </section>
 
+<section id="log">
+  <div class="eyebrow">Execution log</div>
+  <h2>12 / 执行记录</h2>
+  <div class="h">2026-08-10 · T1 / T2 / T4 落地</div>
+
+  <p class="lede">两轮多 agent 并行:第一轮 3 条实施道 + 3 个对抗复核,第二轮 4 条收口道。
+  第二轮的复核和其中一条实施道撞上会话额度没跑成,由人接手补齐。</p>
+
+  <h3>对抗复核咬出的三条 HIGH —— 全是真问题</h3>
+  <div class="tw"><table>
+    <thead><tr><th>问题</th><th>后果</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td><code>live_acceptance.py</code> 仍写死读 <code>backend/data/gyt.sqlite3</code></td>
+          <td>后端写新库、脚本读旧库快照,D1~D4「库级铁证」<b>全绿而什么都没验</b> —— 比报红危险</td>
+          <td>改成从配置取路径 + 只读 URI 打开(库不存在不再被 sqlite 静默建成空库)</td></tr>
+      <tr><td>代码已改、数据未搬的中间态</td>
+          <td>谁先跑一下就静默丢掉 762 个预热缓存和整本台账,日志一句异常都没有</td>
+          <td>写了 <code>migrate_data_dir.py</code> 并执行,1399 文件 86.1MB 已并入</td></tr>
+      <tr><td><code>make dev-docker</code> 漏了 <code>--build</code></td>
+          <td>镜像比代码旧 → 图加载期崩;而 <code>up -d</code> 返回 0,照打「[已启动]」</td>
+          <td>补 <code>--build</code>,并写清为什么挂载换不掉依赖</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note w"><p>⚠️ <b>另有一类问题值得单记:agent 写下的「听着合理但实测为假」的注释。</b><br>
+  这轮抓到 5 条 —— uv 对不存在的包名会报错 / sentence-transformers 是裸依赖 /
+  <code>.dockerignore</code> 挡了 eval / <code>PYTHONDONTWRITEBYTECODE</code> 省了开销 / Windows 也带 CUDA ——
+  全部实测推翻后改写。本仓「注释不许写没验证过的东西」这条红线,<b>在多 agent 协作下要专门设一道复核来守</b>。</p></div>
+
+  <h3>最终验收 · 全部真跑,不是推理</h3>
+  <div class="tw"><table>
+    <thead><tr><th>项</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr><td><code>docker compose build backend</code></td><td>通过 —— T1 的 CPU 轮子从 download-r2.pytorch.org 真拉下来了</td></tr>
+      <tr><td>容器内 torch</td><td><code>2.13.0+cpu</code>,<code>torch.version.cuda</code> 为 <code>None</code></td></tr>
+      <tr><td>容器内 <code>demo_assets_dir</code></td><td><code>/app/data/demo</code> —— 规范 PDF 1 份、图纸 DXF 3 张都找得到</td></tr>
+      <tr><td>容器内 <code>sqlite_path</code></td><td><code>/app/data/gyt.sqlite3</code> 且存在 —— 本机与容器同源</td></tr>
+      <tr><td><code>make test-docker</code></td><td><b>623 passed / 2 skipped,覆盖率 88%</b>(门槛 80%)</td></tr>
+      <tr><td><code>make dev-docker</code> → <code>/ok</code></td><td><code>{"ok":true}</code>,healthcheck healthy</td></tr>
+      <tr><td>热重载</td><td>改 <code>.py</code> 后 0.9 秒触发 Reloading,重载后服务自愈</td></tr>
+      <tr><td>叠加档端口</td><td>仍是 <code>127.0.0.1:2024</code> —— 安全红线守住</td></tr>
+      <tr><td><code>ruff check</code> / <code>format --check</code></td><td>全绿。顺手清了 4 个 main 上本来就没格式化的文件 —— CI 那条 <code>format --check</code> 之前是红的</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note"><p><b>还没做的:</b> T3(ingest 分开退出码)· T6(验收补 E/F 两组)· T7(告知队友)· T8(README 补统一 Docker 段)。
+  其中 <b>T7 最时间敏感</b> —— 队友手册第 88 行把失败信号写成了成功判据,而他正在活跃提交。</p></div>
+</section>
+
 <hr>
 <footer>
-  <p>工友通 · W4 跨平台运行方案(最终版)· <code>/plan-eng-review</code> 二轮 · 2026-08-09<br>
+  <p>工友通 · W4 跨平台运行方案 · <code>/plan-eng-review</code> 二轮定稿 2026-08-09 · <b>T1/T2/T4 落地并验收 2026-08-10</b><br>
   Step 0:scope 未扩大,确认为「修五处路径与依赖问题」而非新建架构。
   Architecture 3 · Code Quality 2 · Test 6 新断言 · Performance 1(转 checklist)· 失败模式 3 个 ⚠️,0 critical gap<br>
   <b>相对上一版 diff 更小</b>:D2 让 D4 从「加配置项」缩成「改一个默认值」。</p>
