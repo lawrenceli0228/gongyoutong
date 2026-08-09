@@ -285,3 +285,111 @@ def test_传PDF时给出准确的话而不是让人转成JPG() -> None:
 def test_前端格式里不支持的图片类型仍会被拒() -> None:
     state = {"messages": [HumanMessage(content=[_ui_image_part(_jpeg(), "image/gif")], id="u1")]}
     assert "转成 JPG 或 PNG" in ingest_uploads(state)["messages"][1].content
+
+
+# ---------------------------------------------------------------------------
+# 方案 A:工友现场上传 DXF 图纸
+#
+# 关键约束:DXF 的浏览器 MIME 不可靠(常是空串或 application/octet-stream),
+# 所以一律按文件名 .dxf 后缀认,不信 MIME。前端(override 后)发的是 file 块,与 PDF 同形。
+# ---------------------------------------------------------------------------
+
+
+def _dxf_bytes(tmp_path: Any) -> bytes:
+    """就地造一张最小 DXF 的字节(复用 CAD 测试的造样工具)。"""
+    from tests.unit._dxf_fixtures import make_plain_dxf
+
+    path = tmp_path / "u.dxf"
+    make_plain_dxf(path)
+    return path.read_bytes()
+
+
+def _ui_dxf_part(
+    payload: bytes, filename: str = "首层平面图.dxf", mime: str = "image/vnd.dxf"
+) -> dict[str, Any]:
+    """agent-chat-ui(override 后)对 .dxf 产出的 file 块形状。data 是裸 base64。"""
+    return {
+        "type": "file",
+        "mimeType": mime,
+        "data": base64.b64encode(payload).decode("ascii"),
+        "metadata": {"filename": filename},
+    }
+
+
+def test_上传的DXF被登记成图纸_消息带图纸编号(tmp_path) -> None:
+    payload = _dxf_bytes(tmp_path)
+    state = {
+        "messages": [
+            HumanMessage(
+                content=[{"type": "text", "text": "看看这张图有哪些图层"}, _ui_dxf_part(payload)],
+                id="u1",
+            )
+        ]
+    }
+
+    updates = ingest_uploads(state)["messages"]
+    assert isinstance(updates[0], RemoveMessage)
+    rewritten = updates[1]
+    assert isinstance(rewritten.content, str)
+    assert "看看这张图有哪些图层" in rewritten.content
+    assert "图纸编号" in rewritten.content  # 不是「照片编号」——cad 按这个词认
+
+    ids = _ids_in(rewritten.content)
+    assert len(ids) == 1
+    # 真的登记成 DRAWING,且字节一致(cad 后面按编号解析)。
+    assert artifacts.resolve(ids[0]).read_bytes() == payload
+    assert artifacts.read_meta(ids[0])["kind"] == "DRAWING"
+
+
+def test_DXF按文件名认_MIME是octet_stream也收(tmp_path) -> None:
+    """浏览器对 .dxf 常给 application/octet-stream —— 只要文件名是 .dxf 就得收。"""
+    payload = _dxf_bytes(tmp_path)
+    part = _ui_dxf_part(payload, filename="结构布置图.dxf", mime="application/octet-stream")
+    state = {"messages": [HumanMessage(content=[part], id="u1")]}
+
+    rewritten = ingest_uploads(state)["messages"][1]
+    ids = _ids_in(rewritten.content)
+    assert len(ids) == 1
+    assert artifacts.read_meta(ids[0])["kind"] == "DRAWING"
+
+
+def test_非DXF的file块不被误当图纸(tmp_path) -> None:
+    """文件名不是 .dxf、MIME 也不含 dxf 的 file 块,绝不能被误登记成图纸。"""
+    part = {
+        "type": "file",
+        "mimeType": "application/octet-stream",
+        "data": base64.b64encode(b"just some bytes").decode("ascii"),
+        "metadata": {"filename": "notes.bin"},
+    }
+    state = {"messages": [HumanMessage(content=[{"type": "text", "text": "看看"}, part], id="u1")]}
+    # 既不是图纸也不是 PDF/图片 → 没有附件被登记 → 原样放行(不改写)。
+    assert ingest_uploads(state) == {}
+
+
+def test_超大DXF在入口就被挡(tmp_path, monkeypatch) -> None:
+    """把上限压到极小,任何 DXF 都算超大 —— 入口就拒,并给中文提示,不静默登记。"""
+    from gyt.config import get_settings
+
+    monkeypatch.setenv("GYT_DRAWING_MAX_MB", "0.000001")
+    get_settings.cache_clear()
+
+    payload = _dxf_bytes(tmp_path)
+    state = {
+        "messages": [
+            HumanMessage(
+                content=[{"type": "text", "text": "看图"}, _ui_dxf_part(payload)], id="u1"
+            )
+        ]
+    }
+
+    rewritten = ingest_uploads(state)["messages"][1]
+    assert "太大" in rewritten.content
+    assert _ids_in(rewritten.content) == []  # 超大不登记,不留编号
+    assert "看图" in rewritten.content
+
+
+def test_只传图纸没文字也给一句话(tmp_path) -> None:
+    state = {"messages": [HumanMessage(content=[_ui_dxf_part(_dxf_bytes(tmp_path))], id="u1")]}
+    rewritten = ingest_uploads(state)["messages"][1]
+    assert "图纸" in rewritten.content
+    assert len(_ids_in(rewritten.content)) == 1
