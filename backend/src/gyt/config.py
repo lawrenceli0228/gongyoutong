@@ -181,7 +181,11 @@ class Settings(BaseSettings):
     llm_retry_base_delay_s: float = Field(default=1.0, ge=0)  # 0 = 测试里免等待
 
     # --- 文件大小限制(单位:MB)-----------------------------------------
-    drawing_max_mb: float = Field(default=20.0, gt=0)  # DXF 图纸
+    # DXF 图纸:默认 64MB。原来是 20,但真实施工图**一层就 20 多兆**(2026-08-09 实测反馈),
+    # 20 会把正经图纸挡在门外。上限存在的成本是:上传走 base64 进聊天消息(体积 ×约 4/3),
+    # 64MB 图 → 约 85MB 报文,ingest_uploads 解码落盘后**立即**把大块从 state 里剔除(换成图纸编号),
+    # 所以只是一次瞬时内存峰值,不长期占用。还不够就 .env 里调 GYT_DRAWING_MAX_MB,不改代码。
+    drawing_max_mb: float = Field(default=64.0, gt=0)  # DXF 图纸
     document_max_mb: float = Field(default=10.0, gt=0)  # PDF/DOCX/TXT/MD
     photo_max_mb: float = Field(default=10.0, gt=0)  # 工地照片原图
     photo_compress_target_mb: float = Field(default=4.0, gt=0)  # 压到多大再喂视觉模型
