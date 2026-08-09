@@ -52,6 +52,11 @@ _ARTIFACTS_SUBDIR: Final[str] = "artifacts"
 _CACHE_SUBDIR: Final[str] = "cache"
 _CHROMA_SUBDIR: Final[str] = "chroma"
 _CAD_INDEX_SUBDIR: Final[str] = "cad_index"
+# demo/ 跟上面那几个不是一类东西:上面全是**运行期产生**的可写目录(访问即创建),
+# 它是**随仓库走的只读源资产**(规范 PDF / 演示图纸 / 演示照片,进 git)。
+# 放在 data_dir 底下是为了让本机 <仓库根>/data/demo 与容器 /app/data/demo 自动对齐 ——
+# compose 把仓库根 ./data 整个挂进 /app/data,demo 跟着一起进去,不必再单开一个配置项。
+_DEMO_SUBDIR: Final[str] = "demo"
 _SQLITE_FILENAME: Final[str] = "gyt.sqlite3"
 
 
@@ -83,6 +88,46 @@ def _ensure_dir(path: Path) -> Path:
         raise RuntimeError(f"数据目录创建失败,请检查磁盘空间和目录权限:{path}") from exc
     _ENSURED_DIRS.add(path)
     return path
+
+
+def _default_data_dir() -> Path:
+    """数据根目录的默认值 —— 按**本文件所在的位置**推导仓库根,不按进程工作目录。
+
+    parents 的索引是这么数出来的(本文件是 ``<仓库根>/backend/src/gyt/config.py``):
+
+        Path(__file__).resolve()  = <仓库根>/backend/src/gyt/config.py
+                       parents[0] = <仓库根>/backend/src/gyt
+                       parents[1] = <仓库根>/backend/src
+                       parents[2] = <仓库根>/backend
+                       parents[3] = <仓库根>            ← 要的就是这一层
+
+    原来这里写的是 ``Path("data")`` —— **相对路径按进程工作目录解析**,于是同一份代码
+    在两处启动就落到两个地方:
+
+        make dev(Makefile 里先 cd backend)  ──►  <仓库根>/backend/data/
+        docker compose(挂仓库根 ./data)     ──►  <仓库根>/data/
+
+    后果不是"多个空目录"这么轻:LLM 缓存、SQLite 台账、Chroma 向量库、产物注册表
+    四样东西各有两份、互相看不见。换一种方式启动,等于把预热好的视觉缓存整个用不上,
+    演示当场每张照片都要真调模型(慢 + 花钱),而日志里一句异常都没有。
+
+    本机现在还留着事故现场(2026-08-09 实测,数的是**文件**、已排除 .DS_Store):
+    ``backend/data/cache`` 762 个、``<仓库根>/data/cache`` 779 个;按内容哈希比对,
+    前者的 762 个在后者里一个不缺,后者另有 17 个是之后新产生的。
+    两处还各有一份 ``gyt.sqlite3``,里面是同样的三行任务 —— 这份"两边长得一样"的
+    陈年快照差点把真机验收变成假绿灯:``scripts/live_acceptance.py`` 曾写死读
+    ``backend/data`` 那份,四条库级断言逐字命中、全绿,而那一轮其实什么都没验
+    (已改成从本配置取 ``sqlite_path``)。
+    ⚠️ 上面这几个数字会随着继续跑评测而变,别当成断言去测;它们只是留个现场。
+
+    容器里**不靠**这个默认值:Dockerfile 写死 ``ENV GYT_DATA_DIR=/app/data``,
+    环境变量优先级高于字段默认值(见 Settings 的优先级表),照样盖得住 ——
+    ``default_factory`` 只在"所有配置来源都没给这个字段"时才被调用,不挡 env。
+    这一条是必须的而不是保险:容器的构建上下文是 ``backend/``、``COPY . /app``,
+    代码落在 ``/app/src/gyt/config.py``,比本机少一层,parents[3] 会算成 ``/`` →
+    ``/data``,是错的。所以容器里那行 ENV 不许删。
+    """
+    return Path(__file__).resolve().parents[3] / "data"
 
 
 class Settings(BaseSettings):
@@ -218,8 +263,10 @@ class Settings(BaseSettings):
     prompt_version: str = "v1"
 
     # --- 数据根目录 -------------------------------------------------------
-    # 相对路径按进程工作目录解析。测试里由 GYT_DATA_DIR 指到 tmp_path。
-    data_dir: Path = Path("data")
+    # 默认值按**本文件位置**推导出的仓库根(见 _default_data_dir),**不是**相对路径 ——
+    # 相对路径会跟着进程工作目录跑,`make dev`(在 backend/ 下跑)和容器因此各写一份数据。
+    # 环境变量 GYT_DATA_DIR 照样能覆盖:容器靠它指到 /app/data,测试靠它指到 tmp_path。
+    data_dir: Path = Field(default_factory=_default_data_dir)
 
     # --- 评测门槛(0~1)---------------------------------------------------
     eval_threshold_routing: float = Field(default=0.90, ge=0.0, le=1.0)
@@ -237,9 +284,9 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # 派生路径(只读 property)
     #
-    # 目录树布局 —— 访问哪个属性就自动建哪个目录,调用方不用自己 mkdir:
+    # 目录树布局 —— 除 demo/ 外,访问哪个属性就自动建哪个目录,调用方不用自己 mkdir:
     #
-    #   data_dir/                  <- GYT_DATA_DIR,默认 ./data
+    #   data_dir/                  <- GYT_DATA_DIR,默认 <仓库根>/data(本机与容器同一份)
     #     |
     #     +-- uploads/             <- uploads_dir    用户上传的原始文件
     #     +-- artifacts/           <- artifacts_dir  产物注册表落盘(core/artifacts.py)
@@ -247,8 +294,16 @@ class Settings(BaseSettings):
     #     +-- chroma/              <- chroma_dir     向量库持久化(RAG)
     #     +-- cad_index/           <- cad_index_dir  CAD 图纸解析索引落盘(agents/cad/index.py)
     #     +-- gyt.sqlite3          <- sqlite_path    业务库文件
-    #                                 (只保证父目录存在,不预先创建空文件,
-    #                                  留给 sqlite 自己建,免得建出个坏库)
+    #     |                           (只保证父目录存在,不预先创建空文件,
+    #     |                            留给 sqlite 自己建,免得建出个坏库)
+    #     |
+    #     +-- demo/                <- demo_assets_dir  ★ 规矩相反:**只读源资产,不自动创建**
+    #           +-- docs/              规范原文 PDF(knowledge 建库的输入)
+    #           +-- drawings/          演示 DXF 图纸 + names.json(cad 启动预注册的输入)
+    #           +-- photos/            演示照片
+    #
+    # 上面那几个是**运行期产物**,建出来天经地义;demo/ 是随仓库走、进 git 的源资产,
+    # 它不存在等于"资产没跟过来 / 容器没挂上卷",必须让调用方自己撞见并报出来。
     # ------------------------------------------------------------------
 
     @property
@@ -280,6 +335,20 @@ class Settings(BaseSettings):
     def sqlite_path(self) -> Path:
         """业务 SQLite 文件路径。只保证父目录存在,文件本身交给 sqlite 创建。"""
         return _ensure_dir(self.data_dir) / _SQLITE_FILENAME
+
+    @property
+    def demo_assets_dir(self) -> Path:
+        """演示源资产根目录(规范 PDF / 演示图纸 / 演示照片),随仓库走、进 git。
+
+        与运行期数据同在 data_dir 底下:本机 ``<仓库根>/data/demo``、容器 ``/app/data/demo`` ——
+        compose 把仓库根 ./data 整个挂进去,两边自动对齐,不用再单开一个配置项。
+
+        刻意**不**走 ``_ensure_dir`` —— 这是本类里唯一一个"访问不创建"的路径属性。
+        这个目录不存在本身就是要报出来的错(资产没跟过来 / 容器忘了挂卷 / 换机器没同步),
+        替调用方悄悄 mkdir 出一个空目录,只会把"资产丢了"伪装成"知识库是空的"。
+        而这两件事在演示当天长得一模一样:knowledge 照样温和地回一句"规范里查不到"。
+        """
+        return self.data_dir / _DEMO_SUBDIR
 
 
 @lru_cache

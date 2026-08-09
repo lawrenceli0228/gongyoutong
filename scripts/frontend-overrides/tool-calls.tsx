@@ -42,14 +42,39 @@ export const AGENT_NAMES: Record<string, string> = {
   report: "报告生成",
 };
 
-/** 业务工具的中文名。 */
+/** 业务工具的中文名。
+ *
+ * 漏一条不会崩(summarize 会退回显示英文函数名),但界面上就会冒出
+ * `query_dimension` 这种东西 —— 这正是覆盖上游的初衷,别让它漏回来。
+ *
+ * 加新工具时的对齐方法:把 `backend/src/gyt/agents/` 下所有 `@tool("名字", ...)`
+ * grep 一遍,逐条对照这张表补齐。名字要按工具的**真实行为**取,不能望文生义 ——
+ * 下面这几条就是照着各 tools.py 里给模型看的 description 定的,不是猜的:
+ *   · query_dimension  只读图上**已经标注**的尺寸,图上没标它如实说做不了,
+ *                      绝不替人估算 —— 所以叫「查标注尺寸」而不是「量尺寸」。
+ *   · list_components  数的是块 / 图元的数量与分布,不是"列一份构件表"。
+ *   · render_preview   出的是整张图的 PNG 预览,图元太多会主动跳过不渲染。
+ *   · search_regulation 查的是规范条文原文,带文件名 + 页码出处,查不到就说查不到。
+ */
 const TOOL_NAMES: Record<string, string> = {
+  // safety / report(英雄链)
   analyze_site_photo: "查看现场照片",
   render_inspection_report: "生成巡检记录",
+  // schedule(任务台账)
   add_task: "记任务",
   list_tasks: "查任务清单",
   reschedule_task: "改期限",
   finish_task: "任务销项",
+  // cad(看图纸)
+  list_drawings: "查图纸清单",
+  parse_drawing: "看图纸概览",
+  query_dimension: "查标注尺寸",
+  list_components: "数图上构件",
+  layer_stats: "查图层清单",
+  render_preview: "出图纸预览",
+  // knowledge(规范检索)
+  search_regulation: "查规范条文",
+  // ping(链路自检,不是业务工具)
   echo: "回声自检",
 };
 
@@ -59,7 +84,8 @@ const REPORT_TOOL_NAME = "render_inspection_report";
 /**
  * 巡检记录的静态出口。
  *
- * 为什么需要这一层:docx 落在 `backend/data/artifacts/<日期>/<32位id>.docx`,
+ * 为什么需要这一层:docx 落在 `<仓库根>/data/artifacts/<日期>/<32位id>.docx`
+ * (= `Settings.artifacts_dir`,容器里是 `/app/data/artifacts`,挂的是同一个目录),
  * 而 `langgraph.json` 只声明了图 —— **没有任何 HTTP 端点能把文件给出去**。
  * 于是「拍照自动出 Word」这个卖点,在界面上此前的最终形态是折叠 JSON 里的
  * 一个 path 字符串:硬边、数据保真(不经 LLM 转抄)、免责落款那一整套设计,

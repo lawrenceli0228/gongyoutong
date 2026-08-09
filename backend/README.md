@@ -173,7 +173,30 @@ curl -s http://localhost:2024/runs/wait \
 
 > `make dev` 的工作目录是 `backend/`,但配置照样读得到仓库根的 `.env`:
 > `backend/langgraph.json` 里写了 `"env": "../.env"`,langgraph CLI 会先把它灌进环境变量。
-> 副作用:本地跑时数据目录落在 `backend/data/`(容器里是 `/app/data`),两边不共用。
+>
+> **数据目录不受工作目录影响**:`Settings.data_dir` 的默认值是按 `src/gyt/config.py`
+> 自身的位置往上数出来的仓库根(见 `_default_data_dir`),所以本地跑写的是**仓库根的 `data/`**;
+> 容器里 `GYT_DATA_DIR=/app/data`,而 compose 把宿主 `./data` 挂到那儿 —— **两边是同一份数据**。
+> 这一点不是锦上添花:LLM 缓存(尤其预热过的视觉缓存)、SQLite 台账、Chroma 向量库、
+> 产物注册表全在这个目录下,分成两份的时候「本地销掉的账,进容器一看还是 open」。
+>
+> 这个默认值以前是相对路径 `data`,会跟着进程工作目录跑,`make dev` 因此落在 `backend/data/`。
+> 你的机器上如果还留着那个旧目录,跑一次搬迁脚本把它并进来:
+>
+> ```bash
+> python3 backend/scripts/migrate_data_dir.py            # 默认只演练,先看清楚要搬什么
+> python3 backend/scripts/migrate_data_dir.py --apply    # 真搬(复制,不删源)
+> ```
+>
+> 只用标准库、在哪个目录敲都行(路径是从脚本自身位置推的)。确认新目录一切正常之后,
+> 再加 `--remove-source` 或自己手动删掉 `backend/data/`。
+
+> **`make setup` 在你机器上装不上依赖怎么办**(Intel Mac 上 torch 没有对应架构的轮子,
+> `uv sync` 必失败,路线 A 从第一步就走不下去):改走 `make dev-docker` ——
+> 在容器里起后端,宿主只管编辑文件,改 `backend/src` 下的 `.py` 几秒自动重载,
+> **不用重建镜像**;改 `prompt.md` 不会自动重载,按它打印的提示 restart 一下(秒级)。
+> 它读写的仍然是仓库根的 `data/`(compose 挂进去的),和路线 A 同一份数据。
+> 细节见 `docker-compose.dev.yml` 顶部注释。
 
 ### 3. 路线 B:容器跑(接近演示环境,验证"冷启动零下载")
 
@@ -205,7 +228,9 @@ BGE-M3 权重一个道理:提交「源 PDF + 建库代码」,各处重建),所�
 make build-knowledge   # 首次约 15 分钟(下 2.2GB 权重 + 抽嵌全书);之后 manifest 命中秒过
 ```
 
-- **本地开发**:上面这条即可(建到 `backend/data/chroma`,与 `make dev` 同一目录)。
+- **本地开发**:上面这条即可(建到仓库根 `data/chroma`,和 `make dev` 读的是同一份)。
+  容器挂的也是这个 `./data`,所以本机建过一次、`make up` 起来就能直接用 ——
+  前提是本机和镜像用的是同一个 embedding 模型(见本节末尾那条同步提醒),换模型要带 `--rebuild`。
   嫌手动麻烦,也可以在 `.env` 里设 `GYT_KNOWLEDGE_PREBUILD_AT_STARTUP=true` ——
   `make dev` 首次启动会自动建(会卡那 15 分钟一次),之后每次秒起。
 - **容器 / 生产**:**先把挂载的 `./data` 卷建好,再起服务**:
@@ -232,6 +257,12 @@ make lint   # ruff 只报不改
 make fmt    # ruff 格式化 + 自动修
 make e2e    # 冷启动冒烟(真起 compose,分钟级,平时不用跑)
 ```
+
+`make test` 的前提是本机 `make setup` 成功过。装不上依赖的机器(见路线 A 末尾那条)
+用 `make test-docker`:同一套用例在容器里跑,比 `make test` 慢十几秒。
+它会先拿宿主的 `backend/uv.lock` 和镜像里那份对账,对不上就直接拦下来让你
+`docker compose build backend` —— 因为镜像比代码旧的表现是一连串 `ModuleNotFoundError`,
+不拦的话人会去查测试、查挂载,唯独想不到是镜像该重建了。
 
 ---
 
@@ -263,8 +294,10 @@ backend/
 仓库根/
 ├── .env / .env.example       所有 GYT_* 配置(.env 不进 git)
 ├── docker-compose.yml        backend(默认) + frontend(--profile ui)
+├── docker-compose.dev.yml    开发档覆盖件(make dev-docker / test-docker 用)
 ├── Makefile                  所有开发命令的入口
 └── data/                     运行期数据,不进 git;只有 data/demo/ 例外(演示数据集)
+                              本机跑和容器跑都是这一份(容器里挂成 /app/data)
 ```
 
 ---
@@ -596,3 +629,9 @@ docker image prune -a       # 清没被容器引用的镜像(会导致下次重�
 
 不会。`.gitignore` 忽略 `/data/*` 和 `backend/data/`,唯独放行 `data/demo/`(演示数据集要进仓库)。
 新建演示数据目录记得放个 `.gitkeep`,否则 git 记不住空目录,别人冷启动会缺目录。
+
+`backend/data/` 那条现在只是**兜住历史遗留目录**:数据根目录已经统一到仓库根 `data/`,
+新装的机器不会再自己生成 `backend/data/`(除非你把 `GYT_DATA_DIR` 手动设成相对路径 `data`
+再从 `backend/` 下启动 —— 别这么干,理由见 `.env.example` 里那一段)。
+留着这条规则是因为老机器上那份还在,删掉规则会让一堆缓存/台账文件突然冒出来要求提交。
+搬迁方式见上面「路线 A」那段。

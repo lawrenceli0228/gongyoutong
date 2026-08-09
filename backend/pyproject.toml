@@ -62,12 +62,24 @@ dependencies = [
     #   langchain-chroma       1.1.0  向量库(chromadb 由它带进来),要 langchain-core>=1.1.3,<2 —— 与本仓 1.5.3 兼容
     #   langchain-huggingface  1.2.2  HuggingFaceEmbeddings 跑 BGE-M3,要 langchain-core>=1.2.31,<2 —— 兼容
     #   sentence-transformers  5.7.0  实际加载 BAAI/bge-m3(**会带进 torch/transformers,体积大**;
-    #                                 Dockerfile 已按「构建期烤 2.2GB 权重」设计,方向一致)
+    #                                 Dockerfile 已按「构建期烤 2.2GB 权重」设计,方向一致。
+    #                                 这里说的 2.2GB 是**模型权重**;torch 自己那份 CUDA 依赖
+    #                                 已经在文件下方用 CPU-only 索引砍掉了,两件事别混)
     #   pypdf                  6.15.0 规范 PDF 逐页抽文本(已验证 GB50016 是文本型、可抽中文)
     # 都是主依赖:容器 `uv sync --no-dev` 也要能建库/检索。
     "langchain-chroma>=1.1.0,<2",
     "langchain-huggingface>=1.2.2,<2",
     "sentence-transformers>=5.7.0,<6",
+    # torch 本来是 sentence-transformers 的传递依赖(2026-08-09 核对 5.7.0 的 Requires-Dist:
+    # 写的是 `torch>=1.11.0` —— 一个几乎不设防的下界,但**不是**裸依赖,别再传抄成「没写版本号」),
+    # 这里**故意把它提成主依赖** —— 不是为了锁版本,是为了让下面 [tool.uv.sources] 的
+    # CPU 索引改道能生效:uv 的 sources 只对「本项目直接声明的依赖」起作用,
+    # 传递依赖上写了也会被静默忽略(2026-08-09 实测:sources 原样保留、只把这一行删掉重跑
+    # uv lock,torch 立刻退回 registry+https://pypi.org/simple,19 个 CUDA 包全部回来,
+    # 包数 168 → 186,而且 uv 一句提示都不给)。
+    # 版本区间照本文件惯例:下界=已核实的当前版本,上界=下一个大版本。
+    # 注意实际解析出来会带 +cpu 本地版本号后缀(2.13.0+cpu),PEP 440 下它 >= 2.13.0,区间成立。
+    "torch>=2.13.0,<3",
     "pypdf>=6.15.0,<7",
     # langchain 1.x 把 text splitter 拆成独立小包(纯 Python,不带重依赖),
     # 不再随 langchain 伞包进来,得显式声明。要 langchain-core>=1.2.31,<2 —— 与本仓 1.5.3 兼容。
@@ -81,6 +93,83 @@ dev = [
     "pytest-asyncio>=1.4.0,<2",
     "pytest-cov>=7.1.0,<8",
     "ruff>=0.16.1,<0.17",
+]
+
+# ---------------------------------------------------------------------------
+# torch 走 PyTorch 官方 CPU-only 索引(2026-08-09 加;同日二轮收口把 win32 从 marker 里摘掉)
+#
+# 为什么要加:上面的 sentence-transformers 会把 torch 带进来,而 PyPI 上 torch 的
+# Linux 轮子是「默认带 CUDA」的那一支 —— 它会连带拖进 nvidia-* / cuda-* / triton。
+# 下面这组数字是**把本段改道整个删掉、重跑 uv lock 做对照组**量出来的(2026-08-09,
+# 体积按 linux-x86_64 轮子、十进制 MB 计;别跟 `docker images` 的 MiB 口径混着看):
+#   uv 打印的 "Resolved N packages" 从 186 掉到 168。**别拿这个 18 去对 19,对不上是正常的**:
+#   定稿里 torch 占两个包块(PyPI 那块给 Windows/macOS、pytorch-cpu 那块给 Linux),
+#   按去重包名算才是 184 → 165,差的正好就是这 19 个 CUDA 包,合计 2196.2MB ——
+#   nvidia-cublas 423.1、nvidia-cudnn-cu13 366.2、nvidia-cufft 214.1、nvidia-nccl-cu13 206.0、
+#   nvidia-cusolver 200.9、triton 197.8、nvidia-cusparselt-cu13 170.1、nvidia-cusparse 145.9,
+#   剩下 11 个都在 100MB 以下。
+#   torch 本体也跟着瘦一圈:PyPI 默认支 526.6MB → +cpu 支 191.8MB。
+# 但本项目只拿 torch 在 **CPU** 上跑 BAAI/bge-m3 做 embedding,镜像里也没有 GPU,
+# 这 2.2GB 装进去之后一个字节都不会被加载 —— 纯粹是构建时间、镜像层和磁盘的浪费。
+# 改道之后 torch 版本仍是 2.13.0,只是带上 +cpu 本地版本号后缀。
+#
+# marker 为什么**只留 linux**(别再手贱把 win32 加回来):
+#   CUDA 那一坨在 torch 自己的元数据里就写死了只给 Linux —— 对照组 uv.lock 的 torch 块里,
+#   每一条 nvidia-* / cuda-* / triton 的 marker 都含 `sys_platform == 'linux'`
+#   (cuda-bindings 和 triton 还额外卡了 `python_full_version < '3.15'`)。
+#   源头是 PyPI 上 torch 2.13.0 轮子 METADATA 里
+#   `Requires-Dist: nvidia-cudnn-cu13==...; platform_system == "Linux"` 这一类写法 ——
+#   逐个拉 win_amd64 / manylinux_x86_64 / macosx_arm64 三个轮子的 .metadata 比对过:
+#   CUDA 相关条目去重后三个平台是同一组 7 条、一字不差,且**每一条都带**
+#   `platform_system == "Linux"`。也就是说轮子里那几行本来就写着,靠 marker 分流,
+#   不是 Windows 的轮子里少写了几行。
+#   所以 Windows 从 PyPI 装本来就一个 CUDA 包都拉不到,改道过去能省的只有轮子本身那点差价:
+#   实测 win_amd64 轮子 122015870B(PyPI 支)→ 121892056B(+cpu 支),
+#   只差 0.12MB、0.10% —— 四舍五入等于没省。
+#   代价却是把用原生 Windows 的队友从 PyPI 挪到一个境内不一定好访问的 CDN 上 —— 净负收益。
+#   macOS 同理,而且更不该指过去:PyPI 上苹果的轮子就是纯 CPU 的 macosx_14_0_arm64
+#   (不带 +cpu 后缀),而 CPU 索引对 macOS 的轮子供给不保证长期齐全,
+#   无条件切过去等于把 macOS 的解析押在一个我们根本不需要的源上。
+#
+# 【要做白名单 / 镜像替换的人看这里】这个源涉及**两个**域名,少放行一个就前功尽弃:
+#   download.pytorch.org      索引页(pyproject 里写的就是它)
+#   download-r2.pytorch.org   轮子文件本体 —— 索引页里的 href 全指向这个主机,
+#                             本仓 uv.lock 里那 19 个 torch 轮子 URL 无一例外;
+#                             实测两者 DNS 落在完全不同的网段,不是同一台机器。
+#
+# explicit = true 是干嘛的:
+#   声明这个索引**只**服务于下面 [tool.uv.sources] 里点名的包。
+#   不写它的话 uv 会把 pytorch 那个源当成通用索引,拿去找依赖树里的每一个包 ——
+#   而那个源上只有 torch 系的东西,别的包要么找不到、要么翻出个陈年版本,
+#   整棵依赖树的解析结果都会跟着漂。
+#
+# 为什么 sources 里只有 torch 一个,以及将来要加 torchvision 的人必看:
+#   本仓依赖闭包里没有 torchvision / torchaudio(sentence-transformers 只要 torch)。
+#   **往 sources 里写一个不在依赖闭包里的包名,uv 是完全静默地忽略掉的,不会报错。**
+#   2026-08-09 实测 uv 0.12.1:同时塞进 `torchvision`(真包,只是没人依赖它)和
+#   `gyt-totally-bogus-package`(压根不存在)两条 sources,`uv lock` 照样 exit 0、
+#   uv.lock 一个字节没变,`uv lock -v` 里连一句 warning 都没有,`uv lock --check` 也照过。
+#   所以将来真要加 torchvision,**必须同时把它写进上面的 [project].dependencies**
+#   (道理和 torch 那条注释里说的一样:sources 只认直接依赖);
+#   只加 sources 等于什么都没做,而且没有任何一处会提醒你。
+#
+# 改动这一段之后必须做两件事:① 重新 `uv lock`(锁文件里的 torch 来源 URL 会整片变);
+# ② 重建镜像的依赖层(deps 层缓存键跟着 uv.lock 走,不重建就还是旧的 CUDA 版)。
+#
+# 【未验证,别当成已完成】T1 的验收标准里那条「镜像 < 5GB」,到本次提交为止一个字都没验:
+#   本机是 Intel Mac,torch 2.13 没有 macOS x86_64 轮子,连 `uv sync` 都跑不完,
+#   更谈不上 docker build。上面所有体积数字都是**轮子体积**,不是镜像体积,
+#   两者之间还隔着解压膨胀、构建期烤进去的 2.2GB 模型权重和基础镜像。
+#   由整合阶段的人跑一次 `docker build -f backend/Dockerfile .` + `docker images` 看 SIZE 来验,
+#   验完把真实数字补在这里。在那之前不许对外宣称镜像瘦到了多少。
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -41,9 +41,26 @@ from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
-"""仓库根。照片在 <仓库根>/data/demo/photos/,而**不能**用 Settings.data_dir 去找 ——
-data_dir 是按进程工作目录解析的运行期目录(backend/data),演示素材不在那儿。
-prefilter.py 顶部踩过同一个坑:相对路径会让 27 张照片被静默写到 backend/data/。"""
+"""仓库根(本文件是 <仓库根>/backend/eval/hooks.py,往上两级)。照片在 <仓库根>/data/demo/photos/。
+
+⚠️ 这里的**理由已经换过一轮,别照抄旧说法**:
+
+- 旧说法(2026-08 之前,现在是假话):"data_dir 是按进程工作目录解析的运行期目录
+  (backend/data),演示素材不在那儿"。那时 ``data_dir`` 的默认值是 ``Path("data")``,
+  相对路径跟着 cwd 跑,`make dev` 先 cd 到 backend,数据就落 backend/data/。
+  prefilter.py 顶部踩的就是这个坑:27 张照片被静默写到了 backend/data/。
+- 现在:``_default_data_dir()`` 改成按 config.py 的 ``__file__`` 推导仓库根,
+  默认情况下 ``get_settings().demo_assets_dir`` 就是 <仓库根>/data/demo,
+  **和这里算出来的是同一个目录**(2026-08-09 在 backend/ 下实测两者一致)。
+
+之所以仍旧锚 ``__file__`` 而不去读配置:评测集是「safety.csv + 它点名的那些照片」
+一整套仓库内资产,必须来自同一份 checkout;而 GYT_DATA_DIR 是给运行期数据
+(缓存 / 台账 / 向量库)搬家用的,把它指到别处时照片不该跟着走丢。
+
+⚠️ 已知偏差,未处理:``knowledge/ingest.py`` 与 ``cad/demo_registry.py`` 已经改成读
+``demo_assets_dir``(而且是**函数**,取值时刻 = 调用时刻),只有 eval 这边还锚 __file__。
+设了 GYT_DATA_DIR 时三者会指向两处。要统一就得连这个模块级常量一起改成函数
+(测试靠 monkeypatch 这个名字打桩),不是改一行的事,留给后续决策。"""
 
 PHOTOS_DIR: Final[Path] = REPO_ROOT / "data" / "demo" / "photos"
 
@@ -186,9 +203,7 @@ async def run_rag_row(row: Mapping[str, str]) -> Any:
         if envelope.get("error_code") == "EMPTY_RESULT":
             # 检索判「无依据」→ 交出「承认查不到、无出处」的形状,给 score_rag 的 no_answer 判定。
             return {"answer": str(envelope.get("user_msg") or ""), "source": "", "page": ""}
-        raise EvalRunnerError(
-            f"检索失败({envelope.get('error_code')}):{envelope.get('user_msg')}"
-        )
+        raise EvalRunnerError(f"检索失败({envelope.get('error_code')}):{envelope.get('user_msg')}")
 
     passages = (envelope.get("data") or {}).get("passages") or []
     return {
