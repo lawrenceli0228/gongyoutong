@@ -568,8 +568,39 @@ Lane E(收尾):  T5  ARTIFACTS_DIR / .PHONY / TOOL_NAMES
     </tbody>
   </table></div>
 
-  <div class="note"><p><b>还没做的:</b> T3(ingest 分开退出码)· T6(验收补 E/F 两组)· T7(告知队友)· T8(README 补统一 Docker 段)。
-  其中 <b>T7 最时间敏感</b> —— 队友手册第 88 行把失败信号写成了成功判据,而他正在活跃提交。</p></div>
+  <h3>同日续做:T3 / T6 / T8</h3>
+  <div class="tw"><table>
+    <thead><tr><th>任务</th><th>状态</th><th>实测</th></tr></thead>
+    <tbody>
+      <tr><td><b>T3</b> ingest 分开退出码</td><td>✅ 完成</td>
+          <td>三条路径全对:目录不存在 → exit 1 + 打印它在找哪个路径;零 PDF → exit 1;真建成 → <code>已建库: … 872 个 chunk</code> + exit 0。<b>队友手册第 88 行到这一步才变成真话</b></td></tr>
+      <tr><td><b>T6</b> 验收补 E/F 两组</td><td>◐ 部分</td>
+          <td><b>E/F 六条全绿</b>,断言 19 → 25。但<b>全套 19/25</b> —— 未过的 6 条与本次改动无关,是 A/C/D 组把日期写成字面量、按 2026-08-08 标定,已漂走两天。改成相对计算这一步<b>没做</b></td></tr>
+      <tr><td><b>T8</b> README 统一 Docker 段</td><td>✅ 完成</td>
+          <td>新增「1.5 先选路线」(<code>uv sync --dry-run</code> 一条命令定生死)+「2.5 路线 A2」(改了什么要做什么的三档对照表)</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note a"><p><b>两条库级铁证都特意绕开了「读上一轮快照」这个坑</b>(D 组 2026-08-09 就栽在这上面):<br>
+  <code>E3</code> = 向量库真有 chunk <b>且</b>入库清单里的规范现在还在 <code>demo_assets_dir</code> 下 —— 只数 chunk 会漏掉「库是上一轮建的、这一轮资产根本没跟过来」。<br>
+  <code>F3</code> = <b>只认 mtime ≥ 脚本启动时刻</b>的解析索引 —— 换成「目录里有没有 json」,演示资产整个挪走、一张图都没解析成,它照样绿。</p></div>
+
+  <h3>计划外发现:容器跑在裸 UTC 上(已修)</h3>
+  <p>做 T6 时顺出来的,<b>跟跨平台改造无关,但比它更该修</b>。<code>backend/Dockerfile</code> 没设 <code>TZ</code>,
+  容器跑 UTC,而工地在中国(CST = UTC+8)。<code>schedule/tools.py:66</code> 用 <code>date.today()</code> 取「今天」,
+  再算「明天/后天/下周三」—— 时区错了整条日期链跟着错。</p>
+  <div class="note d"><p><b>错在哪一段:</b> UTC 落后 CST 8 小时,所以<b>中国时间每天 00:00–07:59</b> 容器还停在前一个日历日。
+  工友一早交班说「明天绑扎钢筋」,系统记成的是<b>今天</b>,而且一句错都不报。
+  剩下 16 小时两边同日 —— 这个洞<b>专挑早班时段发作</b>,白天的测试撞不见。<br>
+  已加 <code>ENV TZ=Asia/Shanghai</code>,修完实测容器 <code>date.today()</code> == 中国时间的今天。</p></div>
+
+  <div class="note w"><p><b>自我纠正记一笔。</b>这条我第一版的注释是<b>错的</b> —— 写成「中国时间 16:00 之后容器停在前一天」,方向反了(正确是 00:00–07:59);
+  还把「宿主 08-10 / 容器 08-09」当证据,可那个差值取决于<b>宿主</b>在哪个时区(本机 AEST=UTC+10),那一刻 CST 也是 08-09、容器其实没错。
+  判据只有一条:容器的日期必须等于<b>中国时间</b>的日期。<br>
+  记在这儿,是因为它和上面抓 agent 的那五条假注释<b>是同一类错误</b> —— 谁写都会犯,所以要靠复核,不能靠自觉。</p></div>
+
+  <div class="note"><p><b>还没做的:</b> <b>T7</b>(告知队友,消息已起草待发)· 把 A/C/D 组的日期字面量改成相对当天计算(这是拿到 25/25 的前提)·
+  Windows 侧全部未验证。</p></div>
 </section>
 
 <hr>
