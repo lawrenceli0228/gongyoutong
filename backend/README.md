@@ -153,6 +153,24 @@ cp .env.example .env
 
 `.env` 在 `.gitignore` 里,**永远不要提交**。密钥不小心推上去了 → 立刻去控制台吊销重发。
 
+### 1.5 先选路线:你这台机器装得上依赖吗
+
+三条路线不是口味问题,**先用一条命令定生死**:
+
+```bash
+cd backend && uv sync --dry-run     # 只解析不安装,几秒出结果
+```
+
+| 结果 | 走哪条 |
+|---|---|
+| 成功 | **路线 A**(本地跑,最快)。想更接近演示环境时再切路线 B |
+| 报 `doesn't have a source distribution or wheel for the current platform` | **路线 A2**(容器里开发)。本机这条路是**断的**,不是慢 |
+
+已知会失败的机器:**Intel Mac**。`torch 2.13.0` 的 macOS 轮子只有 `arm64`
+(实测报 `You're on macOS (macosx_14_0_x86_64), but torch only has wheels for ...`),
+而 `sentence-transformers` → `torch` 是 knowledge Agent 的硬依赖,绕不开。
+Windows 与 Apple Silicon 不受影响,PyPI 上有对应轮子。
+
 ### 2. 路线 A:本地跑(开发日常,改代码秒生效)
 
 ```bash
@@ -191,12 +209,39 @@ curl -s http://localhost:2024/runs/wait \
 > 只用标准库、在哪个目录敲都行(路径是从脚本自身位置推的)。确认新目录一切正常之后,
 > 再加 `--remove-source` 或自己手动删掉 `backend/data/`。
 
-> **`make setup` 在你机器上装不上依赖怎么办**(Intel Mac 上 torch 没有对应架构的轮子,
-> `uv sync` 必失败,路线 A 从第一步就走不下去):改走 `make dev-docker` ——
-> 在容器里起后端,宿主只管编辑文件,改 `backend/src` 下的 `.py` 几秒自动重载,
-> **不用重建镜像**;改 `prompt.md` 不会自动重载,按它打印的提示 restart 一下(秒级)。
-> 它读写的仍然是仓库根的 `data/`(compose 挂进去的),和路线 A 同一份数据。
-> 细节见 `docker-compose.dev.yml` 顶部注释。
+### 2.5 路线 A2:容器里开发(本机装不上依赖时走这条)
+
+**后端跑在容器里,你在宿主正常编辑文件。** 不是"退而求其次" —— 除了首次构建镜像那几分钟,
+日常体验和路线 A 几乎一样。
+
+```bash
+make dev-docker    # 起容器 + 把宿主 backend/src 挂进去(只读)+ 打开热重载
+make test-docker   # 同一套用例在容器里跑
+make down          # 收摊
+```
+
+改了东西之后要做什么,**照这张表,别猜**:
+
+| 改了什么 | 要做什么 | 多久 |
+|---|---|---|
+| `backend/src/**/*.py` | **什么都不用做**,自动重载 | 秒级(实测 0.9s) |
+| `prompt.md` 等非 `.py` | `docker compose -f docker-compose.yml -f docker-compose.dev.yml restart backend` | 秒级 |
+| `pyproject.toml` / `uv.lock` / `langgraph.json` / `Dockerfile` | 重来一次 `make dev-docker`(它带 `--build`) | 分钟级 |
+
+为什么 `.md` 不自动重载:`langgraph dev` 底下是 uvicorn 的 reload,监视清单写死
+`default_includes = ["*.py"]`,而 langgraph CLI 没有透出 `--reload-include`。
+**这是查过源码的,不是猜的** —— 别把「改提示词立刻生效」写进任何文档。
+
+`make dev-docker` 里的 `--build` 不能省:挂载换掉的是**源码**,换不掉镜像层里的**依赖**。
+镜像旧一步,容器会在图加载期 `ModuleNotFoundError` 直接崩,而 `docker compose up -d`
+早就返回 0 了 —— 你只会看到一句"[已启动]"和一个根本没起来的服务。
+
+**改了代码没反应?** 宿主文件系统不往容器传 inotify 事件(WSL2、网络盘常见)。
+macOS Docker Desktop 实测是能传的;传不到就改用轮询:
+
+```bash
+GYT_WATCH_POLLING=1 make dev-docker
+```
 
 ### 3. 路线 B:容器跑(接近演示环境,验证"冷启动零下载")
 
