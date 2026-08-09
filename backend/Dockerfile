@@ -225,11 +225,29 @@ FROM base AS app
 #   而不是在演示现场悄悄卡住等下载。这就是"冷启动零下载"的运行期保险丝。
 # GYT_DATA_DIR
 #   对应 Settings.data_dir;compose 会把宿主 ./data 挂到这里
+# TZ
+#   **不设的话容器跑在 UTC 上,而工地在中国(CST = UTC+8)。**
+#   agents/schedule/tools.py 用 date.today() 取"今天",再由 dates.py 把
+#   「明天」「后天」「下周三」算成具体日期 —— 时区错了,整条日期链跟着错。
+#
+#   错的是哪一段:UTC 落后 CST 8 小时,所以**中国时间每天 00:00–07:59**,
+#   容器还停在前一个日历日。工友一早交班时说"明天绑扎钢筋",系统按前一天 +1,
+#   记成的是**今天**。而它一句错都不报,台账上就是个看着很正常、实际早了一天的日期。
+#   (剩下 16 小时两边同日,所以这个洞很难在白天的测试里撞见 —— 它专挑早班时段发作。)
+#
+#   2026-08-09 实测确认容器确实是裸 UTC:`date` 回 "15:39 UTC",TZ 环境变量为空。
+#   ⚠️ 别拿"宿主时间和容器时间差一天"当判据 —— 那取决于**宿主**在哪个时区
+#   (本机 AEST=UTC+10,当时宿主 08-10 而容器 08-09,可那一刻 CST 也是 08-09,
+#    容器其实没错)。判据只有一条:容器的日期必须等于**中国时间**的日期。
+#
+#   基础镜像 python:3.12-slim-bookworm 自带 /usr/share/zoneinfo,不用额外装 tzdata
+#   (实测 /usr/share/zoneinfo/Asia/Shanghai 在)。
 ENV PATH="/app/.venv/bin:${PATH}" \
     HF_HOME=/opt/hf \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
-    GYT_DATA_DIR=/app/data
+    GYT_DATA_DIR=/app/data \
+    TZ=Asia/Shanghai
 
 # 1) 第三方依赖(来自阶段 2)
 COPY --from=deps /app/.venv /app/.venv

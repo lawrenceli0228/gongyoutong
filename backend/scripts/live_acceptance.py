@@ -1,7 +1,14 @@
-"""工友通 · 真机验收脚本(19 断言):台账全流程 / 路由边界 / 英雄链协同 / 库级铁证。
+"""工友通 · 真机验收脚本(25 断言):台账全流程 / 路由边界 / 英雄链协同 / 规范检索 / 图纸 / 库级铁证。
+
+分组:
+    A 台账全流程(10)· B 路由边界(2)· C 英雄链+协同(3)· D 台账库级铁证(4)
+    E 规范检索 knowledge(3,含 1 条库级)· F 图纸 cad(3,含 1 条库级)
 
 跑法(会真调模型,几分钱;视觉走缓存):
-    1. 确保 langgraph dev 在 :2024(make dev),仓库根 .env 配好两把 Key
+    0. **E 组要求知识库已建好**(向量库是生成物、不进 git,每台机建一次):
+           docker compose run --rm --no-deps backend python -m gyt.agents.knowledge.ingest
+       没建就跑,E 组会红 —— 那是对的,别当成 knowledge Agent 坏了。
+    1. 确保 langgraph dev 在 :2024(make dev / make dev-docker),仓库根 .env 配好两把 Key
     2. 想从空台账开始(在仓库根执行):rm -f data/gyt.sqlite3
        —— ``data/`` 是 ``Settings.data_dir`` 的默认值(<仓库根>/data);设了 GYT_DATA_DIR
        就删那底下那份。``backend/data/`` 里可能还留着一份旧库,那是历史遗留,
@@ -18,6 +25,7 @@ import csv
 import json
 import sqlite3
 import sys
+import time
 import urllib.request
 from contextlib import closing
 from pathlib import Path
@@ -25,6 +33,10 @@ from pathlib import Path
 BASE = "http://127.0.0.1:2024"
 REPO = Path(__file__).resolve().parents[2]
 RESULTS: list[tuple[bool, str]] = []
+
+# 脚本启动时刻。F3 拿它判"这一轮**新写**的解析索引",而不是"盘上有没有索引文件" ——
+# 后者会被上一轮留下的旧文件糊弄过去,正是 D 组 2026-08-09 栽过的那种假绿灯。
+STARTED_AT = time.time()
 
 
 def api(path: str, payload: dict | None = None) -> dict | list:
@@ -111,6 +123,52 @@ def read_ledger(db_path: Path) -> dict[str, tuple]:
         print("  常见原因:文件在但里面还没有 tasks 表(后端一条任务都没记成),或者文件坏了。")
         print("  删掉它,make dev 重起后端再跑一遍 —— D 组这一轮不作数。")
         return {}
+
+
+def count_chunks(chroma_db: Path) -> int:
+    """数向量库里真有多少个 chunk。读不出来一律返回 0(→ E3 判红),不抛栈。
+
+    为什么直接查 chroma 的 sqlite 而不是问 Agent:E3 要的是**库级铁证**。
+    Agent 答得头头是道并不能证明库里有东西 —— 它完全可能是拿提示词里的常识在编,
+    而"消防车道不小于 4 米"恰恰是模型预训练里就有的知识,最容易蒙对。
+
+    只读 URI 的理由同 read_ledger:普通 connect 碰上不存在的路径会当场建个空库,
+    把"库还没建"说成"表不存在",排查方向全错。
+    """
+    if not chroma_db.is_file():
+        print(f"  [没找到向量库] {chroma_db}")
+        print("  向量库是生成物、不进 git,每台机器要自己建一次:")
+        print("    docker compose run --rm --no-deps backend python -m gyt.agents.knowledge.ingest")
+        return 0
+    try:
+        with closing(sqlite3.connect(chroma_db.as_uri() + "?mode=ro", uri=True)) as conn:
+            return int(conn.execute("SELECT count(*) FROM embeddings").fetchone()[0])
+    except sqlite3.Error as exc:
+        print(f"  [向量库打不开或读不出来] {chroma_db}")
+        print(f"  底层报的原话:{exc}")
+        return 0
+
+
+def manifest_pdfs_present(chroma_dir: Path, docs_dir: Path) -> bool:
+    """入库清单里记的规范,现在**还在演示资产目录里**吗?
+
+    这条是 E3 的另一半,专治一种假绿灯:向量库是上一轮建的,而演示资产(规范 PDF)
+    这一轮根本没跟过来 —— 光数 chunk 会照样绿,可实际上"资产在不在"已经没人验了。
+    把清单里的文件名拿回 docs_dir 下核一遍,资产目录一挪走,这条立刻红。
+    """
+    mf = chroma_dir / "_ingest_manifest.json"
+    if not mf.is_file():
+        print(f"  [没找到入库清单] {mf}")
+        return False
+    try:
+        names = json.loads(mf.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"  [入库清单读坏了] {mf}:{exc}")
+        return False
+    missing = [n for n in names if not (docs_dir / n).is_file()]
+    if missing:
+        print(f"  [清单里的规范找不着了] {docs_dir} 下缺:{missing}")
+    return bool(names) and not missing
 
 
 print("=== 线程 A:台账全流程 ===")
@@ -222,6 +280,44 @@ check(bool(t2) and t2[3] == "open" and t2[2] == "2026-08-10", "D2 库:T2 后天=
 rect = [r for title, r in rows.items() if "整改" in title or "隐患" in title]
 check(bool(rect) and rect[0][2] == "2026-08-10", "D3 库:整改任务真实落库且期限=下周一 8-10")
 check(len(rows) == 3, f"D4 库:恰好 3 条(实际 {len(rows)}:{list(rows)})——没有幽灵行")
+
+print("=== 线程 E:规范检索(knowledge)===")
+# 问题与判据都抄 eval/datasets/rag.csv 的 K01 那一行,不自己另编一套 ——
+# 那份数据集的 expected_source / expected_page 是逐条核对过 PDF 的,是现成的真相。
+e = new_thread()
+m = ask(e, "消防车道的净宽度和净空高度有什么要求")
+whole = " ".join(str(x["content"]) for x in m)
+check("transfer_to_knowledge" in str(transfers(m)), "E1 规范提问派给 knowledge")
+check(
+    ("4.0" in whole or "4 米" in whole or "4米" in whole) and "50016" in whole,
+    "E2 答出「不应小于 4.0」并给规范出处(GB50016)",
+)
+
+settings = get_settings()
+docs_dir = settings.demo_assets_dir / "docs"
+chunks = count_chunks(settings.chroma_dir / "chroma.sqlite3")
+print(f"  向量库:{settings.chroma_dir}({chunks} 个 chunk)")
+check(
+    chunks > 0 and manifest_pdfs_present(settings.chroma_dir, docs_dir),
+    f"E3 库:向量库真有 chunk({chunks}),且清单里的规范还在 {docs_dir}",
+)
+
+print("=== 线程 F:图纸(cad)===")
+f = new_thread()
+m = ask(f, "首层平面图有哪些图层")
+whole = " ".join(str(x["content"]) for x in m)
+check("transfer_to_cad" in str(transfers(m)), "F1 图纸提问派给 cad")
+# 真实图层表(用纯 python 读 DXF 组码扫出来的):0 / Defpoints / 墙 / 轴线 / 柱 / 标注。
+# 只要 4 个中文图层里报对 3 个就算数 —— 留一格余量给模型的措辞,但绝不放过"泛泛而谈"。
+hit_layers = [x for x in ("墙", "轴线", "柱", "标注") if x in whole]
+check(len(hit_layers) >= 3, f"F2 出真实图层名(命中 {hit_layers})")
+
+# 这条**只认这一轮新写的**索引文件。换成"目录里有没有 json"就会被上一轮留下的旧文件
+# 糊弄过去 —— 演示资产整个挪走、cad 一张图都没解析成,它照样绿。
+# (D 组 2026-08-09 就是栽在这种"读上一轮快照"上,同一个坑不踩第二次。)
+fresh = [p for p in settings.cad_index_dir.glob("*.json") if p.stat().st_mtime >= STARTED_AT]
+print(f"  解析索引:{settings.cad_index_dir}(本轮新写 {len(fresh)} 份)")
+check(bool(fresh), f"F3 库:本轮真的解析并落盘了图纸索引({[p.name for p in fresh]})")
 
 print()
 passed = sum(1 for ok, _ in RESULTS if ok)
