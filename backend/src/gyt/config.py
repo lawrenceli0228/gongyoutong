@@ -188,6 +188,11 @@ class Settings(BaseSettings):
     drawing_max_mb: float = Field(default=64.0, gt=0)  # DXF 图纸
     document_max_mb: float = Field(default=10.0, gt=0)  # PDF/DOCX/TXT/MD
     photo_max_mb: float = Field(default=10.0, gt=0)  # 工地照片原图
+    # DXF 预览渲染的图元数上限:超过就**不渲染**、如实告知(改查图层/尺寸/构件)。
+    # 真实工程图动辄上千图元,matplotlib 逐个画,实测 2300 图元的图渲染 268 秒 ——
+    # 同步工具里塞这个必卡死。而且大地坐标系的真图往往渲染出来还是空白(视野被离群点撑爆)。
+    # 预览本就是锦上添花,不值得为它冒卡死风险;演示主线是「查」不是「看图」。
+    drawing_render_max_entities: int = Field(default=1000, ge=1)
     photo_compress_target_mb: float = Field(default=4.0, gt=0)  # 压到多大再喂视觉模型
     photo_compress_max_edge_px: int = Field(default=2048, ge=1)  # 长边像素上限
 

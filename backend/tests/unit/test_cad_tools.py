@@ -184,3 +184,17 @@ async def test_render_preview出PNG并落盘(cad_env):
     # 真落盘成产物:能 resolve 出文件,且内容是 PNG 魔数开头。
     path = artifacts.resolve(png_id)
     assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+async def test_render_preview图元过多时如实拒绝(cad_env, monkeypatch):
+    # 把阈值压到 1,让任何真图都算「太多」—— 不渲染、如实说,不硬撑到卡死。
+    from gyt.config import get_settings
+
+    monkeypatch.setenv("GYT_DRAWING_RENDER_MAX_ENTITIES", "1")
+    get_settings.cache_clear()
+    result = await tools.render_preview.ainvoke({"drawing": "首层平面图"})
+    assert result["ok"] is False
+    assert result["error_code"] == "FILE_TOO_LARGE"
+    assert "图元太多" in result["user_msg"]
+    # 关键:失败信封里没有 png_id,模型无从编造「预览出好了」。
+    assert result["data"] is None
