@@ -17,13 +17,24 @@
 import { AIMessage, ToolMessage } from "@langchain/langgraph-sdk";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronRight, ArrowRightLeft, Check, Wrench } from "lucide-react";
+import {
+  ChevronRight,
+  ArrowRightLeft,
+  Check,
+  Wrench,
+  FileText,
+  ExternalLink,
+  Copy,
+} from "lucide-react";
 
 /** 子 Agent 的中文名。加新 Agent 时往这里补一行,不补也不会坏(会退回显示英文名)。
  *  导出给 ai.tsx 覆盖件用(子 Agent 正文折叠行也要念中文名)。 */
 export const AGENT_NAMES: Record<string, string> = {
   supervisor: "调度中枢",
   safety: "安全巡检员",
+  // inspection 是「巡检出记录」英雄链(safety ─硬边→ report)编译成的子图。
+  // 漏了这一行的代价很具体:它是演示第一跳,界面上会显示英文「转给 inspection」。
+  inspection: "巡检出记录",
   ping: "连通性自检",
   knowledge: "规范检索",
   schedule: "任务管理",
@@ -40,6 +51,54 @@ const TOOL_NAMES: Record<string, string> = {
   reschedule_task: "改期限",
   finish_task: "任务销项",
   echo: "回声自检",
+};
+
+/** 巡检记录工具名。它的返回值要单独渲染成卡片,不能只折进灰行,理由见 ARTIFACT_BASE。 */
+const REPORT_TOOL_NAME = "render_inspection_report";
+
+/**
+ * 巡检记录的静态出口。
+ *
+ * 为什么需要这一层:docx 落在 `backend/data/artifacts/<日期>/<32位id>.docx`,
+ * 而 `langgraph.json` 只声明了图 —— **没有任何 HTTP 端点能把文件给出去**。
+ * 于是「拍照自动出 Word」这个卖点,在界面上此前的最终形态是折叠 JSON 里的
+ * 一个 path 字符串:硬边、数据保真(不经 LLM 转抄)、免责落款那一整套设计,
+ * 评委看不到那份文档就等于全白做。
+ *
+ * 起法(仓库根):`make serve-artifacts`
+ * ⚠️ 端口号有两处(本文件与 Makefile 的 ARTIFACTS_PORT),要改一起改。
+ * 只绑 127.0.0.1 —— 与 docker-compose 同一条红线:artifacts 里是工地现场照片
+ * 和巡检记录,不许出本机。
+ */
+const ARTIFACT_BASE = "http://127.0.0.1:8788";
+
+/** 把信封里的绝对路径换成静态服务的 URL。
+ *
+ * 取最后两段(`<日期目录>/<文件名>`),因为静态服务的根就是 artifacts_dir。
+ * 不自己按当天日期拼 —— 落盘目录名走的是 UTC,晚上演示时会落在"明天"那个文件夹里。 */
+function artifactUrl(path: string): string | null {
+  const segs = String(path || "")
+    .split(/[/\\]/)
+    .filter(Boolean);
+  if (segs.length < 2) return null;
+  return `${ARTIFACT_BASE}/${segs.slice(-2).map(encodeURIComponent).join("/")}`;
+}
+
+/** 定级徽章配色。四个取值来自 agents/safety/severity.py,别自由发挥。 */
+const SEVERITY_CHIP: Record<string, string> = {
+  重大: "bg-red-50 text-red-700 ring-red-200",
+  较大: "bg-amber-50 text-amber-700 ring-amber-200",
+  一般: "bg-sky-50 text-sky-700 ring-sky-200",
+  待定级: "bg-gray-100 text-gray-500 ring-gray-200",
+};
+
+type ReportData = {
+  report_no?: string;
+  filename?: string;
+  path?: string;
+  violations?: string[];
+  max_severity?: string;
+  label?: string;
 };
 
 type Summary = { icon: "handoff" | "tool"; text: string };
@@ -178,6 +237,87 @@ export function ToolCalls({
   );
 }
 
+/**
+ * 巡检记录卡片 —— 「拍照 → 自动出 Word」这条链唯一看得见的产出。
+ *
+ * 为什么渲染在这里而不是让模型报链接:report 的正文会被 ai.tsx 折叠,
+ * 链接要靠 supervisor 转述才能露出来 —— 那是在**赌模型配合度**,
+ * 而本项目已经在表格那件事上赌输过两次(见 ai.tsx 顶部的案情)。
+ * 渲染层是确定的:谁产的谁展示。
+ */
+function ReportCard({ data }: { data: ReportData }) {
+  const [copied, setCopied] = useState(false);
+  const url = artifactUrl(data.path ?? "");
+  const count = data.violations?.length ?? 0;
+  const severity = data.max_severity ?? "";
+  const chip = SEVERITY_CHIP[severity];
+
+  const copyPath = () => {
+    if (!data.path) return;
+    void navigator.clipboard.writeText(data.path).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div className="mx-auto w-full max-w-3xl">
+      <div className="my-2 flex items-start gap-3 rounded-xl border border-orange-200 bg-orange-50/40 px-4 py-3">
+        <FileText className="mt-0.5 h-5 w-5 shrink-0 text-orange-600" />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="font-medium text-gray-900">巡检记录</span>
+            <span className="font-mono text-[13px] text-gray-600">
+              {data.report_no}
+            </span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[13px] text-gray-600">
+            <span>
+              {count > 0 ? `共 ${count} 处隐患` : "未发现受控清单内的隐患"}
+            </span>
+            {chip && (
+              <span
+                className={`inline-flex items-center rounded-full px-2 py-0.5 text-[12px] font-medium ring-1 ring-inset ${chip}`}
+              >
+                最高 {severity}
+              </span>
+            )}
+          </div>
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            {url && (
+              <a
+                href={url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-md bg-orange-600 px-2.5 py-1 text-[13px] font-medium text-white transition-colors hover:bg-orange-700"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                打开文档
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={copyPath}
+              className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 py-1 text-[13px] text-gray-700 transition-colors hover:bg-gray-50"
+            >
+              {copied ? (
+                <Check className="h-3.5 w-3.5 text-emerald-600" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" />
+              )}
+              {copied ? "已复制" : "复制路径"}
+            </button>
+          </div>
+          <div className="mt-1.5 text-[11px] text-gray-400">
+            打不开?先在仓库根执行{" "}
+            <code className="font-mono">make serve-artifacts</code>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ToolResult({ message }: { message: ToolMessage }) {
   let parsed: any;
   let isJson = false;
@@ -194,22 +334,31 @@ export function ToolResult({ message }: { message: ToolMessage }) {
   // 摘要就写「已接手」;业务工具则说「返回结果」。
   const done = /^transfer(_back)?_to_/.test(name) ? "已接手" : "已返回结果";
 
+  // 巡检记录额外出一张卡片。灰行照旧保留 —— 展开原始信封正是多智能体协作的证据。
+  const report: ReportData | null =
+    isJson && name === REPORT_TOOL_NAME && parsed?.ok === true && parsed?.data
+      ? (parsed.data as ReportData)
+      : null;
+
   return (
-    <Trace
-      label={`${text} · ${done}`}
-      icon={<Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" />}
-    >
-      <div className="py-1">
-        {isJson ? (
-          <pre className="overflow-x-auto font-mono text-[12px] whitespace-pre-wrap text-gray-600">
-            {JSON.stringify(parsed, null, 2)}
-          </pre>
-        ) : (
-          <div className="break-words whitespace-pre-wrap text-gray-600">
-            {String(message.content)}
-          </div>
-        )}
-      </div>
-    </Trace>
+    <>
+      {report && <ReportCard data={report} />}
+      <Trace
+        label={`${text} · ${done}`}
+        icon={<Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" />}
+      >
+        <div className="py-1">
+          {isJson ? (
+            <pre className="overflow-x-auto font-mono text-[12px] whitespace-pre-wrap text-gray-600">
+              {JSON.stringify(parsed, null, 2)}
+            </pre>
+          ) : (
+            <div className="break-words whitespace-pre-wrap text-gray-600">
+              {String(message.content)}
+            </div>
+          )}
+        </div>
+      </Trace>
+    </>
   );
 }

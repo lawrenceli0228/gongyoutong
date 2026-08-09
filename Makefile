@@ -31,6 +31,10 @@ CHECK_ENV       = test -f $(ENV_FILE) || { echo "[错误] 找不到 $(ENV_FILE)�
 FRONTEND_SETUP := scripts/setup-frontend.sh
 FRONTEND_URL   := http://localhost:3000
 BACKEND_URL    := http://localhost:2024
+# 巡检记录的静态出口(见 serve-artifacts 目标)。端口号与
+# scripts/frontend-overrides/tool-calls.tsx 的 ARTIFACT_BASE 同源,**要改一起改**。
+ARTIFACTS_PORT := 8788
+ARTIFACTS_DIR  := $(BACKEND_DIR)/data/artifacts
 ENV_FILE       := .env
 ENV_TEMPLATE   := .env.example
 DATA_DIR       := data
@@ -39,7 +43,7 @@ DATA_UID       := 10001
 
 .DEFAULT_GOAL := help
 
-.PHONY: help setup dev test cov eval eval-smoke lint lint-ci fmt up down e2e frontend
+.PHONY: help setup dev test cov eval eval-smoke lint lint-ci fmt up down e2e frontend serve-artifacts
 
 help: ## 打印所有可用目标
 	@echo "工友通 · 可用命令:"
@@ -148,3 +152,17 @@ frontend: ## 拉取并初始化前端(agent-chat-ui)
 	@test -f $(FRONTEND_SETUP) \
 		|| { echo "[错误] 找不到 $(FRONTEND_SETUP),前端初始化脚本还没就位"; exit 1; }
 	bash $(FRONTEND_SETUP)
+
+serve-artifacts: ## 起只读静态服务,让聊天界面里的巡检记录能点开(演示前和 make dev 一起起)
+	@# 为什么需要它:docx 落在 $(ARTIFACTS_DIR),而 langgraph.json 只声明了图 ——
+	@# **没有任何 HTTP 端点能把文件给出去**。于是「拍照自动出 Word」这个卖点,
+	@# 在界面上的最终形态曾经只是折叠 JSON 里的一个 path 字符串。
+	@# 前端覆盖件 tool-calls.tsx 的巡检记录卡片指向的就是这个端口。
+	@#
+	@# 只绑 127.0.0.1 —— 与 docker-compose.yml 同一条红线。这里面是工地现场照片和
+	@# 巡检记录(含可识别人脸,见 TODO-22),绑 0.0.0.0 等于把它们发给整个局域网。
+	@mkdir -p $(ARTIFACTS_DIR)
+	@echo "[静态服务] http://127.0.0.1:$(ARTIFACTS_PORT)/"
+	@echo "           根目录:$(ARTIFACTS_DIR)"
+	@echo "           Ctrl-C 停止。"
+	python3 -m http.server $(ARTIFACTS_PORT) --bind 127.0.0.1 --directory $(ARTIFACTS_DIR)
