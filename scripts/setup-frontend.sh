@@ -370,6 +370,13 @@ apply_override "tool-calls.tsx" "src/components/thread/messages/tool-calls.tsx"
 apply_override "ai.tsx" "src/components/thread/messages/ai.tsx"
 apply_override "markdown-text.tsx" "src/components/thread/markdown-text.tsx"
 
+# CAD Agent 方案 A:让工友现场上传 DXF 图纸(见 .personal/CAD_Agent_落地文档.md §1.6)。
+# DXF 的浏览器 MIME 不可靠,前端一律按 .dxf 后缀认;后端 uploads.py 登记成 DRAWING 产物。
+apply_override "use-file-upload.tsx" "src/hooks/use-file-upload.tsx"
+apply_override "multimodal-utils.ts" "src/lib/multimodal-utils.ts"
+apply_override "MultimodalPreview.tsx" "src/components/thread/MultimodalPreview.tsx"
+apply_override "thread-index.tsx" "src/components/thread/index.tsx"
+
 # -----------------------------------------------------------------------------
 # 步骤 3:收尾提示
 # -----------------------------------------------------------------------------

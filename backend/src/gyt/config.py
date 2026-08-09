@@ -51,6 +51,7 @@ _UPLOADS_SUBDIR: Final[str] = "uploads"
 _ARTIFACTS_SUBDIR: Final[str] = "artifacts"
 _CACHE_SUBDIR: Final[str] = "cache"
 _CHROMA_SUBDIR: Final[str] = "chroma"
+_CAD_INDEX_SUBDIR: Final[str] = "cad_index"
 _SQLITE_FILENAME: Final[str] = "gyt.sqlite3"
 
 
@@ -180,9 +181,18 @@ class Settings(BaseSettings):
     llm_retry_base_delay_s: float = Field(default=1.0, ge=0)  # 0 = 测试里免等待
 
     # --- 文件大小限制(单位:MB)-----------------------------------------
-    drawing_max_mb: float = Field(default=20.0, gt=0)  # DXF 图纸
+    # DXF 图纸:默认 64MB。原来是 20,但真实施工图**一层就 20 多兆**(2026-08-09 实测反馈),
+    # 20 会把正经图纸挡在门外。上限存在的成本是:上传走 base64 进聊天消息(体积 ×约 4/3),
+    # 64MB 图 → 约 85MB 报文,ingest_uploads 解码落盘后**立即**把大块从 state 里剔除(换成图纸编号),
+    # 所以只是一次瞬时内存峰值,不长期占用。还不够就 .env 里调 GYT_DRAWING_MAX_MB,不改代码。
+    drawing_max_mb: float = Field(default=64.0, gt=0)  # DXF 图纸
     document_max_mb: float = Field(default=10.0, gt=0)  # PDF/DOCX/TXT/MD
     photo_max_mb: float = Field(default=10.0, gt=0)  # 工地照片原图
+    # DXF 预览渲染的图元数上限:超过就**不渲染**、如实告知(改查图层/尺寸/构件)。
+    # 真实工程图动辄上千图元,matplotlib 逐个画,实测 2300 图元的图渲染 268 秒 ——
+    # 同步工具里塞这个必卡死。而且大地坐标系的真图往往渲染出来还是空白(视野被离群点撑爆)。
+    # 预览本就是锦上添花,不值得为它冒卡死风险;演示主线是「查」不是「看图」。
+    drawing_render_max_entities: int = Field(default=1000, ge=1)
     photo_compress_target_mb: float = Field(default=4.0, gt=0)  # 压到多大再喂视觉模型
     photo_compress_max_edge_px: int = Field(default=2048, ge=1)  # 长边像素上限
 
@@ -220,6 +230,7 @@ class Settings(BaseSettings):
     #     +-- artifacts/           <- artifacts_dir  产物注册表落盘(core/artifacts.py)
     #     +-- cache/               <- cache_dir      LLM 响应缓存(core/llm.py)
     #     +-- chroma/              <- chroma_dir     向量库持久化(RAG)
+    #     +-- cad_index/           <- cad_index_dir  CAD 图纸解析索引落盘(agents/cad/index.py)
     #     +-- gyt.sqlite3          <- sqlite_path    业务库文件
     #                                 (只保证父目录存在,不预先创建空文件,
     #                                  留给 sqlite 自己建,免得建出个坏库)
@@ -244,6 +255,11 @@ class Settings(BaseSettings):
     def chroma_dir(self) -> Path:
         """向量库持久化目录(访问即创建)。"""
         return _ensure_dir(self.data_dir / _CHROMA_SUBDIR)
+
+    @property
+    def cad_index_dir(self) -> Path:
+        """CAD 图纸解析索引落盘目录(访问即创建),一张图一份 <drawing_id>.json。"""
+        return _ensure_dir(self.data_dir / _CAD_INDEX_SUBDIR)
 
     @property
     def sqlite_path(self) -> Path:
