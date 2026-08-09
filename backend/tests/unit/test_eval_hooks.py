@@ -272,3 +272,63 @@ async def test_没填user_input时炸而不是静默判none(monkeypatch: pytest.
 
     with pytest.raises(EvalRunnerError, match="user_input"):
         await run_routing_row({"id": "RX", "user_input": "  "})
+
+
+# --- rag runner(直接打桩检索工具,不加载 BGE-M3、不碰真库)---------------------
+
+
+class _FakeSearchTool:
+    """假的 search_regulation:.ainvoke 直接返回预设信封。"""
+
+    def __init__(self, envelope: dict[str, Any]) -> None:
+        self._envelope = envelope
+
+    async def ainvoke(self, _args: Any) -> Any:
+        return self._envelope
+
+
+async def test_rag命中把passages拼成answer并带出处(monkeypatch: pytest.MonkeyPatch) -> None:
+    from eval.hooks import run_rag_row
+
+    import gyt.agents.knowledge.tools as ktools
+
+    envelope = {
+        "ok": True,
+        "error_code": None,
+        "user_msg": "查到 2 条",
+        "data": {
+            "passages": [
+                {"text": "净宽度不应小于4.0", "source": "GB.pdf", "page": 124, "score": 0.5},
+                {"text": "另一条相关", "source": "GB.pdf", "page": 125, "score": 0.6},
+            ]
+        },
+    }
+    monkeypatch.setattr(ktools, "search_regulation", _FakeSearchTool(envelope))
+    out = await run_rag_row({"id": "K01", "question": "消防车道多宽"})
+    assert "4.0" in out["answer"]  # 要点在拼接的原文里
+    assert out["source"] == "GB.pdf"  # 完整文件名
+    assert out["page"] == "124,125"  # 命中的页码都给上
+
+
+async def test_rag查不到交出承认查不到无出处的形状(monkeypatch: pytest.MonkeyPatch) -> None:
+    from eval.hooks import run_rag_row
+
+    import gyt.agents.knowledge.tools as ktools
+
+    envelope = {
+        "ok": False,
+        "error_code": "EMPTY_RESULT",
+        "user_msg": "知识库里查不到和「食堂吃什么」对得上的规范条文。",
+        "data": None,
+    }
+    monkeypatch.setattr(ktools, "search_regulation", _FakeSearchTool(envelope))
+    out = await run_rag_row({"id": "K17", "question": "食堂吃什么"})
+    assert out["source"] == "" and out["page"] == ""  # no_answer:不许有出处
+    assert "查不到" in out["answer"]
+
+
+async def test_rag没填question时炸() -> None:
+    from eval.hooks import run_rag_row
+
+    with pytest.raises(EvalRunnerError, match="question"):
+        await run_rag_row({"id": "K01", "question": "  "})
