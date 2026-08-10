@@ -42,6 +42,8 @@ def build_schedule_agent() -> CompiledStateGraph:
         tools=list(SCHEDULE_TOOLS),
         # 纯文字台账,走便宜的 DeepSeek;这个包里不存在视觉调用。
         purpose="text",
-        # 防假账结构件:回合首答必须带工具调用,否则打回重试(guard.py 有案情)。
+        # 防假账结构件:回合首答必须带工具调用,否则打回重试。
+        # 判定与重试是公共件 core/require_tool.py(两条泳道的案情都记在那儿),
+        # guard.py 只绑台账自己的话术和「重试还不调工具就放行」的处置。
         extra_middleware=(RequireLedgerTool(),),
     )

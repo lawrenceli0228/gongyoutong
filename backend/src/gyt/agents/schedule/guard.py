@@ -1,95 +1,34 @@
 """RequireLedgerTool —— 台账动作必须先过工具,拦「凭记忆做假账」。
 
-===========================================================================
-这层解决的是什么(2026-08-08 真机抓获,库为证)
----------------------------------------------------------------------------
-多轮对话攒了几条自己的回执之后,schedule 开始**不调工具直接补全回执**:
+2026-08-10 起,判定与重试逻辑下沉到了 **core/require_tool.py 的 RequireToolCall**
+(report 泳道栽了同一种病:没调出文件的工具,直接编了个巡检记录编号)。
+案情、做法与边界全在那个文件的 docstring 里,这里只剩台账自己的两样东西:
+台账口径的系统校验话术,以及「重试还不调工具就放行」这个处置选择。
 
-    用户: T1 干完了
-    [schedule] 销了:复检三层钢筋(T1)已完成。   ← 没调 finish_task!
-    …(库里 T1 仍是 open;后续查询表格里的「已完成」也是编的)
-
-temperature=0 拦不住 —— 这是 few-shot 自我模仿(上文里全是自己的回执范例,
-补一条比调工具"顺手"),不是采样噪声。提示词红线也只是概率性生效。
-嘴上销了库里没销,台账就废了,所以这里用结构件兜底。
-
-做法:台账 Agent 的**每个回合首答**(上一条消息是用户发言或交接回执)
-必须带工具调用;没带就把回答打回去、附一句系统校验重试一次。
-回合中段(上一条是自家工具的结果)当然允许纯文本 —— 那是在念真回执。
-重试仍不带工具就放行并记 warning:上层 recursion_limit 熔断兜底,
-这里绝不能自己造第二个循环。
-===========================================================================
+为什么台账选 on_give_up="pass" 而不是像 report 那样顶替:
+台账嘴上销了库里没销,下一轮查清单就会露馅、还能补销;而 report 一旦让工友
+拿到一个不存在的编号,人已经跑去找管理员了,没有补救机会。两边严重度不同,
+所以处置不同 —— 这不是抄漏了,是有意为之。
 """
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Final
 
-from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from gyt.core.require_tool import RequireToolCall
 
-logger = logging.getLogger(__name__)
-
-_NUDGE = (
+_NUDGE: Final[str] = (
     "(系统校验)你刚才没有调用任何工具就想直接回答。台账问题必须先调工具拿真实数据:"
     "记任务用 add_task、查清单用 list_tasks、改期用 reschedule_task、销项用 finish_task。"
     "凭记忆或上文猜测回答等于做假账。现在重新处理:先调对应的工具。"
 )
 
-_HANDOFF_TOOL_PREFIX = "transfer_to_"
 
+class RequireLedgerTool(RequireToolCall):
+    """台账口径的 RequireToolCall(参数已绑好,挂载处不用重复填)。"""
 
-def _is_turn_start(messages: list[BaseMessage]) -> bool:
-    """回合首答判定:上一条是用户发言,或是「Successfully transferred …」交接回执。
-
-    这两种情形下,台账的正确动作永远是先调工具(记/查/改/销总有一款对应);
-    上一条若是自家工具的 ToolMessage,则模型正在把工具结果念成人话,纯文本合法。
-    """
-    if not messages:
-        return False
-    last = messages[-1]
-    if isinstance(last, HumanMessage):
-        return True
-    return isinstance(last, ToolMessage) and str(getattr(last, "name", "") or "").startswith(
-        _HANDOFF_TOOL_PREFIX
-    )
-
-
-def _lacks_tool_call(response: Any) -> bool:
-    result = getattr(response, "result", None) or []
-    return not any(isinstance(m, AIMessage) and m.tool_calls for m in result)
-
-
-class RequireLedgerTool(AgentMiddleware):
-    """回合首答必须带工具调用,否则附系统校验打回重试一次。
-
-    与 FocusOnOwnWork 的组合顺序:Focus 在外层先裁上下文,本件在内层
-    看到的已是裁后的消息列表(交接回执被 Focus 保留,首答判定不受影响)。
-    """
-
-    def _retry_request(self, request: Any) -> Any:
-        request.messages = [*(request.messages or []), HumanMessage(content=_NUDGE)]
-        return request
-
-    def wrap_model_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
-        response = handler(request)
-        if _is_turn_start(list(request.messages or [])) and _lacks_tool_call(response):
-            logger.warning("schedule 首答未调工具,已打回重试(防假账)")
-            response = handler(self._retry_request(request))
-            if _lacks_tool_call(response):
-                logger.warning("schedule 重试后仍未调工具,放行交由熔断兜底")
-        return response
-
-    async def awrap_model_call(self, request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:
-        response = await handler(request)
-        if _is_turn_start(list(request.messages or [])) and _lacks_tool_call(response):
-            logger.warning("schedule 首答未调工具,已打回重试(防假账)")
-            response = await handler(self._retry_request(request))
-            if _lacks_tool_call(response):
-                logger.warning("schedule 重试后仍未调工具,放行交由熔断兜底")
-        return response
+    def __init__(self) -> None:
+        super().__init__(agent_name="schedule", nudge=_NUDGE, on_give_up="pass")
 
 
 __all__ = ["RequireLedgerTool"]
