@@ -3,18 +3,79 @@
 > 面向:**拿到一台 VPS 的 root、但没参与过这个项目的人**。
 > 目标:一小时内把整套东西跑起来,然后把「网址 + 一个口令」发给几个外部测试者。
 > 写作日期 2026-08-11 · 分支 `lawrence/state-claim-audit`
+> **2026-08-11 凌晨补:整套流程已经在一台真 VPS 上从头跑通过一次,见 §0.0。**
 >
-> **关于「实测」二字。** 本仓最硬的一条规矩是「不许写没验证过的事实」,所以本手册把来源分三档:
+> **关于「实测」二字。** 本仓最硬的一条规矩是「不许写没验证过的事实」,所以本手册把来源分四档:
 >
+> - **VPS 实测** —— 2026-08-11 凌晨那次真实上线(Debian 12 / velactora.com)跑出来的,给了具体数值;
 > - **实测** —— 写手册的人在本机(macOS + Docker Compose v5.1.3)真跑过命令、真看过输出;
 > - **源文件核对** —— 从仓库源文件或依赖库源码读出来的,给了文件名;
-> - **⚠️ 未在真机验证** —— 没有在一台真 VPS 上走通过,按标准做法写的。
+> - **⚠️ 未在真机验证** —— 那次上线也没覆盖到,按标准做法或按代码判据写的。
 >
 > §9 把每一条逐个列了出来。**你照做时哪一步跟手册对不上,先去 §9 看它是哪一档。**
+>
+> ⚠️ **新增的「VPS 实测」是一次、一台机器、并发 1 的样本。**
+> 它证明的是「这条路走得通」,**不是**「任何机器上都这样」。凡是能从中推出的更强结论
+> (「1.9GB 内存够用」「30GB 磁盘够用」),本文一律没写 —— 因为没验过。
 
 ---
 
 ## 0. 先读完这一页,再动手
+
+### 0.0 ✅ 这套流程已经在一台真 VPS 上跑通过一次(2026-08-11 凌晨)
+
+**本手册最初写完时,一步都没在真 VPS 上走过 —— 全流程是拼出来的。现在不是了。**
+那次上线的机器与结果:
+
+| 项 | 实际值 |
+|---|---|
+| 系统 | **Debian 12**,x86_64 |
+| 规格 | **2 vCPU / 1.9GB 内存**(`free -m` 报 1966MB)/ **30GB 磁盘** |
+| 域名 | `velactora.com`,DNS 托管在 **Cloudflare**(**灰云 DNS only**,见 §1.3) |
+| 证书 | Let's Encrypt 签发成功:`CN=velactora.com`,有效期 **2026-08-10 → 2026-11-08** |
+| 结果 | **整套跑通** —— 门锁、令牌、业务链路、持久化都实测过 |
+
+证书那一行不是看 Caddy 自己的日志得出的,是**从外部另一台机器**用 `openssl s_client` 独立验的
+—— 服务自己说签成了不算数,外面能握上手才算。
+
+#### ✅ 已经在真机验证过的部分
+
+- **步骤 1~12 的完整链路**:从空机器到「输口令、提问、拿到答案」。
+  ⚠️ 但**全程是用 `curl` 打的,没有开过真浏览器** —— 口令框长什么样、
+  前端 JS 起来之后会不会报错、SSE 在浏览器里逐不逐字,这三件都还没人看过。
+  见下面「仍然没验证的部分」。
+- **Caddy 自动签发 Let's Encrypt 证书**(域名模式)。手册原来把这条列在「未验证」里,现在成立了。
+- **三层门的实际返回码**:口令层(§3.1)、令牌层(§3.2 的 A/B 两条)。
+  连带抓到一个差点误判的陷阱:**`/api/ok` 不能用来验令牌层**(§3.2)。
+- **域名模式下的自检命令跟裸 IP 模式不一样**:`curl http://<VPS_IP>/` 回 **308** 而不是 401(§3.1)。
+- **1.9GB 内存 + 8GB swap 的机器上,加载 BGE-M3 做检索没被 OOM 杀掉**(§1.1,带采样数据)。
+- **业务链路真的通**:排期条目直查 SQLite 确认落库、knowledge 如实说查不到而没编造(§步骤 12)。
+- **持久化与自启**:**真按了一次 `reboot`** —— 开机 6 秒内四个容器全回来、caddy 直接 healthy
+  (证书从命名卷里读到,没重新向 Let's Encrypt 申请)、两块 swap 按 fstab 自动挂回(§7)。
+- **令牌真的烘进了浏览器包**(前端构建产物里精确匹配到那 64 位令牌)。
+  手册原来把这条列成「已知目前接不上」,现在**已经接上了**(§步骤 11、§9)。
+
+#### ⚠️ 仍然没验证的部分
+
+- **Windows 侧**。那次全程从 macOS 开发机操作,Windows 上的 SSH / rsync / 换行符没碰过。
+- **多并发**。整场并发是 **1**(一个人在操作)。§4.5 说的排队现象**没有被观察到,也没有被证伪**。
+- **长期运行稳定性**。只是一次上线 + 几次提问,**没有连续跑过几天**。内存会不会缓慢涨、
+  单进程会不会累积状态,都不知道。
+- **证书自动续期**。首签成功 ≠ 续期成功,这两件事走的代码路径不一样。
+  这张证书 **2026-11-08 到期**,到那之前谁也不知道。
+- **真浏览器**。整场验收全是 `curl` / `openssl s_client` 打的,**一次都没开过浏览器**。
+  于是这几件仍然没有证据:① 口令框和登录后的界面;② 前端 JS 起来之后会不会报错;
+  ③ **浏览器会不会把 basic_auth 的凭据自动带到 SSE 长连接上** —— 这条是
+  `Caddyfile` 路由三注释里挂了很久的悬案,**curl 打通了并不能回答它**
+  (curl 是我们手动 `-u` 给的凭据,浏览器是自动带,两回事);
+  ④ `<img>` 标签去取 `/artifacts/*` 时凭据带不带得上(同上,curl 验的是路由通,不是浏览器行为)。
+- **§3.2 C) 那条 `x-auth-scheme: langsmith` 后门检查**、**§3.3 限流与 cron 的所有 curl**、
+  **§3.4 里扫 3000 端口那条** —— 那次都没跑,仍是按代码判据写的。
+  (§3.4 的 **2024 端口那条跑了**:从外部机器 `curl -m 6 http://<VPS_IP>:2024/ok` 超时,
+  `%{http_code}` 是 `000` —— 后端端口确实没对公网开。)
+- ARM 架构、中国大陆 ICP 备案 —— 一如既往地没验(§1.1、§1.3)。
+
+完整逐条见 §9。
 
 ### 0.1 这台 VPS 不是演示主路径
 
@@ -22,8 +83,23 @@
 不是「演示当天靠它」。两个理由,任何一个都够:
 
 - **视觉缓存跟着机器走。** 照片识别的结果缓存在 `data/cache/` 里,是**这台机器**的目录。
-  本机焐热的那 22 分钟(30 张照片跑一轮),VPS 上一张都不认 —— 要么在 VPS 上再烧一轮钱焐,
-  要么把几百 MB 的 `data/cache` 同步上去。
+  在 VPS 上重新焐一轮就是再烧一次钱。
+
+  > **⚠️ 这一条 2026-08-11 被实测修正了一半。**
+  > 原来这儿写的是「VPS 上一张都不认,要么再烧一轮,要么把**几百 MB** 的 `data/cache` 同步上去」。
+  > 实测:那次把开发机的 `data/cache` 一起 rsync 过去了,**只有 4.1MB**(不是几百 MB),
+  > 而且**视觉缓存真的跨机命中**。判据:传同一张演示照片跑英雄链两次,
+  > 缓存目录里 `kimi` 条目共 160 条、**当晚 02:00 之后新增 0 条** ——
+  > 也就是说 kimi 视觉那一跳一次都没真调,贵的那半是免费的。
+  >
+  > **但便宜的那半每次都真花钱。** 同样两次跑,每次都**新增 6 条 `deepseek-v4-flash` 条目**,
+  > 耗时 7 秒 / 11 秒(第二次反而更慢)—— **重复同一张照片的演示不会变便宜**。
+  > 至于文本档为什么不命中,**没查**。
+  > (一个没验证的猜测,别当结论:`ingest_uploads` 每次上传都用新的 `uuid4().hex` 登记照片,
+  > 改写出来的 `(照片编号:<id>)` 每次都不一样,而那串进了文本档的输入。)
+  >
+  > 对**给外部的人测**这件事的直接含义:每个人每张照片大约 6 次文本调用是真账单,
+  > 视觉那笔只在照片没见过时才付。
 - **会场网络、跨网延迟、供应商临时限流**,任何一个抽风都能毁掉现场。
 
 所以:**VPS 是加分项和第四层兜底,演示主路径仍然是本地那台。**
@@ -101,19 +177,57 @@ grep -n 'access_token\|rate_limit_burst' backend/src/gyt/config.py   # ⑥ 闸�
 | 项 | 要求 | 为什么 |
 |---|---|---|
 | CPU / 内存 | **2C4G 起步** | BGE-M3(知识库用的本地 embedding 模型)推理**吃内存**。**4G 是下限,不是舒适区**,能上 8G 就上 8G |
-| 磁盘 | **40GB 以上** | 后端镜像本身就很大 —— **实测**本机 `docker images` 里 `gyt-backend:dev` 占 **6.38GB**(2.2GB 的 BGE-M3 权重烤在镜像里)。加上构建缓存、前端镜像、`data/`,20GB 会很紧张 |
-| 系统 | Ubuntu 22.04 / 24.04 LTS(x86_64) | 手册里的命令按 Debian 系写。ARM 机器**没试过**,BGE-M3 权重和 CPU 版 torch 在 ARM 上能不能装,**⚠️ 未在真机验证** |
+| 磁盘 | **40GB 以上** | 后端镜像本身就很大 —— **实测**本机 `docker images` 里 `gyt-backend:dev` 占 **6.38GB**(2.2GB 的 BGE-M3 权重烤在镜像里)。加上构建缓存、前端镜像、`data/`,20GB 会很紧张。<br>**VPS 实测**:一块 **30GB** 的盘走完全流程,最终占用约 **20GB**(两个镜像 8.3GB + 系统),中途靠 `docker builder prune -af` 回收了 **9.34GB**。详见步骤 9 |
+| 系统 | Ubuntu 22.04 / 24.04 LTS(x86_64) | 手册里的命令按 Debian 系写。**VPS 实测**跑通的那台是 **Debian 12 / x86_64**。ARM 机器**没试过**,BGE-M3 权重和 CPU 版 torch 在 ARM 上能不能装,**⚠️ 未在真机验证** |
 | 网络 | 能出站访问 DeepSeek / Moonshot / HuggingFace / GitHub / npm | 构建期要下 2.2GB 权重和前端依赖,运行期要调两家模型 |
 
 > **内存不够的典型症状不是报错,是「构建到一半 OOM 被杀」。**
 > 尤其前端那步(Next.js 生产构建)在 4G 机器上有风险。
 > 保险做法是先挂 swap 再构建(`docker-compose.vps.yml` 的收尾注释建议 **2G 起**,
 > 理由是「BGE-M3 加载权重那一下是尖峰,有 swap 兜着就是慢几秒,没有就是 OOM」;
-> 磁盘够的话给 4G 更稳)—— 命令见步骤 1,**⚠️ 未在真机验证**(本机是 macOS,没法验)。
+> 磁盘够的话给 4G 更稳)—— 命令见步骤 1。
+> **2026-08-11 那台机器上 swap 确实挂着(原有 4GB + 新增 4GB = 8GB),整场没有 OOM**;
+> 但**用的是不是步骤 1 那几条命令,没有记录**,所以那几条命令本身仍标 ⚠️ 未在真机验证。
 >
 > 另外注意 `docker-compose.vps.yml` **故意没有写 `deploy.resources.limits`**:
 > 在一台 4G 的机器上给唯一一个吃内存的服务再加内存上限,只是把「慢」变成「被 kill」。
 > 这台 VPS 上还跑别的东西的话再回来加,加之前先量一下:`docker stats gyt-backend-vps`。
+
+#### ⚠️ 内存这一格,2026-08-11 那次上线拿到了真数据 —— 但结论比你想的窄
+
+**先说会挡路的那件事:`scripts/preflight_vps.sh` 第 233-236 行的内存闸要求 ≥ 3500MB。**
+那台机器 1966MB,**被判 FATAL、脚本直接 `exit 1`**(**源文件核对** + **VPS 实测**)。
+
+**而它给的理由在那次上线里并不适用。** 脚本里那句话是:
+
+> `内存只有 ${MEM}MB。BGE-M3 推理吃内存,**4G 是下限不是舒适区**,建库那一步会被 OOM 杀掉。`
+
+那次**根本没在 VPS 上跑过 `ingest`** —— `data/chroma`(12MB)是从开发机整个搬过去的
+(做法见步骤 10)。所以「建库那一步会被 OOM」这个**具体后果**没有被验证,也没有被证伪。
+
+**真正被验证的是另一件事:查询时把 BGE-M3 加载进来那一下。** 每 5 秒采样一次(**VPS 实测**):
+
+```
+02:25:09   可用 745MB    swap 18MB    backend 容器 430MB     ← 加载前
+02:25:23   可用 381MB    swap 18MB    backend 容器 846MB     ← 加载中
+02:25:31   可用 454MB    swap 77MB    backend 容器 955MB     ← 峰值
+```
+
+**backend 峰值只到 955MB,不是 2.2GB。** 原因是权重从镜像里 **mmap** 进来,
+算**文件页缓存**(可回收),不占匿名内存 —— 所以「权重 2.2GB ⇒ 至少吃 2.2GB 内存」这个
+直觉推算是错的。
+
+那台机器上 swap 是 **原有 4GB + 新增 4GB = 8GB**。
+整场构建 + 查询下来,`dmesg | grep -ci "out of memory"` = **0**。
+
+> ### ⚠️ 结论只能写到这里:**这台机器上跑通了。**
+>
+> **不许**据此改写成「1.9GB 够用」,更**不许**据此去下调 `preflight_vps.sh` 的内存闸。
+> 理由:样本只有一次,而且**那次的并发是 1**。
+> 一个人自己点,和三五个人同时提问,内存曲线不是一回事,而这条我们没测过。
+>
+> 想跑在 4G 以下的机器上,你要自己接受这个风险,并且**至少把 swap 挂足**
+> —— 上面那份采样是在 8GB swap 之下取的,换成没有 swap 的机器,这份数据不适用。
 
 ### 1.2 要装的东西
 
@@ -141,6 +255,31 @@ grep -n 'access_token\|rate_limit_burst' backend/src/gyt/config.py   # ⑥ 闸�
 > 请在买机器**之前**直接去你的服务商控制台或客服那里确认清楚 ——
 > 这件事卡住的话,后面所有步骤都白做。
 > 只想快速给几个人试的话,买在香港/海外能省掉这个不确定性。
+
+#### ⚠️⚠️ DNS 托管在 Cloudflare 的话:**必须用灰云(DNS only),不能开橙云代理**
+
+**本节是 2026-08-11 那次上线新增的 —— 手册原来对 Cloudflare 一个字都没提。**
+而域名放在 Cloudflare 上是很常见的做法,那个云朵图标默认就是**橙色**(已代理)。
+
+在 Cloudflare 的 DNS 记录列表里,把那条 A 记录的云朵点成**灰色**(Proxy status = **DNS only**)。
+**橙云(Proxied)会从三个方向同时把这套东西弄坏:**
+
+1. **证书死锁。** 橙云下 Cloudflare 在它自己的边缘卸载 TLS,回源走 443;
+   而我们这边的 Caddy 是**先要拿到证书才有 443 可听**。两边互相等,谁也起不来。
+2. **SSE 会被缓冲。** 整个应用靠**流式推送**把 Agent 的中间过程吐给页面
+   (`/api/runs/stream`)。Cloudflare 免费版代理对 SSE 有**缓冲**,还有 **100 秒空闲超时** ——
+   表现不是报错,是「转圈很久,然后一次性蹦出全部内容」或者干脆断掉。
+3. **`scripts/preflight_vps.sh` 的 DNS 检查会判红。** 那一段(第 ③ 组)拿 `dig` 的结果
+   跟本机公网 IP 比对,橙云下 `dig` 返回的是 Cloudflare 的 IP,两边对不上 →
+   `bad "…指到别的机器上了。"`。
+   **这是该脚本的设计,不是 bug** —— 它挡的正是「证书一定申请不下来」这件事(**源文件核对**)。
+
+第 1、2 条是**原理说明**(Cloudflare 的行为,不是我们测出来的);第 3 条是**读脚本源码**得出的。
+**那次上线实际用的就是灰云,证书一次签成**(**VPS 实测**)。
+
+> 顺带说:灰云意味着**你的 VPS 真实 IP 是公开的**,没有 CDN 挡在前面。
+> 这套编排本来就假定了这一点 —— §0.3 的四层防线全在你这台机器上,
+> 不依赖任何 CDN。真实 IP 暴露不改变风险模型,但它确实意味着**扫描器几分钟内就能摸到你**(§0.2)。
 
 ### 1.4 两把 API Key
 
@@ -187,6 +326,11 @@ free -h    # Swap 那一行应该有 4G
 
 （没有 swap 时的典型症状:建库或首次检索的那一下容器被 OOM killer 干掉,
 `docker compose ps` 显示 `Exited (137)`,而日志里什么都看不出来。）
+
+> **swap 这一步别省。** 2026-08-11 那台 1.9GB 内存的机器**是带着 8GB swap 跑通的**
+> (原有 4GB + 新增 4GB),全场 `dmesg | grep -ci "out of memory"` = **0**(**VPS 实测**)。
+> §1.1 那份内存采样也是在这个前提下取的 —— **换成没有 swap 的机器,那份数据不适用。**
+> (那次具体用的是不是上面这几条命令,没有记录,所以命令本身仍是 ⚠️ 未在真机验证。)
 
 ### 步骤 2 · 装 Docker
 
@@ -258,6 +402,28 @@ ls -ld data
 
 ⚠️ 这条 `chown -R` 会把 `data/demo/` 里那些 git 管着的资产也改成 10001 所有。
 **这没问题**(容器只读它们,git 也不跟踪属主),但你以后 `git pull` 更新演示资产时得是 root。
+
+> ### ⚠️ 你要是用 `rsync` 从开发机搬代码过来的(而不是 §步骤 3 的 `git clone`),这一步更要命
+>
+> **VPS 实测(2026-08-11)**:`rsync -a` 会**保留源端的 uid**。从 macOS 开发机搬过去,
+> `data/` 到了 VPS 上属主是 **501:staff** —— 那台 Linux 上根本没有这个 uid,
+> 而容器里跑的是 **uid 10001**(`backend/Dockerfile:288` 的 `useradd --uid 10001`,**源文件核对**)。
+>
+> **后果:台账 SQLite、产物注册表、LLM 缓存全都写不进去。**
+> 而且照例是那种最难查的症状 —— 容器 healthy、页面能开、问答有回复,只是什么都没落盘。
+>
+> 修法两条,都要做:
+>
+> ```bash
+> cd ~/gongyoutong
+> mkdir -p data/artifacts data/uploads     # rsync 排除掉这两个目录的话,它们压根不存在
+> chown -R 10001:10001 data
+> ```
+>
+> **这条这次是被 `scripts/preflight_vps.sh` 第 ④ 组拦下来的** —— 那一组里有一条
+> 「`data/` 属主是 10001」的硬检查,不是 10001 就判 FATAL 并打出 `sudo chown -R 10001:10001 data`。
+> (它在 **非 Linux** 上会跳过这条,因为 Docker Desktop 自己做 uid 映射 —— 所以在你的 mac 上跑
+> 是绿的,搬到 VPS 上才红。见步骤 8.5。)
 
 ### 步骤 6 · 生成两个秘密
 
@@ -407,6 +573,39 @@ docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
 不是任何真实口令 —— 这一步只验语法,不验口令。三个环境变量必须给,
 否则 `{$VAR}` 会替换成空串、站点地址为空直接报错。)
 
+### 步骤 8.5 · 跑一遍上线前自检脚本
+
+**仓库里有 `scripts/preflight_vps.sh`,它会把上面这些步骤里最容易漏的检查一次性做完。**
+只读:不改文件、不起容器、不发网络请求(除了解析域名)。退出码 0 = 可以 `up`,1 = 有致命项。
+
+```bash
+cd ~/gongyoutong
+bash scripts/preflight_vps.sh
+```
+
+它查的六组(**源文件核对** `scripts/preflight_vps.sh`):
+
+| 组 | 查什么 | 漏了会怎样 |
+|---|---|---|
+| ① | `.env` 存在、六个变量非占位符、令牌 ≥24 位、口令哈希里的 `$` 已加倍 | 步骤 6/7 的两个坑 |
+| ② | `GYT_SITE_ADDRESS` 与 `GYT_PUBLIC_ORIGIN` 描述**同一个入口** | 差一个字 → 浏览器判跨源 → 界面报「连不上服务器」,方向全错 |
+| ③ | 域名模式下 `dig` 结果与本机公网 IP 一致 | 证书一定申请不下来,还可能撞 Let's Encrypt 频率限制 |
+| ④ | :80/:443 空闲(**会先认自家 `gyt-caddy`** —— 站点已在跑时不误报)、**`data/` 属主是 10001**、`frontend/` 已生成且 `frontend/Dockerfile` **两条 ARG 都在**(`NEXT_PUBLIC_API_KEY` 与 `NEXT_PUBLIC_ARTIFACT_BASE`)、演示资产在 | 见步骤 5、步骤 11、§4.1 |
+| ⑤ | `Caddyfile` 语法、compose 合并档能解析、`published:` 端口不超过 caddy 应有的数量(**应为 3**:80 / 443tcp / 443udp。多一条就说明有服务偷偷加了 `ports` —— artifacts 服务的 `0.0.0.0` 绑定安全性就押在这条上,见 §4.1) | 见步骤 8、§3.4 |
+| ⑥ | 内存 ≥3500MB、可用磁盘 ≥10000MB | 见 §1.1 |
+
+**这次上线真跑过它,`data/` 属主那条就是被它拦下来的**(见步骤 5 的 rsync 警告,**VPS 实测**)。
+
+> ### ⚠️ 两件跑之前要知道的事,否则你会被它自己的红吓到
+>
+> - **第 ④ 组会检查 `frontend/`,而前端要到步骤 11 才生成。** 所以在这个位置跑,
+>   「`frontend/` 还没生成」那条**必然红**,这是预期的。
+>   实用的做法是**跑两次**:这里跑一次(前端那两条先忽略),步骤 11 生成前端之后再跑一次,
+>   拿到全绿再 `up`。
+> - **第 ⑥ 组的内存闸要求 ≥3500MB,不到就是 FATAL + `exit 1`。**
+>   2026-08-11 那台 1966MB 的机器**就是被它判红的**,而最后整套跑通了(理由与边界见 §1.1)。
+>   **看到这条红,先去读 §1.1 那一整段再决定要不要往下走** —— 别直接去改脚本里的阈值。
+
 ### 步骤 9 · 构建并起后端
 
 ```bash
@@ -426,9 +625,34 @@ docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build bac
 > 只要 backend 或 frontend 也带着 `ports`,就是有人把 VPS 档里的 `!reset []` 删了 ——
 > 停下,回 §3.4 看后果。(这条验证命令抄自 `docker-compose.vps.yml` 自己的注释。)
 
-⚠️ **第一次构建很久。** 镜像要下 2.2GB 的 BGE-M3 权重再烤进去,
-仓库里对冷启动构建的记载是 **10~30 分钟**(`Makefile` 的 `e2e` 目标注释,**源文件核对**;
-本手册没在 VPS 上计时过,**⚠️ 未在真机验证**)。
+⚠️ **第一次构建很久。** 镜像要下 2.2GB 的 BGE-M3 权重再烤进去。
+仓库里对冷启动构建的记载是 **10~30 分钟**(`Makefile` 的 `e2e` 目标注释,**源文件核对**)。
+
+**这里以前写着「本手册没在 VPS 上计时过,⚠️ 未在真机验证」—— 现在有数了。**
+2026-08-11 那台 2 vCPU / 1.9GB / 30GB 的 Debian 12,**单机单次**实测(**VPS 实测**):
+
+| 项 | 实测值 |
+|---|---|
+| backend 镜像 | **6.37GB**,构建约 **6 分半**(含从 huggingface.co 下 `BAAI/bge-m3` 权重) |
+| frontend 镜像 | **1.93GB**,构建约 **3 分半**,其中 `next build` 本身 **75.9 秒** |
+| 构建缓存回收 | 构建完 `docker builder prune -af` 回收了 **9.34GB** |
+| 磁盘终态 | 30GB 的盘最终占用约 **20GB**(两个镜像 8.3GB + 系统) |
+
+> ⚠️ **这是一台机器、一次构建的数字,只用来估算,不是承诺。**
+> 下权重那段完全取决于你到 huggingface.co 的带宽,换台机器差几倍都正常。
+>
+> 顺带回答手册里悬了很久的一个问题:**「4G 内存能不能扛住前端 `next build` 而不 OOM」**
+> ——原文把它标成「**这是我最不放心的一处**」。那次是在 **1.9GB 内存 + 8GB swap** 上跑的,
+> `next build` 75.9 秒完成,整场 `dmesg | grep -ci "out of memory"` = **0**。
+> **注意这解答的是「1.9GB + 8GB swap」这一种配置**,不是「4G 内存无 swap」那一种 ——
+> 后者仍然没验过。
+
+**磁盘紧的话,构建完顺手回收一次构建缓存:**
+
+```bash
+docker builder prune -af      # 这次回收了 9.34GB
+df -h                         # 看一眼还剩多少
+```
 
 盯着日志等它健康:
 
@@ -484,6 +708,22 @@ docker compose -f docker-compose.yml -f docker-compose.vps.yml \
 2.2GB 的模型权重已经烤在镜像里了,这一步不再下载)。
 幂等,可以反复跑;第二次起 manifest 命中就秒过。
 
+> ### 另一条路:把开发机上建好的 `data/chroma` 整个搬过去(**2026-08-11 那次实际走的就是这条**)
+>
+> 向量库是**生成物**,内容只取决于「哪些 PDF + 哪个 embedding 模型」,和机器无关。
+> 所以在开发机上建好之后整个目录搬过去也行 ——
+> `docker-compose.vps.yml` 的收尾注释里本来就写了这条(**源文件核对**)。
+>
+> **VPS 实测**:那次搬过去的 `data/chroma` 是 **12MB**,**VPS 上一次都没跑过 `ingest`**。
+> 好处是省掉 VPS 上那 15 分钟,更重要的是**省掉一次在小内存机器上做批量向量化的风险**。
+>
+> ⚠️ **搬完必须回步骤 5 重做属主** —— `rsync -a` / `scp -p` 都会把源端 uid 带过去,
+> 而容器是 uid 10001。`data/chroma` 属主不对的表现和「库没建」一模一样:
+> 一直回「规范里查不到」。
+>
+> ⚠️ 这条路**不适用于**「你在 VPS 上加了新的规范 PDF」的情况 —— 那种时候还是得在
+> VPS 上跑一次上面那条 `python -m …`,或者在开发机上重建完再搬一次。
+
 **怎么算成功 —— 看输出,别只看有没有报错:**
 
 | 输出 | 含义 |
@@ -536,11 +776,32 @@ ls frontend/package.json frontend/Dockerfile     # 两个都在才算成功
 >   ② 临时兜底:先照常上线,然后告诉每个测试者在浏览器 F12 控制台里种一次令牌
 >      —— 每个浏览器只需一次,做法见 §9 末尾。**这条兜底会把令牌交到测试者手上,
 >      能接受再用。**
+>
+> #### ✅ 这条链现在是通的(2026-08-11 更正)
+>
+> **手册原来把这条列成「已知目前接不上」**(§9 末尾原文:
+> 「在 `scripts/setup-frontend.sh` 的 Dockerfile 模板补上 `ARG NEXT_PUBLIC_API_KEY` 之前,
+> 令牌不会进浏览器包」)。**那个说法现在不成立了**,两头都补齐了:
+>
+> - **模板端**:`scripts/setup-frontend.sh:313` 已经有 `ARG NEXT_PUBLIC_API_KEY=`,
+>   并且写进了 build 阶段的 `ENV`(**源文件核对**);
+> - **读取端**:同一个脚本注册了 `api-key.tsx` 覆盖件,让 `getApiKey()` 除了 localStorage
+>   之外也读构建期变量(**源文件核对**)。上游那份只读 localStorage;
+> - **拦截端**:`scripts/preflight_vps.sh` 第 ④ 组会硬查 `frontend/Dockerfile` 里有没有这个 ARG,
+>   没有就判 FATAL(见步骤 8.5)。
+>
+> **VPS 实测**:那次构建完,在前端产物 `/app/.next/static/chunks/app/page-*.js` 里
+> **精确匹配到了完整的 64 位令牌**,以及 `https://velactora.com/api` ——
+> 也就是说地址和令牌确实都烘进了浏览器包。上面那条 `grep` 仍然值得跑,**但它现在应该是有输出的**;
+> 没输出说明你的 `frontend/` 是用旧版脚本生成的,`bash scripts/setup-frontend.sh --force` 重来一次。
+>
+> ⚠️ 顺带提醒一句这件事的另一面:**令牌就明明白白躺在浏览器包里,任何能打开页面的人都能扒出来。**
+> 这是设计上接受的(理由见 §0.3 末尾),不是疏忽 —— 但别把它当机密。
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
 
-docker compose ps      # gyt-backend-vps / gyt-frontend-vps / gyt-caddy 三个都要在
+docker compose ps      # gyt-backend-vps / gyt-frontend-vps / gyt-artifacts / gyt-caddy 四个都要在
 ```
 
 > **注意这里没有 `--profile ui`。** 基础档把 frontend 关在 `profiles: [ui]` 里,
@@ -568,9 +829,48 @@ docker compose ps      # gyt-backend-vps / gyt-frontend-vps / gyt-caddy 三个�
 1. 弹出**浏览器原生的登录框**,标题写着「工友通 GYT 内测」→ 输用户名口令 → 进入聊天界面。
    **没弹框就是 ① 没生效,回 §3.1。**
 2. 发一句纯文本:**「明天要绑扎钢筋」** → 应该看到 schedule 记了一条任务。
-3. 传一张工地照片 → 等 **10~60 秒**(视觉调用就是这么慢,见 §4.2)→ 应该给出违规项清单。
+3. 传一张工地照片 → 等 **10~60 秒**(视觉调用就是这么慢,见 §4.3)→ 应该给出违规项清单。
 4. 再问 **「规范里对消防车道宽度是怎么要求的?」** → 应该给出**带页码**的条文出处。
    **如果它说「规范里查不到」,几乎可以肯定是步骤 10 没做或者做失败了。**
+
+> ### ✅ 2026-08-11 那次冒烟实际跑出来的东西(**VPS 实测**)
+>
+> 记在这儿是因为:**门锁通了不等于业务通了。** 一套只剩登录框的站点也能把 §3 四条验证全走绿。
+>
+> **① 排期链路 —— 不看回执,直查库。**
+> 提问「记一条:明天上午复核 3-5 轴柱距」→ 路由到 `transfer_to_schedule` →
+> 然后**直接查 VPS 上那个 SQLite**,确认真有这一行:
+>
+> ```
+> {'id': 1, 'title': '复核 3-5 轴柱距', 'due_date': '2026-08-12',
+>  'status': 'open', 'created_at': '2026-08-11T02:24:18+08:00'}
+> ```
+>
+> 两件事同时被证明:**任务真落库了**(不是模型编的回执 —— 本仓在这上面栽过,见 CLAUDE.md
+> 的防假账守卫),以及 **`TZ` 那一行真生效了** —— `created_at` 是 `+08:00`,
+> 「明天」被算成 `2026-08-12` 而不是差一天(步骤 7 那个坑)。
+>
+> **② 知识链路 —— 验的是它肯不肯认怂。**
+> 提问「脚手架的连墙件规范上是怎么要求的?」→ 路由到 `transfer_to_knowledge` →
+> 检索两次都只命中防火规范(库里目前只有 GB 50016)→ **如实回答「知识库里查不到」,
+> 并给出 JGJ 130 作为去处,没有编造条文号。**
+>
+> ⚠️ **注意这跟上面第 4 条不矛盾,但很容易看混:**
+> 「查不到」在**库里没有那本规范**时是**正确行为**;在**库里有、却查不到**时才是步骤 10 出了问题。
+> 分辨方法是拿一个**你确信库里有**的问题去问(比如消防车道宽度,GB 50016 里就有)。
+>
+> **③ 确认是流式,不是转半天一次性蹦出来。**
+> schedule 那次的 SSE 事件类型分布:`messages/metadata` ×6、`messages/complete` ×6、
+> `updates` ×3、`metadata` ×1。
+>
+> **④ 非视觉链路的端到端耗时**(单次,并发 1):
+>
+> | 提问 | 耗时 |
+> |---|---|
+> | 一次 knowledge 提问 | **19 秒**(含**首次**把 BGE-M3 加载进内存那一下,见 §1.1 的采样) |
+> | 一次 schedule 提问 | **6 秒** |
+>
+> 视觉那一档仍然是 10~60 秒,那个数没变(§4.3)。
 
 ---
 
@@ -590,12 +890,61 @@ curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' https://<你�
 
 第一条回 200 = **门是开的,立刻下线**(§6.4)。
 
+> ### ⚠️⚠️ 域名模式下的「反裸奔」自检,跟裸 IP 模式**不是同一条命令**(2026-08-11 补)
+>
+> **手册这一节原来只给了一种写法,而它在域名模式下验不到东西。**
+> `docker-compose.vps.yml` 第 310 行附近的注释块已经按模式分好岔了,**这一节现在与它对齐**。
+>
+> **裸 IP 模式**(`GYT_SITE_ADDRESS=":80"`)—— 直接打 IP 就行:
+>
+> ```bash
+> curl -sS -o /dev/null -w '%{http_code}\n' http://<VPS_IP>/         # 期望 401
+> curl -sS -o /dev/null -w '%{http_code}\n' http://<VPS_IP>/api/ok   # 期望 401
+> ```
+>
+> **域名模式**(`GYT_SITE_ADDRESS=<域名>`)—— **上面那两条会回 308,而 308 不代表出事,
+> 也不代表没事**:
+>
+> ```bash
+> curl -sk --resolve <域名>:443:<VPS_IP> -o /dev/null -w '%{http_code}\n' https://<域名>/
+> # 期望 401(VPS 实测:401)
+>
+> curl -sk --resolve <域名>:443:<VPS_IP> -o /dev/null -w '%{http_code}\n' https://<域名>/api/ok
+> # 期望 401 —— ⚠️ 注意这条**不带口令**,挡它的是 Caddy;带上口令它就变 200 了,见本框末尾
+> ```
+>
+> **为什么 `curl http://<VPS_IP>/` 在域名模式下回 308(VPS 实测,实测值就是 308):**
+> Caddy 一旦启用 automatic HTTPS,就会在站点块**之外**另起一台独立服务器
+> (日志里叫 `remaining_auto_https_redirects`)专管 `:80`,对**任意 Host、任意路径**无差别 308 到 https。
+> 也就是说 `Caddyfile` 第 113 行 `{$GYT_SITE_ADDRESS} {` 那个**带 `basic_auth` 的站点块根本没被进入** ——
+> 这条命令验证到的只是「重定向存在」,**验不到口令层有没有生效**。
+> 而 308 又足够像「服务活着」,紧张的时候很容易被当成通过。
+>
+> **别想着用 `-L` 追下去。** 追下去是 `https://<VPS_IP>/`,SNI 是裸 IP、选不出域名的证书,
+> 握手直接炸 —— `docker-compose.vps.yml` 的注释记着实测结果是 `tlsv1 alert internal error`、
+> curl 的 `%{http_code}` 是 `000`(**源文件核对**)。既不是 401 也不是 200,更难判断。
+> `--resolve` 的作用就是**让 SNI 走域名、而连接落到你指定的那台机器上**。
+>
+> ⚠️ **`/api/ok` 这两条更要当心 —— 它在两种口令状态下含义完全不同:**
+> **不带**口令打 `/api/ok` 回 401,那是**口令层**(Caddy)在挡,是这一节要验的东西;
+> **带对**口令再打它回 **200**,那是 `/ok` 被后端鉴权框架豁免,**跟令牌层一点关系都没有**。
+> 拿后者去验令牌层就会得出「令牌层没生效」的假结论 —— 详见 §3.2 开头那个陷阱。
+
 > 顺带说一件设计得很聪明、你应该知道的事:**caddy 容器的 healthcheck 断言的是「返回 401」,
 > 不是「返回 200」**(**源文件核对** `docker-compose.vps.yml`)。
 > 401 同时证明两件事:Caddy 活着、**并且口令那道门是开着的**。
 > 所以哪天 `basic_auth` 被误删或写错位置、站点变成 200 全放行,
 > **caddy 容器会直接变 unhealthy**,而不是高高兴兴地报健康。
 > 也就是说 `docker compose ps` 里 caddy 那一行的 `(healthy)`,本身就是一条持续的口令检查。
+>
+> **而这条 healthcheck 自己也是按模式分岔的**,理由跟上面那个 308 完全一样:
+> 裸 IP 模式探 `http://127.0.0.1:80/`,域名模式探 `https://<域名>/` 并用 `curl --resolve`
+> 把域名钉回本机回环(这样 SNI 才走得对)。用 busybox 的 `wget` 不行 —— 它走 https 时不发 SNI。
+> (**源文件核对** `docker-compose.vps.yml` 的 caddy `healthcheck`,那段注释写着这条真机验过三遍才写对。)
+>
+> **VPS 实测**:`docker compose up -d` 之后 **20 秒内** caddy 就 `healthy`。
+> 由于它的判据是「HTTPS 上拿到 401」,**这一条 healthy 同时说明证书已经签发就绪了** ——
+> 不用另外去等。
 
 ### 3.2 ② 令牌拦得住
 
@@ -614,6 +963,19 @@ curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' https://<你�
 > 顺带说明两件事:
 > ① 这也正是**容器 healthcheck 加了鉴权之后仍然健康**的原因(它探的就是 `/ok`),这是好事;
 > ② `/docs` 和 `/openapi.json` 是**公开**的 —— 挡它们的是 Caddy 口令,不是令牌。
+>
+> #### ⚠️⚠️ 这条陷阱 2026-08-11 那次上线**差点真的踩下去**,所以补一个实测值
+>
+> 原来这一段是**读源码**推出来的。现在有实打实的数了(**VPS 实测**):
+>
+> **带正确的 basic auth 口令、但完全不带 `X-Api-Key`,打 `https://<域名>/api/ok` → 回 `200`。**
+>
+> 当时看到这个 200,第一反应就是「令牌层没生效」—— **而令牌层好好的**。
+> `/ok` 是 langgraph-api 的健康端点,被 Auth 框架豁免,**后端自己的 healthcheck 就是靠
+> 在容器内不带令牌打它才能探活的**。拿它验令牌层,得到的是一个百分之百的假结论,
+> 然后你会去改一个本来就对的配置,越改越乱。
+>
+> **规矩:验令牌层,只用 `/api/threads` 或 `/api/threads/search` 这类受保护路由。**
 
 正确的验法(**必须用受保护路由**;`/api` 前缀来自 `Caddyfile` 的 `handle_path /api/*`,
 它会自动剥掉前缀再转给后端,**源文件核对**):
@@ -632,6 +994,25 @@ curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' \
   -H 'Content-Type: application/json' -H 'X-Api-Key: <你的令牌>' -d '{"limit":1}'
 ```
 
+**这两条 2026-08-11 那次真打过了,连同一个受保护路由。以下全是实测值(口令都带对):**
+
+| 请求 | 无令牌 | 令牌不对 | 令牌正确 |
+|---|---|---|---|
+| `POST /api/threads` | **401** | **401** | **200** |
+| `POST /api/threads/search` | **401** | 未单独试 | **200** |
+| `GET /api/ok` | **200** ⚠️ | — | 200 |
+
+最后一行就是上面那个陷阱 —— **它对令牌层没有任何鉴别力,别拿它当验证**。
+
+**无令牌时后端回的响应体原文(VPS 实测):**
+
+```json
+{"detail":"访问被拒绝,请联系发你链接的人。"}
+```
+
+中文人话、没有堆栈、没有类名、没有内部路径 —— 符合本仓对面向用户字符串的要求。
+**「令牌不对」和「没带令牌」回的是同一句话**,这是故意的(理由见上面那条注释)。
+
 **C) 还要验一条后门 —— 这条最容易被漏:**
 
 ```bash
@@ -640,6 +1021,9 @@ curl -s -u '<用户名>:<口令>' -X POST https://<你的域名>/api/threads/sea
   -H 'Content-Type: application/json' -H 'x-auth-scheme: langsmith' \
   -d '{"limit":1}' -w '\n[%{http_code}]\n'
 ```
+
+⚠️ **这一条 2026-08-11 那次没跑**(A/B 两条跑了,C 没跑)。它仍然是**按代码判据写的**,
+不是实测值 —— 别因为上面那张表全是实测就顺手把这条也当验过了。**它反而是三条里最该跑的一条。**
 
 **这一条回 200 就是重大问题,立刻下线。**
 langgraph-api 里有一条旁路:满足特定条件时,带上 `x-auth-scheme: langsmith` 会让
@@ -713,8 +1097,33 @@ curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' \
 **未必罩得进那只令牌桶** —— 等于绕过限流开了一条长期烧钱的管子。
 来测试的人不需要定时任务,拦掉的代价是零。(**源文件核对**:`backend/auth.py` 的 `deny_cron_create`。)
 
-⚠️ 本节所有 curl **未在真机验证**(没有 VPS)。命令是照着代码里的判据写的,
-但「实际打过去是不是这个码」我们没跑过。
+⚠️ **本节(§3.3)的 429 / `Retry-After` / cron 403 都还没在真机上见过。**
+cron 那半那次**完全没跑**;限流那半**跑了两次、但两次都没打到令牌桶上** ——
+这两条死路记在这儿,免得你重走一遍:
+
+- **刷「建线程」没用。** 连发 26 次 `POST /api/threads` 全是 200。
+  `backend/auth.py:62` 写明限流只挂在 `@auth.on.threads.create_run` 上,
+  **建线程是被刻意排除的**(读操作和线程管理不该被限流打断)。
+- **发畸形 run 也没用**(本想借此不花钱地把桶抽干)。连发 26 次缺 `assistant_id` 的
+  `POST /api/threads/<id>/runs`,全是 **422**、一次 429 都没有 ——
+  **请求体的 JSON schema 校验跑在 auth 处理器之前,压根没消耗令牌。**
+
+想真验只能发 20+ 次**合法** run,那要真花钱,那次没做。
+⚠️ **但别据此说限流坏了**:`auth.py:201` 写明鉴权与限流**同开同关**,
+而鉴权那次是实测在工作的(401 全对),所以桶是 **armed** 的 ——
+只是 429 那条路在这台机器上没被走过。(本机彩排里走过:20 通过后 429 带 `Retry-After: 3`。)
+
+> **§3 各条的验证状态,一句话说清**(免得被上面那些实测值带偏):
+>
+> | 小节 | 状态 |
+> |---|---|
+> | §3.1 口令 | ✅ **VPS 实测**(含 308 那个坑) |
+> | §3.2 A) 无令牌 / B) 对令牌 | ✅ **VPS 实测** |
+> | §3.2 C) `x-auth-scheme` 后门 | ⚠️ 未跑 |
+> | §3.3 限流 | ⚠️ **试过两次,都没打到桶上**(两条死路见上方),429 没见过;桶是 armed 的 |
+> | §3.3 cron | ⚠️ 未跑 |
+> | §3.4 扫 **2024** 端口 | ✅ **VPS 实测** —— 从外部机器超时,`%{http_code}` 是 `000` |
+> | §3.4 扫 **3000** 端口 | ⚠️ 未跑 |
 
 ### 3.4 ④ backend / frontend 端口没暴露到公网
 
@@ -748,29 +1157,57 @@ ss -tlnp | grep -E ':2024|:3000|:443|:80'
 
 ## 4. 已知限制 —— 上线前先知道,别当 bug 报回来
 
-### 4.1 ⚠️ 巡检记录卡片和历史照片,在外网点不开
+### 4.1 ~~巡检记录卡片和历史照片,在外网点不开~~ ✅ 2026-08-11 已修
 
-聊天界面里那张「巡检记录」卡片(以及历史消息里的照片缩略图)指向的地址是
-**写死的 `http://127.0.0.1:8788`**(**源文件核对**:`scripts/frontend-overrides/tool-calls.tsx`
-和 `human.tsx` 里的 `ARTIFACT_BASE` 常量)。
+> **这一整条已经不成立了,但原文留在下面**,因为它描述的失效模式仍然值得认识 ——
+> 而且**同源清单少改一环就会退回这个状态**。
 
-那个端口由 `make serve-artifacts` 起的静态服务提供,而它**只绑 `127.0.0.1`,连命令行开关都没留**
-(`scripts/serve_artifacts.py` 的 `BIND_HOST` 常量,注释里写明「想突破得改代码、得过 review」)——
-因为那个目录里是**工地现场照片和巡检记录,含可识别人脸**。
+**原来是这样(2026-08-11 之前):** 聊天界面里那张「巡检记录」卡片、以及历史消息里的照片,
+指向的地址是**写死的 `http://127.0.0.1:8788`**。对外部测试者来说,那个地址指的是
+**他们自己的电脑** —— 照片是碎图、docx 点了没反应。当时的说法是「设计使然,
+要看文件请 `scp` 下来」,并且要提前跟测试者打招呼免得被当 bug 报回来。
 
-**对外部测试者的实际影响:** 他们浏览器里的 `127.0.0.1:8788` 指的是**他们自己的电脑**,
-所以卡片点开是空的。
+**⚠️ 而且它比原文写的还糟一层:** 站点上了 HTTPS 之后,https 页面去拉 http 资源属于
+**mixed content**,浏览器**连请求都不会发**,只在控制台留一行 —— 界面上一点线索都没有。
 
-**结论:巡检记录**在 VPS 上**能生成、能看到编号,但下载链接点不开。**
-这是设计使然,不是故障。要把生成的 docx 拿出来给人看,在 VPS 上:
+**现在是这样:** 走**同源**路径 `<你的域名>/artifacts/*`,在口令门**后面**:
 
-```bash
-ls -R ~/gongyoutong/data/artifacts | tail -20
-# 然后从你自己的电脑上取:
-# scp root@<你的VPS>:~/gongyoutong/data/artifacts/<日期>/<文件名> .
+```
+浏览器 ──▶ caddy ──handle_path /artifacts/*──▶ artifacts 服务(python:3.12-slim)
+             │                                    只读挂 data/artifacts,uid 10001
+             └ basic_auth 先拦一道                 **一个 ports 都没有**
 ```
 
-**这一条要提前告诉测试者**(§5 的话术里已经写进去了),否则一定会被当成 bug 报回来。
+五处同源,**断一环就退回上面那个状态,而且不报错**:
+
+| 环 | 位置 |
+|---|---|
+| 两个覆盖件读编译期变量 | `scripts/frontend-overrides/human.tsx`、`tool-calls.tsx` 的 `ARTIFACT_BASE` |
+| Dockerfile 模板声明 ARG | `scripts/setup-frontend.sh`(漏了**不报错**,同 `NEXT_PUBLIC_API_KEY` 那个坑) |
+| 编排传值 + artifacts 服务 | `docker-compose.vps.yml` 的 frontend `build.args` 与 `artifacts:` |
+| 反代路由 | `Caddyfile` 的 `handle_path /artifacts/*`(**必须写在兜底 `handle {}` 之前**) |
+| 自检 | `scripts/preflight_vps.sh` ④ 组查那条 ARG、⑤ 组数发布端口总数(应为 3) |
+
+**VPS 实测(2026-08-11,从外部机器)**:
+
+| 请求 | 结果 |
+|---|---|
+| 照片 `/artifacts/by-id/<32位编号>` | **200** `image/jpeg` 358893B,落地校验是真 JPEG 1600×1066 |
+| 巡检记录 同上 | **200** `application/vnd.openxmlformats-...wordprocessingml.document` 37454B,真 OOXML |
+| **不带口令**取产物 | **401** |
+| sidecar `.json` | **404**(`.json` / `%2ejson` / `HEAD` 三种走法都拦住) |
+| 路径穿越 `../etc/passwd` | **404** |
+| 编号格式非法 | **400** |
+
+⚠️ **`serve_artifacts.py` 的 `BIND_HOST` 改了,但那条红线没有变松。**
+它现在按 `/.dockerenv` 判断:宿主机上仍然是 `127.0.0.1` 且**依然没有 `--host` 开关**;
+只有在容器里才绑 `0.0.0.0`,而那**只在该容器的网络命名空间内**。
+保证从「写死在这个文件里」挪到了「编排里可被自检的不变量」——
+**artifacts 服务不许有 `ports`**,preflight ⑤ 组数发布端口总数就是在守这个。
+谁给它加一行 `ports`,就是把含可识别人脸的工地照片(`TODOS.md` TODO-22)直接挂公网。
+
+⚠️ **仍然没验的**:`<img>` 标签去取 `/artifacts/*` 时浏览器带不带 basic_auth 凭据。
+上面那些是 `curl -u` 打的,验的是**路由通**,不是浏览器行为(同 §9 里 SSE 那条悬案)。
 
 ### 4.2 ⚠️ 所有测试者共用一个身份,**能互相看到对方的会话历史**
 
@@ -805,6 +1242,10 @@ ls -R ~/gongyoutong/data/artifacts | tail -20
 **同时几个人提问会互相排队**,不是挂了。
 给三五个人内部测试够用;要给几十个人同时用,得先做进程/队列这一层,不在本手册范围内。
 
+⚠️ **2026-08-11 那次上线的并发是 1**(一个人在操作)。所以这一节说的排队现象
+**既没有被观察到,也没有被证伪** —— 它是从「单进程」这个结构推出来的,不是实测。
+§1.1 那份内存采样同样是并发 1 之下取的,**别拿它去推多人同时提问时的内存曲线**。
+
 ### 4.6 上传体积上限有两道,报错长相不一样
 
 - **应用层**(`GYT_PHOTO_MAX_MB` / `DOCUMENT` / `DRAWING`)超了 → 给一句**看得懂的中文**。
@@ -814,6 +1255,27 @@ ls -R ~/gongyoutong/data/artifacts | tail -20
 再留余量)。**改了 `GYT_DRAWING_MAX_MB` 就要回 `Caddyfile` 重算这一行**,
 否则表现是「传大图纸必失败」,而报错来自 Caddy、不是那句写好的中文提示。
 (**源文件核对**:`Caddyfile` 的 `request_body` 段。)
+
+### 4.7 ⚠️ 后端日志里有一条**会把你带偏**的警告(不影响功能,未修)
+
+**VPS 实测**:后端起来之后,日志里会出现这样一条 ——
+
+```
+Ignoring corrupted tree cache file /opt/hf/hub/models--BAAI--bge-m3/trees/xxx.json:
+  [Errno 13] Permission denied: '...'
+```
+
+**它说的是 "corrupted"(损坏),但真实原因写在同一行的后半截:`Permission denied`** ——
+镜像里 `/opt/hf` 的属主与运行用户(uid 10001)不一致。
+(`backend/Dockerfile` 的注释写明「**故意不 `chown -R` `/app/.venv` 与 `/opt/hf`**:
+它们只读即可,递归 chown 会把上千兆内容整层复制一遍,镜像体积直接翻倍」,**源文件核对**。)
+
+**不影响功能。** 那次就是**带着这条警告跑通的**:模型照常加载、检索照常返回
+(§步骤 12 的 knowledge 那条就是在这条警告之后跑出来的)。
+
+**目前未修。** 记在这里只有一个目的:**别被 "corrupted" 这个词带去查权重文件损坏** ——
+去 `docker exec` 里翻 `.safetensors` 的校验和、去重新拉权重、去怀疑镜像构建坏了,
+全是白费,而这条路一走就是半小时。
 
 ---
 
@@ -839,8 +1301,10 @@ ls -R ~/gongyoutong/data/artifacts | tail -20
 > - ⏳ **传照片以后要等 10~60 秒**,手机原图更慢。**这是正常的,请不要连点** ——
 >   每点一次都是一次真实的模型调用(会产生费用)。
 >   如果你点太快,它会回一句「问得太快啦,请等几秒再发一条。」,等几秒再发就行。
-> - 📄 巡检记录**能生成、能看到编号**,但**页面上那个下载链接在你这边点不开**(已知限制)。
->   需要那份 Word 文件的话找我要,我从服务器上取给你。
+> - 📄 巡检记录会生成一张卡片,**点上面的链接就能下载那份 Word**;传过的照片也会显示在历史里。
+>   (2026-08-11 之前这两样在外网都打不开,那条限制已经没有了。
+>   ⚠️ 但**没有人用真浏览器试过** —— 万一照片是碎图或者点了没反应,请**立刻告诉我**,
+>   那是真 bug 不是设计如此。)
 > - 👥 **这是共享的测试环境:大家用的是同一个账号,所以你在左边历史列表里能看到别人的会话,
 >   别人也能看到你的。** 请不要在这里聊任何你不想被同组人看到的内容。
 > - 🔒 **⚠️ 请不要上传含真实人脸的工地照片。**
@@ -937,6 +1401,15 @@ $COMPOSE down
 反复重建足够把自己关在门外,现象是「HTTPS 突然就申请不下来了」。
 (**源文件核对**:`docker-compose.vps.yml` 的 `caddy_data` 卷注释。)
 
+**VPS 实测**:命名卷 `gyt_caddy_data` / `gyt_caddy_config` 确实建出来了,证书文件就在
+
+```
+/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/velactora.com/velactora.com.crt
+```
+
+(路径里的域名换成你自己的)。所以**重建容器不会丢证书,也就不会反复向 Let's Encrypt 申请** ——
+这正是不能加 `-v` 的原因,现在这句话有实物撑着了。
+
 ---
 
 ## 7. 日常运维小抄
@@ -952,6 +1425,36 @@ $COMPOSE restart                # 重启整栈(不需要 --profile ui,VPS 档已
 docker stats --no-stream        # 内存吃了多少(4G 机器要常看这个)
 df -h                           # 磁盘,镜像很大
 ```
+
+> ### ✅ 机器重启之后会不会自己回来 —— 这次确认过了(**VPS 实测**)
+>
+> **不是推的,是真按了一次 `reboot`。**(先说这个,因为下面三条配置项只能推出「应该回得来」,
+> 而「应该」和「真回来了」在上线这件事上不是一回事。)
+>
+> 重启后实测:
+>
+> - **开机 6 秒内四个容器全部 Up**,`caddy` 直接 healthy(= 证书从卷里读到了,
+>   **没有重新向 Let's Encrypt 申请** —— 这点很重要,否则每次重启都在消耗签发额度);
+> - 从**外部机器**复验:首页无口令 401 / 有口令 200、API 无令牌 401 / 有令牌 200、
+>   产物 200,证书 `notAfter` 与重启前一致;
+> - 两块 swap 都按 `/etc/fstab` **自动挂了回来**(`swapon --show` 两条都在);
+> - `ufw` 仍然 active。
+>
+> 支撑它的三条配置(**源文件核对** + 机器上核过):
+>
+> - `systemctl is-enabled docker` = **`enabled`**(Docker 自己开机自启);
+> - 四个容器全是 **`restart=unless-stopped`**;
+> - 证书在命名卷 `gyt_caddy_data` 里,不随容器走(见 §6.4)。
+>
+> 合起来:**VPS 重启之后这套东西会自己回来,不需要人上去 `up` 一遍。**
+>
+> ⚠️ 一个**没有**跟着恢复的东西:上线时给 `sshd` 设过 `oom_score_adj = -1000`
+> (防构建期 OOM killer 把 ssh 连接掐掉,把自己关在门外)。那是写进 `/proc` 的,
+> **重启即失效**。日常运行不需要它;下次要在这台机器上做大构建,记得重设。
+>
+> ⚠️ 但**「重启后回得来」不等于「长期跑得住」**。那次只是一次上线加几次提问,
+> **没有连续跑过几天** —— 内存会不会缓慢涨、单进程会不会累积状态,都还不知道(§9)。
+> 真放着长期开,记得按 §6.3 隔几小时看一眼用量,并且**用完就关**(§8)。
 
 **⚠️ 改 `Caddyfile` 之后用 `restart`,不要找 `caddy reload`。**
 配置里写了 `admin off`(关掉了 Caddy 那个**无鉴权**的 `:2019` 管理端点),
@@ -1008,6 +1511,34 @@ $COMPOSE ps                                          # caddy 那行必须是 hea
 
 本仓的红线是「不许写没验证过的事实」,所以把来源摊开。
 
+### ✅ VPS 实测(2026-08-11 凌晨那次真实上线;机器规格见 §0.0)
+
+| 事实 | 实测值 / 怎么核的 |
+|---|---|
+| **步骤 1~12 的完整链路走得通** | Debian 12 / 2 vCPU / 1.9GB / 30GB,域名 `velactora.com`(Cloudflare **灰云**) |
+| **Caddy 自动签发 Let's Encrypt 证书** | `CN=velactora.com`,有效期 **2026-08-10 → 2026-11-08**。**从外部另一台机器**用 `openssl s_client` 独立验的,不是看 Caddy 自己的日志 |
+| **域名模式下 `curl http://<VPS_IP>/` 回 308,不是 401** | 实测 **308**。Caddy 在站点块之外另起了 `remaining_auto_https_redirects` 专管 :80,带 `basic_auth` 的站点块根本没被进入 → §3.1 |
+| **域名模式的正确自检回 401** | `curl -sk --resolve <域名>:443:<VPS_IP> … https://<域名>/` → 实测 **401** |
+| **`/api/ok` 验不了令牌层** | 带对口令、**不带** `X-Api-Key` 打 `https://<域名>/api/ok` → **200**。`/ok` 被鉴权框架豁免(后端 healthcheck 就靠这个探活)。**这次差点据此误判「令牌层没生效」** → §3.2 |
+| **受保护路由的实际返回码** | `POST /api/threads`:无令牌 **401** / 错令牌 **401** / 对令牌 **200**;`POST /api/threads/search`:无令牌 **401** / 对令牌 **200** |
+| **无令牌时后端回的原文** | `{"detail":"访问被拒绝,请联系发你链接的人。"}` —— 中文人话,无堆栈 |
+| **1.9GB 内存机器上查询时加载 BGE-M3 不 OOM** | 每 5 秒采样:可用 745→381→454MB;backend 容器 430→846→**955MB**(峰值)。权重是 mmap 进来的、算可回收文件页缓存,所以峰值不是 2.2GB。该机 swap 共 8GB(原有 4G + 新增 4G),全场 `dmesg \| grep -ci "out of memory"` = **0** → §1.1 |
+| **`preflight_vps.sh` 的内存闸会把这台机器判 FATAL** | 脚本第 233-236 行要求 ≥3500MB,该机 1966MB → `exit 1`。⚠️ 它给的理由是「**建库那一步**会被 OOM」,而那次**根本没在 VPS 上跑过 ingest** —— 那个具体后果既没被验证也没被证伪 |
+| **`data/chroma` 可以从开发机整个搬过去** | 搬过去的是 **12MB**,VPS 上一次 `ingest` 都没跑 → 步骤 10 |
+| **`rsync -a` 会把 `data/` 属主搞错** | macOS 源端 uid **501:staff** 被原样带过去,而容器跑 uid **10001**(`backend/Dockerfile:288`)→ 台账 / 产物注册表 / LLM 缓存全写不进去。**被 `preflight_vps.sh` 第 ④ 组的「data/ 属主是 10001」拦下** → 步骤 5 |
+| **构建耗时与体积** | backend 镜像 **6.37GB** / 约 6 分半(含下 BGE-M3 权重);frontend 镜像 **1.93GB** / 约 3 分半,其中 `next build` 本身 **75.9 秒**;`docker builder prune -af` 回收 **9.34GB**;30GB 盘最终占用约 **20GB** → 步骤 9 |
+| **令牌真的烘进了浏览器包** | 前端构建产物 `/app/.next/static/chunks/app/page-*.js` 里**精确匹配到完整的 64 位令牌**,以及 `https://velactora.com/api`。**这推翻了手册原来「这条路已知目前接不上」的说法** → 步骤 11 |
+| **排期链路真落库** | 提问「记一条:明天上午复核 3-5 轴柱距」→ `transfer_to_schedule` → **直查 SQLite**:`{'id': 1, 'title': '复核 3-5 轴柱距', 'due_date': '2026-08-12', 'status': 'open', 'created_at': '2026-08-11T02:24:18+08:00'}`。时区 `+08:00` 正确,「明天」算对了 |
+| **知识链路会认怂而不是编造** | 提问「脚手架的连墙件规范上是怎么要求的?」→ `transfer_to_knowledge` → 检索两次都只命中防火规范 → **如实回答「知识库里查不到」并给出 JGJ 130 作为去处,没有编造条文号** |
+| **确实是流式推送** | schedule 那次的 SSE 事件分布:`messages/metadata` ×6、`messages/complete` ×6、`updates` ×3、`metadata` ×1 |
+| **非视觉链路端到端耗时** | knowledge 一次 **19 秒**(含首次加载模型);schedule 一次 **6 秒**。并发 1 |
+| **证书在命名卷里、重建不丢** | `gyt_caddy_data` / `gyt_caddy_config` 存在,证书在 `/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/velactora.com/velactora.com.crt` |
+| **重启之后自己回得来** | **真按了一次 `reboot`**:开机 6 秒内四个容器全 Up、caddy 直接 healthy(证书从卷里读,没重新申请)、两块 swap 按 fstab 自动挂回、ufw 仍 active;从外部复验 401/200 全对、证书 `notAfter` 未变。支撑配置:`systemctl is-enabled docker` = `enabled`,四个容器 `restart=unless-stopped` |
+| **caddy 20 秒内 healthy** | `docker compose up -d` 之后 20 秒内。由于它的判据是「HTTPS 上拿到 401」,healthy 同时意味着证书已就绪 |
+| **HF tree cache 那条 "corrupted" 警告不影响功能** | 真实原因是同一行里的 `Permission denied`(`/opt/hf` 属主与运行用户不一致)。**带着这条警告跑通的**,模型照常加载、检索照常返回。未修 → §4.7 |
+
+> ⚠️ **整张表是一次、一台机器、并发 1 的样本。** 它证明「这条路走得通」,不证明「任何机器上都这样」。
+
 ### 实测(写手册时真跑过命令、真看过输出)
 
 | 事实 | 怎么核的 |
@@ -1029,8 +1560,14 @@ $COMPOSE ps                                          # caddy 那行必须是 hea
 | 事实 | 出处 |
 |---|---|
 | 站点变量 `GYT_SITE_ADDRESS`(`:80` 或域名)、`GYT_BASIC_AUTH_USER` / `HASH`、`GYT_PUBLIC_ORIGIN`;`handle_path /api/*` 会剥前缀;`admin off`;`request_body max_size 128MB`;日志过滤删 `Authorization`/`X-Api-Key`/`Cookie`;`basic_auth` 是 Caddy v2.8 才改的名字 | `Caddyfile` |
-| **环境变量文件必须叫 `.env`(由 `.env.vps.example` 复制而来),不能用 `--env-file .env.vps`**;`GYT_ACCESS_TOKEN` / `GYT_BASIC_AUTH_HASH` / `GYT_PUBLIC_ORIGIN` 是 `${VAR:?}` 硬性前置(没设就 `up` 失败);`GYT_SITE_ADDRESS` 默认 `:80`、`GYT_BASIC_AUTH_USER` 默认 `gyt`、`TZ` 默认 `Asia/Shanghai`;backend/frontend 都用 `ports: !reset []`;frontend 用 `profiles: !reset []`(**所以不需要 `--profile ui`**);镜像 tag 换成 `:vps`、容器名 `gyt-backend-vps` / `gyt-frontend-vps` / `gyt-caddy`;caddy 是唯一有 ports 的服务(80/443/443udp)、**没有 env_file**(不碰模型 Key);`NEXT_PUBLIC_API_URL = ${GYT_PUBLIC_ORIGIN}/api`;**caddy healthcheck 断言 401 而不是 200**;`caddy_data` / `caddy_config` 命名卷存证书;`restart: unless-stopped`;建议 2G swap;故意不设 `deploy.resources.limits` | `docker-compose.vps.yml` |
-| **`NEXT_PUBLIC_API_KEY` 目前是空转** —— `frontend/Dockerfile` 没有对应的 `ARG`,Docker 只警告 `unused build arg`,构建照样成功但令牌没进包 | `docker-compose.vps.yml` 的 `frontend.build.args` 注释 + `frontend/Dockerfile` 实际内容 |
+| **环境变量文件必须叫 `.env`(由 `.env.vps.example` 复制而来),不能用 `--env-file .env.vps`**;`GYT_ACCESS_TOKEN` / `GYT_BASIC_AUTH_HASH` / `GYT_PUBLIC_ORIGIN` 是 `${VAR:?}` 硬性前置(没设就 `up` 失败);`GYT_SITE_ADDRESS` 默认 `:80`、`GYT_BASIC_AUTH_USER` 默认 `gyt`、`TZ` 默认 `Asia/Shanghai`;backend/frontend 都用 `ports: !reset []`;frontend 用 `profiles: !reset []`(**所以不需要 `--profile ui`**);镜像 tag 换成 `:vps`、容器名 `gyt-backend-vps` / `gyt-frontend-vps` / `gyt-caddy`;caddy 是唯一有 ports 的服务(80/443/443udp)、**没有 env_file**(不碰模型 Key);`NEXT_PUBLIC_API_URL = ${GYT_PUBLIC_ORIGIN}/api`;**caddy healthcheck 断言 401 而不是 200**;`caddy_data` / `caddy_config` 命名卷存证书;`restart: unless-stopped`;建议 2G swap;故意不设 `deploy.resources.limits`;**artifacts 服务**(`python:3.12-slim`、uid 10001、两个卷都 `:ro`、**一个 ports 都没有**、`PYTHONUNBUFFERED=1`);四个服务共用 `x-logging` 锚点(`json-file` / `max-size 10m` / `max-file 3`) | `docker-compose.vps.yml` |
+| ~~**`NEXT_PUBLIC_API_KEY` 目前是空转** —— `frontend/Dockerfile` 没有对应的 `ARG`,Docker 只警告 `unused build arg`,构建照样成功但令牌没进包~~ **已不成立,见下一行**(原文保留,因为「Docker 对未声明 arg 只警告」这个机制本身没变,值得记住) | `docker-compose.vps.yml` 的 `frontend.build.args` 注释 |
+| **✅ 更正:这条链现在是通的。** `scripts/setup-frontend.sh:313` 有 `ARG NEXT_PUBLIC_API_KEY=` 并写进 build 阶段 `ENV`;同一脚本注册了 `api-key.tsx` 覆盖件让 `getApiKey()` 也读构建期变量(上游那份只读 localStorage);`preflight_vps.sh` 第 ④ 组硬查这个 ARG。**并且 2026-08-11 在构建产物里实测到了令牌** | `scripts/setup-frontend.sh`(Dockerfile 模板 + `apply_override "api-key.tsx"`)+ `scripts/preflight_vps.sh` |
+| **上线前自检脚本的六组检查**(① 环境变量 ② 站点/公开地址同源 ③ DNS 与本机公网 IP 比对 ④ 端口/`data/` 属主/前端 ⑤ 配置语法与 `published:` 端口数 ⑥ 内存 ≥3500MB、磁盘 ≥10000MB);只读、不改文件、不起容器 | `scripts/preflight_vps.sh` → 步骤 8.5 |
+| **③ 组的 DNS 检查在 Cloudflare 橙云下必然判红** —— 它拿 `dig` 结果比对本机公网 IP,橙云返回的是 Cloudflare 的 IP。**这是设计,不是 bug** | `scripts/preflight_vps.sh` 第 ③ 组 → §1.3 |
+| **caddy healthcheck 按模式分岔**:裸 IP 探 `http://127.0.0.1:80/`,域名探 `https://<域名>/` 并用 `curl --resolve` 走对 SNI;不能用 busybox 的 `wget`(走 https 不发 SNI) | `docker-compose.vps.yml` 的 caddy `healthcheck` 及其注释 |
+| **域名模式下追 `-L` 到 `https://<VPS_IP>/` 会握手失败**:`tlsv1 alert internal error`,curl 的 `%{http_code}` = `000` | `docker-compose.vps.yml` 第 310 行附近的注释块(那里记的是它自己的实测) |
+| **故意不 `chown -R` `/opt/hf`**(只读即可;递归 chown 会把上千兆内容整层复制一遍,镜像体积翻倍)—— 这正是 §4.7 那条 `Permission denied` 的来源 | `backend/Dockerfile` |
 | `GYT_ACCESS_TOKEN` 设了才开鉴权+限流;缺失时打感叹号横幅;**写进仓库根 `.env` 会让本机 `make dev` 也强制,`live_acceptance.py` 立刻 401**;失败文案「访问被拒绝,请联系发你链接的人。」;限流文案「问得太快啦,请等几秒再发一条。」;429 带 `Retry-After`;cron 创建被拒(返回 `False` → 403);`x-auth-scheme: langsmith` 旁路及两道堵法;令牌桶是进程内内存实现 | `backend/auth.py` |
 | `"auth": {"path": "./auth.py:auth", "disable_studio_auth": true}` | `backend/langgraph.json` |
 | `access_token` / `rate_limit_burst=20` / `rate_limit_per_minute=20.0` 三个字段,以及 20/20 的定值依据 | `backend/src/gyt/config.py` |
@@ -1039,47 +1576,102 @@ $COMPOSE ps                                          # caddy 那行必须是 hea
 | 建库 CLI 的四种输出与退出码 | `backend/src/gyt/agents/knowledge/ingest.py` 的 `main()` |
 | 「容器里别开启动时自动建库」 | `.env.example` + `Makefile` 的 `build-knowledge` 注释 |
 | `data/demo/` 不被 gitignore、`frontend/` 被 gitignore | `.gitignore` |
-| `ARTIFACT_BASE = "http://127.0.0.1:8788"` 写死在两个覆盖件里;`serve_artifacts.py` 的 `BIND_HOST` 写死回环、**没有 `--host` 开关** | `scripts/frontend-overrides/{tool-calls,human}.tsx`、`scripts/serve_artifacts.py` |
+| ~~`ARTIFACT_BASE` 写死 `http://127.0.0.1:8788`~~ → **2026-08-11 改成读编译期变量 `NEXT_PUBLIC_ARTIFACT_BASE`**,默认值仍是那个回环地址(本机开发行为不变);公网由编排传 `${GYT_PUBLIC_ORIGIN}/artifacts`。详见 §4.1 | `scripts/frontend-overrides/{tool-calls,human}.tsx` |
+| ~~`serve_artifacts.py` 的 `BIND_HOST` 写死回环~~ → **改成按 `/.dockerenv` 判容器**:宿主机上仍是 `127.0.0.1` 且**依然没有 `--host` 开关**,只有容器内绑 `0.0.0.0`。红线没变松,只是挪到「artifacts 服务不许有 `ports`」这个可被 preflight 自检的不变量上 | `scripts/serve_artifacts.py`、`docker-compose.vps.yml`、`scripts/preflight_vps.sh` |
+| `/artifacts/*` 反代路由必须写在兜底 `handle {}` **之前**(Caddy 的 handle 系列按书写顺序择一匹配) | `Caddyfile` |
 | 视觉调用 10.1 / 42.9 / 59.7 秒;超时定 150 秒 | `config.py` 的 `llm_timeout_s` 注释(仓库 2026-08-07 的实测记录) |
 | 冷启动构建 10~30 分钟、首次建库约 15 分钟 | `Makefile` 的 `e2e` / `build-knowledge` 注释 + `.env.example` |
 | 两家 Key 的申请地址 | `.env.example` |
 | D9「本地主跑 + 三层兜底」、安全最小集四条 | `docs/W4_跨平台运行方案.md` §7、`TODOS.md` TODO-1 / TODO-7 |
 | 演示照片含可识别人脸、公开前要打码 | `TODOS.md` TODO-22 |
 
-### ⚠️ 未在真机验证(手上没有 VPS,这些是按标准做法或按代码判据写的)
+### ✅ 原来列在「未在真机验证」里、现在成立的几条(2026-08-11 更正)
 
-- **在一台真 VPS 上完整走完步骤 1~12 的任何一步。全流程是拼出来的,不是跑出来的。**
-- §3 里**所有的 curl**。命令是照着代码判据写的,但「打过去实际回哪个码」没跑过。
-- `curl -fsSL https://get.docker.com | sh` 装 Docker(Docker 官方路径,但我们没在这台机器上跑)。
-- `fallocate` 挂 swap 那几条。
-- **4G 内存能不能扛住前端 `next build` 而不 OOM。这是我最不放心的一处。**
-- Caddy 自动签发 HTTPS 证书的完整流程;`:80` 裸 IP 那条路。
+**这几条以前明确写着没验过,别再照着旧说法转述。**
+
+| 原来写的 | 现在 |
+|---|---|
+| 「**在一台真 VPS 上完整走完步骤 1~12 的任何一步。全流程是拼出来的,不是跑出来的。**」 | ✅ 走完了一次,见 §0.0 |
+| 「Caddy 自动签发 HTTPS 证书的完整流程」 | ✅ 签成了,证书从外部独立验过(有效期 2026-08-10 → 2026-11-08) |
+| 「§3 里**所有的** curl」 | 部分成立:**§3.1 和 §3.2 的 A/B 跑了**;§3.2 C、§3.3、§3.4 **仍然没跑**(见下) |
+| 「**4G 内存能不能扛住前端 `next build` 而不 OOM。这是我最不放心的一处。**」 | 部分成立:**1.9GB 内存 + 8GB swap** 上 `next build` 75.9 秒完成、全场 OOM 计数 0。**「4G 无 swap」那一种仍然没验** |
+| 「**前端构建期注入 `NEXT_PUBLIC_API_KEY` 这条路** —— 已知目前接不上」 | ✅ **接上了**,并且在构建产物里实测到了令牌。详见步骤 11 与上面 §9 的更正行 |
+
+### ⚠️ 仍然未在真机验证(按标准做法或按代码判据写的)
+
+**上面那次上线覆盖不到的部分,一条都没少。**
+
+- **Windows 侧的任何一步。** 那次全程从 macOS 开发机操作;Windows 上的 SSH、rsync、
+  换行符、路径这些都没碰过。
+- **多并发。** 整场并发是 **1**。§4.5 说的排队、§1.1 那份内存采样,都建立在「一个人在用」之上。
+  **几个人同时提问会怎样,没测过。**
+- **长期运行稳定性。** 只是一次上线加几次提问,**没有连续跑过几天**。
+  内存会不会缓慢涨、单进程会不会累积状态,都不知道。
+  (**日志把盘写满这一条已经堵上了**:2026-08-11 给四个服务都加了
+  `logging: json-file / max-size 10m / max-file 3`,四个加起来封顶 120MB,
+  `docker inspect` 核过真生效。堵之前是 Docker 默认的**无上限**。
+  但**产物目录仍然无上限**:每张测试照片约 350KB 落在 `data/artifacts/` 里,没有清理机制。)
+- **证书自动续期。** 首签成功 ≠ 续期成功,两件事走的代码路径不一样。
+  这张证书 **2026-11-08 到期**,到那之前谁也不知道。
+  (证书在命名卷里、不随容器重建丢失这一条**已经验过**,那是续期能成立的前提,但不是续期本身。)
+- **§3.2 C) 的 `x-auth-scheme: langsmith` 后门检查。** 三条里最该跑的一条,那次偏偏没跑。
+- **§3.3 的 429 / `Retry-After` / cron 被拒的 403。** 那次**试了两次都没打到桶上**,
+  两条死路都记下来,免得下一个人再走一遍:
+  - **刷「建线程」没用。** 连发 26 次 `POST /api/threads` 全是 200。
+    `backend/auth.py:62` 写明限流只挂在 `@auth.on.threads.create_run` 上,
+    **建线程是被刻意排除的**(读操作和线程管理不该被限流打断)。
+  - **发畸形 run 也没用**(本想借此不花钱地抽干令牌桶)。连发 26 次缺 `assistant_id` 的
+    `POST /api/threads/<id>/runs`,全是 **422**,一次 429 都没有 ——
+    **请求体的 JSON schema 校验跑在 auth 处理器之前,压根没消耗令牌。**
+
+  想真验只能发 20+ 次**合法** run,那是要真花钱的,那次没做。
+  ⚠️ 但**别据此说限流坏了**:`auth.py:201` 写明鉴权与限流**同开同关**,
+  而鉴权那次是实测在工作的(401 全对),所以桶是**armed** 的 ——
+  只是 429 那条路在这台机器上没被走过。(本机彩排里走过:20 通过后 429 带 `Retry-After: 3`。)
+- **§3.4 里从外部扫 3000 端口那条。** 那次没扫。
+  (**2024 那条跑了**:从外部机器 `curl -m 6 http://<VPS_IP>:2024/ok` 超时、
+  `%{http_code}` 是 `000`,后端端口确实没对公网开。)
+- `curl -fsSL https://get.docker.com | sh` 装 Docker(Docker 官方路径,但没在这台机器上跑)。
+- **`fallocate` 挂 swap 那几条命令本身。** 那台机器上确实有 swap(原有 4GB + 新增 4GB = 8GB)
+  并且生效了,但**用的是不是手册里这几条命令,没有记录** —— 别把「有 swap」当成「这几条验过了」。
 - **浏览器通过 basic_auth 之后,会不会把凭据自动带到同源的 `/api/*` SSE 长连接上。**
-  `Caddyfile` 的注释把「同源 ⇒ 自动带」当成设计前提写了下来,理论上也确实如此,但没实测。
-  **万一前端能打开却一直连不上后端,先怀疑这条。**
+  `Caddyfile` 的注释把「同源 ⇒ 自动带」当成设计前提写了下来,理论上也确实如此。
+  那次确实看到了 SSE 事件流(§步骤 12 ③),**但那是 `curl` 打的,不是浏览器** ——
+  这不是「没留下记录」,是**明确知道不是浏览器**。而 `curl` 的凭据是命令行上手动 `-u` 给的,
+  浏览器是过了口令框之后**自动带**,两回事:**curl 通了一点都不能证明浏览器会通。**
+  所以这条原封不动仍是未验证。**万一前端能打开却一直连不上后端,先怀疑这条。**
+  同理还有 **`<img>` 标签去取 `/artifacts/*` 时带不带凭据** —— 那次验的是路由通(curl),
+  不是浏览器行为。
+- **`:80` 裸 IP 那条路。** 那次走的是域名模式。裸 IP 模式下 §3.1 的两条自检没跑过。
 - §6.3 用日志估请求量与真实账单的对应关系。
 - ARM 架构机器。
-- **前端构建期注入 `NEXT_PUBLIC_API_KEY` 这条路。**
-  ⚠️ 这一条不是「没验证」,是**已知目前接不上**:写手册时 `frontend/Dockerfile`
-  只声明了 `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_ASSISTANT_ID` 两个 ARG(**源文件核对**),
-  而 `getApiKey()` 只读 localStorage。`docker-compose.vps.yml` 已经把这个 build arg 传下去了,
-  但 Docker 对未声明的 arg 只警告一句就过 —— 所以在 `scripts/setup-frontend.sh` 的
-  Dockerfile 模板补上 `ARG NEXT_PUBLIC_API_KEY` 之前,**令牌不会进浏览器包**。
-  现象是网页能开,但一提问就回「访问被拒绝,请联系发你链接的人。」
-  检查命令见步骤 11。应急办法是在浏览器 F12 控制台里手动种一次,每个浏览器只需一次:
-  ```js
-  localStorage.setItem("lg:chat:apiKey", "<你的令牌>"); location.reload();
-  ```
-  (key 名 `lg:chat:apiKey` 是**源文件核对**过的,见 `frontend/src/lib/api-key.tsx`;
-  前端已经在发 `X-Api-Key` 头,见 `frontend/src/providers/Stream.tsx:57`。)
-  ⚠️ 注意**不能靠界面上那个填 API Key 的表单** —— 只要 `NEXT_PUBLIC_API_URL` 和
-  `NEXT_PUBLIC_ASSISTANT_ID` 都在构建期给了,那个表单**根本不渲染**
-  (`Stream.tsx:184` 的 `if (!finalApiUrl || !finalAssistantId)`)。
+- **`preflight_vps.sh` 内存闸那句「建库那一步会被 OOM 杀掉」。** 那次没在 VPS 上跑 `ingest`
+  (`data/chroma` 是搬过去的),所以这个具体后果**既没被验证也没被证伪**(§1.1)。
 - 中国大陆 ICP 备案的任何具体规则 —— §1.3 已经明说了「请自己去服务商那儿确认」。
+- Cloudflare **橙云**下的实际表现。§1.3 那三条理由里,前两条(证书死锁、SSE 缓冲)是
+  **原理说明**,不是我们测出来的;第三条(preflight 判红)是读脚本得出的。
+  **那次用的是灰云,橙云下究竟坏成什么样,没试过 —— 也不建议你去试。**
+
+> **令牌进不了浏览器包时的应急办法**(现在这条链是通的,这段只作为兜底保留):
+> 在浏览器 F12 控制台里手动种一次,每个浏览器只需一次:
+>
+> ```js
+> localStorage.setItem("lg:chat:apiKey", "<你的令牌>"); location.reload();
+> ```
+>
+> (key 名 `lg:chat:apiKey` 是**源文件核对**过的,见 `frontend/src/lib/api-key.tsx`;
+> 前端已经在发 `X-Api-Key` 头,见 `frontend/src/providers/Stream.tsx:57`。)
+> ⚠️ **不能靠界面上那个填 API Key 的表单** —— 只要 `NEXT_PUBLIC_API_URL` 和
+> `NEXT_PUBLIC_ASSISTANT_ID` 都在构建期给了,那个表单**根本不渲染**
+> (`Stream.tsx:184` 的 `if (!finalApiUrl || !finalAssistantId)`)。
+> ⚠️ 这条兜底会把令牌交到测试者手上,能接受再用。
 
 ### 明确没做的事
 
-- **没有改动任何代码文件。** 这份手册只是文档。
+- **这一轮(2026-08-11 补录实测)同样没有改动任何代码或配置文件,只改了这份文档。**
+  与这次上线相关的代码侧改动(`scripts/preflight_vps.sh` 上线前自检、
+  `docker-compose.vps.yml` 里按模式分岔的反裸奔注释与 caddy healthcheck)在各自的提交里,
+  本文只是**与它们对齐**。哪天两边对不上,**以那两个文件为准**——理由见本节最后一条。
 - `Caddyfile` / `docker-compose.vps.yml` / `backend/auth.py` 的**具体内容**没有抄进手册,
   只写了「它们必须做到什么」和「怎么验它们还在」。
   理由是本仓的「一份真相」规矩:配置的真相在配置文件里,手册再抄一份两边就会漂移 ——

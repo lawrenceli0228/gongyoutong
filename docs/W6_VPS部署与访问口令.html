@@ -1,0 +1,1213 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VPS 部署与访问口令 · 工友通 W6</title>
+<style>
+:root{
+  --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5;
+  --accent:#c2410c; --accent-soft:#fff1e8;
+  --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec;
+  --warn:#b45309; --warn-soft:#fdf3e2;
+  --bad:#a52a2a; --bad-soft:#fbeceb;
+  --sans:"PingFang SC","Hiragino Sans GB","Noto Sans SC",system-ui,-apple-system,sans-serif;
+  --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme:dark){
+  :root{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+    --line:#37332c; --line-soft:#2a2620; --accent:#f97b3d; --accent-soft:#2e1c10;
+    --blue:#6aa5d8; --blue-soft:#152433; --ok:#6fbf8f; --ok-soft:#12271a;
+    --warn:#e0a34e; --warn-soft:#2b2010; --bad:#e97a70; --bad-soft:#2c1614; }
+}
+:root[data-theme="light"]{ --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5; --accent:#c2410c; --accent-soft:#fff1e8; --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec; --warn:#b45309; --warn-soft:#fdf3e2; --bad:#a52a2a; --bad-soft:#fbeceb; }
+:root[data-theme="dark"]{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+  --line:#37332c; --line-soft:#2a2620; --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+  --ok:#6fbf8f; --ok-soft:#12271a; --warn:#e0a34e; --warn-soft:#2b2010; --bad:#e97a70; --bad-soft:#2c1614; }
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;font-feature-settings:"tnum"}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px 96px;display:grid;grid-template-columns:1fr;gap:0}
+@media(min-width:1060px){ .wrap{grid-template-columns:186px minmax(0,1fr);gap:50px;padding-right:34px} }
+nav{display:none}
+@media(min-width:1060px){
+  nav{display:block;position:sticky;top:0;align-self:start;padding-top:124px;height:100vh;overflow-y:auto}
+  nav a{display:block;font-size:12.5px;color:var(--ink-faint);text-decoration:none;
+    padding:5px 0 5px 11px;border-left:2px solid var(--line-soft);transition:.15s}
+  nav a:hover{color:var(--accent);border-left-color:var(--accent)}
+  nav a b{font-family:var(--mono);font-size:10.5px;margin-right:6px;opacity:.6}
+}
+main{min-width:0}
+header{padding:70px 0 0}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--accent);margin-bottom:16px}
+h1{font-size:clamp(29px,4.2vw,46px);line-height:1.15;letter-spacing:-.022em;font-weight:680;
+  margin:0 0 16px;text-wrap:balance;max-width:17em}
+.lede{font-size:clamp(15.5px,1.5vw,18px);color:var(--ink-soft);max-width:45em;margin:0 0 28px;line-height:1.72}
+.lede b{color:var(--ink);font-weight:600}
+.rev{border-left:3px solid var(--warn);background:var(--warn-soft);padding:13px 16px;
+  border-radius:0 var(--r) var(--r) 0;margin:0 0 24px;font-size:14px;color:var(--ink-soft)}
+.rev b{color:var(--ink)}
+section .rev{margin:16px 0 22px}
+.rev p{margin:0 0 10px;max-width:none;font-size:14px}
+.rev p:last-child{margin-bottom:0}
+.rev ol,.rev ul{margin:8px 0;padding-left:20px;max-width:none}
+.rev li{color:var(--ink-soft);font-size:14px;margin-bottom:8px}
+.rev li:last-child{margin-bottom:0}
+.rev .hd{display:block;color:var(--ink);font-weight:650;font-size:15px;margin-bottom:8px}
+.verdict{border:1.5px solid var(--accent);background:var(--accent-soft);border-radius:var(--r);
+  padding:20px 24px;margin-bottom:14px}
+.verdict .t{font-size:19px;font-weight:650;margin-bottom:8px;letter-spacing:-.01em}
+.verdict p{margin:0 0 8px;color:var(--ink-soft);font-size:15px;max-width:none}
+.verdict p:last-child{margin-bottom:0}
+.verdict.ok{border-color:var(--ok);background:var(--ok-soft)}
+.meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);padding-bottom:8px;line-height:1.9}
+section{padding-top:58px;scroll-margin-top:24px}
+h2{font-size:12px;font-family:var(--mono);letter-spacing:.15em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 8px;font-weight:600}
+h2 + .h{font-size:clamp(21px,2.3vw,26px);font-weight:640;letter-spacing:-.016em;margin:0 0 8px;line-height:1.3;text-wrap:balance}
+.sub{color:var(--ink-soft);max-width:44em;margin:0 0 24px;font-size:15.5px}
+h3{font-size:16.5px;font-weight:620;margin:30px 0 12px;letter-spacing:-.008em}
+h4{font-size:14.5px;font-weight:620;margin:22px 0 9px;color:var(--ink)}
+p{margin:0 0 14px;max-width:44em}
+code{font-family:var(--mono);font-size:.855em;background:var(--line-soft);padding:1.5px 5px;border-radius:4px;word-break:break-word}
+pre{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;
+  overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.62;color:var(--ink-soft);margin:8px 0 20px}
+pre b{color:var(--accent);font-weight:600}
+pre i{color:var(--ok);font-style:normal}
+pre s{color:var(--bad);text-decoration:none}
+pre u{color:var(--ink-faint);text-decoration:none}
+.tw{overflow-x:auto;margin:8px 0 22px;border:1px solid var(--line);border-radius:var(--r);background:var(--card)}
+.tw.feat{border:1.5px solid var(--accent);margin:14px 0 18px}
+.tw.good{border:1.5px solid var(--ok);margin:14px 0 18px}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:560px}
+th{text-align:left;font-size:10.5px;font-family:var(--mono);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:600;padding:11px 15px;border-bottom:1px solid var(--line);
+  background:var(--line-soft);white-space:nowrap}
+td{padding:11px 15px;border-bottom:1px solid var(--line-soft);vertical-align:top;color:var(--ink-soft);line-height:1.6}
+tr:last-child td{border-bottom:0}
+td:first-child{color:var(--ink);font-weight:550}
+td b{color:var(--ink);font-weight:600}
+td code{font-size:.82em}
+.tw.feat table{font-size:14.5px;min-width:620px}
+.tw.feat th{background:var(--accent-soft);color:var(--accent);border-bottom-color:var(--accent)}
+.tw.good th{background:var(--ok-soft);color:var(--ok);border-bottom-color:var(--ok)}
+.note{border-left:3px solid var(--blue);background:var(--blue-soft);padding:14px 17px;
+  border-radius:0 var(--r) var(--r) 0;margin:16px 0 22px;font-size:14.5px;color:var(--ink-soft)}
+.note b{color:var(--ink)}
+.note.a{border-left-color:var(--accent);background:var(--accent-soft)}
+.note.w{border-left-color:var(--warn);background:var(--warn-soft)}
+.note.d{border-left-color:var(--bad);background:var(--bad-soft)}
+.note.g{border-left-color:var(--ok);background:var(--ok-soft)}
+.note p{max-width:none}
+.note p:last-child{margin-bottom:0}
+.note pre{margin:10px 0 4px}
+.note ul,.note ol{max-width:none;margin:8px 0}
+.note li{font-size:14.5px}
+.note li:last-child{margin-bottom:0}
+.note .hd{display:block;color:var(--ink);font-weight:650;font-size:15px;margin-bottom:8px}
+.grid{display:grid;gap:14px;margin:6px 0 20px}
+@media(min-width:720px){ .g2{grid-template-columns:1fr 1fr} .g3{grid-template-columns:repeat(3,1fr)} }
+.card{border:1px solid var(--line);border-radius:var(--r);background:var(--card);padding:17px 19px}
+.card h4{margin:0 0 8px;font-size:15.5px;font-weight:620;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.card h4 .no{font-family:var(--mono);font-size:11.5px;color:var(--accent);font-weight:700}
+.card p{font-size:14px;color:var(--ink-soft);margin:0 0 8px;max-width:none;line-height:1.66}
+.card p:last-child{margin-bottom:0}
+.card.ok{border-left:3px solid var(--ok)} .card.warn{border-left:3px solid var(--warn)}
+.card.bad{border-left:3px solid var(--bad)}
+.b-bad,.b-warn,.b-ok,.b-new{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 6px;
+  border-radius:4px;vertical-align:2px;margin-right:8px;white-space:nowrap;letter-spacing:.02em}
+.b-bad{background:var(--bad-soft);color:var(--bad)}
+.b-warn{background:var(--warn-soft);color:var(--warn)}
+.b-ok{background:var(--ok-soft);color:var(--ok)}
+.b-new{background:var(--blue-soft);color:var(--blue)}
+.yes{color:var(--ok);font-weight:700} .no{color:var(--bad);font-weight:700}
+ul{margin:0 0 14px;padding-left:20px;max-width:44em}
+ol{margin:0 0 14px;padding-left:22px;max-width:44em}
+li{margin-bottom:6px;color:var(--ink-soft)}
+li b{color:var(--ink)}
+.step{border:1px solid var(--line);border-radius:var(--r);background:var(--card);padding:16px 19px;margin-bottom:12px}
+.step .hd{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:7px}
+.step .id{font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--accent);white-space:nowrap}
+.step .ti{font-weight:620;font-size:15.5px}
+.step p{font-size:14px;max-width:none;margin:0 0 9px}
+.step p:last-child{margin-bottom:0}
+.step pre{margin:8px 0 12px}
+.step.hot{border-color:var(--accent);border-left:3px solid var(--accent)}
+.step.new{border-left:3px solid var(--blue)}
+del{color:var(--ink-faint);text-decoration-color:var(--bad)}
+hr{border:0;border-top:1px solid var(--line);margin:44px 0 0}
+footer{padding-top:24px;font-size:13px;color:var(--ink-faint)}
+footer p{max-width:none}
+</style>
+
+<div class="wrap">
+<nav aria-label="目录">
+  <a href="#real"><b>01</b>真机结果</a>
+  <a href="#red"><b>02</b>红线与四层防线</a>
+  <a href="#pre"><b>03</b>先决条件</a>
+  <a href="#steps"><b>04</b>上线步骤</a>
+  <a href="#verify"><b>05</b>四层验证</a>
+  <a href="#limit"><b>06</b>已知限制</a>
+  <a href="#tell"><b>07</b>给测试者</a>
+  <a href="#cost"><b>08</b>成本与风险</a>
+  <a href="#ops"><b>09</b>运维小抄</a>
+  <a href="#place"><b>10</b>这台机器的定位</a>
+  <a href="#src"><b>11</b>核实到什么程度</a>
+</nav>
+
+<main>
+<header>
+  <div class="eyebrow">工友通 W6 · 部署手册 + 真机实测补录</div>
+  <h1>VPS 部署与访问口令</h1>
+
+  <p class="lede">给<b>拿到一台 VPS 的 root、但没参与过这个项目的人</b>:一小时内把整套东西跑起来,
+  然后把「网址 + 一个口令」发给几个外部测试者。</p>
+
+  <div class="rev">
+    <span class="hd">2026-08-11 凌晨:这套流程已经在一台真 VPS 上从头跑通过一次。</span>
+    <p>手册最初写完时<b>一步都没在真机上走过</b> —— 全流程是拼出来的。现在不是了。
+    但那是<b>一次、一台机器、并发 1</b> 的样本:它证明「这条路走得通」,<b>不证明「任何机器上都这样」</b>。
+    凡是能从中推出的更强结论(「1.9GB 内存够用」「30GB 磁盘够用」),本文一律没写 —— 因为没验过。</p>
+  </div>
+
+  <div class="meta">
+    md 原件:<code>docs/W6_VPS部署与访问口令.md</code>(1500+ 行,含全部命令原文)<br>
+    实测机:Debian 12 · 2 vCPU / 1.9GB / 30GB · 域名 velactora.com(Cloudflare 灰云)<br>
+    来源四档:<b>VPS 实测</b> / 实测(本机) / 源文件核对 / ⚠️ 未在真机验证
+  </div>
+</header>
+
+<!-- 01 -->
+<section id="real">
+  <h2>01 / 真机结果</h2>
+  <div class="h">已经在真机验证过的 / 仍然没验证的</div>
+  <p class="sub">本仓最硬的一条规矩是「不许写没验证过的事实」。所以先把这条线画清楚,
+  再往下看任何一个数字。</p>
+
+  <div class="tw feat"><table>
+    <thead><tr><th>项</th><th>2026-08-11 那次上线的实际值</th></tr></thead>
+    <tbody>
+      <tr><td>系统</td><td><b>Debian 12</b>,x86_64</td></tr>
+      <tr><td>规格</td><td><b>2 vCPU / 1.9GB 内存</b>(<code>free -m</code> 报 1966MB)/ <b>30GB 磁盘</b></td></tr>
+      <tr><td>域名</td><td><code>velactora.com</code>,DNS 托管在 <b>Cloudflare</b>(<b>灰云 DNS only</b>)</td></tr>
+      <tr><td>证书</td><td>Let's Encrypt 签发成功:<code>CN=velactora.com</code>,有效期 <b>2026-08-10 → 2026-11-08</b></td></tr>
+      <tr><td>结果</td><td><b>整套跑通</b> —— 门锁、令牌、业务链路、持久化都实测过</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>证书那一行不是看 Caddy 自己的日志得出的,是<b>从外部另一台机器</b>用 <code>openssl s_client</code>
+  独立验的 —— 服务自己说签成了不算数,外面能握上手才算。</p>
+
+  <h3><span class="b-ok">已验证</span>已经在真机验证过的部分</h3>
+  <ul>
+    <li><b>步骤 1~12 的完整链路</b>:从空机器到「输口令、提问、拿到答案」。<br>
+      ⚠️ 但<b>全程是用 <code>curl</code> 打的,没有开过真浏览器</b> —— 口令框长什么样、
+      前端 JS 起来之后会不会报错、SSE 在浏览器里逐不逐字,这三件都还没人看过。见下面「仍然没验证的部分」。</li>
+    <li><b>Caddy 自动签发 Let's Encrypt 证书</b>(域名模式)。手册原来把这条列在「未验证」里,现在成立了。</li>
+    <li><b>三层门的实际返回码</b>:口令层、令牌层的 A/B 两条。连带抓到一个差点误判的陷阱 ——
+      <b><code>/api/ok</code> 不能用来验令牌层</b>。</li>
+    <li><b>域名模式下的自检命令跟裸 IP 模式不一样</b>:<code>curl http://&lt;VPS_IP&gt;/</code> 回 <b>308</b> 而不是 401。</li>
+    <li><b>1.9GB 内存 + 8GB swap 的机器上,加载 BGE-M3 做检索没被 OOM 杀掉</b>(带采样数据)。</li>
+    <li><b>业务链路真的通</b>:排期条目直查 SQLite 确认落库、knowledge 如实说查不到而没编造。</li>
+    <li><b>持久化与自启</b>:<b>真按了一次 <code>reboot</code></b> —— 开机 6 秒内四个容器全回来、caddy 直接 healthy
+      (证书从命名卷里读到,没重新向 Let's Encrypt 申请)、两块 swap 按 fstab 自动挂回。</li>
+    <li><b>令牌真的烘进了浏览器包</b>(前端构建产物里精确匹配到那 64 位令牌)。
+      手册原来把这条列成「已知目前接不上」,<b>现在已经接上了</b>。</li>
+  </ul>
+
+  <h3><span class="b-warn">未验证</span>仍然没验证的部分</h3>
+  <div class="note d">
+    <ul>
+      <li><b>Windows 侧。</b>那次全程从 macOS 开发机操作,Windows 上的 SSH / rsync / 换行符没碰过。</li>
+      <li><b>多并发。</b>整场并发是 <b>1</b>(一个人在操作)。单进程排队这件事<b>没有被观察到,也没有被证伪</b>。</li>
+      <li><b>长期运行稳定性。</b>只是一次上线 + 几次提问,<b>没有连续跑过几天</b>。内存会不会缓慢涨、
+        单进程会不会累积状态,都不知道。</li>
+      <li><b>证书自动续期。</b>首签成功 ≠ 续期成功,两件事走的代码路径不一样。
+        这张证书 <b>2026-11-08 到期</b>,到那之前谁也不知道。</li>
+      <li><b>真浏览器。</b>整场验收全是 <code>curl</code> / <code>openssl s_client</code> 打的,<b>一次都没开过浏览器</b>。
+        于是这几件仍然没有证据:① 口令框和登录后的界面;② 前端 JS 起来之后会不会报错;
+        ③ <b>浏览器会不会把 basic_auth 的凭据自动带到 SSE 长连接上</b> —— 这条是
+        <code>Caddyfile</code> 路由三注释里挂了很久的悬案,<b>curl 打通了并不能回答它</b>
+        (curl 是我们手动 <code>-u</code> 给的凭据,浏览器是自动带,两回事);
+        ④ <code>&lt;img&gt;</code> 标签去取 <code>/artifacts/*</code> 时凭据带不带得上
+        (同上,curl 验的是路由通,不是浏览器行为)。</li>
+      <li><b><code>x-auth-scheme: langsmith</code> 后门检查</b>、<b>限流与 cron 的所有 curl</b>、
+        <b>扫 3000 端口那条</b> —— 那次都没跑,仍是按代码判据写的。<br>
+        (<b>2024 端口那条跑了</b>:从外部机器 <code>curl -m 6 http://&lt;VPS_IP&gt;:2024/ok</code> 超时,
+        <code>%{http_code}</code> 是 <code>000</code> —— 后端端口确实没对公网开。)</li>
+      <li>ARM 架构、中国大陆 ICP 备案、Cloudflare 橙云下的实际表现 —— 一如既往地没验。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 02 -->
+<section id="red">
+  <h2>02 / 红线</h2>
+  <div class="h">上公网之前必须理解的那条线,和四层防线</div>
+
+  <div class="note d">
+    <p><code>:2024</code> 是<b>零鉴权</b>的 Agent 执行端点,而两把 API Key(DeepSeek / Moonshot)就在容器里。
+    <code>docker-compose.yml</code> 钉死 <code>127.0.0.1</code> 正是为了挡这个。<b>公网裸奔 = 账单敞开给人刷。</b></p>
+    <p>这不是修辞。<code>POST /runs/stream</code> 谁都能打,一次请求就是一次真实模型调用;
+    <code>POST /threads/search</code> 能读走别人刚传上去的工地照片和图纸。
+    <b>别用「没人知道我的 IP」当防线</b> —— VPS 的 IP 一上线就会被全网扫描器在几分钟内摸到。</p>
+  </div>
+
+<pre>公网
+  │
+  │  <b>① Caddy:全站访问口令(basic_auth)</b>          <u>← 给「人」的门,测试者只需要这一个</u>
+  ▼
+Caddy ── 整份编排里唯一 publish 端口的服务(80 / 443)
+  │
+  ├── /       ──▶ frontend:3000  ┐  两个都<b>不写 ports</b>,
+  └── /api/*  ──▶ backend:2024   ┘  只在 docker 内网互通       <u>← ④ 端口不暴露</u>
+                     │
+                     │  <b>② backend/auth.py 校验 X-Api-Key</b>       <u>← 给「程序」的门(纵深)</u>
+                     │  <b>③ 令牌桶限流:只卡「创建 run」这个动作</b>
+                     ▼
+                 Agent 真跑</pre>
+
+  <div class="tw"><table>
+    <thead><tr><th>防线</th><th>挡住的是</th><th>它自己失效的方式</th></tr></thead>
+    <tbody>
+      <tr><td>① Caddy 口令</td><td>陌生人根本进不来</td><td>Caddy 配置写错、某条路由漏配</td></tr>
+      <tr><td>② X-Api-Key</td><td><b>绕过 Caddy 直接打内网端口的人</b>;将来有人为了排障给 backend 加回 <code>ports</code></td><td>令牌泄漏(它在浏览器包里,能拿到包的人已经过了①)</td></tr>
+      <tr><td>③ 限流</td><td><b>已经进来的人</b>反复刷 run 烧钱</td><td>参数给太松;多副本部署</td></tr>
+      <tr><td>④ 端口只走内网</td><td>直接 <code>curl http://&lt;你的IP&gt;:2024</code></td><td>有人手贱把 <code>ports</code> 改成 <code>0.0.0.0</code></td></tr>
+    </tbody>
+  </table></div>
+
+  <p>①塌了②还在,②塌了④还在,而③管的是「合法用户也可能把你刷穷」这件①②④都管不了的事。</p>
+
+  <div class="note">
+    <p>令牌(<code>X-Api-Key</code>)在<b>构建期</b>烤进前端浏览器包,测试者不用手动粘。
+    它躺在包里是<b>可见</b>的 —— 但<b>能拿到那个包的人已经过了 Caddy 口令</b>,所以可接受。
+    它防的从来不是「过了第一道门的人」。<b>别把它当机密管理。</b></p>
+  </div>
+
+  <h3>动手前先核对:这套安全件在不在你 clone 到的提交里</h3>
+<pre>cd ~/gongyoutong
+ls backend/auth.py                       <u># ① 令牌鉴权 + 令牌桶限流</u>
+grep -n '"auth"' backend/langgraph.json  <u># ② 应看到 "auth": {"path": "./auth.py:auth"}</u>
+ls Caddyfile                             <u># ③ 反代 + 全站口令</u>
+ls docker-compose.vps.yml                <u># ④ VPS 覆盖件</u>
+ls .env.vps.example                      <u># ⑤ VPS 专用环境变量样例</u>
+grep -n 'access_token\|rate_limit_burst' backend/src/gyt/config.py   <u># ⑥ 闸门配置字段</u></pre>
+
+  <div class="note a"><p><b>六条里但凡缺一条,就停下。</b>说明你 clone 到的是这套安全件落地之前的提交 ——
+  那份代码<b>不能上公网</b>。去找项目负责人要正确的分支或 tag,别自己动手补。</p></div>
+
+  <div class="note w">
+    <p><b>这台 VPS 不是演示主路径。</b>项目的 D9 决策是「本地主跑 + 三层兜底」。
+    两个理由,任何一个都够:<b>视觉缓存跟着机器走</b>(在 VPS 上重新焐一轮就是再烧一次钱);
+    <b>会场网络、跨网延迟、供应商临时限流</b>,任何一个抽风都能毁掉现场。
+    <b>VPS 是加分项和第四层兜底。</b></p>
+  </div>
+
+  <div class="note">
+    <span class="hd">⚠️ 视觉缓存这一条 2026-08-11 被实测修正了一半</span>
+    <p>原来这儿写的是「VPS 上一张都不认,要么再烧一轮,要么把<b>几百 MB</b> 的 <code>data/cache</code> 同步上去」。</p>
+    <p>实测:那次把开发机的 <code>data/cache</code> 一起 rsync 过去了,<b>只有 4.1MB</b>(不是几百 MB),
+    而且<b>视觉缓存真的跨机命中</b>。判据:传同一张演示照片跑英雄链两次,
+    缓存目录里 <code>kimi</code> 条目共 <b>160 条</b>、<b>当晚 02:00 之后新增 0 条</b> ——
+    也就是说 kimi 视觉那一跳一次都没真调,<b>贵的那半是免费的</b>。</p>
+    <p><b>但便宜的那半每次都真花钱。</b>同样两次跑,每次都<b>新增 6 条 <code>deepseek-v4-flash</code> 条目</b>,
+    耗时 <b>7 秒 / 11 秒</b>(第二次反而更慢)—— <b>重复同一张照片的演示不会变便宜</b>。
+    至于文本档为什么不命中,<b>没查</b>。</p>
+    <p>(一个<b>没验证的猜测,别当结论</b>:<code>ingest_uploads</code> 每次上传都用新的 <code>uuid4().hex</code>
+    登记照片,改写出来的 <code>(照片编号:&lt;id&gt;)</code> 每次都不一样,而那串进了文本档的输入。)</p>
+    <p>对<b>给外部的人测</b>这件事的直接含义:<b>每个人每张照片大约 6 次文本调用是真账单</b>,
+    视觉那笔只在照片没见过时才付。</p>
+  </div>
+</section>
+
+<!-- 03 -->
+<section id="pre">
+  <h2>03 / 先决条件</h2>
+  <div class="h">机器、域名、两把 Key</div>
+
+  <h3>机器规格</h3>
+  <div class="tw"><table>
+    <thead><tr><th>项</th><th>要求</th><th>为什么</th></tr></thead>
+    <tbody>
+      <tr><td>CPU / 内存</td><td><b>2C4G 起步</b></td><td>BGE-M3 推理<b>吃内存</b>。<b>4G 是下限,不是舒适区</b>,能上 8G 就上 8G</td></tr>
+      <tr><td>磁盘</td><td><b>40GB 以上</b></td><td>后端镜像本身就很大。<b>VPS 实测</b>:一块 <b>30GB</b> 的盘走完全流程,最终占用约 <b>20GB</b>(两个镜像 8.3GB + 系统),中途靠 <code>docker builder prune -af</code> 回收了 <b>9.34GB</b></td></tr>
+      <tr><td>系统</td><td>Ubuntu 22.04 / 24.04 LTS(x86_64)</td><td>命令按 Debian 系写。<b>VPS 实测</b>跑通的那台是 <b>Debian 12 / x86_64</b>。ARM ⚠️ 没试过</td></tr>
+      <tr><td>网络</td><td>能出站访问 DeepSeek / Moonshot / HuggingFace / GitHub / npm</td><td>构建期要下 2.2GB 权重和前端依赖,运行期要调两家模型</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><span class="b-new">2026-08-11 新增</span>内存这一格拿到了真数据 —— 但结论比你想的窄</h3>
+
+  <p><b>先说会挡路的那件事:</b><code>scripts/preflight_vps.sh</code> 第 233-236 行的内存闸要求 ≥ 3500MB。
+  那台机器 1966MB,<b>被判 FATAL、脚本直接 <code>exit 1</code></b>。</p>
+
+  <div class="note w">
+    <span class="hd">而它给的理由,在那次上线里并不适用</span>
+    <p>脚本里那句话是「BGE-M3 推理吃内存,<b>4G 是下限不是舒适区</b>,<b>建库那一步</b>会被 OOM 杀掉」。</p>
+    <p>那次<b>根本没在 VPS 上跑过 <code>ingest</code></b> —— <code>data/chroma</code>(12MB)是从开发机整个搬过去的。
+    所以「建库那一步会被 OOM」这个<b>具体后果</b>没有被验证,也没有被证伪。</p>
+  </div>
+
+  <p><b>真正被验证的是另一件事:查询时把 BGE-M3 加载进来那一下。</b>每 5 秒采样一次:</p>
+
+<pre>02:25:09   可用 745MB    swap 18MB    backend 容器 430MB     <u>← 加载前</u>
+02:25:23   可用 381MB    swap 18MB    backend 容器 846MB     <u>← 加载中</u>
+02:25:31   可用 454MB    swap 77MB    backend 容器 <b>955MB</b>     <u>← 峰值</u></pre>
+
+  <p><b>backend 峰值只到 955MB,不是 2.2GB。</b>原因是权重从镜像里 <b>mmap</b> 进来,算<b>文件页缓存</b>
+  (可回收),不占匿名内存 —— 所以「权重 2.2GB ⇒ 至少吃 2.2GB 内存」这个直觉推算是错的。</p>
+
+  <p>那台机器上 swap 是 <b>原有 4GB + 新增 4GB = 8GB</b>。整场构建 + 查询下来,
+  <code>dmesg | grep -ci "out of memory"</code> = <b>0</b>。</p>
+
+  <div class="verdict">
+    <div class="t">结论只能写到这里:这台机器上跑通了</div>
+    <p><b>不许</b>据此改写成「1.9GB 够用」,更<b>不许</b>据此去下调 <code>preflight_vps.sh</code> 的内存闸。</p>
+    <p>理由:样本只有一次,而且<b>那次的并发是 1</b>。一个人自己点,和三五个人同时提问,
+    内存曲线不是一回事,而这条我们没测过。</p>
+    <p>想跑在 4G 以下的机器上,你要自己接受这个风险,并且<b>至少把 swap 挂足</b> ——
+    上面那份采样是在 8GB swap 之下取的,<b>换成没有 swap 的机器,这份数据不适用</b>。</p>
+  </div>
+
+  <h3>域名:两种玩法,靠一个变量切换</h3>
+  <div class="tw"><table>
+    <thead><tr><th><code>GYT_SITE_ADDRESS</code></th><th>效果</th><th>代价</th></tr></thead>
+    <tbody>
+      <tr><td><code>gyt.example.com</code><br><b>推荐</b></td><td>Caddy <b>自动申请 Let's Encrypt 证书、自动续期、80 自动跳 443</b></td><td>需要一个 A 记录已经指到这台 VPS 的域名;80 和 443 都要能从公网进来(证书校验走 80)</td></tr>
+      <tr><td><code>:80</code></td><td>没有域名,直接用 VPS 的 IP 访问,<b>纯 HTTP</b></td><td>⚠️ <b>HTTP 下口令是明文过网的</b>。临时测试可以接受,别拿它当长期方案,更别用你在别处用过的密码</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note d">
+    <span class="hd">⚠️⚠️ DNS 托管在 Cloudflare 的话:必须用灰云(DNS only),不能开橙云代理</span>
+    <p><b>本节是 2026-08-11 那次上线新增的 —— 手册原来对 Cloudflare 一个字都没提。</b>
+    而域名放在 Cloudflare 上是很常见的做法,那个云朵图标<b>默认就是橙色</b>(已代理)。</p>
+    <p>把那条 A 记录的云朵点成<b>灰色</b>(Proxy status = <b>DNS only</b>)。
+    <b>橙云会从三个方向同时把这套东西弄坏:</b></p>
+    <ol>
+      <li><b>证书死锁。</b>橙云下 Cloudflare 在它自己的边缘卸载 TLS,回源走 443;
+        而我们这边的 Caddy 是<b>先要拿到证书才有 443 可听</b>。两边互相等,谁也起不来。</li>
+      <li><b>SSE 会被缓冲。</b>整个应用靠<b>流式推送</b>把 Agent 的中间过程吐给页面。
+        Cloudflare 免费版代理对 SSE 有<b>缓冲</b>,还有 <b>100 秒空闲超时</b> ——
+        表现不是报错,是「转圈很久然后一次性蹦出全部内容」或者干脆断掉。</li>
+      <li><b><code>scripts/preflight_vps.sh</code> 的 DNS 检查会判红。</b>它拿 <code>dig</code> 的结果
+        跟本机公网 IP 比对,橙云下 <code>dig</code> 返回的是 Cloudflare 的 IP，两边对不上。
+        <b>这是该脚本的设计,不是 bug</b> —— 它挡的正是「证书一定申请不下来」这件事。</li>
+    </ol>
+    <p>第 1、2 条是<b>原理说明</b>(Cloudflare 的行为,不是我们测出来的);第 3 条是<b>读脚本源码</b>得出的。
+    <b>那次上线实际用的就是灰云,证书一次签成。</b></p>
+  </div>
+
+  <div class="note">
+    <p>灰云意味着<b>你的 VPS 真实 IP 是公开的</b>,没有 CDN 挡在前面。
+    这套编排本来就假定了这一点 —— 四层防线全在你这台机器上,不依赖任何 CDN。
+    真实 IP 暴露不改变风险模型,但它确实意味着<b>扫描器几分钟内就能摸到你</b>。</p>
+  </div>
+
+  <div class="note w">
+    <p><b>合规提醒,不是结论。</b>机器买在<b>中国大陆</b>的云服务商,用域名对外提供 HTTP 服务
+    通常涉及 <b>ICP 备案</b>流程,周期以周为单位。<b>我们没有替你核实任何一条现行监管细节,政策也会变</b> ——
+    请在买机器<b>之前</b>去服务商那里确认清楚。买在香港/海外能省掉这个不确定性。</p>
+  </div>
+</section>
+
+<!-- 04 -->
+<section id="steps">
+  <h2>04 / 一步步上线</h2>
+  <div class="h">十三步(含 2026-08-11 新增的自检那步)</div>
+  <p class="sub">完整可复制的命令在 md 原件里。这里只留每步的要点、坑,和那次实测拿到的数。</p>
+
+  <div class="step">
+    <div class="hd"><span class="id">步骤 1</span><span class="ti">系统基础与防火墙</span></div>
+    <p><code>ufw</code> 只开 22 / 80 / 443。<b>2024(后端)和 3000(前端)绝对不要开</b> —— 它们只走 docker 内网。</p>
+    <p><b>swap 这一步别省。</b>2026-08-11 那台 1.9GB 内存的机器<b>是带着 8GB swap 跑通的</b>
+    (原有 4GB + 新增 4GB),全场 OOM 计数 <b>0</b>。上面那份内存采样也是在这个前提下取的 ——
+    <b>换成没有 swap 的机器,那份数据不适用</b>。
+    (那次具体用的是不是手册里那几条 <code>fallocate</code> 命令,没有记录,所以命令本身仍是 ⚠️ 未在真机验证。)</p>
+  </div>
+
+  <div class="step">
+    <div class="hd"><span class="id">步骤 2</span><span class="ti">装 Docker</span></div>
+    <p>Docker 官方安装脚本(⚠️ 未在真机验证,但这是 Docker 官方给的路径)。上机第一件事跑
+    <code>docker compose version</code>,别用太老的版本。</p>
+  </div>
+
+  <div class="step">
+    <div class="hd"><span class="id">步骤 3</span><span class="ti">拉代码</span></div>
+    <p>仓库是<b>私有</b>的:在 VPS 上生成一把新钥匙,公钥加到 GitHub 的 Deploy keys(只勾读)。
+    <b>别把你个人账号的 SSH 私钥丢到 VPS 上。</b></p>
+  </div>
+
+  <div class="step">
+    <div class="hd"><span class="id">步骤 4</span><span class="ti">⚠️ 确认演示资产真的拉下来了</span></div>
+    <p><code>data/demo/</code> 是<b>进 git 的</b>、没用 git-lfs,普通 clone 就该全带下来。但值得亲眼确认一次 ——
+    缺了它们,knowledge 会建出个空库,而<b>空库的表现和「规范里查不到」一模一样</b>,极难发现。</p>
+    <p><b>PDF 那一行是空的 = 知识库这一整块功能作废。</b>别继续。</p>
+  </div>
+
+  <div class="step hot">
+    <div class="hd"><span class="id">步骤 5</span><span class="ti">建数据目录并交出所有权</span><span class="b-new">实测补充</span></div>
+<pre>mkdir -p data/artifacts data/uploads
+chown -R 10001:10001 data</pre>
+    <p>容器里跑的是 <b>uid 10001</b> 的非 root 用户(<code>backend/Dockerfile:288</code>)。
+    Linux 上不 <code>chown</code>,容器一访问 <code>data/</code> 就 PermissionError ——
+    症状是<b>「服务显示健康,但什么都干不了」</b>,最难查的那一类。</p>
+    <div class="note d">
+      <span class="hd">⚠️ 你要是用 rsync 从开发机搬代码过来的,这一步更要命</span>
+      <p><b>VPS 实测</b>:<code>rsync -a</code> 会<b>保留源端的 uid</b>。从 macOS 开发机搬过去,
+      <code>data/</code> 到了 VPS 上属主是 <b>501:staff</b> —— 那台 Linux 上根本没有这个 uid。</p>
+      <p><b>后果:台账 SQLite、产物注册表、LLM 缓存全都写不进去。</b>
+      而且照例是那种最难查的症状 —— 容器 healthy、页面能开、问答有回复,只是什么都没落盘。</p>
+      <p><code>mkdir -p data/artifacts data/uploads</code> 也别漏:这两个目录如果被 rsync 排除了,压根不存在。</p>
+      <p><b>这条这次是被 <code>preflight_vps.sh</code> 第 ④ 组拦下来的。</b>
+      它在<b>非 Linux</b> 上会跳过这条(Docker Desktop 自己做 uid 映射)—— 所以在你的 mac 上跑是绿的,
+      搬到 VPS 上才红。</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="hd"><span class="id">步骤 6</span><span class="ti">生成两个秘密</span></div>
+    <p><b>口令哈希</b>用 <code>caddy hash-password --algorithm bcrypt --bcrypt-cost 12</code>。
+    <code>--bcrypt-cost 12</code> 不能省:默认是 cost 14,而 <code>basic_auth</code> 排在所有路由之前 ——
+    它是整套部署里<b>唯一不需要任何凭据就能触发的重计算</b>。实测冷校验 cost 12 是 0.470s、cost 14 是 1.268s。</p>
+    <div class="note d">
+      <span class="hd">⚠️⚠️ 会让你查一整晚的坑:bcrypt 哈希里的 <code>$</code></span>
+      <p><b>Docker Compose 会把它读到的所有 env 文件里的 <code>$</code> 当变量展开。</b>本机实测:</p>
+<pre>env 文件里写 <s>HASH=$2a$14$JMw9EJgAEKPOoH.PJQ8Ljek…</s>
+容器里拿到  <s>HASH=$2a$14.PJQ8Ljek…</s>   <u>← $JMw9EJgAEKPOoH 被整段吃掉</u>
+
+env 文件里写 <i>HASH=$$2a$$14$$JMw9EJgAEKPOoH.PJQ8Ljek…</i>
+容器里拿到  <i>HASH=$2a$14$JMw9EJgAEKPOoH.PJQ8Ljek…</i>   <u>← 正确</u></pre>
+      <p>被吃掉的哈希<b>不报任何错</b>,Caddy 照常起来,只是<b>你输什么口令都进不去</b> ——
+      而你会去怀疑口令打错了、怀疑 Caddy 配置、怀疑浏览器缓存,方向全错。
+      <b>规矩:写进 env 文件时,把每一个 <code>$</code> 写成 <code>$$</code>。</b></p>
+    </div>
+    <p><b>API 令牌</b>用 <code>openssl rand -hex 32</code>。用十六进制不是随手选的:<b>它里面不会出现 <code>$</code></b>,
+    天然绕开上面那个坑。后端拿它做<b>恒定时间比对</b>。</p>
+  </div>
+
+  <div class="step">
+    <div class="hd"><span class="id">步骤 7</span><span class="ti">写环境变量</span></div>
+    <p><b>文件名只有一个:<code>.env</code>。</b>别自作聪明起名叫 <code>.env.vps</code> ——
+    <code>--env-file</code> 只影响 compose 自己做变量插值,<b>管不到</b>基础档里 backend 的 <code>env_file: .env</code>,
+    而那条是 <code>required: false</code>,文件不存在时<b>不报错</b>。结果是容器反复重启而一点提示都没有。</p>
+    <div class="tw"><table>
+      <thead><tr><th>变量</th><th>没填会怎样</th></tr></thead>
+      <tbody>
+        <tr><td><code>GYT_DEEPSEEK_API_KEY</code> / <code>GYT_MOONSHOT_API_KEY</code></td><td><b>留空</b>→ 容器起来又退出(建图期就要 Key);<b>填了占位符</b> → 容器正常起来,然后每次对话都在第一次模型调用时报错</td></tr>
+        <tr><td><code>GYT_ACCESS_TOKEN</code> / <code>GYT_BASIC_AUTH_HASH</code> / <code>GYT_PUBLIC_ORIGIN</code></td><td><b><code>up</code> 当场失败并打中文</b> —— 这是 fail-closed,故意的。<b>别为了图省事给它们加默认值</b>,那等于把「忘了设」从「起不来」变成「起来了但没锁门」</td></tr>
+        <tr><td><code>TZ</code></td><td>默认 <code>Asia/Shanghai</code>,<b>别删</b>。VPS 默认基本都是 UTC,差 8 小时的后果是<b>晚上 8 点之后建的任务日期全部算成前一天</b> —— 界面不报错,只是日子悄悄不对</td></tr>
+      </tbody>
+    </table></div>
+    <div class="note w">
+      <p><b><code>GYT_ACCESS_TOKEN</code> 千万别同步回你本机的 <code>.env</code>。</b>
+      <code>backend/langgraph.json</code> 会把仓库根 <code>.env</code> 整份灌进环境变量,于是本机
+      <code>make dev</code> 也跟着强制鉴权,而 <code>live_acceptance.py</code> 用的是裸 urllib、不发
+      <code>X-Api-Key</code> —— 25 条断言当场 401 全红。<b>而那种红最坏:红的是脚本不是系统,
+      它会训练人「这几条本来就红,跳过」。</b></p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="hd"><span class="id">步骤 8</span><span class="ti">先验一遍 Caddy 配置语法(30 秒,值回票价)</span></div>
+    <p><code>Caddyfile</code> 写坏了 = Caddy 起不来 = <b>整个站点连不上</b>。上线前用
+    <code>caddy validate</code> 单独验一次。</p>
+  </div>
+
+  <div class="step new">
+    <div class="hd"><span class="id">步骤 8.5</span><span class="ti">跑一遍上线前自检脚本</span><span class="b-new">本次新增</span></div>
+    <p>仓库里有 <code>scripts/preflight_vps.sh</code>,把上面这些步骤里最容易漏的检查一次性做完。
+    只读:不改文件、不起容器、不发网络请求(除了解析域名)。退出码 0 = 可以 <code>up</code>,1 = 有致命项。</p>
+    <div class="tw"><table>
+      <thead><tr><th>组</th><th>查什么</th><th>漏了会怎样</th></tr></thead>
+      <tbody>
+        <tr><td>①</td><td><code>.env</code> 存在、六个变量非占位符、令牌 ≥24 位、<b>口令哈希里的 <code>$</code> 已加倍</b></td><td>步骤 6/7 的两个坑</td></tr>
+        <tr><td>②</td><td><code>GYT_SITE_ADDRESS</code> 与 <code>GYT_PUBLIC_ORIGIN</code> 描述<b>同一个入口</b></td><td>差一个字 → 浏览器判跨源 → 界面报「连不上服务器」,方向全错</td></tr>
+        <tr><td>③</td><td>域名模式下 <code>dig</code> 结果与本机公网 IP 一致</td><td>证书一定申请不下来,还可能撞 Let's Encrypt 频率限制</td></tr>
+        <tr><td>④</td><td>:80/:443 空闲(<b>会先认自家 <code>gyt-caddy</code></b> —— 站点已在跑时不误报)、<b><code>data/</code> 属主是 10001</b>、<code>frontend/</code> 已生成且 <code>frontend/Dockerfile</code> <b>两条 ARG 都在</b>(<code>NEXT_PUBLIC_API_KEY</code> 与 <code>NEXT_PUBLIC_ARTIFACT_BASE</code>)、演示资产在</td><td>见步骤 5、步骤 11、§4.1</td></tr>
+        <tr><td>⑤</td><td><code>Caddyfile</code> 语法、compose 合并档能解析、<code>published:</code> 端口不超过 caddy 应有的数量(<b>应为 3</b>:80 / 443tcp / 443udp。多一条就说明有服务偷偷加了 <code>ports</code> —— artifacts 服务的 <code>0.0.0.0</code> 绑定安全性就押在这条上,见 §4.1)</td><td>见步骤 8、§3.4</td></tr>
+        <tr><td>⑥</td><td>内存 ≥3500MB、可用磁盘 ≥10000MB</td><td>见 §1.1</td></tr>
+      </tbody>
+    </table></div>
+    <p><b>这次上线真跑过它,<code>data/</code> 属主那条就是被它拦下来的。</b></p>
+    <div class="note w">
+      <span class="hd">⚠️ 两件跑之前要知道的事,否则你会被它自己的红吓到</span>
+      <ul>
+        <li><b>第 ④ 组会检查 <code>frontend/</code>,而前端要到步骤 11 才生成。</b>
+          在这个位置跑,「<code>frontend/</code> 还没生成」那条<b>必然红</b>,这是预期的。
+          实用做法是<b>跑两次</b>:这里一次,生成前端之后再一次,拿到全绿再 <code>up</code>。</li>
+        <li><b>第 ⑥ 组的内存闸要求 ≥3500MB,不到就是 FATAL + <code>exit 1</code>。</b>
+          那台 1966MB 的机器<b>就是被它判红的</b>,而最后整套跑通了。
+          <b>看到这条红,先去读「内存这一格」那一整段再决定要不要往下走</b> —— 别直接去改脚本里的阈值。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="step hot">
+    <div class="hd"><span class="id">步骤 9</span><span class="ti">构建并起后端</span><span class="b-new">有实测数了</span></div>
+    <p>先只起后端(显式点名 <code>backend</code>),排查面小一半。顺手做一次<b>零成本端口自检</b>:
+    <code>… config | grep -n -A3 'ports:'</code> —— <b>只有 caddy 那一组该出现端口</b>。</p>
+    <p><b>这里以前写着「本手册没在 VPS 上计时过,⚠️ 未在真机验证」—— 现在有数了。</b>
+    单机单次实测:</p>
+    <div class="tw good"><table>
+      <thead><tr><th>项</th><th>实测值</th></tr></thead>
+      <tbody>
+        <tr><td>backend 镜像</td><td><b>6.37GB</b>,构建约 <b>6 分半</b>(含从 huggingface.co 下 <code>BAAI/bge-m3</code> 权重)</td></tr>
+        <tr><td>frontend 镜像</td><td><b>1.93GB</b>,构建约 <b>3 分半</b>,其中 <code>next build</code> 本身 <b>75.9 秒</b></td></tr>
+        <tr><td>构建缓存回收</td><td><code>docker builder prune -af</code> 回收了 <b>9.34GB</b></td></tr>
+        <tr><td>磁盘终态</td><td>30GB 的盘最终占用约 <b>20GB</b>(两个镜像 8.3GB + 系统)</td></tr>
+      </tbody>
+    </table></div>
+    <div class="note w">
+      <p><b>这是一台机器、一次构建的数字,只用来估算,不是承诺。</b>
+      下权重那段完全取决于你到 huggingface.co 的带宽,换台机器差几倍都正常。</p>
+      <p>顺带回答手册里悬了很久的一个问题:<b>「4G 内存能不能扛住前端 <code>next build</code> 而不 OOM」</b>
+      —— 原文把它标成「<b>这是我最不放心的一处</b>」。那次是在 <b>1.9GB 内存 + 8GB swap</b> 上跑的,
+      <code>next build</code> 75.9 秒完成,整场 OOM 计数 0。
+      <b>注意这解答的是「1.9GB + 8GB swap」这一种配置</b>,不是「4G 内存无 swap」那一种 —— 后者仍然没验过。</p>
+    </div>
+    <div class="note d">
+      <span class="hd">🔍 这时候日志里有一条必须看到的行</span>
+      <p>锁了 → <code>访问校验已开启:请求必须带 x-api-key 请求头;创建 run 限流 = 突发 20 次…</code><br>
+      <b>没锁 → 一整块 <code>!!!!!!</code> 感叹号横幅</b>,大意是「当前没有开启访问校验……账单敞开给人刷」。</p>
+      <p><b>看到感叹号横幅就说明 <code>GYT_ACCESS_TOKEN</code> 没生效,立刻停下回步骤 7。</b>
+      别往下走 —— 这时候起前端,等于把一个零鉴权的 Agent 端点接上公网。</p>
+    </div>
+  </div>
+
+  <div class="step hot">
+    <div class="hd"><span class="id">步骤 10</span><span class="ti">★ 单独建一次知识库 ★</span></div>
+    <p><b>这一步最容易被漏,而漏了的后果是 knowledge 整块功能作废 —— 并且它不报错,
+    只会一直回「规范里查不到」,和真的查不到长得一模一样。</b></p>
+<pre>docker compose -f docker-compose.yml -f docker-compose.vps.yml \
+  run --rm --no-deps backend python -m gyt.agents.knowledge.ingest</pre>
+    <p>⚠️ <b>别用 <code>run --rm backend make build-knowledge</code></b> —— 实测镜像里既没有 <code>make</code>、
+    <code>/app</code> 下也没有 <code>Makefile</code>。首次约 <b>15 分钟</b>,幂等,可以反复跑。</p>
+    <div class="note g">
+      <span class="hd">另一条路:把开发机上建好的 data/chroma 整个搬过去(2026-08-11 那次实际走的就是这条)</span>
+      <p>向量库是<b>生成物</b>,内容只取决于「哪些 PDF + 哪个 embedding 模型」,和机器无关。</p>
+      <p><b>VPS 实测</b>:那次搬过去的 <code>data/chroma</code> 是 <b>12MB</b>,<b>VPS 上一次都没跑过 <code>ingest</code></b>。
+      好处是省掉 VPS 上那 15 分钟,更重要的是<b>省掉一次在小内存机器上做批量向量化的风险</b>。</p>
+      <p>⚠️ <b>搬完必须回步骤 5 重做属主</b> —— <code>rsync -a</code> / <code>scp -p</code> 都会把源端 uid 带过去。
+      <code>data/chroma</code> 属主不对的表现和「库没建」一模一样:一直回「规范里查不到」。</p>
+      <p>⚠️ 这条路<b>不适用于</b>「你在 VPS 上加了新的规范 PDF」的情况。</p>
+    </div>
+    <div class="note d">
+      <p><b>千万别改成「起服务时自动建库」。</b>容器 healthcheck 的 <code>start_period</code> 只有 120 秒,
+      15 分钟的启动建库会让它<b>反复重启、永远不 healthy</b>,而前端 <code>depends_on: service_healthy</code>,
+      于是整栈永远起不来。</p>
+    </div>
+  </div>
+
+  <div class="step hot">
+    <div class="hd"><span class="id">步骤 11</span><span class="ti">生成前端目录并起整栈</span><span class="b-new">旧说法已推翻</span></div>
+    <p><code>frontend/</code> <b>不在 git 里</b>,由 <code>scripts/setup-frontend.sh</code> 从上游 clone 生成并打上覆盖件。
+    起整栈<b>不需要 <code>--profile ui</code></b>(VPS 档已经把前端放出来了)。</p>
+<pre>docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
+
+docker compose ps      <u># <b>gyt-backend-vps / gyt-frontend-vps / gyt-artifacts / gyt-caddy 四个都要在</b></u></pre>
+    <p><b>前端构建就是把「地址和令牌」烤进浏览器包的那一刻。</b>Next.js 的 <code>NEXT_PUBLIC_*</code>
+    是<b>编译期</b>变量,只写在 <code>environment:</code> 里是没用的,必须走 <code>build.args</code>。
+    <b>改了域名或令牌,必须 <code>--build</code> 重新构建前端</b>,只 <code>restart</code> 页面还会去连旧地址、带旧令牌。</p>
+    <div class="note g">
+      <span class="hd">✅ 令牌注入这条链现在是通的(2026-08-11 更正)</span>
+      <p><b>手册原来把这条列成「已知目前接不上」</b>,原文是:「在 <code>scripts/setup-frontend.sh</code> 的
+      Dockerfile 模板补上 <code>ARG NEXT_PUBLIC_API_KEY</code> 之前,令牌不会进浏览器包」。
+      <b>那个说法现在不成立了</b>,三头都补齐了:</p>
+      <ul>
+        <li><b>模板端</b>:<code>scripts/setup-frontend.sh:313</code> 已经有 <code>ARG NEXT_PUBLIC_API_KEY=</code>,
+          并写进 build 阶段的 <code>ENV</code>;</li>
+        <li><b>读取端</b>:同一脚本注册了 <code>api-key.tsx</code> 覆盖件,让 <code>getApiKey()</code>
+          除 localStorage 之外也读构建期变量(上游那份只读 localStorage);</li>
+        <li><b>拦截端</b>:<code>preflight_vps.sh</code> 第 ④ 组硬查这个 ARG,没有就判 FATAL。</li>
+      </ul>
+      <p><b>VPS 实测</b>:那次构建完,在前端产物 <code>/app/.next/static/chunks/app/page-*.js</code> 里
+      <b>精确匹配到了完整的 64 位令牌</b>,以及 <code>https://velactora.com/api</code>。</p>
+      <p><code>grep -n 'NEXT_PUBLIC_API_KEY' frontend/Dockerfile</code> 仍然值得跑,<b>但它现在应该是有输出的</b>;
+      没输出说明你的 <code>frontend/</code> 是用旧版脚本生成的,<code>bash scripts/setup-frontend.sh --force</code> 重来一次。</p>
+    </div>
+    <div class="note">
+      <p>为什么这件事以前那么容易静默失败:<b>Docker 对没声明的 build arg 只警告一句
+      <code>unused build arg</code> 就过去了</b>,构建照样成功、页面照样能开,只是令牌永远没进包 ——
+      表现是每次提问都被后端 401。这个机制本身没变,值得记住。</p>
+    </div>
+  </div>
+
+  <div class="step hot">
+    <div class="hd"><span class="id">步骤 12</span><span class="ti">人肉冒烟</span><span class="b-new">实测结果</span></div>
+    <ol>
+      <li>弹出<b>浏览器原生的登录框</b>(标题「工友通 GYT 内测」)→ 输口令 → 进入聊天界面。<b>没弹框就是 ① 没生效。</b></li>
+      <li>发一句纯文本「明天要绑扎钢筋」→ schedule 记一条任务。</li>
+      <li>传一张工地照片 → 等 <b>10~60 秒</b> → 给出违规项清单。</li>
+      <li>问「规范里对消防车道宽度是怎么要求的?」→ 给出<b>带页码</b>的条文出处。
+        <b>如果它说「规范里查不到」,几乎可以肯定是步骤 10 没做或做失败了。</b></li>
+    </ol>
+    <div class="note g">
+      <span class="hd">✅ 2026-08-11 那次冒烟实际跑出来的东西</span>
+      <p>记在这儿是因为:<b>门锁通了不等于业务通了。</b>一套只剩登录框的站点也能把四条验证全走绿。</p>
+
+      <p><b>① 排期链路 —— 不看回执,直查库。</b>提问「记一条:明天上午复核 3-5 轴柱距」→
+      路由到 <code>transfer_to_schedule</code> → 然后<b>直接查 VPS 上那个 SQLite</b>:</p>
+<pre>{'id': 1, 'title': '<i>复核 3-5 轴柱距</i>', 'due_date': '<i>2026-08-12</i>',
+ 'status': 'open', 'created_at': '<i>2026-08-11T02:24:18+08:00</i>'}</pre>
+      <p>两件事同时被证明:<b>任务真落库了</b>(不是模型编的回执),以及 <b><code>TZ</code> 那一行真生效了</b> ——
+      <code>created_at</code> 是 <code>+08:00</code>,「明天」被算成 <code>2026-08-12</code> 而不是差一天。</p>
+
+      <p><b>② 知识链路 —— 验的是它肯不肯认怂。</b>提问「脚手架的连墙件规范上是怎么要求的?」→
+      <code>transfer_to_knowledge</code> → 检索两次都只命中防火规范(库里目前只有 GB 50016)→
+      <b>如实回答「知识库里查不到」,并给出 JGJ 130 作为去处,没有编造条文号。</b></p>
+      <p>⚠️ <b>这跟上面第 4 条不矛盾,但很容易看混:</b>「查不到」在<b>库里没有那本规范</b>时是<b>正确行为</b>;
+      在<b>库里有、却查不到</b>时才是步骤 10 出了问题。分辨方法是拿一个<b>你确信库里有</b>的问题去问。</p>
+
+      <p><b>③ 确认是流式,不是转半天一次性蹦出来。</b>schedule 那次的 SSE 事件分布:
+      <code>messages/metadata</code> ×6、<code>messages/complete</code> ×6、<code>updates</code> ×3、<code>metadata</code> ×1。</p>
+
+      <p><b>④ 非视觉链路的端到端耗时</b>(单次,并发 1):
+      knowledge 一次 <b>19 秒</b>(含<b>首次</b>把 BGE-M3 加载进内存那一下);schedule 一次 <b>6 秒</b>。
+      视觉那一档仍然是 10~60 秒。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 05 -->
+<section id="verify">
+  <h2>05 / 验证清单</h2>
+  <div class="h">四层是不是真的都在</div>
+  <p class="sub"><b>做完这四条再把地址发出去。</b>命令在你自己的电脑上跑(除非另有说明)。</p>
+
+  <div class="tw feat"><table>
+    <thead><tr><th>小节</th><th>验证状态</th></tr></thead>
+    <tbody>
+      <tr><td>① 口令(含 308 那个坑)</td><td><span class="yes">✅ VPS 实测</span></td></tr>
+      <tr><td>② 令牌 A) 无令牌 / B) 对令牌</td><td><span class="yes">✅ VPS 实测</span></td></tr>
+      <tr><td>② C) <code>x-auth-scheme</code> 后门</td><td><span class="no">⚠️ 未跑</span></td></tr>
+      <tr><td>③ 限流</td><td><span class="no">⚠️ 试过两次,都没打到桶上</span>(两条死路见下方),429 没见过;桶是 <b>armed</b> 的</td></tr>
+      <tr><td>③ cron</td><td><span class="no">⚠️ 未跑</span></td></tr>
+      <tr><td>④ 扫 <b>2024</b> 端口</td><td><span class="yes">✅ VPS 实测</span> —— 从外部机器超时,<code>%{http_code}</code> 是 <code>000</code></td></tr>
+      <tr><td>④ 扫 <b>3000</b> 端口</td><td><span class="no">⚠️ 未跑</span></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>① 口令拦得住</h3>
+  <div class="note d">
+    <span class="hd">⚠️⚠️ 域名模式下的「反裸奔」自检,跟裸 IP 模式不是同一条命令(2026-08-11 补)</span>
+    <p><b>手册这一节原来只给了一种写法,而它在域名模式下验不到东西。</b>
+    <code>docker-compose.vps.yml</code> 第 310 行附近的注释块已经按模式分好岔了,这一节现在与它对齐。</p>
+<pre><u># 裸 IP 模式(GYT_SITE_ADDRESS=":80")—— 直接打 IP 就行</u>
+curl -sS -o /dev/null -w '%{http_code}\n' http://&lt;VPS_IP&gt;/         <i># 期望 401</i>
+
+<u># 域名模式 —— 上面那条会回 308,而 308 不代表出事,也不代表没事</u>
+curl -sk <b>--resolve</b> &lt;域名&gt;:443:&lt;VPS_IP&gt; -o /dev/null -w '%{http_code}\n' https://&lt;域名&gt;/
+<i># 期望 401(VPS 实测:401)</i>
+curl -sk <b>--resolve</b> &lt;域名&gt;:443:&lt;VPS_IP&gt; -o /dev/null -w '%{http_code}\n' https://&lt;域名&gt;/api/ok
+<i># 期望 401 —— ⚠️ 这条不带口令,挡它的是 Caddy;带上口令它就变 200 了</i></pre>
+    <p><b>为什么 <code>curl http://&lt;VPS_IP&gt;/</code> 在域名模式下回 308(VPS 实测,实测值就是 308):</b>
+    Caddy 一旦启用 automatic HTTPS,就会在站点块<b>之外</b>另起一台独立服务器
+    (日志里叫 <code>remaining_auto_https_redirects</code>)专管 <code>:80</code>,
+    对<b>任意 Host、任意路径</b>无差别 308 到 https。
+    也就是说 <code>Caddyfile</code> 第 113 行那个<b>带 <code>basic_auth</code> 的站点块根本没被进入</b> ——
+    这条命令验证到的只是「重定向存在」,<b>验不到口令层有没有生效</b>。
+    而 308 又足够像「服务活着」,紧张的时候很容易被当成通过。</p>
+    <p><b>别想着用 <code>-L</code> 追下去。</b>追下去是 <code>https://&lt;VPS_IP&gt;/</code>,SNI 是裸 IP、
+    选不出域名的证书,握手直接炸 —— compose 注释记着实测结果是 <code>tlsv1 alert internal error</code>、
+    curl 的 <code>%{http_code}</code> 是 <code>000</code>。既不是 401 也不是 200,更难判断。
+    <code>--resolve</code> 的作用就是<b>让 SNI 走域名、而连接落到你指定的那台机器上</b>。</p>
+    <p>⚠️ <b><code>/api/ok</code> 这条更要当心 —— 它在两种口令状态下含义完全不同:</b>
+    <b>不带</b>口令打它回 401,那是<b>口令层</b>(Caddy)在挡,是这一节要验的东西;
+    <b>带对</b>口令再打它回 <b>200</b>,那是 <code>/ok</code> 被后端鉴权框架豁免,<b>跟令牌层一点关系都没有</b>。</p>
+  </div>
+
+  <div class="note">
+    <p><b>caddy 容器的 healthcheck 断言的是「返回 401」,不是「返回 200」。</b>
+    401 同时证明两件事:Caddy 活着、<b>并且口令那道门是开着的</b>。
+    所以哪天 <code>basic_auth</code> 被误删、站点变成 200 全放行,<b>caddy 容器会直接变 unhealthy</b>。
+    <code>docker compose ps</code> 里 caddy 那一行的 <code>(healthy)</code>,本身就是一条持续的口令检查。</p>
+    <p><b>而这条 healthcheck 自己也是按模式分岔的</b>,理由跟上面那个 308 完全一样:
+    裸 IP 探 <code>http://127.0.0.1:80/</code>,域名探 <code>https://&lt;域名&gt;/</code> 并用 <code>curl --resolve</code>
+    把域名钉回本机回环。用 busybox 的 <code>wget</code> 不行 —— 它走 https 时不发 SNI。</p>
+    <p><b>VPS 实测</b>:<code>docker compose up -d</code> 之后 <b>20 秒内</b> caddy 就 <code>healthy</code>。
+    由于它的判据是「HTTPS 上拿到 401」,<b>这一条 healthy 同时说明证书已经签发就绪了</b> —— 不用另外去等。</p>
+  </div>
+
+  <h3>② 令牌拦得住</h3>
+  <div class="note d">
+    <span class="hd">⚠️ 真陷阱:不要拿 /ok 或 /info 来验令牌</span>
+    <p>LangGraph 服务把路由分成两拨(读 <code>langgraph_api</code> 0.12.0 源码确认):</p>
+    <ul>
+      <li><b>不过鉴权</b>:<code>GET /ok</code>、<code>/info</code>、<code>/</code>、<code>/docs</code>、<code>/openapi.json</code>、<code>/metrics</code></li>
+      <li><b>过鉴权</b>:<code>/assistants/*</code>、<code>/threads/*</code>、<code>/runs/*</code>、<code>/store/*</code></li>
+    </ul>
+    <p><b>这条陷阱 2026-08-11 那次上线差点真的踩下去,所以补一个实测值:</b><br>
+    <b>带正确的 basic auth 口令、但完全不带 <code>X-Api-Key</code>,打 <code>https://&lt;域名&gt;/api/ok</code> → 回 <code>200</code>。</b></p>
+    <p>当时看到这个 200,第一反应就是「令牌层没生效」—— <b>而令牌层好好的</b>。
+    <code>/ok</code> 是 langgraph-api 的健康端点,被 Auth 框架豁免,<b>后端自己的 healthcheck 就是靠
+    在容器内不带令牌打它才能探活的</b>。拿它验令牌层,得到的是一个百分之百的假结论,
+    然后你会去改一个本来就对的配置,越改越乱。</p>
+    <p><b>规矩:验令牌层,只用 <code>/api/threads</code> 或 <code>/api/threads/search</code> 这类受保护路由。</b></p>
+  </div>
+
+  <div class="tw good"><table>
+    <thead><tr><th>请求(口令都带对)</th><th>无令牌</th><th>令牌不对</th><th>令牌正确</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST /api/threads</code></td><td><b>401</b></td><td><b>401</b></td><td><b>200</b></td></tr>
+      <tr><td><code>POST /api/threads/search</code></td><td><b>401</b></td><td>未单独试</td><td><b>200</b></td></tr>
+      <tr><td><code>GET /api/ok</code></td><td><b>200</b> ⚠️</td><td>—</td><td>200</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>最后一行就是上面那个陷阱 —— <b>它对令牌层没有任何鉴别力,别拿它当验证</b>。
+  无令牌时后端回的响应体原文(VPS 实测):</p>
+<pre>{"detail":"<i>访问被拒绝,请联系发你链接的人。</i>"}</pre>
+  <p>中文人话、没有堆栈、没有类名、没有内部路径。
+  <b>「令牌不对」和「没带令牌」回的是同一句话</b>,这是故意的 —— 任何差异都是送给爆破脚本的信号。</p>
+
+  <div class="note w">
+    <span class="hd">C) 还要验一条后门 —— 这条最容易被漏,而那次偏偏没跑</span>
+    <p>不带令牌、但加一个 <code>x-auth-scheme: langsmith</code> 头打受保护路由 —— <b>期望仍然 401</b>。
+    <b>回 200 就是重大问题,立刻下线。</b></p>
+    <p>langgraph-api 里有一条旁路:满足特定条件时,这个头会让<b>自定义鉴权整个被跳过</b>,
+    换成一个内置的 Studio 用户。仓库已经堵了两道
+    (<code>langgraph.json</code> 的 <code>"disable_studio_auth": true</code> + <code>auth.py</code> 的身份白名单),
+    <b>这条 curl 就是验这两道还在不在</b>。</p>
+    <p>⚠️ <b>它仍然是按代码判据写的,不是实测值。</b>别因为上面那张表全是实测就顺手把这条也当验过了 ——
+    <b>它反而是三条里最该跑的一条。</b></p>
+  </div>
+
+  <h3>③ 限流拦得住 <span class="b-warn">429 没见过</span></h3>
+  <p><b>限流只卡「创建 run」</b>(<code>@auth.on.threads.create_run</code>)。读线程、列历史、翻记录<b>故意不卡</b> ——
+  那些不花钱。所以<b>拿 <code>/threads/search</code> 连打一百次是永远不会 429 的</b>,那不是限流坏了。</p>
+  <p>便宜的验法:把 <code>GYT_RATE_LIMIT_BURST</code> / <code>PER_MINUTE</code> 临时压到 1,连发两次
+  <code>/api/runs/stream</code> —— 期望第 1 次 200、第 2 次 <b>429</b>。
+  第 2 次<b>一次模型都不会调、不花钱</b>(限流卡在 run 落库、图被调起<b>之前</b>)。
+  429 的响应体是「问得太快啦,请等几秒再发一条。」,还会带 <code>Retry-After</code> 头。验完记得改回去。</p>
+  <p>顺带验一条 cron:创建定时任务应该 <b>403</b>。拦它的理由是「一个 cron 创建一次、以后自己反复跑 run」,
+  而 cron 触发的 run <b>未必罩得进那只令牌桶</b> —— 等于绕过限流开了一条长期烧钱的管子。</p>
+  <div class="note w">
+    <span class="hd">⚠️ 本节(§3.3)的 429 / <code>Retry-After</code> / cron 403 都还没在真机上见过</span>
+    <p>cron 那半那次<b>完全没跑</b>;限流那半<b>跑了两次、但两次都没打到令牌桶上</b> ——
+    这两条死路记在这儿,免得你重走一遍:</p>
+    <ul>
+      <li><b>刷「建线程」没用。</b>连发 26 次 <code>POST /api/threads</code> 全是 200。
+        <code>backend/auth.py:62</code> 写明限流只挂在 <code>@auth.on.threads.create_run</code> 上,
+        <b>建线程是被刻意排除的</b>(读操作和线程管理不该被限流打断)。</li>
+      <li><b>发畸形 run 也没用</b>(本想借此不花钱地把桶抽干)。连发 26 次缺 <code>assistant_id</code> 的
+        <code>POST /api/threads/&lt;id&gt;/runs</code>,全是 <b>422</b>、一次 429 都没有 ——
+        <b>请求体的 JSON schema 校验跑在 auth 处理器之前,压根没消耗令牌。</b></li>
+    </ul>
+    <p>想真验只能发 20+ 次<b>合法</b> run,那要真花钱,那次没做。</p>
+    <p>⚠️ <b>但别据此说限流坏了</b>:<code>auth.py:201</code> 写明鉴权与限流<b>同开同关</b>,
+    而鉴权那次是实测在工作的(401 全对),所以桶是 <b>armed</b> 的 ——
+    只是 429 那条路在这台机器上没被走过。(本机彩排里走过:20 通过后 429 带 <code>Retry-After: 3</code>。)</p>
+  </div>
+
+  <h3>④ 端口没暴露到公网 <span class="b-warn">3000 未跑</span></h3>
+  <p>在你自己的电脑上 <code>nc -z</code> 扫 2024 / 3000,期望两条都连不上;在 VPS 上再 <code>ss -tlnp</code> 确认一次。
+  <b>判据:2024 和 3000 要么完全不出现在监听列表里,要么只绑在 <code>127.0.0.1</code>。</b>
+  只要看见 <code>0.0.0.0:2024</code>,立刻下线。</p>
+  <p>VPS 覆盖件用 <code>ports: !reset []</code> 把基础档的发布整条<b>去掉</b>(compose 的列表是「合并」不是「替换」)。
+  <b>这条检查的意义是:确认没有人在中间「优化」掉这条红线。</b></p>
+</section>
+
+<!-- 06 -->
+<section id="limit">
+  <h2>06 / 已知限制</h2>
+  <div class="h">上线前先知道,别当 bug 报回来</div>
+
+  <h3>4.1 <del>巡检记录卡片和历史照片,在外网点不开</del> <span class="b-ok">✅ 2026-08-11 已修</span></h3>
+
+  <div class="note w">
+    <p><b>这一整条已经不成立了,但原文留在下面</b>,因为它描述的失效模式仍然值得认识 ——
+    而且<b>同源清单少改一环就会退回这个状态</b>。</p>
+  </div>
+
+  <p><b>原来是这样(2026-08-11 之前):</b>聊天界面里那张「巡检记录」卡片、以及历史消息里的照片,
+  指向的地址是<b>写死的 <code>http://127.0.0.1:8788</code></b>。对外部测试者来说,那个地址指的是
+  <b>他们自己的电脑</b> —— 照片是碎图、docx 点了没反应。当时的说法是「设计使然,
+  要看文件请 <code>scp</code> 下来」,并且要提前跟测试者打招呼免得被当 bug 报回来。</p>
+
+  <p><b>⚠️ 而且它比原文写的还糟一层:</b>站点上了 HTTPS 之后,https 页面去拉 http 资源属于
+  <b>mixed content</b>,浏览器<b>连请求都不会发</b>,只在控制台留一行 —— 界面上一点线索都没有。</p>
+
+  <p><b>现在是这样:</b>走<b>同源</b>路径 <code>&lt;你的域名&gt;/artifacts/*</code>,在口令门<b>后面</b>:</p>
+
+<pre>浏览器 ──▶ caddy ──<b>handle_path /artifacts/*</b>──▶ artifacts 服务(python:3.12-slim)
+             │                                    只读挂 data/artifacts,uid 10001
+             └ <b>basic_auth 先拦一道</b>                 <b>一个 ports 都没有</b></pre>
+
+  <p>五处同源,<b>断一环就退回上面那个状态,而且不报错</b>:</p>
+
+  <div class="tw"><table>
+    <thead><tr><th>环</th><th>位置</th></tr></thead>
+    <tbody>
+      <tr><td>两个覆盖件读编译期变量</td><td><code>scripts/frontend-overrides/human.tsx</code>、<code>tool-calls.tsx</code> 的 <code>ARTIFACT_BASE</code></td></tr>
+      <tr><td>Dockerfile 模板声明 ARG</td><td><code>scripts/setup-frontend.sh</code>(漏了<b>不报错</b>,同 <code>NEXT_PUBLIC_API_KEY</code> 那个坑)</td></tr>
+      <tr><td>编排传值 + artifacts 服务</td><td><code>docker-compose.vps.yml</code> 的 frontend <code>build.args</code> 与 <code>artifacts:</code></td></tr>
+      <tr><td>反代路由</td><td><code>Caddyfile</code> 的 <code>handle_path /artifacts/*</code>(<b>必须写在兜底 <code>handle {}</code> 之前</b>)</td></tr>
+      <tr><td>自检</td><td><code>scripts/preflight_vps.sh</code> ④ 组查那条 ARG、⑤ 组数发布端口总数(应为 3)</td></tr>
+    </tbody>
+  </table></div>
+
+  <p><b>VPS 实测(2026-08-11,从外部机器)</b>:</p>
+
+  <div class="tw good"><table>
+    <thead><tr><th>请求</th><th>结果</th></tr></thead>
+    <tbody>
+      <tr><td>照片 <code>/artifacts/by-id/&lt;32位编号&gt;</code></td><td><b>200</b> <code>image/jpeg</code> 358893B,落地校验是真 JPEG 1600×1066</td></tr>
+      <tr><td>巡检记录 同上</td><td><b>200</b> <code>application/vnd.openxmlformats-...wordprocessingml.document</code> 37454B,真 OOXML</td></tr>
+      <tr><td><b>不带口令</b>取产物</td><td><b>401</b></td></tr>
+      <tr><td>sidecar <code>.json</code></td><td><b>404</b>(<code>.json</code> / <code>%2ejson</code> / <code>HEAD</code> 三种走法都拦住)</td></tr>
+      <tr><td>路径穿越 <code>../etc/passwd</code></td><td><b>404</b></td></tr>
+      <tr><td>编号格式非法</td><td><b>400</b></td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note d">
+    <p>⚠️ <b><code>serve_artifacts.py</code> 的 <code>BIND_HOST</code> 改了,但那条红线没有变松。</b>
+    它现在按 <code>/.dockerenv</code> 判断:宿主机上仍然是 <code>127.0.0.1</code> 且<b>依然没有 <code>--host</code> 开关</b>;
+    只有在容器里才绑 <code>0.0.0.0</code>,而那<b>只在该容器的网络命名空间内</b>。</p>
+    <p>保证从「写死在这个文件里」挪到了「编排里可被自检的不变量」——
+    <b>artifacts 服务不许有 <code>ports</code></b>,preflight ⑤ 组数发布端口总数就是在守这个。
+    谁给它加一行 <code>ports</code>,就是把含可识别人脸的工地照片(<code>TODOS.md</code> TODO-22)直接挂公网。</p>
+    <p>⚠️ <b>仍然没验的</b>:<code>&lt;img&gt;</code> 标签去取 <code>/artifacts/*</code> 时浏览器带不带 basic_auth 凭据。
+    上面那些是 <code>curl -u</code> 打的,验的是<b>路由通</b>,不是浏览器行为(同 §11 里 SSE 那条悬案)。</p>
+  </div>
+
+  <div class="grid g2">
+    <div class="card warn">
+      <h4><span class="no">4.2</span>所有测试者共用一个身份</h4>
+      <p>全体测试者拿的是<b>同一把令牌</b>,线程没有按人隔离 ——
+      <b>A 能在历史列表里看到 B 刚才问了什么、传了什么照片。</b></p>
+      <p>这不是新增的退化(上线前是零鉴权,谁都看得见),但<b>必须提前告诉测试者</b> ——
+      尤其他们可能会传自己项目的照片。</p>
+    </div>
+    <div class="card">
+      <h4><span class="no">4.3</span>视觉识别慢是正常的,10~60 秒</h4>
+      <p>仓库 2026-08-07 实测:1600×1067 办公室 <b>10.1 秒</b>;440×293 工地 <b>42.9 秒</b>;
+      4000×2430 手机原图 <b>59.7 秒</b>。超时阈值定 150 秒而不是 60。</p>
+      <p><b>测试者传手机原图,等一分钟是正常的</b> —— 不说清楚他们会以为卡死然后连点几次,
+      而每一次点都是真金白银。</p>
+    </div>
+    <div class="card">
+      <h4><span class="no">4.4</span>缓存是冷的,每次提问都真花钱</h4>
+      <p><code>data/cache/</code> 里的 LLM 响应缓存<b>跟着机器走</b>,新 VPS 上是空的。
+      本机焐热过的那些照片,在这台机器上一张都不认。</p>
+    </div>
+    <div class="card">
+      <h4><span class="no">4.5</span>单进程,并发要排队</h4>
+      <p>后端是单容器单进程。<b>同时几个人提问会互相排队</b>,不是挂了。</p>
+      <p>⚠️ <b>2026-08-11 那次的并发是 1。</b>所以排队现象<b>既没有被观察到,也没有被证伪</b> ——
+      它是从「单进程」这个结构推出来的,不是实测。那份内存采样同样是并发 1 之下取的。</p>
+    </div>
+    <div class="card">
+      <h4><span class="no">4.6</span>上传体积上限有两道</h4>
+      <p><b>应用层</b>超了 → 给一句<b>看得懂的中文</b>;<b>Caddy 层</b>(<code>max_size 128MB</code>)超了 →
+      一个干巴巴的 <b>413</b>。改了 <code>GYT_DRAWING_MAX_MB</code> 就要回 <code>Caddyfile</code> 重算那一行。</p>
+    </div>
+  </div>
+
+  <h3><span class="b-new">本次新增</span>4.7 后端日志里有一条会把你带偏的警告(不影响功能,未修)</h3>
+<pre><s>Ignoring corrupted tree cache file /opt/hf/hub/models--BAAI--bge-m3/trees/xxx.json:</s>
+  <b>[Errno 13] Permission denied</b>: '...'</pre>
+  <div class="note w">
+    <p><b>它说的是 "corrupted"(损坏),但真实原因写在同一行的后半截:<code>Permission denied</code></b> ——
+    镜像里 <code>/opt/hf</code> 的属主与运行用户(uid 10001)不一致。
+    (<code>backend/Dockerfile</code> 的注释写明「<b>故意不 <code>chown -R</code> <code>/app/.venv</code> 与 <code>/opt/hf</code></b>:
+    它们只读即可,递归 chown 会把上千兆内容整层复制一遍,镜像体积直接翻倍」。)</p>
+    <p><b>不影响功能。</b>那次就是<b>带着这条警告跑通的</b>:模型照常加载、检索照常返回。<b>目前未修。</b></p>
+    <p>记在这里只有一个目的:<b>别被 "corrupted" 这个词带去查权重文件损坏</b> ——
+    去 <code>docker exec</code> 里翻 <code>.safetensors</code> 的校验和、去重新拉权重、去怀疑镜像构建坏了,
+    全是白费,而这条路一走就是半小时。</p>
+  </div>
+</section>
+
+<!-- 07 -->
+<section id="tell">
+  <h2>07 / 话术</h2>
+  <div class="h">给测试者的那段话(可以直接整段转发)</div>
+
+  <div class="note">
+    <p><b>【工友通 · 建筑工地 AI 助手】内测邀请</b></p>
+    <p>网址:https://&lt;你的域名&gt;<br>
+    打开后浏览器会弹一个登录框(标题写着「工友通 GYT 内测」):用户名 / 口令见下。</p>
+    <p><b>它能干什么(直接用大白话问就行,不用记命令):</b></p>
+    <ol>
+      <li><b>拍照查隐患</b> —— 传一张工地照片,指出没戴安全帽、没系安全带、料堆乱放这类问题,并定严重程度。</li>
+      <li><b>自动出巡检记录</b> —— 顺手说一句「顺便出份巡检记录」,生成一份 Word。</li>
+      <li><b>记工期任务</b> —— 「明天要绑扎钢筋」会被记进台账,也能问「这周还有什么没干完」。</li>
+      <li><b>查规范条文</b> —— 会给出条文<b>和页码</b>。</li>
+      <li><b>看图纸</b> —— 传一份 DXF,可以问图层、构件、尺寸。</li>
+    </ol>
+    <p><b>几件要先说明白的事:</b></p>
+    <ul>
+      <li>⏳ <b>传照片以后要等 10~60 秒</b>,手机原图更慢。<b>这是正常的,请不要连点</b> ——
+        每点一次都是一次真实的模型调用(会产生费用)。</li>
+      <li>📄 巡检记录会生成一张卡片,<b>点上面的链接就能下载那份 Word</b>;传过的照片也会显示在历史里。</li>
+      <li>👥 <b>这是共享的测试环境:大家用的是同一个账号,你在历史列表里能看到别人的会话,别人也能看到你的。</b></li>
+      <li>🔒 ⚠️ <b>请不要上传含真实人脸的工地照片</b>,请先打码再传;也请不要传涉密图纸和敏感资料。</li>
+      <li>🧪 这是<b>内测</b>:它会答错,也会有答不上来的时候。<b>它答「查不到 / 做不了」是正确行为,不是故障</b> ——
+        我们宁可它认怂也不许它编。</li>
+      <li>💬 口令<b>请不要外传</b>,这套东西每答一句都在花真钱。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 08 -->
+<section id="cost">
+  <h2>08 / 成本与风险</h2>
+  <div class="h">钱花在哪,出事怎么最快止血</div>
+
+  <div class="tw"><table>
+    <thead><tr><th>动作</th><th>花费</th></tr></thead>
+    <tbody>
+      <tr><td>一句纯文本提问</td><td>一次或几次 DeepSeek 文本调用 —— 便宜</td></tr>
+      <tr><td><b>传一张照片</b></td><td><b>一次 Kimi 视觉调用 —— 最贵的那一档</b>,而且 10~60 秒</td></tr>
+      <tr><td>查规范条文</td><td>检索本身在本机跑(BGE-M3,不花钱),综合成人话那步花 DeepSeek</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note d">
+    <p><b>特别注意:<code>supervisor_recursion_limit</code>(默认 8)不是限流。</b>
+    它限的是<b>单次 run 内部转来转去的步数</b>,防的是 Agent 自己死循环;<b>一点都不限 run 的次数</b>。
+    一个脚本每秒发 50 个 run、每个都规规矩矩只走 3 步,账单照样爆。</p>
+  </div>
+
+  <p><b>默认值 20 / 20 的由来</b>(不是拍脑袋):<b>突发 20</b> —— 真机验收脚本全程发 18 个 run,
+  取 20 是为了「万一有人在本机也设了令牌,验收光靠突发额度也能跑完」;
+  <b>每分钟 20</b> —— 一张工地照片端到端 10~60 秒,一个人<b>物理上</b>不可能持续超过约 6 轮/分钟,
+  20 留了三倍余量,而脚本狂刷会被压到 <b>1200 次/小时</b>这个<b>有上限</b>的量级。</p>
+
+  <div class="note w">
+    <p><b>这只桶是「进程内内存」实现的</b>:多副本 → 实际配额 = 配置值 × 副本数;进程重启 → 桶全满、白送一轮。
+    今天是单容器单进程,够用;<b>哪天想加副本,得先把桶换成 Redis 之类的共享计数器</b>。</p>
+  </div>
+
+  <h3>出事了怎么最快止血 —— 三档</h3>
+<pre><b>第 1 档</b>(约 5 秒):<i>$COMPOSE stop backend</i>
+  前端还在,但谁问都答不了 —— 花钱立刻停止。
+
+<b>第 2 档</b>:<i>$COMPOSE down</i>
+  整栈下线,网址直接打不开。data/ 不会被删,台账和产物都还在。
+  <s>⚠️ 别加 -v</s> —— 会连命名卷一起删,Caddy 的证书和 ACME 账号密钥就在里面。
+
+<b>第 3 档</b>(怀疑令牌/口令泄漏,或者账单已经异常):
+  去 DeepSeek 和 Moonshot 控制台 <b>吊销这两把 Key</b>,再各生成一把新的。
+  <b>这一档才是真止血</b> —— 模型 Key 就在容器里,只要有人拿到过它,
+  停你的容器并不能阻止他继续用那把 Key 花你的钱。</pre>
+
+  <div class="note g">
+    <p><b>VPS 实测</b>:命名卷 <code>gyt_caddy_data</code> / <code>gyt_caddy_config</code> 确实建出来了,证书文件就在</p>
+<pre>/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/<b>velactora.com</b>/velactora.com.crt</pre>
+    <p>所以<b>重建容器不会丢证书,也就不会反复向 Let's Encrypt 申请</b> ——
+    这正是不能加 <code>-v</code> 的原因,现在这句话有实物撑着了。
+    (Let's Encrypt 对同一域名有签发频率限制,反复重建足够把自己关在门外。)</p>
+  </div>
+
+  <p><b>怎么看用量:唯一可信的是供应商控制台。</b>容器日志能看到调用发生,但看不到花了多少钱。
+  服务端能看到的迹象:<code>grep '创建 run 被限流'</code>(有人在刷的直接证据)、
+  <code>grep '鉴权失败'</code>(有人在试令牌)。
+  <code>Caddyfile</code> 已经配了日志过滤,<b>把 <code>Authorization</code> / <code>X-Api-Key</code> / <code>Cookie</code>
+  三个头删掉再落盘</b> —— 所以 caddy 日志可以放心截图问人。<b>别去掉那段过滤。</b></p>
+</section>
+
+<!-- 09 -->
+<section id="ops">
+  <h2>09 / 运维小抄</h2>
+  <div class="h">改了什么 → 要做什么</div>
+
+  <div class="note g">
+    <span class="hd">✅ 机器重启之后会不会自己回来 —— 这次确认过了(VPS 实测)</span>
+    <p><b>不是推的,是真按了一次 <code>reboot</code>。</b>(先说这个,因为下面三条配置项只能推出「应该回得来」,
+    而「应该」和「真回来了」在上线这件事上不是一回事。)</p>
+    <p>重启后实测:</p>
+    <ul>
+      <li><b>开机 6 秒内四个容器全部 Up</b>,<code>caddy</code> 直接 healthy(= 证书从卷里读到了,
+        <b>没有重新向 Let's Encrypt 申请</b> —— 这点很重要,否则每次重启都在消耗签发额度);</li>
+      <li>从<b>外部机器</b>复验:首页无口令 401 / 有口令 200、API 无令牌 401 / 有令牌 200、
+        产物 200,证书 <code>notAfter</code> 与重启前一致;</li>
+      <li>两块 swap 都按 <code>/etc/fstab</code> <b>自动挂了回来</b>(<code>swapon --show</code> 两条都在);</li>
+      <li><code>ufw</code> 仍然 active。</li>
+    </ul>
+    <p>支撑它的三条配置(<b>源文件核对</b> + 机器上核过):</p>
+    <ul>
+      <li><code>systemctl is-enabled docker</code> = <b><code>enabled</code></b>(Docker 自己开机自启);</li>
+      <li>四个容器全是 <b><code>restart=unless-stopped</code></b>;</li>
+      <li>证书在命名卷 <code>gyt_caddy_data</code> 里,不随容器走(见 §08)。</li>
+    </ul>
+    <p>合起来:<b>VPS 重启之后这套东西会自己回来,不需要人上去 <code>up</code> 一遍。</b></p>
+    <p>⚠️ 一个<b>没有</b>跟着恢复的东西:上线时给 <code>sshd</code> 设过 <code>oom_score_adj = -1000</code>
+    (防构建期 OOM killer 把 ssh 连接掐掉,把自己关在门外)。那是写进 <code>/proc</code> 的,
+    <b>重启即失效</b>。日常运行不需要它;下次要在这台机器上做大构建,记得重设。</p>
+    <p>⚠️ 但<b>「重启后回得来」不等于「长期跑得住」</b>。那次只是一次上线加几次提问,
+    <b>没有连续跑过几天</b> —— 内存会不会缓慢涨、单进程会不会累积状态,都还不知道。
+    真放着长期开,记得隔几小时看一眼用量,并且<b>用完就关</b>。</p>
+  </div>
+
+  <div class="tw"><table>
+    <thead><tr><th>改动</th><th>需要的动作</th></tr></thead>
+    <tbody>
+      <tr><td><code>backend/src/**.py</code> / 任何 <code>prompt.md</code> / <code>backend/auth.py</code></td><td>VPS 档没挂源码,<b>要重建</b>:<code>$COMPOSE up -d --build backend</code></td></tr>
+      <tr><td><b><code>backend/langgraph.json</code></b>(动了 auth 声明)</td><td><b>必须重建镜像</b> —— 它没被挂载,容器读的是镜像里那份</td></tr>
+      <tr><td><code>pyproject.toml</code> / <code>uv.lock</code> / <code>Dockerfile</code></td><td>重建后端</td></tr>
+      <tr><td><code>.env</code> 里<b>后端</b>的值(超时、限流、阈值)</td><td><code>$COMPOSE up -d backend</code> 即可(重建容器,不重建镜像)</td></tr>
+      <tr><td><b>令牌 <code>GYT_ACCESS_TOKEN</code> / 域名 <code>GYT_PUBLIC_ORIGIN</code></b></td><td><b>要 <code>--build</code> 重建前端</b> —— 它们烤在浏览器包里</td></tr>
+      <tr><td><code>GYT_SITE_ADDRESS</code> / <code>GYT_BASIC_AUTH_*</code></td><td><code>$COMPOSE up -d caddy</code></td></tr>
+      <tr><td><code>Caddyfile</code></td><td>先 <code>caddy validate</code>,再 <code>$COMPOSE restart caddy</code></td></tr>
+      <tr><td><code>data/demo/docs/</code> 里加了新规范 PDF</td><td><b>重跑步骤 10 建库</b>(幂等,只嵌新增的那份)</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note w">
+    <p><b>改 <code>Caddyfile</code> 之后用 <code>restart</code>,不要找 <code>caddy reload</code>。</b>
+    配置里写了 <code>admin off</code>(关掉了 Caddy 那个<b>无鉴权</b>的 <code>:2019</code> 管理端点),
+    走 admin API 的 reload 已经不可用了 —— 这是刻意的取舍,代价就是改配置要 restart(同样是秒级)。</p>
+  </div>
+
+  <p><b>每次 <code>git pull</code> + <code>--build</code> 之后,都确认一次门还锁着:</b>
+  <code>$COMPOSE logs backend | grep -A6 '访问校验\|!!!!!!'</code>,并且
+  <code>$COMPOSE ps</code> 里 caddy 那行必须是 <code>healthy</code>。</p>
+</section>
+
+<!-- 10 -->
+<section id="place">
+  <h2>10 / 定位</h2>
+  <div class="h">这台机器该怎么定位</div>
+
+  <div class="grid g3">
+    <div class="card ok"><h4>✅ 给外部的人自己点点看</h4><p>这是它存在的理由。</p></div>
+    <div class="card ok"><h4>✅ 演示机故障时的第四层兜底</h4><p>但要知道视觉缓存是冷的,速度和现场彩排不一样。</p></div>
+    <div class="card bad"><h4>❌ 演示当天的主路径</h4><p>与 D9 决策冲突,别拿它赌。</p></div>
+  </div>
+
+  <div class="verdict">
+    <div class="t">测试跑完、不再需要的时候,记得把它关掉</div>
+    <p>一台开着的、带真 API Key 的公网机器,是一笔<b>一直在走</b>的风险。</p>
+  </div>
+</section>
+
+<!-- 11 -->
+<section id="src">
+  <h2>11 / 来源</h2>
+  <div class="h">这份手册核实到什么程度(逐条)</div>
+  <p class="sub">本仓的红线是「不许写没验证过的事实」,所以把来源摊开。
+  完整逐条清单在 md 原件 §9,这里只留最关键的那些。</p>
+
+  <h3><span class="b-ok">VPS 实测</span>2026-08-11 凌晨那次真实上线</h3>
+  <div class="tw good"><table>
+    <thead><tr><th>事实</th><th>实测值 / 怎么核的</th></tr></thead>
+    <tbody>
+      <tr><td><b>步骤 1~12 的完整链路走得通</b></td><td>Debian 12 / 2 vCPU / 1.9GB / 30GB,域名 <code>velactora.com</code>(Cloudflare <b>灰云</b>)</td></tr>
+      <tr><td><b>Caddy 自动签发 Let's Encrypt 证书</b></td><td><code>CN=velactora.com</code>,有效期 <b>2026-08-10 → 2026-11-08</b>。<b>从外部另一台机器</b>用 <code>openssl s_client</code> 独立验的</td></tr>
+      <tr><td><b>域名模式下 <code>curl http://&lt;VPS_IP&gt;/</code> 回 308,不是 401</b></td><td>实测 <b>308</b>。Caddy 在站点块之外另起了 <code>remaining_auto_https_redirects</code> 专管 :80,带 <code>basic_auth</code> 的站点块根本没被进入</td></tr>
+      <tr><td><b>域名模式的正确自检回 401</b></td><td><code>curl -sk --resolve &lt;域名&gt;:443:&lt;VPS_IP&gt; … https://&lt;域名&gt;/</code> → 实测 <b>401</b></td></tr>
+      <tr><td><b><code>/api/ok</code> 验不了令牌层</b></td><td>带对口令、<b>不带</b> <code>X-Api-Key</code> 打它 → <b>200</b>。<code>/ok</code> 被鉴权框架豁免。<b>这次差点据此误判「令牌层没生效」</b></td></tr>
+      <tr><td><b>受保护路由的实际返回码</b></td><td><code>POST /api/threads</code>:无令牌 <b>401</b> / 错令牌 <b>401</b> / 对令牌 <b>200</b>;<code>/api/threads/search</code>:无令牌 <b>401</b> / 对令牌 <b>200</b></td></tr>
+      <tr><td><b>无令牌时后端回的原文</b></td><td><code>{"detail":"访问被拒绝,请联系发你链接的人。"}</code> —— 中文人话,无堆栈</td></tr>
+      <tr><td><b>1.9GB 机器上加载 BGE-M3 不 OOM</b></td><td>可用 745→381→454MB;backend 容器 430→846→<b>955MB</b>。权重 mmap 进来、算可回收文件页缓存。该机 swap 共 8GB,全场 OOM 计数 <b>0</b></td></tr>
+      <tr><td><b>preflight 的内存闸会把这台机器判 FATAL</b></td><td>脚本第 233-236 行要求 ≥3500MB,该机 1966MB → <code>exit 1</code>。⚠️ 它给的理由是「<b>建库那一步</b>会被 OOM」,而那次<b>根本没跑过 ingest</b> —— 那个具体后果既没被验证也没被证伪</td></tr>
+      <tr><td><b><code>data/chroma</code> 可以从开发机整个搬过去</b></td><td>搬过去的是 <b>12MB</b>,VPS 上一次 <code>ingest</code> 都没跑</td></tr>
+      <tr><td><b><code>rsync -a</code> 会把 <code>data/</code> 属主搞错</b></td><td>macOS 源端 uid <b>501:staff</b> 被原样带过去,而容器跑 uid <b>10001</b> → 台账 / 产物注册表 / LLM 缓存全写不进去。<b>被 preflight 第 ④ 组拦下</b></td></tr>
+      <tr><td><b>构建耗时与体积</b></td><td>backend <b>6.37GB</b> / 约 6 分半;frontend <b>1.93GB</b> / 约 3 分半(<code>next build</code> 本身 <b>75.9 秒</b>);<code>builder prune -af</code> 回收 <b>9.34GB</b>;30GB 盘最终占用约 <b>20GB</b></td></tr>
+      <tr><td><b>令牌真的烘进了浏览器包</b></td><td>构建产物 <code>page-*.js</code> 里<b>精确匹配到完整 64 位令牌</b>及 <code>https://velactora.com/api</code>。<b>推翻了原来「已知目前接不上」的说法</b></td></tr>
+      <tr><td><b>排期链路真落库</b></td><td><b>直查 SQLite</b>:<code>{'id': 1, 'title': '复核 3-5 轴柱距', 'due_date': '2026-08-12', 'status': 'open', 'created_at': '2026-08-11T02:24:18+08:00'}</code>。时区 <code>+08:00</code> 正确,「明天」算对了</td></tr>
+      <tr><td><b>知识链路会认怂而不是编造</b></td><td>检索两次都只命中防火规范 → <b>如实回答「知识库里查不到」并给出 JGJ 130,没有编造条文号</b></td></tr>
+      <tr><td><b>确实是流式推送</b></td><td>SSE 事件分布:<code>messages/metadata</code> ×6、<code>messages/complete</code> ×6、<code>updates</code> ×3、<code>metadata</code> ×1</td></tr>
+      <tr><td><b>非视觉链路端到端耗时</b></td><td>knowledge 一次 <b>19 秒</b>(含首次加载模型);schedule 一次 <b>6 秒</b>。并发 1</td></tr>
+      <tr><td><b>证书在命名卷里、重建不丢</b></td><td><code>gyt_caddy_data</code> / <code>gyt_caddy_config</code> 存在,证书路径见 §08</td></tr>
+      <tr><td><b>重启之后自己回得来</b></td><td><b>真按了一次 <code>reboot</code></b>:开机 6 秒内四个容器全 Up、caddy 直接 healthy(证书从卷里读,没重新申请)、两块 swap 按 fstab 自动挂回、ufw 仍 active;从外部复验 401/200 全对、证书 <code>notAfter</code> 未变。支撑配置:<code>systemctl is-enabled docker</code> = <code>enabled</code>,四个容器 <code>restart=unless-stopped</code></td></tr>
+      <tr><td><b>caddy 20 秒内 healthy</b></td><td>判据是「HTTPS 上拿到 401」,healthy 同时意味着证书已就绪</td></tr>
+      <tr><td><b>HF "corrupted" 警告不影响功能</b></td><td>真实原因是同一行的 <code>Permission denied</code>。<b>带着这条警告跑通的</b>。未修</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note w"><p><b>整张表是一次、一台机器、并发 1 的样本。</b>
+  它证明「这条路走得通」,不证明「任何机器上都这样」。</p></div>
+
+  <h3>原来列在「未在真机验证」里、现在成立的几条</h3>
+  <div class="tw"><table>
+    <thead><tr><th>原来写的</th><th>现在</th></tr></thead>
+    <tbody>
+      <tr><td><del>在一台真 VPS 上完整走完步骤 1~12 的任何一步。全流程是拼出来的,不是跑出来的。</del></td><td><span class="yes">✅</span> 走完了一次</td></tr>
+      <tr><td><del>Caddy 自动签发 HTTPS 证书的完整流程</del></td><td><span class="yes">✅</span> 签成了,证书从外部独立验过</td></tr>
+      <tr><td><del>§3 里所有的 curl</del></td><td>部分成立:<b>§3.1 和 §3.2 的 A/B 跑了</b>;C、限流、端口扫描<b>仍然没跑</b></td></tr>
+      <tr><td><del>4G 内存能不能扛住前端 next build 而不 OOM。这是我最不放心的一处。</del></td><td>部分成立:<b>1.9GB + 8GB swap</b> 上 75.9 秒完成、OOM 计数 0。<b>「4G 无 swap」仍然没验</b></td></tr>
+      <tr><td><del>前端构建期注入 NEXT_PUBLIC_API_KEY —— 已知目前接不上</del></td><td><span class="yes">✅</span> <b>接上了</b>,并在构建产物里实测到了令牌</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><span class="b-warn">未验证</span>仍然未在真机验证</h3>
+  <div class="note d">
+    <ul>
+      <li><b>Windows 侧的任何一步。</b>那次全程从 macOS 开发机操作。</li>
+      <li><b>多并发。</b>整场并发是 1。</li>
+      <li><b>长期运行稳定性。</b>没有连续跑过几天,内存会不会缓慢涨、单进程会不会累积状态都不知道。<br>
+        (<b>日志把盘写满这一条已经堵上了</b>:2026-08-11 给四个服务都加了
+        <code>logging: json-file / max-size 10m / max-file 3</code>,四个加起来封顶 120MB,
+        <code>docker inspect</code> 核过真生效。堵之前是 Docker 默认的<b>无上限</b>。
+        但<b>产物目录仍然无上限</b>:每张测试照片约 350KB 落在 <code>data/artifacts/</code> 里,没有清理机制。)</li>
+      <li><b>证书自动续期。</b>首签成功 ≠ 续期成功。这张证书 <b>2026-11-08 到期</b>,到那之前谁也不知道。
+        (证书不随容器重建丢失<b>已经验过</b>,那是续期能成立的前提,但不是续期本身。)</li>
+      <li><b><code>x-auth-scheme: langsmith</code> 后门检查。</b>三条里最该跑的一条,那次偏偏没跑。</li>
+      <li><b>§3.3 的 429 / <code>Retry-After</code> / cron 被拒的 403。</b>那次<b>试了两次都没打到桶上</b>,
+        两条死路都记下来,免得下一个人再走一遍:
+        <ul>
+          <li><b>刷「建线程」没用。</b>连发 26 次 <code>POST /api/threads</code> 全是 200。
+            <code>backend/auth.py:62</code> 写明限流只挂在 <code>@auth.on.threads.create_run</code> 上,
+            <b>建线程是被刻意排除的</b>(读操作和线程管理不该被限流打断)。</li>
+          <li><b>发畸形 run 也没用</b>(本想借此不花钱地抽干令牌桶)。连发 26 次缺 <code>assistant_id</code> 的
+            <code>POST /api/threads/&lt;id&gt;/runs</code>,全是 <b>422</b>,一次 429 都没有 ——
+            <b>请求体的 JSON schema 校验跑在 auth 处理器之前,压根没消耗令牌。</b></li>
+        </ul>
+        想真验只能发 20+ 次<b>合法</b> run,那是要真花钱的,那次没做。<br>
+        ⚠️ 但<b>别据此说限流坏了</b>:<code>auth.py:201</code> 写明鉴权与限流<b>同开同关</b>,
+        而鉴权那次是实测在工作的(401 全对),所以桶是 <b>armed</b> 的 ——
+        只是 429 那条路在这台机器上没被走过。(本机彩排里走过:20 通过后 429 带 <code>Retry-After: 3</code>。)</li>
+      <li><b>§3.4 里从外部扫 3000 端口那条。</b>那次没扫。<br>
+        (<b>2024 那条跑了</b>:从外部机器 <code>curl -m 6 http://&lt;VPS_IP&gt;:2024/ok</code> 超时、
+        <code>%{http_code}</code> 是 <code>000</code>,后端端口确实没对公网开。)</li>
+      <li><code>get.docker.com</code> 装 Docker;<b><code>fallocate</code> 挂 swap 那几条命令本身</b>
+        (那台机器上确实有 8GB swap 并且生效了,但<b>用的是不是这几条命令,没有记录</b>)。</li>
+      <li><b>浏览器通过 basic_auth 之后,会不会把凭据自动带到同源的 <code>/api/*</code> SSE 长连接上。</b>
+        <code>Caddyfile</code> 的注释把「同源 ⇒ 自动带」当成设计前提写了下来,理论上也确实如此。
+        那次确实看到了 SSE 事件流,<b>但那是 <code>curl</code> 打的,不是浏览器</b> ——
+        这不是「没留下记录」,是<b>明确知道不是浏览器</b>。而 <code>curl</code> 的凭据是命令行上手动
+        <code>-u</code> 给的,浏览器是过了口令框之后<b>自动带</b>,两回事:
+        <b>curl 通了一点都不能证明浏览器会通。</b>
+        所以这条原封不动仍是未验证。<b>万一前端能打开却一直连不上后端,先怀疑这条。</b>
+        同理还有 <b><code>&lt;img&gt;</code> 标签去取 <code>/artifacts/*</code> 时带不带凭据</b> ——
+        那次验的是路由通(curl),不是浏览器行为。</li>
+      <li><b><code>:80</code> 裸 IP 那条路。</b>那次走的是域名模式。</li>
+      <li>用日志估请求量与真实账单的对应关系;ARM 架构机器;中国大陆 ICP 备案的任何具体规则。</li>
+      <li><b>Cloudflare 橙云下的实际表现。</b>那三条理由里前两条是<b>原理说明</b>,第三条是读脚本得出的。
+        <b>那次用的是灰云,橙云下究竟坏成什么样,没试过 —— 也不建议你去试。</b></li>
+      <li><b>preflight 内存闸那句「建库那一步会被 OOM 杀掉」。</b>那次没在 VPS 上跑 <code>ingest</code>,
+        所以这个具体后果<b>既没被验证也没被证伪</b>。</li>
+    </ul>
+  </div>
+
+  <h3>明确没做的事</h3>
+  <div class="note">
+    <p><b>这一轮(2026-08-11 补录实测)同样没有改动任何代码或配置文件,只改了文档。</b>
+    与这次上线相关的代码侧改动(<code>scripts/preflight_vps.sh</code>、
+    <code>docker-compose.vps.yml</code> 里按模式分岔的反裸奔注释与 caddy healthcheck)在各自的提交里,
+    文档只是<b>与它们对齐</b>。</p>
+    <p><code>Caddyfile</code> / <code>docker-compose.vps.yml</code> / <code>backend/auth.py</code> 的<b>具体内容</b>
+    没有抄进手册,只写了「它们必须做到什么」和「怎么验它们还在」。
+    理由是本仓的「一份真相」规矩:配置的真相在配置文件里,手册再抄一份两边就会漂移 ——
+    而<b>漂移的安全配置比没有配置更危险</b>(你以为它挡着)。
+    <b>哪天两边对不上,以那几个文件为准。</b></p>
+  </div>
+</section>
+
+<hr>
+<footer>
+  <p>工友通 GYT · W6 VPS 部署与访问口令 —— md + html 双件套。
+  完整命令原文、每一条 curl、每一段注释出处,以 <code>docs/W6_VPS部署与访问口令.md</code> 为准。</p>
+  <p>2026-08-11 补录:真机上线实测。<b>一次、一台机器、并发 1。</b></p>
+</footer>
+</main>
+</div>
