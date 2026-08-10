@@ -86,11 +86,17 @@ CHECK_ENV_KEYS = test -f $(ENV_FILE) \
 # --cov=eval,少了它 pytest 起手就报错,而镜像里那份能满足)。这里仍然挂一份宿主的,
 # 理由只有一个:让 eval 与 tests 同步走**你当前的源码**。只挂 tests 不挂 eval 的话,
 # 改了 eval/hooks.py 再跑 test-docker,测的是镜像里烤死的旧 eval —— 一半新一半旧最难查。
+# scripts/ 同理,而且更隐蔽:镜像里**有**一份(.dockerignore 没挡它,阶段 4 的
+# `COPY . /app` 照抄进去了),所以不挂也不报错 —— 测的是那份**烤死的旧脚本**,
+# 现象是「明明改了 scripts/acceptance_dates.py,test-docker 还是旧结果」。
+# tests/unit/test_acceptance_{dates,trace}.py 按文件路径加载 scripts/ 下的模块,
+# 必须挂宿主这份。(scripts/ 里其余脚本容器不执行,挂上去只读没有副作用。)
 # uv.lock 挂进去是为了和镜像里那份对账,见 TEST_IN_CONTAINER。
 IMAGE_LOCK_PATH := /app/uv.lock
 HOST_LOCK_PATH  := /tmp/host-uv.lock
 TEST_MOUNTS     := -v "$(PWD)/$(BACKEND_DIR)/tests:/app/tests:ro" \
                    -v "$(PWD)/$(BACKEND_DIR)/eval:/app/eval:ro" \
+                   -v "$(PWD)/$(BACKEND_DIR)/scripts:/app/scripts:ro" \
                    -v "$(PWD)/$(BACKEND_DIR)/uv.lock:$(HOST_LOCK_PATH):ro"
 # pytest 三件套。版本区间与 backend/pyproject.toml 的 [dependency-groups].dev **同源**,
 # 那边动了这里要跟着动 —— 没法直接引用,因为容器里的 pyproject 是镜像烤死的那份。
