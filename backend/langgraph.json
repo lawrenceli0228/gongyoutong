@@ -4,5 +4,9 @@
     "gyt": "./src/gyt/graph.py:graph"
   },
   "env": "../.env",
-  "python_version": "3.11"
+  "python_version": "3.11",
+  "auth": {
+    "path": "./auth.py:auth",
+    "disable_studio_auth": true
+  }
 }

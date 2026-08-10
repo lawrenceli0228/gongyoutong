@@ -94,9 +94,14 @@ CHECK_ENV_KEYS = test -f $(ENV_FILE) \
 # uv.lock 挂进去是为了和镜像里那份对账,见 TEST_IN_CONTAINER。
 IMAGE_LOCK_PATH := /app/uv.lock
 HOST_LOCK_PATH  := /tmp/host-uv.lock
+# ⚠️ auth.py 单独挂一条,别忘。它跟 langgraph.json 平级住在 backend/ 根,
+#    **不在开发档那条 src/ 挂载覆盖的范围里** —— 少了这行,改完 auth.py 跑
+#    `make test-docker`,容器里 import 到的仍是**镜像里烤死的旧版**,
+#    于是「改了没生效」却一路绿灯。2026-08-11 加 auth 时踩到,当场补上。
 TEST_MOUNTS     := -v "$(PWD)/$(BACKEND_DIR)/tests:/app/tests:ro" \
                    -v "$(PWD)/$(BACKEND_DIR)/eval:/app/eval:ro" \
                    -v "$(PWD)/$(BACKEND_DIR)/scripts:/app/scripts:ro" \
+                   -v "$(PWD)/$(BACKEND_DIR)/auth.py:/app/auth.py:ro" \
                    -v "$(PWD)/$(BACKEND_DIR)/uv.lock:$(HOST_LOCK_PATH):ro"
 # pytest 三件套。版本区间与 backend/pyproject.toml 的 [dependency-groups].dev **同源**,
 # 那边动了这里要跟着动 —— 没法直接引用,因为容器里的 pyproject 是镜像烤死的那份。
@@ -303,8 +308,12 @@ serve-artifacts: ## 起只读静态服务,让聊天界面里的巡检记录能�
 	@#
 	@# 只绑 127.0.0.1 —— 与 docker-compose.yml 同一条红线。这里面是工地现场照片和
 	@# 巡检记录(含可识别人脸,见 TODO-22),绑 0.0.0.0 等于把它们发给整个局域网。
-	@mkdir -p $(ARTIFACTS_DIR)
-	@echo "[静态服务] http://127.0.0.1:$(ARTIFACTS_PORT)/"
-	@echo "           根目录:$(ARTIFACTS_DIR)"
-	@echo "           Ctrl-C 停止。"
-	python3 -m http.server $(ARTIFACTS_PORT) --bind 127.0.0.1 --directory $(ARTIFACTS_DIR)
+	@# 绑定地址**写死在脚本的 BIND_HOST 常量里,没有命令行开关** —— 想突破得改代码、得过 review。
+	@#
+	@# 2026-08-11 从 `python3 -m http.server` 换成自己的脚本,为的是多一条
+	@# `GET /by-id/<32位编号>`:产物在盘上是 <UTC日期>/<32位id>.<扩展名>,而前端手里
+	@# 只有编号、没有日期段 —— 历史里的照片(human.tsx 覆盖件)就靠这条路取件。
+	@# 老路径 `/<日期>/<文件名>` 原样保留,巡检记录卡片(tool-calls.tsx)用的是那条。
+	@# mkdir 和启动横幅都由脚本自己做了,这里不再重复打印。
+	@# 仍然用裸 python3(不走 uv / venv):脚本纯 stdlib,Intel Mac 装不上 torch 也不影响。
+	python3 scripts/serve_artifacts.py --port $(ARTIFACTS_PORT) --directory $(ARTIFACTS_DIR)

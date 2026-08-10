@@ -61,9 +61,14 @@ backend/data/
 # 构建产物(.next/ out/ .turbo/)已被这一条整体覆盖,不必再单列。
 /frontend/
 
-# 本地环境变量的各种变体(.env 已在开头忽略);.env.example 必须进 git
+# 本地环境变量的各种变体(.env 已在开头忽略);*.example 这类模板必须进 git
 .env.*
 !.env.example
+# VPS 公网部署的变量模板。必须显式放行 —— 上面那条 `.env.*` 会连它一起吞掉,
+# 而它是「只有示例值、零真实密钥」的说明文档,不进 git 等于没交付:
+# 换台机器 clone 下来就少了这份东西,而缺失是静默的(没人会收到提示)。
+# 加新的 .env.<something>.example 时记得照样在这里补一行。
+!.env.vps.example
 
 # 外部数据集的原始下载包与解压目录(Roboflow / Kaggle 等)。
 #
