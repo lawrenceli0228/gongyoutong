@@ -307,10 +307,30 @@ volumes:
 #       docker compose -f docker-compose.yml -f docker-compose.vps.yml run --rm backend make build-knowledge
 #   (或者在本机建好 data/chroma/ 之后整个目录 scp 上去,省一次 2.2GB 下载。)
 #
-# 【怎么确认自己没有裸奔】—— 上线后立刻在**别的机器**上跑这三条
-#   curl -sS -o /dev/null -w '%{http_code}\n' http://<VPS_IP>/          → 期望 401
-#   curl -sS -o /dev/null -w '%{http_code}\n' http://<VPS_IP>/api/ok    → 期望 401
-#   curl -sS -m 5 -o /dev/null -w '%{http_code}\n' http://<VPS_IP>:2024/ok → 期望连不上(超时/拒绝)
-#   最后一条**必须**在别的机器上跑。在 VPS 自己身上跑走的是 127.0.0.1,
+# 【怎么确认自己没有裸奔】—— 上线后立刻在**别的机器**上跑。
+#   ⚠️ 前两条**按模式分岔**,照抄错模式的那组会得到一个「看着像没事」的假结论。
+#
+#   裸 IP 模式(GYT_SITE_ADDRESS=":80"):
+#     curl -sS -o /dev/null -w '%{http_code}\n' http://<VPS_IP>/       → 期望 401
+#     curl -sS -o /dev/null -w '%{http_code}\n' http://<VPS_IP>/api/ok → 期望 401
+#
+#   域名模式(GYT_SITE_ADDRESS=<域名>):**上面两条会得到 308,不是 401,而那不代表出事**。
+#     curl -sk --resolve <域名>:443:<VPS_IP> -o /dev/null -w '%{http_code}\n' https://<域名>/       → 期望 401
+#     curl -sk --resolve <域名>:443:<VPS_IP> -o /dev/null -w '%{http_code}\n' https://<域名>/api/ok → 期望 401
+#
+#   为什么域名模式下不能直接 curl :80(2026-08-11 起容器实测):
+#   Caddy 一旦启用 automatic HTTPS,就会在站点块**之外**另起一台独立服务器
+#   (日志里叫 `remaining_auto_https_redirects`)专管 :80,对**任意 Host、任意路径**
+#   无差别 308 到 https。第 113 行 `{$GYT_SITE_ADDRESS} {` 那个带 basic_auth 的站点块
+#   **根本没被进入** —— 所以这条命令验证到的只是「重定向存在」,
+#   **验不到口令层有没有生效**,而它回的 308 又足够像「服务活着」,很容易被当成通过。
+#   跟 `-L` 追下去更糟:https://<VPS_IP>/ 的 SNI 是裸 IP、选不出域名的证书,
+#   握手直接炸(实测 `tlsv1 alert internal error`,curl 的 %{http_code} 是 000)——
+#   既不是 401 也不是 200,紧张时刻很难判断「到底锁没锁」。
+#   `--resolve` 就是为了让 SNI 走域名、而连接落到你指定的那台机器上。
+#
+#   第三条两种模式通用:
+#     curl -sS -m 5 -o /dev/null -w '%{http_code}\n' http://<VPS_IP>:2024/ok → 期望连不上(超时/拒绝)
+#   它**必须**在别的机器上跑。在 VPS 自己身上跑走的是 127.0.0.1,
 #   测不出「有没有对公网开」这件事。
 # =============================================================================
