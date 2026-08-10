@@ -311,9 +311,18 @@ ARG NEXT_PUBLIC_ASSISTANT_ID=@@ASSISTANT_ID@@
 #    表现是「站点打得开、每次提问 401」,而构建日志一切正常。
 #    2026-08-11 安全复核就是这么抓到的(H3)。
 ARG NEXT_PUBLIC_API_KEY=
+# 产物(工地照片 / 巡检记录 docx)的静态出口。
+# 空 = 用覆盖件里的默认值 http://127.0.0.1:8788,即本机 `make serve-artifacts` 那份。
+# 公网部署必须传同源路径(如 https://<域名>/artifacts):127.0.0.1 在测试者那边
+# 指的是他自己的电脑,而且 https 页面拉 http 资源会被浏览器按 mixed content 拦掉,
+# 表现是「照片全是碎图、巡检记录点了没反应」,而控制台之外一点提示都没有。
+# 同源清单:本行 + docker-compose.vps.yml 的 build args + Caddyfile 的 handle_path /artifacts/*
+#          + human.tsx / tool-calls.tsx 两个 ARTIFACT_BASE。
+ARG NEXT_PUBLIC_ARTIFACT_BASE=
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
     NEXT_PUBLIC_ASSISTANT_ID=${NEXT_PUBLIC_ASSISTANT_ID} \
     NEXT_PUBLIC_API_KEY=${NEXT_PUBLIC_API_KEY} \
+    NEXT_PUBLIC_ARTIFACT_BASE=${NEXT_PUBLIC_ARTIFACT_BASE} \
     NODE_ENV=production
 
 COPY --from=deps /app/node_modules ./node_modules

@@ -149,9 +149,23 @@ fi
 # ---------------------------------------------------------------------------
 head_ "④ 端口 / 数据目录 / 前端"
 # ---------------------------------------------------------------------------
+# 占用者是不是**我们自己**要分开说。
+# 这个脚本叫 preflight,本意是 up 之前跑;但人一定会在站点已经跑起来之后
+# 再跑一遍来"体检"。那时 80/443 必然被自家 caddy 占着,而原来的提示语是
+# 「常见是系统自带的 nginx / apache」——**把正常状态描述成故障,还指错了方向**,
+# 照着去 `systemctl stop nginx` 是白忙,去 kill 掉那个进程则是把自己站点弄挂。
+OWN_CADDY=""
+if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^gyt-caddy$'; then
+  OWN_CADDY="yes"
+fi
 for p in 80 443; do
   if command -v ss >/dev/null 2>&1 && ss -ltn "sport = :${p}" 2>/dev/null | grep -q LISTEN; then
-    bad ":${p} 已经被别的进程占着(常见是系统自带的 nginx / apache)。Caddy 起不来。"
+    if [[ -n "${OWN_CADDY}" ]]; then
+      ok ":${p} 被本站自己的 gyt-caddy 占着(站点已在运行 —— 这不是问题)"
+    else
+      bad ":${p} 已经被别的进程占着(常见是系统自带的 nginx / apache)。Caddy 起不来。"
+      note "看是谁:ss -ltnp 'sport = :${p}'"
+    fi
   else
     ok ":${p} 空闲"
   fi
@@ -184,6 +198,16 @@ else
   else
     bad "frontend/Dockerfile 缺 ARG NEXT_PUBLIC_API_KEY。"
     note "Docker 对没声明的 build arg 只警告不报错 —— 表现是站点打得开、每次提问 401。"
+    note "修法:bash scripts/setup-frontend.sh --force"
+  fi
+  # 同一个失效模式的第二处:产物出口。漏了它站点一切正常,只是照片全是碎图、
+  # 巡检记录点了没反应 —— 而且 https 拉 http 属于 mixed content,浏览器连请求都不发,
+  # 界面上一点线索都没有,只有控制台里一行。
+  if grep -q "NEXT_PUBLIC_ARTIFACT_BASE" frontend/Dockerfile 2>/dev/null; then
+    ok "frontend/Dockerfile 有 ARG NEXT_PUBLIC_ARTIFACT_BASE(照片/巡检记录能显示)"
+  else
+    bad "frontend/Dockerfile 缺 ARG NEXT_PUBLIC_ARTIFACT_BASE。"
+    note "表现是站点一切正常,但工地照片是碎图、巡检记录点了没反应。"
     note "修法:bash scripts/setup-frontend.sh --force"
   fi
 fi

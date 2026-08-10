@@ -35,7 +35,7 @@ import sys
 import urllib.parse
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 # --- 模块级常量:禁止在函数里散落魔法值 ---------------------------------------
@@ -53,12 +53,24 @@ DEFAULT_DIR: Final[Path] = REPO_ROOT / "data" / "artifacts"
 # 要改一起改 —— 只改一处的现象是"卡片点开一片空白",不报错,属于最难发现的那一类。
 DEFAULT_PORT: Final[int] = 8788
 
-# 绑定地址写死,**故意不做成命令行参数**。
-# 这里面是工地现场照片和巡检记录(含可识别人脸,见 TODO-22),绑 0.0.0.0 等于把它们
-# 发给整个局域网 —— 与 docker-compose.yml 的 `127.0.0.1:2024:2024` 是同一条红线。
-# 做成参数迟早有人为了"方便用手机看"传个 0.0.0.0,而且不会有任何东西拦他;
-# 写死在这里,想突破就得改代码、就得过 code review。要在别的机器上看,走 ssh 端口转发。
-BIND_HOST: Final[str] = "127.0.0.1"
+# 绑定地址**故意不做成命令行参数**,也故意不做成环境变量。
+# 这里面是工地现场照片和巡检记录(含可识别人脸,见 TODO-22),在宿主机上绑 0.0.0.0
+# 等于把它们发给整个局域网 —— 与 docker-compose.yml 的 `127.0.0.1:2024:2024` 是同一条红线。
+# 给个旋钮迟早有人为了"方便用手机看"拧到 0.0.0.0,而且不会有任何东西拦他。
+#
+# 但容器里必须绑 0.0.0.0,否则同一个 compose 网络里的 caddy 根本连不上它
+# (两个容器不共享 network namespace,127.0.0.1 只是它自己)。
+# 所以这里按**是不是在容器里**自动判,而不是给人一个参数:
+#
+#   宿主机  → 127.0.0.1,没有任何办法改。要在别的机器上看,走 ssh 端口转发。
+#   容器内  → 0.0.0.0,但它只在该容器的网络命名空间内。
+#             想让它真的对外,必须有人给这个服务写 `ports:` ——
+#             而那件事是**能被检查的**:docker-compose.vps.yml 里 artifacts 一个 ports 都没有,
+#             `scripts/preflight_vps.sh` 第 ⑤ 组会数「发布端口总数」,多一条就露馅。
+#
+# 换句话说:保证没有变弱,只是从"写死在这个文件里"挪到了"编排里可被自检的不变量"上。
+_IN_CONTAINER: Final[bool] = Path("/.dockerenv").exists()
+BIND_HOST: Final[str] = "0.0.0.0" if _IN_CONTAINER else "127.0.0.1"  # noqa: S104 —— 见上面整段
 
 BY_ID_PREFIX: Final[str] = "/by-id/"
 
@@ -198,12 +210,38 @@ class ArtifactsHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         if self._try_by_id(write_body=True):
             return
+        if self._deny_by_suffix(write_body=True):
+            return
         super().do_GET()
 
     def do_HEAD(self) -> None:
         if self._try_by_id(write_body=False):
             return
+        if self._deny_by_suffix(write_body=False):
+            return
         super().do_HEAD()
+
+    def _deny_by_suffix(self, write_body: bool) -> bool:
+        """按扩展名拦掉 sidecar / 半成品;拦下了返回 True。
+
+        ⚠️ 这一段是补的。DENY_SUFFIXES 原来只在 ``_is_body_file`` 里生效,
+        而那个函数**只被 /by-id/ 那条路调用** —— 直接按路径请求
+        ``/<日期>/<编号>.json`` 会一路落到父类 SimpleHTTPRequestHandler,
+        它根本不认这张表,于是 sidecar 元数据照发不误。
+        2026-08-11 公网上线做产物路由自检时实测到:``/by-id/`` 那条 404,
+        同一份文件换成直接路径回 200。**两条路进同一个目录,却只有一条设了闸。**
+
+        回 404 不回 403:403 等于告诉对方"这儿确实有个东西,只是不给你",
+        而这个服务对外只该承认正文的存在。/by-id/ 那条路找不到正文时也是 404,
+        两条路的对外语义保持一致。
+        """
+        path = urllib.parse.urlsplit(self.path).path
+        # 先 unquote 再取扩展名 —— 否则 ``%2ejson`` 能绕过去。
+        suffix = PurePosixPath(urllib.parse.unquote(path)).suffix.lower()
+        if suffix not in DENY_SUFFIXES:
+            return False
+        self._send_text(HTTPStatus.NOT_FOUND, TEXT_NOT_FOUND, write_body)
+        return True
 
     def __getattr__(self, name: str):
         """GET/HEAD 之外的动词一律 405。
@@ -345,7 +383,14 @@ def main(argv: list | None = None) -> int:
     print(f"[静态服务] {base}/", flush=True)
     print(f"           根目录:{root}", flush=True)
     print(f"           按编号取件:{base}/by-id/<32位编号>", flush=True)
-    print(f"           只绑 {BIND_HOST},本机之外访问不到。Ctrl-C 停止。", flush=True)
+    # 这行不能两种模式共用一句话。在容器里说"本机之外访问不到"是**假的**
+    # (同一个 compose 网络里的 caddy 就访问得到,那正是它存在的意义),
+    # 而运维照着这句话去排查"caddy 连不上 artifacts",方向会全错。
+    if _IN_CONTAINER:
+        print(f"           容器内绑 {BIND_HOST} —— 只有同一个 compose 网络里的服务能连,", flush=True)
+        print("           对外仍然只有 caddy 那一个入口(本服务不许有 ports)。", flush=True)
+    else:
+        print(f"           只绑 {BIND_HOST},本机之外访问不到。Ctrl-C 停止。", flush=True)
 
     # 多线程:一张巡检记录 docx 下到一半,不该把同页那十几张照片全堵住。
     # daemon_threads 让 Ctrl-C 能立刻退,不用等所有连接自然结束。

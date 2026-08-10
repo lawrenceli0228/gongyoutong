@@ -131,15 +131,25 @@ services:
         # 令牌的作用是纵深(挡 Caddy 配错、挡内网直连),不是挡终端用户。
         # 换来的是外部测试的人只需要记一个口令,不用被教「打开设置粘一串 hex」。
         #
-        # ⚠️ 前置依赖(不满足的话这一行是**空转**):
-        #    scripts/setup-frontend.sh 生成的 frontend/Dockerfile 目前只声明了
-        #    ARG NEXT_PUBLIC_API_URL 和 ARG NEXT_PUBLIC_ASSISTANT_ID,
-        #    **没有** ARG NEXT_PUBLIC_API_KEY。Docker 对没声明的 build arg 只会
-        #    警告一句 "unused build arg" 就过去了,构建照样成功、页面照样能开,
-        #    只是令牌永远没进包 —— 表现是每次请求被后端 401,而不是构建失败。
-        #    要让它真正生效,setup-frontend.sh 的 Dockerfile 模板里必须补上
-        #    ARG NEXT_PUBLIC_API_KEY 和对应的 ENV(和另外两个变量写在一起)。
+        # ⚠️ 前置依赖:`scripts/setup-frontend.sh` 生成的 frontend/Dockerfile 里
+        #    必须有 `ARG NEXT_PUBLIC_API_KEY` 和对应的 ENV。
+        #    **现在有了**(2026-08-11 上线时实测:构建产物 .next/static/chunks/app/page-*.js
+        #    里搜得到完整 64 位令牌)。但这条依赖必须一直写在这儿,因为漏了它**不会报错**:
+        #    Docker 对没声明的 build arg 只警告一句 "unused build arg" 就过去了,
+        #    构建成功、页面能开,只是令牌永远没进包 —— 表现是每次提问被后端 401。
+        #    `scripts/preflight_vps.sh` 第 ④ 组会专门查这一条。
         NEXT_PUBLIC_API_KEY: ${GYT_ACCESS_TOKEN:?没设 GYT_ACCESS_TOKEN(前端也要用同一个令牌)}
+
+        # 产物(工地照片 / 巡检记录 docx)的静态出口,同样是编译期烘进浏览器包。
+        #
+        # 不传这个值的下场:覆盖件退回默认的 http://127.0.0.1:8788,
+        # 而那在测试者的浏览器里指的是**他自己的电脑** —— 照片全是碎图、
+        # 巡检记录点了没反应;更麻烦的是 https 页面拉 http 资源属于 mixed content,
+        # 浏览器**连请求都不会发**,只在控制台留一行,界面上一点线索都没有。
+        #
+        # 走 ${GYT_PUBLIC_ORIGIN}/artifacts 是同源路径,由 Caddyfile 的
+        # `handle_path /artifacts/*` 转给下面那个 artifacts 服务,顺带也在口令门后面。
+        NEXT_PUBLIC_ARTIFACT_BASE: ${GYT_PUBLIC_ORIGIN}/artifacts
 
     environment:
       # 运行期再写一遍,浏览器包用不到它(编译期已经烘进去了),
@@ -147,6 +157,60 @@ services:
       # 排障时不用去翻构建参数。
       NEXT_PUBLIC_API_URL: ${GYT_PUBLIC_ORIGIN}/api
       TZ: ${TZ:-Asia/Shanghai}
+
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 产物只读静态服务:把工地照片 / 巡检记录 docx 递出去
+  # ---------------------------------------------------------------------------
+  # 为什么需要单独一个服务:产物落在 data/artifacts/<日期>/<32位id>.<ext>,
+  # 而 langgraph.json 只声明了图 —— **后端没有任何 HTTP 端点能把文件给出去**。
+  # 本机开发靠 `make serve-artifacts`(宿主上跑,只绑 127.0.0.1);
+  # 公网部署就得有个容器化的等价物,否则「拍照 → 出巡检记录」这条主演示路径
+  # 在界面上的最终形态是一个打不开的链接。
+  #
+  # 用 python:3.12-slim 而不是复用 backend 镜像:
+  #   · scripts/ 不在 backend 的构建上下文里(context 是 ./backend),复用不了;
+  #   · 这个服务只用标准库(http.server),不需要 torch 那 6.37GB 里的任何东西;
+  #   · 隔离得越干净,它被打穿时能碰到的东西越少 —— 它挂的两个卷都是 :ro。
+  artifacts:
+    image: python:3.12-slim
+    container_name: gyt-artifacts
+
+    # 与 backend 同一个非 root uid。它只读两个 :ro 卷、不发布端口,
+    # 用 root 跑本来也不至于出事 —— 但这个服务的输入是**公网来的 URL 路径**
+    # (路径穿越、软链接那一类),纵深一点不亏。
+    # data/artifacts 是 10001 建的,读得到。
+    user: "10001:10001"
+
+    # ⚠️ 一个 ports 都不许有 —— 和 backend / frontend 同一条红线。
+    # 这条不只是惯例:scripts/serve_artifacts.py 的 BIND_HOST 是「在容器里就绑
+    # 0.0.0.0」,它敢这么做的**唯一前提**就是这个服务不发布端口。
+    # 谁在这儿加一行 ports,就等于把工地现场照片(含可识别人脸,见 TODO-22)
+    # 直接挂到公网上,而且不会有任何报错。
+    # `scripts/preflight_vps.sh` 第 ⑤ 组数「发布端口总数」,多一条就露馅。
+    command:
+      - python
+      - /srv/serve_artifacts.py
+      - --port
+      - "8788"
+      - --directory
+      - /srv/artifacts
+
+    volumes:
+      # 脚本本身只读挂进来,改了 restart 一下就生效,不用重建镜像
+      - ./scripts/serve_artifacts.py:/srv/serve_artifacts.py:ro
+      # 产物目录只读 —— 这个服务永远只往外读,写入是 backend 的事
+      - ./data/artifacts:/srv/artifacts:ro
+
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # 无缓冲。脚本自己的 print 已经带 flush=True,这里兜的是 Python 别的输出
+      # (traceback、warning)—— 输出不是终端时 stdout 会变成块缓冲,要攒够 8KB 才吐,
+      # 而这个进程会一直跑下去,于是报错**永远出不来**,`docker compose logs` 里一片空白。
+      # 不用 `tty: true` 办这件事:那是靠"假装有终端"顺带得到行缓冲,副作用是
+      # 日志里混进控制字符、Ctrl-C 语义也变,属于用副作用当功能使。
+      PYTHONUNBUFFERED: "1"
 
     restart: unless-stopped
 
@@ -219,6 +283,10 @@ services:
         # 后端首次启动要把 BGE-M3 权重加载进内存,基础档给了 start_period: 120s。
         condition: service_healthy
       frontend:
+        condition: service_started
+      artifacts:
+        # 只等它起来,不等健康 —— 这个服务没有 healthcheck,而且晚几秒无所谓:
+        # 它只在用户点开照片 / 巡检记录时才被访问,不在首屏路径上。
         condition: service_started
 
     # 探活:故意断言「返回 401」,而不是「返回 200」。

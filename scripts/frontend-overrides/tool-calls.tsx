@@ -93,10 +93,17 @@ const REPORT_TOOL_NAME = "render_inspection_report";
  *
  * 起法(仓库根):`make serve-artifacts`
  * ⚠️ 端口号有两处(本文件与 Makefile 的 ARTIFACTS_PORT),要改一起改。
- * 只绑 127.0.0.1 —— 与 docker-compose 同一条红线:artifacts 里是工地现场照片
- * 和巡检记录,不许出本机。
+ *
+ * **本机开发**默认 `http://127.0.0.1:8788`(只绑回环,照片和巡检记录不出本机)。
+ * **公网部署**必须换成同源路径,否则 127.0.0.1 指的是测试者自己的电脑(下载链接是死的),
+ * 而且 https 页面拉 http 资源会被浏览器按 mixed content 直接拦掉。
+ * 由 docker-compose.vps.yml 的 build args 传 `${GYT_PUBLIC_ORIGIN}/artifacts`。
+ * **与 human.tsx 的 ARTIFACT_BASE 同源,要改一起改。**
+ *
+ * ⚠️ NEXT_PUBLIC_* 是**编译期**变量:改了要重建前端镜像。
  */
-const ARTIFACT_BASE = "http://127.0.0.1:8788";
+const ARTIFACT_BASE =
+  process.env.NEXT_PUBLIC_ARTIFACT_BASE || "http://127.0.0.1:8788";
 
 /** 把信封里的绝对路径换成静态服务的 URL。
  *

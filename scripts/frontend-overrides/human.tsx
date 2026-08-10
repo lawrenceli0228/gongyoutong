@@ -47,10 +47,20 @@ import { File as FileIcon, ImageOff } from "lucide-react";
  *   · 本文件的 `ARTIFACT_BASE`(历史里的照片 / 图纸)
  * 漏改的现象是「不报错,只是打不开」,属于最难发现的那一类。
  *
- * 只绑 127.0.0.1 —— 与 docker-compose 端口那条红线同理:artifacts 里是工地现场
- * 照片和巡检记录,不许出本机。
+ * **本机开发**默认 `http://127.0.0.1:8788`(`make serve-artifacts` 起的那份,只绑回环)。
+ *
+ * **公网部署**必须换成同源路径(`https://<域名>/artifacts`),否则有两件事同时坏:
+ *   ① 127.0.0.1 指的是**测试者自己的电脑**,那儿什么都没有 —— 照片是碎图;
+ *   ② https 页面加载 http 资源属于 mixed content,浏览器**直接拦掉**,连请求都不发。
+ * 所以这里读编译期变量,由 docker-compose.vps.yml 的 build args 传
+ * `${GYT_PUBLIC_ORIGIN}/artifacts`,Caddy 那边 `handle_path /artifacts/*` 转给
+ * artifacts 服务 —— 同源,顺带整条路径也在 basic_auth 后面。
+ *
+ * ⚠️ NEXT_PUBLIC_* 是**编译期**变量:改了要重建前端镜像,只改 compose 的
+ * environment 不生效(和 NEXT_PUBLIC_API_URL 是同一个坑)。
  */
-const ARTIFACT_BASE = "http://127.0.0.1:8788";
+const ARTIFACT_BASE =
+  process.env.NEXT_PUBLIC_ARTIFACT_BASE || "http://127.0.0.1:8788";
 
 /**
  * 按 id 取产物的地址。
