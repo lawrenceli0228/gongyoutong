@@ -234,24 +234,27 @@ services:
       # 这条不只是「进程还活着」,它同时是**一条持续的口令检查**:
       # 401 = basic_auth 还在岗。哪天有人把它注释掉调试完忘了加回来,这里立刻变红。
       #
-      # ⚠️ 必须显式带 Host 头。2026-08-11 安全复核实测:域名模式下
-      # (GYT_SITE_ADDRESS=你的域名)Caddy 的自动 HTTPS 会把裸 http://127.0.0.1/
-      # 302/308 跳到 https,**压根到不了 basic_auth**,于是这条检查恒定失败 ——
-      # `docker compose ps` 里 caddy 一直 unhealthy,人去排查一个不存在的故障;
-      # 更糟的是它本来那个「口令被误删就变红」的职责已经悄悄失效了。
-      # 带上 Host 头走站点自己那个 server 块,两种模式(裸 IP / 域名)才都拿到 401。
+      # ⚠️⚠️ 两种模式**必须分开探**,这条 2026-08-11 真机验过三遍才写对:
       #
-      # Host 从容器自己已有的 GYT_SITE_ADDRESS **现推**,不新增变量 ——
-      # 多一个变量就多一处要手工对齐的真相,而这张表已经够长了。
-      # 取值形如 ":80"(裸 IP 模式)时推成 localhost;形如 "gyt.example.com" 时原样用。
-      # `$$` 是 compose 的转义:让 shell 在**容器里运行时**展开,而不是 compose 解析时。
-      # (整条命令用 YAML 单引号包起来:里面有 `:` 和 `*`,不加引号 YAML 会当成
-      #  映射键 / 别名去解析,直接报 "mapping values are not allowed"。)
+      #   裸 IP(GYT_SITE_ADDRESS=":80")  → 探 http://127.0.0.1:80/          → 401
+      #   域名(GYT_SITE_ADDRESS=域名)    → 探 https://<域名>/ 且要走对 SNI  → 401
+      #
+      # 域名模式下探 :80 **恒定拿到 308**(Caddy 自动 HTTPS 的重定向按主机名挂),
+      # 加不加 Host 头都一样 —— 我一开始就是这么写错的,结果是 caddy 永远 unhealthy,
+      # 人去排查一个不存在的故障,而这条检查真正的职责(口令被误删就变红)已经悄悄失效。
+      #
+      # 用 curl 不用 wget:caddy:2-alpine 里的 busybox wget 走 https 时**不发 SNI**,
+      # Caddy 选不出证书,握手直接炸(实测 `tlsv1 alert internal error`)。
+      # curl 的 --resolve 才能既走对 SNI、又把域名解析钉到本机回环。
+      # -k 是因为自签/内部证书也要能探通;这是本机自己探自己,不需要验证书链。
+      #
+      # `$$` 是 compose 的转义(让 shell 在容器里运行时展开);整条用 YAML 单引号包起来,
+      # 否则里面的 `:` 和 `*` 会被当成映射键/别名解析,直接报 mapping values 错。
       test:
         - CMD-SHELL
-        - 'A="$${GYT_SITE_ADDRESS}"; H="$${A%%:*}"; [ -z "$$H" ] && H=localhost;
-          wget -q -S -O /dev/null --header="Host: $$H" http://127.0.0.1:80/ 2>&1
-          | grep -q " 401 "'
+        - 'A="$${GYT_SITE_ADDRESS}"; case "$$A" in :*) U=http://127.0.0.1:80/; R=;;
+          *) H="$${A%%:*}"; U=https://$$H/; R="--resolve $$H:443:127.0.0.1";; esac;
+          curl -sk -o /dev/null -w %{http_code} --max-time 5 $$R "$$U" | grep -q 401'
       interval: 30s
       timeout: 10s
       retries: 3
