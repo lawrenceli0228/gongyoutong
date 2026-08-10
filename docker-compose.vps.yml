@@ -1,0 +1,316 @@
+# =============================================================================
+# 工友通(GYT)公网档 —— 给外部的人做测试用
+#
+#   叠在基础档上用(-f 顺序不能反,后面的覆盖前面的):
+#
+#       docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
+#
+#   和 docker-compose.dev.yml 是**并列**关系,不是叠加关系:
+#   dev 档解决「改代码不重建镜像」,本档解决「怎么安全地放到公网上」。
+#   两个档不要同时 -f 进来。
+#
+# -----------------------------------------------------------------------------
+#   公网(0.0.0.0:80 / :443)
+#        │
+#        ▼
+#   ┌──────────┐  这是整份编排里**唯一**有 ports 的服务
+#   │  caddy   │  ① basic_auth 全局口令(给人的门)
+#   └────┬─────┘
+#        │  docker 内网,宿主机上看不到端口
+#        ├── /       ──▶ frontend:3000    ← ports 被 !reset 掉了
+#        └── /api/*  ──▶ backend:2024     ← ports 被 !reset 掉了
+#                          │ ② auth.py 校验 X-Api-Key(纵深第二道)
+#                          │ ③ 令牌桶限流(挡刷 run 烧账单)
+#                          └ ./data 绑定挂载:台账 / 缓存 / 产物 / 向量库
+# -----------------------------------------------------------------------------
+#
+# 为什么 backend 和 frontend 一个 ports 都不许有(本仓最硬的红线的直接推论):
+#
+#   :2024 是**零鉴权**的 Agent 执行端点,容器里还揣着两家供应商的真实 API Key。
+#   基础档 docker-compose.yml 把它钉死在 127.0.0.1 正是为了挡这个。
+#   到了 VPS 上,127.0.0.1 也不再是「只有我自己」—— 这台机器上任何一个进程、
+#   任何一个别的容器、任何一个被打穿的服务,都能直接打 2024。
+#   而 `docker compose -f A -f B` 的 ports 是**按端口去重后合并**的:
+#   本档不写 ports 并不能把基础档那条抹掉,必须显式 `!reset []`(见下面两处)。
+#
+#   公网裸奔 = 账单敞开给人刷。这不是理论风险:VPS 的 IP 一上线,
+#   几分钟内就会被全网扫描器摸一遍。
+#
+# -----------------------------------------------------------------------------
+# 上线前必须先做的事(缺一步就起不来或者裸奔)
+# -----------------------------------------------------------------------------
+#   1. cp .env.vps.example .env      ← **必须叫 .env**,理由见文件末尾「关于 --env-file」
+#   2. 按 .env 里的命令生成 GYT_ACCESS_TOKEN 和 GYT_BASIC_AUTH_HASH,填进去
+#   3. 填两把模型 Key(GYT_DEEPSEEK_API_KEY / GYT_MOONSHOT_API_KEY)
+#   4. mkdir -p data && sudo chown 10001:10001 data   ← Linux 上必做,
+#      容器里跑的是非 root 用户,不改属主写不进这个绑定挂载
+#   5. bash scripts/setup-frontend.sh                 ← frontend/ 不在仓库里
+#   6. docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
+#
+#   忘了第 2 步会**当场失败并打中文**(下面的 ${VAR:?...} 语法),不会静默裸奔 ——
+#   这是整份部署最重要的一道闸,别为了图省事给它加默认值。
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # 后端:继承基础档的 build / healthcheck / volumes,只改公网相关的几处
+  # ---------------------------------------------------------------------------
+  backend:
+    # ⚠️⚠️ 这一行是整个文件的核心。
+    # 基础档有 `ports: ["127.0.0.1:2024:2024"]`,compose 合并时会保留它。
+    # `!reset []` 是 Compose 的显式清空标记(比较新的特性,本机实测在
+    # Compose v5.1.3 上生效;太老的 compose 上会直接报解析错误,不会静默失效 ——
+    # 这点很重要:失败是响的,不会让你以为清掉了其实没清)。
+    # 效果是合并后的配置里**根本没有 ports 这个键** —— 可以用
+    #     docker compose -f docker-compose.yml -f docker-compose.vps.yml config | grep -n ports
+    # 验证:除了 caddy 那两条,不该有任何输出。
+    #
+    # 删掉这行的后果:VPS 的 127.0.0.1:2024 上多出一个零鉴权端点。
+    # 它不直接对公网,但它对**这台机器上的一切**开放,纵深防御的第一层就没了。
+    ports: !reset []
+
+    # 换个镜像 tag(基础档是 gyt-backend:dev)。
+    # 不是洁癖:公网档要求 backend/langgraph.json 里声明了 auth,而那个文件**没有挂卷**,
+    # 是烘在镜像里的。沿用 :dev 这个 tag 的话,机器上万一存着一个 auth 之前构建的
+    # gyt-backend:dev,`up -d`(不带 --build)会直接拿它起来 —— 鉴权静默消失,
+    # 而一切看起来都正常。换 tag = 镜像不存在 = 强制构建一次,把这条路堵死。
+    image: gyt-backend:vps
+    container_name: gyt-backend-vps
+
+    environment:
+      # 纵深第二道的令牌。后端 auth.py 拿它校验请求头 X-Api-Key。
+      # 用 :? 让它成为硬性前置:没设就在 `up` 的那一刻失败,而不是起一个不设防的服务。
+      GYT_ACCESS_TOKEN: ${GYT_ACCESS_TOKEN:?没设 GYT_ACCESS_TOKEN。这是后端校验 X-Api-Key 用的令牌,不设等于把零鉴权的 Agent 端点放上公网,两把模型 Key 的额度敞开给人刷。请先 cp .env.vps.example .env,按里面的命令生成一个再来}
+
+      # 时区。**别省这一行。**
+      # VPS 默认基本都是 UTC,而本项目的排期台账是按「今天/明天/本周五」算日期的
+      # (backend/scripts/acceptance_dates.py 那套锚点)。差 8 小时的直接后果是:
+      # 北京时间晚上 8 点之后建的任务,日期全部算成前一天 —— 界面不会报错,
+      # 只是日子悄悄不对,而这种错最难被测试的人描述清楚。
+      #
+      # 已确认(backend/Dockerfile 第 246 行注释):基础镜像 python:3.12-slim-bookworm
+      # 自带 /usr/share/zoneinfo,所以设了 TZ 就能生效,不用另外装 tzdata。
+      TZ: ${TZ:-Asia/Shanghai}
+
+    # 基础档是 on-failure:3(本机开发时「起不来就停住,现象一眼可见」)。
+    # 公网跑法相反:机器重启、docker 自己升级之后要能自己回来,不然得有人手动上机器。
+    # 注意这不会掩盖「缺 Key 起不来」—— 那种情况下容器会反复重启,
+    # `docker compose ps` 一眼就能看见 Restarting。
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 前端:agent-chat-ui。同样不许有 ports,只让 caddy 从内网访问
+  # ---------------------------------------------------------------------------
+  frontend:
+    # 基础档里 frontend 挂在 profiles: [ui] 下,默认不启动。
+    # 公网档必须让它默认起来,否则 `up -d` 只起后端,caddy 一路 502。
+    profiles: !reset []
+
+    # 理由同 backend:基础档有 127.0.0.1:3000:3000,必须显式清掉。
+    ports: !reset []
+
+    image: gyt-frontend:vps
+    container_name: gyt-frontend-vps
+
+    build:
+      # build.args 是映射,按键合并 —— 这里覆盖基础档那两个,并加一个新的。
+      args:
+        # ⚠️ NEXT_PUBLIC_* 是 Next.js 的**编译期**变量,会被烘进浏览器 JS 包。
+        # 必须在 build 阶段给;只写在 environment 里对浏览器是无效的。
+        # 改了这两个值就必须 `--build` 重建前端镜像,只 restart 不管用。
+        #
+        # 值指向 Caddy 的 /api 前缀,而不是后端的 2024 端口:
+        # 请求由浏览器发出,浏览器只认识公网那一个地址;而且前后端同源之后,
+        # 不用配 CORS,basic_auth 的凭据也会被浏览器自动带上。
+        NEXT_PUBLIC_API_URL: ${GYT_PUBLIC_ORIGIN:?没设 GYT_PUBLIC_ORIGIN。这是测试的人在浏览器里敲的那个地址,比如 http://203.0.113.10 或 https://gyt.example.com。它会被编译进前端包,填错的表现是页面打得开但一发消息就连不上}/api
+
+        # 令牌注进浏览器包,测试的人不用手动粘。
+        #
+        # 「把令牌放进浏览器包」是刻意的取舍,不是疏忽:它确实躺在 JS 里可见,
+        # 但**能拿到这个包的人已经过了 Caddy 那道口令门**。在这个前提下,
+        # 令牌的作用是纵深(挡 Caddy 配错、挡内网直连),不是挡终端用户。
+        # 换来的是外部测试的人只需要记一个口令,不用被教「打开设置粘一串 hex」。
+        #
+        # ⚠️ 前置依赖(不满足的话这一行是**空转**):
+        #    scripts/setup-frontend.sh 生成的 frontend/Dockerfile 目前只声明了
+        #    ARG NEXT_PUBLIC_API_URL 和 ARG NEXT_PUBLIC_ASSISTANT_ID,
+        #    **没有** ARG NEXT_PUBLIC_API_KEY。Docker 对没声明的 build arg 只会
+        #    警告一句 "unused build arg" 就过去了,构建照样成功、页面照样能开,
+        #    只是令牌永远没进包 —— 表现是每次请求被后端 401,而不是构建失败。
+        #    要让它真正生效,setup-frontend.sh 的 Dockerfile 模板里必须补上
+        #    ARG NEXT_PUBLIC_API_KEY 和对应的 ENV(和另外两个变量写在一起)。
+        NEXT_PUBLIC_API_KEY: ${GYT_ACCESS_TOKEN:?没设 GYT_ACCESS_TOKEN(前端也要用同一个令牌)}
+
+    environment:
+      # 运行期再写一遍,浏览器包用不到它(编译期已经烘进去了),
+      # 留着是为了让 `docker compose config` 和 `docker inspect` 一眼能看出这台连的是哪儿,
+      # 排障时不用去翻构建参数。
+      NEXT_PUBLIC_API_URL: ${GYT_PUBLIC_ORIGIN}/api
+      TZ: ${TZ:-Asia/Shanghai}
+
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Caddy:反向代理 + 全局口令。整份编排里唯一对公网开口的服务
+  # ---------------------------------------------------------------------------
+  caddy:
+    # 官方镜像,不自己构建。
+    # ⚠️ 别换成需要插件的玩法(限流 rate_limit、WAF 之类):官方镜像**不带**那些模块,
+    # 写了对应指令的下场是 Caddy 启动即报 unrecognized directive,整个站点连不上。
+    # 限流由后端做(令牌桶),不在这一层。
+    image: caddy:2-alpine
+    container_name: gyt-caddy
+    init: true
+
+    ports:
+      # 这里**故意**不写 127.0.0.1 —— 就是要让公网进来,这是本服务存在的意义。
+      # 也正因为如此,上面两个服务才必须一个 ports 都没有。
+      - "80:80"
+      # 443 即便暂时用裸 IP(GYT_SITE_ADDRESS=":80")也留着:
+      # 哪天换成域名,Caddy 会自动签证书并把 80 跳到 443,不用回来改这个文件。
+      # 端口开着但没人监听,不构成额外风险。
+      - "443:443"
+      # 443/udp 是 HTTP/3(QUIC)。没有它 Caddy 也能跑,浏览器会退回 HTTP/2。
+      - "443:443/udp"
+
+    volumes:
+      # Caddyfile 只读挂进去。改完 `restart caddy` 秒级生效,不用重建镜像。
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 证书和 ACME 账号密钥。**必须持久化**:走域名时,证书丢了就要重新申请,
+      # 而 Let's Encrypt 对同一域名有签发频率限制(一周几次),
+      # 反复重建容器足够把自己关在门外,现象是「HTTPS 突然就申请不下来了」。
+      - caddy_data:/data
+      - caddy_config:/config
+
+    environment:
+      # 站点地址。裸 IP 用 :80(纯 HTTP);有域名就直接填域名,Caddy 自动签证书。
+      # 两种写法的完整说明在 Caddyfile 里那一大段注释。
+      GYT_SITE_ADDRESS: ${GYT_SITE_ADDRESS:-:80}
+
+      GYT_BASIC_AUTH_USER: ${GYT_BASIC_AUTH_USER:-gyt}
+
+      # 口令的 bcrypt 哈希。和令牌一样 fail-closed —— 没设就不许起。
+      #
+      # ⚠️⚠️ 这里有个**必须知道**的坑,实测确认过:
+      # 哈希串长这样 `$2a$12$xxxx`,里面的 `$` 会被 Compose 当成变量引用吃掉。
+      # 实测(Compose v5.1.3):.env 里原样贴 `$2a$14$V8/gFX...`,
+      # 容器里拿到的是 `$2a$14.ZwGx8MTWE...` —— 中间少了一截。
+      # 而 Caddy 对这种残缺哈希**不报错**,只是口令永远对不上:
+      # 你输对了口令也一直 401,还以为是自己记错了密码。
+      #
+      # 所以 .env 里必须存**把 `$` 全部写成 `$$`** 的形态。
+      # .env.vps.example 给的生成命令已经直接吐出转义好的串,照抄粘贴即可。
+      # (下面这句提示文案本身也会被 Compose 插值一遍,所以里面的 $ 必须写成 $$ 才能
+      #  在终端上真的打出一个 $。实测:写 $$ 打出 $,写 $$$$ 打出 $$。
+      #  没转义的话提示会变成「$ 必须写成 $」这种自相矛盾的废话 —— 别手贱改回去。)
+      GYT_BASIC_AUTH_HASH: ${GYT_BASIC_AUTH_HASH:?没设 GYT_BASIC_AUTH_HASH。这是外部测试的人访问站点要输的那个口令的哈希,不设等于整个站点对全网敞开。生成命令在 .env.vps.example 里,注意生成出来的哈希里每个 $$ 符号都必须写成两个,即 $$$$}
+
+      TZ: ${TZ:-Asia/Shanghai}
+
+    # ⚠️ 注意这里**没有** env_file。
+    # 基础档给 backend 挂了 `env_file: .env`,那是它要读两把模型 Key。
+    # Caddy 一把 Key 都不该碰 —— 它只需要上面这四个变量,用 ${} 逐个点名注入。
+    # 顺手写个 env_file 图省事,等于把 DeepSeek / Moonshot 的 Key 复制一份进
+    # 一个直接对公网监听的容器里,毫无必要地扩大了泄漏面。
+
+    depends_on:
+      backend:
+        # 等后端 /ok 真探活通过再起 caddy。
+        # 后端首次启动要把 BGE-M3 权重加载进内存,基础档给了 start_period: 120s。
+        condition: service_healthy
+      frontend:
+        condition: service_started
+
+    # 探活:故意断言「返回 401」,而不是「返回 200」。
+    #
+    # 这不是绕弯子 —— 401 同时证明了两件事:Caddy 活着、**并且口令这道门是开着的**。
+    # 如果哪天 basic_auth 被误删/写错位置,站点会变成 200 全放行,
+    # 而一个「探 200」的健康检查会高高兴兴地报 healthy,没人发现已经裸奔了。
+    # 现在这种写法下,那种情况会让容器直接变 unhealthy。
+    #
+    # 用 busybox 的 wget:alpine 镜像自带,不用为了健康检查再装 curl。
+    # -S 把响应头打到 stderr,2>&1 合流后 grep 401。
+    healthcheck:
+      # 这条不只是「进程还活着」,它同时是**一条持续的口令检查**:
+      # 401 = basic_auth 还在岗。哪天有人把它注释掉调试完忘了加回来,这里立刻变红。
+      #
+      # ⚠️⚠️ 两种模式**必须分开探**,这条 2026-08-11 真机验过三遍才写对:
+      #
+      #   裸 IP(GYT_SITE_ADDRESS=":80")  → 探 http://127.0.0.1:80/          → 401
+      #   域名(GYT_SITE_ADDRESS=域名)    → 探 https://<域名>/ 且要走对 SNI  → 401
+      #
+      # 域名模式下探 :80 **恒定拿到 308**(Caddy 自动 HTTPS 的重定向按主机名挂),
+      # 加不加 Host 头都一样 —— 我一开始就是这么写错的,结果是 caddy 永远 unhealthy,
+      # 人去排查一个不存在的故障,而这条检查真正的职责(口令被误删就变红)已经悄悄失效。
+      #
+      # 用 curl 不用 wget:caddy:2-alpine 里的 busybox wget 走 https 时**不发 SNI**,
+      # Caddy 选不出证书,握手直接炸(实测 `tlsv1 alert internal error`)。
+      # curl 的 --resolve 才能既走对 SNI、又把域名解析钉到本机回环。
+      # -k 是因为自签/内部证书也要能探通;这是本机自己探自己,不需要验证书链。
+      #
+      # `$$` 是 compose 的转义(让 shell 在容器里运行时展开);整条用 YAML 单引号包起来,
+      # 否则里面的 `:` 和 `*` 会被当成映射键/别名解析,直接报 mapping values 错。
+      test:
+        - CMD-SHELL
+        - 'A="$${GYT_SITE_ADDRESS}"; case "$$A" in :*) U=http://127.0.0.1:80/; R=;;
+          *) H="$${A%%:*}"; U=https://$$H/; R="--resolve $$H:443:127.0.0.1";; esac;
+          curl -sk -o /dev/null -w %{http_code} --max-time 5 $$R "$$U" | grep -q 401'
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    restart: unless-stopped
+
+# -----------------------------------------------------------------------------
+# 命名卷:只给 Caddy 用
+# 业务数据一律走基础档的 ./data 绑定挂载(台账 / LLM 缓存 / 产物 / Chroma 向量库),
+# 那份要能被 `ls`、能被 scp 下来看,所以是绑定挂载而不是命名卷。
+# 证书正相反:不需要人去翻,也不该被人随手打开,交给 Docker 管更合适。
+# -----------------------------------------------------------------------------
+volumes:
+  caddy_data:
+  caddy_config:
+
+# =============================================================================
+# 几件容易踩的事,写在这儿免得下一个人再查一遍
+# -----------------------------------------------------------------------------
+#
+# 【关于 --env-file】
+#   本档假定 VPS 上的环境变量放在**仓库根的 .env**(由 .env.vps.example 复制而来)。
+#   别用 `docker compose --env-file .env.vps ...` 这种写法:
+#   --env-file 只影响 compose 自己做变量插值,**不影响** 基础档里 backend 的
+#   `env_file: .env`。那条是 required:false,文件不存在时**不报错**,
+#   于是后端启动时一把模型 Key 都没有 —— 报错发生在图加载期,
+#   现象是容器反复重启,而根因(你把变量放在另一个文件里了)一点提示都没有。
+#
+# 【关于机器规格】
+#   2C4G 起步,这是下限不是舒适区。吃内存的大头是 knowledge 用的本地
+#   BGE-M3 embedding 模型(权重 2.2GB,推理时还要再占一块)。
+#   1C2G 的机器上表现是:建库或首次检索时容器被 OOM killer 干掉,
+#   `docker compose ps` 显示 Exited(137),日志里什么都看不出来。
+#
+#   这里**故意不写 deploy.resources.limits**。在一台 4G 的机器上,
+#   给唯一一个吃内存的服务再加一道内存上限,只是把「慢」变成「被 kill」,
+#   换不来任何隔离收益 —— 反正也没有别的服务要保护。
+#   如果这台 VPS 还跑着别的东西,再回来加,并且加之前先量一下实际占用:
+#       docker stats gyt-backend-vps
+#
+#   另外建议在 VPS 上开 2G swap。BGE-M3 加载权重那一下是尖峰,
+#   有 swap 兜着就是慢几秒,没有就是 OOM。
+#
+# 【关于知识库】
+#   `GYT_KNOWLEDGE_PREBUILD_AT_STARTUP=true` 在这套编排里**千万别开**:
+#   首次建库要十几分钟,而 backend 的 healthcheck start_period 是 120s,
+#   结果是容器永远探不活 → caddy 因为 depends_on 也起不来 → 整站打不开。
+#   正确顺序是先把库建好、再起服务:
+#       docker compose -f docker-compose.yml -f docker-compose.vps.yml run --rm backend make build-knowledge
+#   (或者在本机建好 data/chroma/ 之后整个目录 scp 上去,省一次 2.2GB 下载。)
+#
+# 【怎么确认自己没有裸奔】—— 上线后立刻在**别的机器**上跑这三条
+#   curl -sS -o /dev/null -w '%{http_code}\n' http://<VPS_IP>/          → 期望 401
+#   curl -sS -o /dev/null -w '%{http_code}\n' http://<VPS_IP>/api/ok    → 期望 401
+#   curl -sS -m 5 -o /dev/null -w '%{http_code}\n' http://<VPS_IP>:2024/ok → 期望连不上(超时/拒绝)
+#   最后一条**必须**在别的机器上跑。在 VPS 自己身上跑走的是 127.0.0.1,
+#   测不出「有没有对公网开」这件事。
+# =============================================================================

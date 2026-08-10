@@ -221,8 +221,9 @@ RUNNERS: Final[Mapping[str, Any]] = MappingProxyType(
 MappingProxyType 是只读的:runner.load_runners 会 dict(...) 复制一份再用,
 但这里仍然只读,防止有人在运行期往里塞东西。
 
-W2/W3 往下加:
-    "rag": 队友的 knowledge Agent(W2 末验收)
+三套已齐(safety 2026-08-07;routing / rag 2026-08-09 随 knowledge 落地一起接上)。
+这段以前挂着一行「W2/W3 往下加:"rag": 队友的 knowledge Agent」—— 那是在描述
+它自己上面 8 行的代码,而代码里 "rag" 早就在了。加第四套时往上面的字典里加一个键即可。
 """
 
 __all__ = [

@@ -336,27 +336,30 @@ jobs:
           cat "${{ runner.temp }}/langgraph.log" 2>/dev/null || echo "(无日志)"
 
 # =============================================================================
-# job: eval —— 三套评测门槛(W2 启用,现在先注释占位)
+# job: eval —— 三套评测门槛(仍是注释占位,但**卡点已经只剩一条**)
 #
-# 打分脚本已经就位(backend/eval/runner.py,W2 前置 A2 交付),门槛也已经从
+# 打分脚本已经就位(backend/eval/runner.py),门槛也已经从
 # gyt.config 的 eval_threshold_* 读 —— 但**这段仍然保持注释**,理由见下面。
 #
 # ---------------------------------------------------------------------------
 # 取消注释的前提(三条全满足才动手,少一条就别开)
 # ---------------------------------------------------------------------------
-#   前提 1:三套数据集都填够,且不再有"待替换/请替换"占位行。
-#           下限是方案定的:routing 20 条、safety 30 张、rag 20 组。
+#   前提 1 ✅ 已满足(2026-08-09):三套数据集都填够,且不再有"待替换/请替换"占位行。
+#           下限是方案定的:routing 20 条、safety 30 张、rag 20 组;
+#           实际 routing 22 / safety 30 / rag 20 —— **后两套恰好卡在下限上,一条不多**。
 #           runner 会把占位行剔掉;整套没有可判分的行时打印 SKIP 并以 0 退出 ——
-#           也就是说**现在开了不会红,但会绿得毫无意义**(什么都没测),
-#           那比红更危险:大家会以为门槛已经守住了。
+#           那种"绿得毫无意义"比红更危险,所以这条曾经是硬卡点。
 #
-#   前提 2:被测 Agent 接进来了。runner 不 import 任何具体 Agent,
+#   前提 2 ✅ 已满足(2026-08-09):被测 Agent 接进来了。runner 不 import 任何具体 Agent,
 #           要靠 `--runners 模块:属性` 注入一张 {套名: async 函数} 的表
 #           (见 backend/eval/runner.py 的 load_runners)。没注入 = 全套 SKIP。
-#           所以启用前要先在后端某处导出这张表,并把下面的 --runners 参数填上。
+#           那张表就是 `eval.hooks:RUNNERS`(safety / routing / rag 三个键齐),
+#           下面几个 step 的 --runners 参数已经按它填好,不再是占位符。
 #
-#   前提 3:评测全程 mock 或走离线缓存,绝不在 CI 里烧真实额度。
-#           视觉调用一次约 6 分钱,30 张照片 × 每次 push = 账单会很难看。
+#   前提 3 ❌ **仍未满足 —— 这是现在唯一的卡点**:评测全程 mock 或走离线缓存,
+#           绝不在 CI 里烧真实额度。视觉调用一次约 6 分钱,30 张照片 × 每次 push
+#           = 账单会很难看;routing 那 22 行也是每行一次真实文本调用。
+#           (rag 不过模型,但要求 runner 上先建好 Chroma 向量库。)
 #
 # 满足后:去掉下面整段的注释符,并按需加到 e2e 的 needs 里(或保持并行)。
 # 三条门槛值**不要**写进本文件,runner 自己比对阈值、不达标就非零码退出,
@@ -404,17 +407,17 @@ jobs:
 #     - name: 路由准确率(门槛 eval_threshold_routing)
 #       run: |
 #         mkdir -p eval-reports
-#         uv run python -m eval.runner --suite routing --runners 待填:RUNNERS \
+#         uv run python -m eval.runner --suite routing --runners eval.hooks:RUNNERS \
 #           | tee eval-reports/routing.txt
 #     - name: 安全隐患识别(门槛 eval_threshold_safety)
 #       run: |
 #         mkdir -p eval-reports
-#         uv run python -m eval.runner --suite safety --runners 待填:RUNNERS \
+#         uv run python -m eval.runner --suite safety --runners eval.hooks:RUNNERS \
 #           | tee eval-reports/safety.txt
 #     - name: 知识问答召回(门槛 eval_threshold_rag)
 #       run: |
 #         mkdir -p eval-reports
-#         uv run python -m eval.runner --suite rag --runners 待填:RUNNERS \
+#         uv run python -m eval.runner --suite rag --runners eval.hooks:RUNNERS \
 #           | tee eval-reports/rag.txt
 #     - name: 上传评测明细
 #       if: always()

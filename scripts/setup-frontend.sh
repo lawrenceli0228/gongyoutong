@@ -304,8 +304,16 @@ FROM base AS build
 # 由 docker-compose.yml 的 build.args 传入;这里的默认值只是让裸 docker build 也能用
 ARG NEXT_PUBLIC_API_URL=@@BACKEND_URL@@
 ARG NEXT_PUBLIC_ASSISTANT_ID=@@ASSISTANT_ID@@
+# 公网部署时把后端访问令牌烘进浏览器包,测试的人不用手动粘。
+# 本机开发不传,默认空 —— api-key.tsx 覆盖件会退回只读 localStorage,行为与从前一样。
+# ⚠️ 这个 ARG **不能省**:Docker 对未声明的 build arg 只警告 "unused build arg",
+#    构建照样成功,于是 compose 传了值、镜像里却什么都没有 ——
+#    表现是「站点打得开、每次提问 401」,而构建日志一切正常。
+#    2026-08-11 安全复核就是这么抓到的(H3)。
+ARG NEXT_PUBLIC_API_KEY=
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
     NEXT_PUBLIC_ASSISTANT_ID=${NEXT_PUBLIC_ASSISTANT_ID} \
+    NEXT_PUBLIC_API_KEY=${NEXT_PUBLIC_API_KEY} \
     NODE_ENV=production
 
 COPY --from=deps /app/node_modules ./node_modules
@@ -380,6 +388,25 @@ apply_override "thread-index.tsx" "src/components/thread/index.tsx"
 # 上游 LangGraph logo 用了 JSX 里非法的 clip-path(应为 clipPath),控制台每次报
 # "Invalid DOM property `clip-path`"。这里改成 clipPath 消掉这个警告。
 apply_override "langgraph.tsx" "src/components/icons/langgraph.tsx"
+
+# 历史记录里把上传的照片显示出来,而不是一串 32 位编号。
+# 成因不在前端:backend/src/gyt/core/uploads.py 的 ingest_uploads 是 supervisor 的
+# pre_model_hook,它返回 {RemoveMessage(原消息), 改写后的纯文本} —— **带图那条消息
+# 从 state 里被永久删掉了**(必须永久换,否则子 Agent 共享同一份 messages 时照样
+# 会拿到 image 块,文本档模型收到直接 400)。所以图只能从产物目录捞,靠
+# `make serve-artifacts` 的 GET /by-id/<32位编号>(scripts/serve_artifacts.py)。
+apply_override "human.tsx" "src/components/thread/messages/human.tsx"
+
+# 线程历史加删除按钮。上游只能点进去,一场演示攒下几十条废线程,
+# 下次上台要在里面翻找要演的那条;历史里还躺着已经修掉的老问题,评委随手点开就看到。
+apply_override "thread-history.tsx" "src/components/thread/history/index.tsx"
+
+# 公网部署:把后端访问令牌从构建期环境变量里读出来(localStorage 优先,本机调试能覆盖)。
+# 上游 getApiKey() 只读 localStorage —— 于是 VPS 上每个测试者都得自己去控制台
+# localStorage.setItem 一遍,而那等于把令牌用聊天工具发给一群人。
+# ⚠️ 与上面 Dockerfile 模板里的 `ARG NEXT_PUBLIC_API_KEY` 同源,少哪一半都是
+#    「站点打得开、每次提问 401」。
+apply_override "api-key.tsx" "src/lib/api-key.tsx"
 
 # -----------------------------------------------------------------------------
 # 步骤 3:收尾提示

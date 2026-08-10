@@ -94,9 +94,14 @@ CHECK_ENV_KEYS = test -f $(ENV_FILE) \
 # uv.lock 挂进去是为了和镜像里那份对账,见 TEST_IN_CONTAINER。
 IMAGE_LOCK_PATH := /app/uv.lock
 HOST_LOCK_PATH  := /tmp/host-uv.lock
+# ⚠️ auth.py 单独挂一条,别忘。它跟 langgraph.json 平级住在 backend/ 根,
+#    **不在开发档那条 src/ 挂载覆盖的范围里** —— 少了这行,改完 auth.py 跑
+#    `make test-docker`,容器里 import 到的仍是**镜像里烤死的旧版**,
+#    于是「改了没生效」却一路绿灯。2026-08-11 加 auth 时踩到,当场补上。
 TEST_MOUNTS     := -v "$(PWD)/$(BACKEND_DIR)/tests:/app/tests:ro" \
                    -v "$(PWD)/$(BACKEND_DIR)/eval:/app/eval:ro" \
                    -v "$(PWD)/$(BACKEND_DIR)/scripts:/app/scripts:ro" \
+                   -v "$(PWD)/$(BACKEND_DIR)/auth.py:/app/auth.py:ro" \
                    -v "$(PWD)/$(BACKEND_DIR)/uv.lock:$(HOST_LOCK_PATH):ro"
 # pytest 三件套。版本区间与 backend/pyproject.toml 的 [dependency-groups].dev **同源**,
 # 那边动了这里要跟着动 —— 没法直接引用,因为容器里的 pyproject 是镜像烤死的那份。
@@ -208,11 +213,19 @@ build-knowledge: ## 建/更新规范知识库(PDF 切分 + BGE-M3 向量化 → 
 	cd $(BACKEND_DIR) && $(UV) run python -m gyt.agents.knowledge.ingest
 
 eval: ## 跑评测门槛(默认三套全跑;make eval SUITE=safety 只跑一套)
-	@# safety 已接上(eval/hooks.py:RUNNERS);routing / rag 还没接,会打印 SKIP —— 那是正常状态。
-	@# ⚠️ safety 会**真的调 kimi-k3 并真的花钱**:实测单张 10~60 秒,30 张串行约 22 分钟。
-	@#    第二轮起命中磁盘缓存,秒级返回、零花费 —— 但改了 vision_prompt.md 正文
-	@#    或 prompt_version 会让缓存全失效,又是一轮 22 分钟(见 TODO-11)。
-	@#    先用 `make eval-smoke` 拿 1 张探链路,别一上来就押 22 分钟。
+	@# 三套**都已接上**(eval/hooks.py:RUNNERS 里 safety/routing/rag 三个键齐)。
+	@# 这里以前写着「routing / rag 还没接,会打印 SKIP —— 那是正常状态」,现在不是了:
+	@# 不带 SUITE 跑就是**三套全真跑**,今天再看到 SKIP 说明数据集或注入点出了问题,别当正常。
+	@# ⚠️ 三套都花钱,而且花法不同,别只按 safety 估:
+	@#    safety  30 张 —— **真的调 kimi-k3**,实测单张 10~60 秒,串行约 22 分钟。
+	@#    routing 22 行 —— 每行一次 DeepSeek 文本调用(只跑第一跳,拿到首个交接就停)。
+	@#    rag     20 行 —— 直调 search_regulation 不过模型,但**要求本机向量库已建好**
+	@#                     (先 make build-knowledge),没建会整套判失败。
+	@# safety 那 22 分钟只花一次:第二轮起命中磁盘缓存,秒级返回、零花费 ——
+	@# 但改了 vision_prompt.md 正文或 prompt_version 会让缓存全失效,又是一轮(见 TODO-11)。
+	@# 先用 `make eval-smoke` 拿 1 张探链路,别一上来就押 22 分钟。
+	@# (2026-08-11:这里原本把 safety 的花费警告连着写了两遍 —— 本文件自己的规矩是
+	@#  「同一句话别各抄一份,文案漂移过一次」,已合并成上面这一处。)
 	@$(CHECK_ENV)
 	cd $(BACKEND_DIR) && $(UV) run --env-file ../$(ENV_FILE) \
 		python -m $(EVAL_MODULE) --suite $(SUITE) --runners $(EVAL_RUNNERS)
@@ -283,16 +296,24 @@ frontend: ## 拉取并初始化前端(agent-chat-ui)
 		|| { echo "[错误] 找不到 $(FRONTEND_SETUP),前端初始化脚本还没就位"; exit 1; }
 	bash $(FRONTEND_SETUP)
 
-serve-artifacts: ## 起只读静态服务,让聊天界面里的巡检记录能点开(演示前和 make dev 一起起)
+serve-artifacts: ## 起只读静态服务,让聊天界面里的巡检记录能点开(演示前和后端一起起)
 	@# 为什么需要它:docx 落在 $(ARTIFACTS_DIR),而 langgraph.json 只声明了图 ——
 	@# **没有任何 HTTP 端点能把文件给出去**。于是「拍照自动出 Word」这个卖点,
 	@# 在界面上的最终形态曾经只是折叠 JSON 里的一个 path 字符串。
 	@# 前端覆盖件 tool-calls.tsx 的巡检记录卡片指向的就是这个端口。
 	@#
+	@# 和哪条启动路径一起起都行(make dev **或** make dev-docker / make up)——
+	@# 它读的是宿主 $(ARTIFACTS_DIR),而容器把同一个 ./data 挂进去,两边是同一份产物。
+	@# 别写成「和 make dev 一起起」:Intel Mac 上 make dev 根本跑不起来(装不上 torch)。
+	@#
 	@# 只绑 127.0.0.1 —— 与 docker-compose.yml 同一条红线。这里面是工地现场照片和
 	@# 巡检记录(含可识别人脸,见 TODO-22),绑 0.0.0.0 等于把它们发给整个局域网。
-	@mkdir -p $(ARTIFACTS_DIR)
-	@echo "[静态服务] http://127.0.0.1:$(ARTIFACTS_PORT)/"
-	@echo "           根目录:$(ARTIFACTS_DIR)"
-	@echo "           Ctrl-C 停止。"
-	python3 -m http.server $(ARTIFACTS_PORT) --bind 127.0.0.1 --directory $(ARTIFACTS_DIR)
+	@# 绑定地址**写死在脚本的 BIND_HOST 常量里,没有命令行开关** —— 想突破得改代码、得过 review。
+	@#
+	@# 2026-08-11 从 `python3 -m http.server` 换成自己的脚本,为的是多一条
+	@# `GET /by-id/<32位编号>`:产物在盘上是 <UTC日期>/<32位id>.<扩展名>,而前端手里
+	@# 只有编号、没有日期段 —— 历史里的照片(human.tsx 覆盖件)就靠这条路取件。
+	@# 老路径 `/<日期>/<文件名>` 原样保留,巡检记录卡片(tool-calls.tsx)用的是那条。
+	@# mkdir 和启动横幅都由脚本自己做了,这里不再重复打印。
+	@# 仍然用裸 python3(不走 uv / venv):脚本纯 stdlib,Intel Mac 装不上 torch 也不影响。
+	python3 scripts/serve_artifacts.py --port $(ARTIFACTS_PORT) --directory $(ARTIFACTS_DIR)

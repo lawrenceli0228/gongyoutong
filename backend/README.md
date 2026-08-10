@@ -122,13 +122,33 @@ python3 -c "print('中文测试正常')"      # 这行必须正常显示
 | `make cov` | `cd backend; uv run pytest --cov=gyt --cov-fail-under=80` |
 | `make lint` | `cd backend; uv run ruff check .` |
 | `make fmt` | `cd backend; uv run ruff format .; uv run ruff check --fix .` |
-| `make dev` | `cd backend; uv run langgraph dev` |
+| `make dev` | `cd backend; uv run langgraph dev --allow-blocking` ← **`--allow-blocking` 不能省**,见下方 |
 | `make up` | `mkdir data -Force; docker compose up -d` |
 | `make down` | `docker compose down --remove-orphans` |
-| `make frontend` | **没有等价命令** —— 脚本是 bash-only,只能手动: |
-| | `git clone --depth 1 https://github.com/langchain-ai/agent-chat-ui frontend` |
-| | 删掉 `frontend\.git`,新建 `frontend\.env` 写入两行:<br>`NEXT_PUBLIC_API_URL=http://localhost:2024`<br>`NEXT_PUBLIC_ASSISTANT_ID=gyt` |
+| `make frontend` | **没有等价命令,而且手抄不出来了** —— 见下方专门那段 |
 | `make lint-ci` | `docker run --rm -v "${PWD}:/repo" -w /repo rhysd/actionlint:latest -no-color .github/workflows/ci.yml` |
+
+**`--allow-blocking` 为什么不能省**(与 `Makefile` 的 `dev` 配方、`backend/Dockerfile` 的 CMD、
+`docker-compose.dev.yml` 是同一条铁律):缺了它,langgraph 的 blockbuster 会把
+`config.cache_dir` / `artifacts_dir` 那种「访问即 mkdir」的属性判成违规,
+**磁盘缓存的读写会全部静默失败** —— 每次提问都真的掏钱调模型,而日志里只有一句
+"Background run succeeded",看不出任何异常。踩过:本机 Safety Agent 每次等 60 秒,
+容器里却是秒回,差别就在这一个参数上。
+
+**`make frontend` 别再照「clone + 写两行 .env」手抄了。** 那是 2026-08-06 的写法,
+现在 `scripts/setup-frontend.sh` 做的事已经远不止 clone:
+
+- **生成** `frontend/.env`、`frontend/.dockerignore`,以及 **`frontend/Dockerfile`**
+  ——上游仓库自己不带这个文件,缺了它 `docker compose --profile ui up` 直接起不来。
+- **覆盖 8 个界面文件**(`scripts/frontend-overrides/`,靠脚本末尾的 `apply_override` 注册):
+  观感三件 `tool-calls.tsx` / `ai.tsx` / `markdown-text.tsx`,
+  **DXF 上传四件** `use-file-upload.tsx` / `multimodal-utils.ts` / `MultimodalPreview.tsx` / `thread-index.tsx`,
+  消警告一件 `langgraph.tsx`。
+
+照旧写法手抄拿到的界面:没有交接痕迹折叠、没有巡检记录卡片、没有工作表格,
+**也没有图纸上传入口**(整条 cad 演示路径就没有门)。
+原生 Windows 上的正解是装 WSL2 或 Git Bash 跑那个脚本,别手抄 —— 清单会继续变,
+**唯一真相是 `scripts/setup-frontend.sh` 本身**。
 
 再加一句防中文乱码(建议写进 PowerShell 配置文件):
 
@@ -187,7 +207,13 @@ curl -s http://localhost:2024/runs/wait \
   -d '{"assistant_id":"gyt","input":{"messages":[{"role":"human","content":"你好"}]}}'
 ```
 
-第二条应该看到 ping Agent 走了一遭 echo 工具再回话 —— 这就是 T1 的"通电指示灯"。
+第二条是纯闲聊,应该看到 **supervisor 自己回答**、不产生任何交接 —— 图起来了就算通电。
+
+> 这里以前写的是「应该看到 ping Agent 走了一遭 echo 工具再回话」。**`ping` 已于 2026-08-08
+> 从 `AGENT_REGISTRY` 摘除**(包还留着,当工具写法样板用),所以现在不会有那一跳,
+> 看不到它是正常的。摘除理由写在 `graph.py` 的 `AGENT_REGISTRY` 顶部:它的正域是空的,
+> 于是 summary 里每个词都成了钩子,三轮改措辞都收不住 —— 空正域条目不该占路由位。
+> 想验哪个子 Agent 通不通,直接问它那一域的话(比如「这张照片有没有安全隐患」)。
 
 > `make dev` 的工作目录是 `backend/`,但配置照样读得到仓库根的 `.env`:
 > `backend/langgraph.json` 里写了 `"env": "../.env"`,langgraph CLI 会先把它灌进环境变量。
@@ -211,8 +237,15 @@ curl -s http://localhost:2024/runs/wait \
 
 ### 2.5 路线 A2:容器里开发(本机装不上依赖时走这条)
 
-**后端跑在容器里,你在宿主正常编辑文件。** 不是"退而求其次" —— 除了首次构建镜像那几分钟,
+**后端跑在容器里,你在宿主正常编辑文件。** 不是"退而求其次" —— 除了首次构建镜像那一次,
 日常体验和路线 A 几乎一样。
+
+> ⚠️ **「首次构建」要留出 10~30 分钟,不是「几分钟」。**(这里以前写的是「几分钟」,
+> 而下面路线 B 对**同一次构建**写的是 10~30 分钟 —— 两个数字说的是一件事。)
+> `docker-compose.dev.yml` 里没有 build 段,`make dev-docker` 的 `--build` 走的就是基础档那份,
+> 而 app 阶段要 `COPY --from=models`,必然先构建 models 阶段、先拉 2.2GB 的 BGE-M3 权重。
+> 被分流到这条路线的恰恰是本机装不上依赖的人(Intel Mac),按「几分钟」的预期开跑会以为卡死了。
+> 之后命中层缓存是秒级。
 
 ```bash
 make dev-docker    # 起容器 + 把宿主 backend/src 挂进去(只读)+ 打开热重载
@@ -300,7 +333,37 @@ make test   # 单元 + 集成,秒级,全 mock,绝不联网
 make cov    # 加覆盖率门槛(<80% 直接失败,与 CI 同一把尺子)
 make lint   # ruff 只报不改
 make fmt    # ruff 格式化 + 自动修
-make e2e    # 冷启动冒烟(真起 compose,分钟级,平时不用跑)
+make e2e    # 冷启动冒烟 —— 真起 compose、**首跑要拉 2.2GB 权重 10~30 分钟**,
+            # 而且会**产生真实调用费用**(它真发一次 /runs/wait)。平时别跑。
+```
+
+评测与演示辅助(**都不在上面这几条里,而且都花钱或有前置**):
+
+```bash
+make eval-smoke        # 1 张照片探链路,几十秒、几毛钱 —— 上全量前先跑这条
+make eval              # 三套全跑,真花钱(safety 约 22 分钟;rag 要求本机向量库已建好)
+make build-knowledge   # 建规范知识库(首次含 2.2GB 权重,约 15 分钟);rag 与 E 组的前置
+make serve-artifacts   # 起只读静态服务。**不起它,界面里的巡检记录卡片点开是空白**
+```
+
+真机验收(25 断言,含直查 sqlite 的库级铁证)不在 Makefile 里,直接跑脚本 ——
+**跑法与清库路径的唯一真相是脚本头注**(`backend/scripts/live_acceptance.py`
+第 1 行的断言条数 + 第 7-17 行的跑法块,其中第 12-16 行是清库路径):
+
+```bash
+# E 组要求知识库已建好(每台机建一次);想从空台账开始,在**仓库根**执行 rm -f data/gyt.sqlite3
+cd backend && uv run --env-file ../.env python scripts/live_acceptance.py
+```
+
+⚠️ **别删 `backend/data/gyt.sqlite3`,那是空操作** —— 后端只写 `<仓库根>/data/`,
+删错的后果不是「没生效」而是「以为清干净了」,真库带着旧台账上台会红一片还查不到方向。
+
+**跑单个测试必须先 `cd backend`**(pytest 的 `testpaths` 和覆盖率配置都在 `backend/pyproject.toml`;
+从仓库根裸跑会大面积报错,那是跑法不对不是回归):
+
+```bash
+cd backend && uv run pytest tests/unit/test_schedule_dates.py
+cd backend && uv run pytest -k "改期"      # 测试名是中文,-k 直接写中文
 ```
 
 `make test` 的前提是本机 `make setup` 成功过。装不上依赖的机器(见路线 A 末尾那条)
@@ -318,16 +381,31 @@ backend/
 ├── src/gyt/
 │   ├── config.py             全项目常量的唯一入口(get_settings())。禁止在别处硬编码
 │   ├── graph.py              Supervisor 图,导出已 compile 的 graph;langgraph.json 指向它
+│   │                         唯一挂载点 = 模块级常量 AGENT_REGISTRY
 │   ├── core/
 │   │   ├── errors.py         错误信封 Envelope / ErrorCode / tool_guard   ← 契约 1
 │   │   ├── artifacts.py      文件引用注册表 register/resolve/read_meta    ← 契约 2
 │   │   ├── llm.py            双供应商客户端:选模型 + 退避重试 + 磁盘缓存
-│   │   └── base_agent.py     Agent 薄工厂:load_prompt + create_gyt_agent
-│   └── agents/
-│       └── ping/             占位 Agent(链路自检)。新 Agent 照着这个目录抄
-│           ├── prompt.md     提示词外置成 .md,不许写死在 .py 里
-│           ├── tools.py      工具函数,统一返回 Envelope
-│           └── __init__.py   build_xxx_agent(),组装并返回已编译的子图
+│   │   ├── base_agent.py     Agent 薄工厂:load_prompt + create_gyt_agent
+│   │   ├── focus.py          FocusOnOwnWork 中间件:只滤 supervisor 的纯文本发言
+│   │   ├── require_tool.py   防假账两件套 RequireToolCall / RequireReceiptSource
+│   │   └── uploads.py        pre_model_hook:把上传的图片/图纸换成「编号」文本
+│   ├── db/                   SQLite 台账(schedule 用)
+│   └── agents/               ← 六个包。**在册的五个**见 graph.AGENT_REGISTRY:
+│       ├── safety/             识图查隐患(工具内部走 kimi 视觉档)
+│       ├── schedule/           任务台账(挂 RequireLedgerTool)
+│       ├── cad/                DXF 图纸
+│       ├── knowledge/          规范条文检索(Chroma + BGE-M3)
+│       ├── report/             出巡检记录 docx。**不在册** —— 只作为英雄链
+│       │                       inspection 的第二跳存在,transfer_to_report 这条路不存在
+│       └── ping/               **已于 2026-08-08 从 AGENT_REGISTRY 摘除**,包留着当工具写法样板
+│           ├── prompt.md       提示词外置成 .md,不许写死在 .py 里
+│           ├── tools.py        工具函数,统一返回 Envelope
+│           └── __init__.py     build_xxx_agent(),组装并返回已编译的子图
+├── eval/                     三套评测(判分是纯函数;接线点只有 hooks.py 的 RUNNERS)
+│                             **它也在覆盖率门槛里**(pyproject 的 --cov=eval)
+├── scripts/                  真机验收 live_acceptance.py(25 断言)+ acceptance_dates.py
+│                             + migrate_data_dir.py。容器里也有一份,test-docker 会挂宿主这份
 ├── tests/
 │   ├── conftest.py           全局 fixture:环境隔离 + 假 AI 回复(所有人共用)
 │   ├── unit/                 单元测试,全 mock
@@ -363,7 +441,9 @@ W2 两人各写 3 个 Agent,只有**统一的返回结构 + 统一的文件传�
 | `user_msg` | `str` | **给工地师傅看的中文人话**,不许出现堆栈/类名/内部路径 |
 | `error_code` | `str \| None` | 失败时是 `ErrorCode` 的字符串;成功时 `None` |
 
-**标准写法(照抄 `src/gyt/agents/ping/tools.py`)**:
+**标准写法**(单个工具的形状照 `src/gyt/agents/ping/tools.py` 抄即可 —— ping 虽然已从
+`AGENT_REGISTRY` 摘除,包特意留着就是当这个样板用的;但**整个 Agent 的组装照 `agents/safety/` 抄**,
+理由见第五节「加一个新 Agent」):
 
 ```python
 from langchain_core.tools import tool
@@ -439,7 +519,13 @@ else:
 - `original_name` 传 `../../../etc/passwd.jpg` 也只会落在 `artifacts_dir` 内。
 - `resolve()` 先用 `ARTIFACT_ID_RE`(纯 32 位 hex)卡一道,带 `/` 或 `..` 的 id 直接拒绝。
 
-### 加一个新 Agent 的四步(照 `agents/ping/` 抄)
+### 加一个新 Agent 的五步
+
+**照 `agents/safety/` 抄**(它是在册的、挂了中间件的真实形状)。
+`agents/ping/` 只能当**单个工具**的写法样板看:它已从 `AGENT_REGISTRY` 摘除,
+而且它的 `create_gyt_agent` 调用**不带 `extra_middleware`** —— 现役 Agent 都挂了行为守卫
+(`schedule/__init__.py` 挂 `RequireLedgerTool`、`report/__init__.py` 挂 `RequireReceiptSource`),
+照 ping 抄拿不到那一层,而少了它模型会凭记忆编回执。
 
 ```text
 1. 建目录 src/gyt/agents/<名字>/
@@ -554,8 +640,14 @@ docker compose ps                   # 多半是上次没 down 干净的容器
 make down                           # 先规规矩矩收摊
 ```
 
-还占着就 `kill <PID>`。要换端口:改 `docker-compose.yml` 的宿主侧映射(冒号左边),
+还占着就 `kill <PID>`。要换端口:改 `docker-compose.yml` 里那一行的**中间那段**,
 容器内的 2024 别动 —— `Dockerfile` 的 `EXPOSE`、healthcheck、前端 `NEXT_PUBLIC_API_URL` 都对着它。
+
+⚠️ 那一行现在是 `"127.0.0.1:2024:2024"`,**三段**,所以「冒号左边」指到的是 IP 不是端口
+(这句话以前就是这么写的,会把人指错)。要改的是中间那个 2024。
+**最左边的 `127.0.0.1` 一个字都不许动** —— 去掉它写成 `2024:2024`,等于把零鉴权的
+Agent 执行端点连同容器里的两把 API Key 暴露给整个局域网。同一条红线还写在
+`docker-compose.yml` 顶部与 `docker-compose.dev.yml`(那份文件永远不许出现 `ports`)。
 
 ### 镜像构建特别慢 / 卡在下载权重
 
