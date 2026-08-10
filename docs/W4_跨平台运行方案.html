@@ -379,7 +379,7 @@ make down</pre>
   <div class="grid g3">
     <div class="card bad"><h4><span class="no">1</span><code>list_components</code> 谎报图层</h4><p><code>layers_with</code> 取的是<b>全图</b>所有含 INSERT 的图层,与被查的那个块<b>无关</b>,却拼成「都在「X」层」。演示时会当着评委的面说错话。</p></div>
     <div class="card warn"><h4><span class="no">2</span>库空与真查不到同一句话</h4><p><code>search_regulation</code> 建议检索前判库是否为空,空则返回<b>不同的</b> <code>user_msg</code>(「知识库还没建」)。比路径 bug 更隐蔽。</p></div>
-    <div class="card bad"><h4><span class="no">3</span>CI 会红</h4><p><code>ruff format --check</code> 有 <b>6 个文件</b>不合格,全来自新代码(<code>ci.yml:182</code> 确实跑这条)。<code>ruff format .</code> 一条命令全修好。</p></div>
+    <div class="card"><h4><span class="no">3</span><s>CI 会红</s> ✅ 已收口</h4><p><s><code>ruff format --check</code> 有 <b>6 个文件</b>不合格,全来自新代码(<code>ci.yml:182</code> 确实跑这条)。<code>ruff format .</code> 一条命令全修好。</s></p><p><b>旁注 2026-08-11(原句留档不改):</b>commit <code>6a21322</code>「chore(lint): ruff format 收口」已格式化,§12 执行记录里也记着「顺手清了 4 个文件」。复核:<code>ruff format --check .</code> 报 <b>85 files already formatted</b>、<code>ruff check .</code> 全过。<b>第 1、2 条仍然成立,别跟着一起划掉。</b></p></div>
   </div>
 </section>
 
@@ -464,7 +464,11 @@ make down</pre>
 [ ] 手动问一次图纸,确认 cad 能列出图纸
 [ ] <b>make up 带 --build</b>(否则跑的是旧镜像)
 [ ] live_acceptance.py 跑到 <b>25/25</b>(含新增 E/F 组)</pre>
-  <div class="note w"><p>⚠️ <b>既有陷阱:</b>19 条断言的日期锚死在 2026-08-08(8月9日周日 / 8月14日周五 / 8月10日周一)。演示日不是这天的话 A1/A3/A4/C3 会红,<b>那是断言过期不是系统坏了</b>——彩排前先按当天重算。</p></div>
+  <div class="note w"><p><s>⚠️ <b>既有陷阱:</b>19 条断言的日期锚死在 2026-08-08(8月9日周日 / 8月14日周五 / 8月10日周一)。演示日不是这天的话 A1/A3/A4/C3 会红,<b>那是断言过期不是系统坏了</b>——彩排前先按当天重算。</s></p></div>
+  <div class="note d"><p>⛔ <b>上面这条已作废(2026-08-11 旁注,原句留档不改)。见 TODO-29。</b></p>
+  <p>W5·T4 之后 <code>live_acceptance.py</code> 里<b>没有会随日期失效的字面量了</b>:「今天」从后端台账的 <code>created_at</code> 问出来,A1/A3/A4/C3 四句提问的原话和全部期望日期由 <code>backend/scripts/acceptance_dates.py</code> 现算(A1/A4 是固定锚,A3/C3 按候选表顺延避撞车)。断言数也早已从 19 变成 <b>25</b>(以 <code>live_acceptance.py</code> 第 1 行为准)。</p>
+  <p><b>照旧指引去「按当天重算这几行」的人找不到要改的行</b>,更坏的是可能动手把短语写死回去——那正好把 T4 拆掉的撞车问题原样装回来(每周有两天在验错东西,而且屏幕全绿)。</p>
+  <p>唯一的例外是 A9 那句写死的「T99 改到周五」,那是<b>故意</b>的:A9 断的是「不存在的号如实报」,没有任何日期判据,期限说成什么都一样(理由写在 <code>live_acceptance.py</code> 第 535 行的注释里)。</p></div>
 </section>
 
 <!-- 11 -->
@@ -575,7 +579,8 @@ Lane E(收尾):  T5  ARTIFACTS_DIR / .PHONY / TOOL_NAMES
       <tr><td><b>T3</b> ingest 分开退出码</td><td>✅ 完成</td>
           <td>三条路径全对:目录不存在 → exit 1 + 打印它在找哪个路径;零 PDF → exit 1;真建成 → <code>已建库: … 872 个 chunk</code> + exit 0。<b>队友手册第 88 行到这一步才变成真话</b></td></tr>
       <tr><td><b>T6</b> 验收补 E/F 两组</td><td>◐ 部分</td>
-          <td><b>E/F 六条全绿</b>,断言 19 → 25。但<b>全套 19/25</b> —— 未过的 6 条与本次改动无关,是 A/C/D 组把日期写成字面量、按 2026-08-08 标定,已漂走两天。改成相对计算这一步<b>没做</b></td></tr>
+          <td><b>E/F 六条全绿</b>,断言 19 → 25。但<b>全套 19/25</b> —— 未过的 6 条与本次改动无关,是 A/C/D 组把日期写成字面量、按 2026-08-08 标定,已漂走两天。改成相对计算这一步<b>没做</b>
+          <br><br>📌 <b>2026-08-10 更新(与 md 件套同步,原句留档不改):上面这个堵点已被 W5 的 T4/T5 拆掉</b>(commit <code>809a890</code>,PR #10)。日期字面量改成从后端 <code>today</code> 现算、A10 按星期分支,桩后端上<b>七个星期几全 25/25</b>,顺带抓出四条这一版没发现的假绿灯(周四 A1 与 A3 撞同一天等),详见 <code>docs/W5_巡检链防假账与验收去脆化方案.md</code> 第 10 节。<b>T6 现在的缺口换成了「真机没跑过」</b> —— 要起 :2024、要 Key、会花钱,与日期无关了</td></tr>
       <tr><td><b>T8</b> README 统一 Docker 段</td><td>✅ 完成</td>
           <td>新增「1.5 先选路线」(<code>uv sync --dry-run</code> 一条命令定生死)+「2.5 路线 A2」(改了什么要做什么的三档对照表)</td></tr>
     </tbody>

@@ -89,7 +89,16 @@ API 核实结论（2026-08-05 实测，逐个从 PyPI 下 wheel 解包读源码�
         │ 子 Agent 跑完固定回到 supervisor（库自动加的边，不用我们写）
         └────────────────► supervisor
 
-图 2：W2 / W3 挂载位（往 AGENT_REGISTRY 追加一行即可，本文件其它地方不用动）
+图 2：W2 / W3 挂载位与分工（**2026-08-06 的规划快照,同样以下方 AGENT_REGISTRY 为准**）
+
+      ⚠️ 这张图里有三处已经不是现状了,别照它判断「谁在册」:
+        · ping   —— 2026-08-08 已从 AGENT_REGISTRY **摘除**(理由见该常量顶部的三连实锤),
+                    包还在,当工具写法样板用,但它**不占路由位**了。
+        · knowledge / cad —— 标着「队友 · W2」,其实 2026-08-09 就已落地在册
+                    (cad = b4fc154、knowledge = 9b120be)。
+        · report —— 画在挂载位上,实际**不在登记表里**:它只作为英雄链 inspection 的
+                    第二跳存在,`transfer_to_report` 这条路不存在(见 build_inspection_chain)。
+      留着这张图是因为下面那段分工说明记着「为什么这么分」,那是当时的决策记录。
 
                               supervisor
                                   │

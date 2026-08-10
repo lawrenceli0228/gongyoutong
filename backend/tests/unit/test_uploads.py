@@ -261,7 +261,9 @@ def test_前端格式也支持下划线写法的mime() -> None:
 def test_传PDF时给出准确的话而不是让人转成JPG() -> None:
     """上传按钮上明写着「Upload PDF or Image」,所以用户真的会传 PDF。
 
-    看规范文档是 knowledge Agent 的活(还没接)。这时候说「请转成 JPG 或 PNG」
+    看规范文档是 knowledge Agent 的活 —— 它**已经在册**(2026-08-09 起),
+    没接的是「上传的 PDF → 增量入库」那一段(详见 uploads.py 该分支的注释)。
+    所以这时候仍然要拒,但说「请转成 JPG 或 PNG」
     是**错的** —— 他传 PDF 本来就是这个按钮允许的操作,那句话会让他以为自己搞错了。
     """
     state = {

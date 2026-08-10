@@ -48,12 +48,17 @@
 | `id` | R01、R02……唯一即可 |
 | `type` | `positive` 正常请求 / `none` 不该派给任何子 Agent / `ambiguous` 信息不足应追问 |
 | `user_input` | **工人真会说的话**,不是规范书面语。多写几种同义说法 |
-| `expected_agent` | `safety` / `inspection` / `knowledge` / `schedule` / `cad` / `report` / `none` |
+| `expected_agent` | `safety` / `inspection` / `knowledge` / `schedule` / `cad` / `none` |
 | `note` | 这条测什么,可空 |
 
 判分:实际派给的 Agent == `expected_agent` 即算对。`none` 表示 supervisor 应自己回答或追问。
 
-> **`expected_agent` 只能填上面那七个词之一,拼错会当场炸**(`scorers.ROUTING_AGENTS`,与本表同源)。
+> **`expected_agent` 只能填上面那六个词之一,拼错会当场炸**(`scorers.ROUTING_AGENTS`,与本表同源)。
+>
+> ⚠️ **别填 `report`。** 2026-08-11 把它从白名单里删掉了:`report` 不在 `graph.AGENT_REGISTRY`,
+> 它只是英雄链 `inspection` 子图**内部**的第二跳(靠硬边串,`transfer_to_report` 不存在),
+> 而路由判分取的是 supervisor **第一跳**的 `transfer_to_X` —— 填 report 的行永远判不对,
+> 报出来的原因却是「派错人了」,把矛头指向模型。要测「拍照出报告」请填 **`inspection`**。
 > 不拦的话,`knowlege`(漏了 d)那一行永远不可能被判对,而报告写的是「派错人了」——
 > 矛头指向模型。routing 门槛是三套里最高的 90%,20 条里错标 2 条就直接把上限压到 90%。
 > 要加新 Agent,这张表和 `ROUTING_AGENTS` 一起改。
@@ -66,7 +71,7 @@
 | 列 | 说明 |
 |---|---|
 | `id` | S01、S02…… |
-| `type` | `positive` 违规 / `compliant` 合规 / `hard` 难例 / `not_site` 非工地干扰项 |
+| `type` | `violation` 违规 / `compliant` 合规 / `hard` 难例 / `not_site` 非工地干扰项 |
 | `image` | 文件名,照片放 `data/demo/photos/` |
 | `label` | `violation` / `compliant` / `not_site` |
 | `violations` | **只能从下面的受控词表里选**,多个用 `;` 分隔;非违规行留空 |
@@ -79,11 +84,26 @@
 消防通道堵塞 · 材料堆放混乱 · 用电隐患 · 动火作业无监护
 ```
 
-> **这份词表同时是 Safety Agent 提示词的输出约束** —— `agents/safety/prompt.md`
-> 必须要求模型只从这八个里选。标注用的词和模型输出的词对不上,判分就永远是错的。
-> 词表要改,两边一起改。
+> **这份词表同时是视觉档提示词的输出约束** —— 词表在
+> **`agents/safety/vision_prompt.md`**(「违规项:只能用这 8 个词」那张表格)。
+> 标注用的词和模型输出的词对不上,判分就永远是错的。
+> **词表要改,三处一起改**(不是两处):`agents/safety/vision_prompt.md` 的表格 +
+> 本文件这张表 + `eval/scorers.py` 的 `VIOLATION_VOCAB`。
+> 漏掉 `VIOLATION_VOCAB` 的症状很隐蔽:加词时 `test_safety.py` 的子集断言**不会**变红,
+> 而 `validate_safety_row` 会在标注端把新词判成非法,炸在离改动最远的地方。
+>
+> ⚠️ **不是 `agents/safety/prompt.md`。** 这里以前指的就是它,而判断根本不在那一层做 ——
+> prompt.md 是 Safety 本体的文本档提示词,它自己头注明写「这份提示词不含那 8 个受控词,
+> 别在这儿再抄一份」。照旧指路牌去改的人会改一个不生效的文件,而真正喂给 kimi 的
+> vision_prompt.md 一个字没动。
 
-建议配比(共 30 张):违规 15 · 合规 7 · 难例 5 · 非工地 3。
+建议配比(共 30 张,**这是设计目标不是现状**):违规 15 · 合规 7 · 难例 5 · 非工地 3。
+
+> 现状(2026-08-11 数):按 `type` 列是 违规 16 · 合规 8 · 难例 **1** · 非工地 5;
+> 按 `label` 列是 violation 17 · compliant 8 · not_site 5。
+> **难例只有 1 张,离建议的 5 张差得最远** —— 要不要补难例、还是把建议改成现状,由人定。
+> 另注意 `validate_safety_row` **不校验 `type` 列**(只校验 `label` 和 `violations`),
+> 所以 type 的口径漂了不会有任何一条测试变红,只能靠人对着这张表看。
 
 ### rag.csv —— 测检索准不准、有没有编造
 
@@ -116,8 +136,14 @@
    子串判据会把「引错了文档」判成「引对了」。所以被测 Agent 的 `source` 字段
    请给出文件名本身,可以裹在《》或括号里,但别和别的字黏成一团。
 
-`no_answer` 行:后四列全部留空。期望模型**按下面的规定措辞**说明知识库里没有依据,
-**编造即判错**。
+`no_answer` 行:`expected_answer_points` / `expected_source` / `expected_page` 三列留空
+(`note` 可以写标注理由 —— 现有 K17~K20 四行写的都是「负向-非规范」)。
+期望模型**按下面的规定措辞**说明知识库里没有依据,**编造即判错**。
+
+> 这里以前写的是「后四列全部留空」,和两边都对不上:`validate_rag_row` 实际只查
+> `expected_source` 与 `expected_answer_points` **两列**(`expected_page` 和 `note`
+> 填了也放行),而数据里那四行的 `note` 本来就是填着的。文档说 4、代码查 2、数据填 1,
+> 三方各说各的 —— 当前无害,但那正是下一次误判的种子,所以按代码与数据的实际口径改齐。
 
 **「承认查不到」的规定措辞是按规则生成的,不是一张手写清单:**
 
@@ -158,15 +184,22 @@
 
 ## 三、怎么跑
 
-> **safety 已经接通了(2026-08-07)**,`make eval SUITE=safety` 会真的调 kimi-k3 出分。
-> routing / rag 还没接,跑起来打印 SKIP —— 那是正常状态,不是坏了。
+> **三套都接通了**:safety(2026-08-07)、routing 与 rag(2026-08-09,随 knowledge 落地)。
+> `make eval` 不带 `SUITE` 就是三套全真跑。
+>
+> 这段以前写着「routing / rag 还没接,跑起来打印 SKIP —— 那是正常状态」。**现在不是了** ——
+> 今天再看到 SKIP,说明数据集或 `--runners` 注入点出了问题,别当正常状态放过去。
+>
+> 三套的花法不一样,别只按 safety 估:safety 真调 kimi-k3(30 张串行约 22 分钟);
+> routing 每行一次 DeepSeek 文本调用(只跑第一跳);rag 直调 `search_regulation` 不过模型,
+> 但**要求本机向量库已建好**(先 `make build-knowledge`)。
 >
 > 接线点只有一个:`backend/eval/hooks.py` 的 `RUNNERS`(套名 → async 函数)。
 > **加自己的 Agent 只改那一处**,`runner.py` 一个 Agent 都不 import,别去动它。
 >
 > ```python
-> # eval/hooks.py
-> RUNNERS = {"safety": run_safety_row}   # ← 往这里加 "rag": run_rag_row
+> # eval/hooks.py —— 当前长相(三套齐)
+> RUNNERS = {"safety": run_safety_row, "routing": run_routing_row, "rag": run_rag_row}
 > ```
 >
 > 被测函数的契约:`async def f(row: Mapping[str, str]) -> Any`,

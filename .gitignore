@@ -36,10 +36,17 @@ htmlcov/
 /data/*
 !/data/demo/
 
-# 本地(非容器)跑 `make dev` 时,langgraph CLI 的工作目录是 backend/,
-# Settings.data_dir 按工作目录解析,数据会落在 backend/data/。
-# 上面那条 /data/* 是根锚定的,管不到这里,必须单列一条,
-# 否则 sqlite / 产物 / LLM 缓存会被 git 当成新文件要求提交。
+# 历史遗留目录,**后端已经不写这儿了**(2026-08-09 起)。
+#
+# 2026-08-09 之前:`Settings.data_dir` 的默认值是相对路径 `Path("data")`,按**进程工作目录**
+# 解析,而 `make dev` 的工作目录是 backend/ —— 于是本机落 backend/data/、容器落仓库根 data/,
+# 两份数据互相看不见。现在 `_default_data_dir()` 按 config.py 的文件位置推导仓库根,
+# 与工作目录无关,两条路径读写同一份。
+#
+# 这条规则**仍然要留着**:本机上那份旧数据还在,不忽略的话 git 会把它当成一堆待提交的新文件。
+# 想彻底清掉用 `backend/scripts/migrate_data_dir.py`(默认只演练,`--apply` 才动手)。
+# ⚠️ 别照这条注释去 `rm -f backend/data/gyt.sqlite3` 清台账 —— 那是空操作,
+#    真正在用的是仓库根的 `data/gyt.sqlite3`(见 CLAUDE.md 与 live_acceptance.py 头注)。
 backend/data/
 
 # langgraph dev 在工作目录下写的本地运行状态(内存库快照、热重载缓存)

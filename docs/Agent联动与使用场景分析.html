@@ -172,6 +172,7 @@ footer p{max-width:44em}
 
 <div class="wrap">
 <nav aria-label="目录">
+  <a href="#stale"><b>00</b>⚠️ 已作废的现状陈述</a>
   <a href="#m"><b>01</b>联动机制</a>
   <a href="#f"><b>02</b>三种形态</a>
   <a href="#c"><b>03</b>能力矩阵</a>
@@ -197,8 +198,42 @@ footer p{max-width:44em}
     <div class="stat"><div class="n">15<s>/22</s></div><div class="k">路由 = 当前满上限</div></div>
     <div class="stat"><div class="n">3<s>次</s></div><div class="k">熔断前最多派活(实测)</div></div>
   </div>
-  <div class="meta">2026-08-08 · 基准 main@b140032 · 结论均落到 文件:行号,已剔除计划文档里的设想</div>
+  <div class="meta">2026-08-08 · 基准 main@b140032 · 结论均落到 文件:行号,已剔除计划文档里的设想<br>
+  ⚠️ <b>上面五块里有三块已过期</b>(3+1 个 Agent / 19 条断言 / 15-22 路由)—— 现在是 5 个 Agent、25 条断言、路由上限 22/22。另两块(<b>4 条</b>跨 Agent 协同证据、<b>3 次</b>熔断)是 2026-08-08 那次实测的留档,<b>此后没有重测过</b>,当历史读、别当现值。先读 <a href="#stale">00 / 校订</a> 再往下看。</div>
 </header>
+
+<!-- ══ 校订旁注(2026-08-11)══ 原文一个字不改,只在这里声明哪些现状陈述已经作废 ══ -->
+<section id="stale">
+  <h2>00 / 校订</h2>
+  <div class="h">这份文档里已经作废的现状陈述(2026-08-11 旁注)</div>
+  <div class="note w"><p><b>怎么读这份文档:</b>它是 <b>2026-08-08、基准 <code>main@b140032</code></b> 那一刻的快照分析。
+  机制部分(01/02 消息怎么走、五个结构件、Envelope 到不了 supervisor)到今天仍然准确;
+  <b>但凡带数字和「已实现 / 未实现」的现状陈述,底下这几条都已经过期</b>。
+  正文一个字不改(那是当时的记录,也是它的价值),作废声明只写在这里。</p></div>
+
+  <div class="tw"><table>
+    <thead><tr><th>文档里怎么说</th><th>今天实际是什么</th><th>怎么核实的</th></tr></thead>
+    <tbody>
+      <tr><td>头部计数条 <b>3+1</b> 个登记 Agent;03 家底表把 <code>knowledge</code> / <code>cad</code> 标成「<b>未实现</b>、目录不存在、队友分支零独有提交、素材目录空」</td>
+          <td><b>五个全在册:safety / inspection / schedule / cad / knowledge。</b>cad 落于 <code>b4fc154</code>、knowledge 落于 <code>9b120be</code>,都是 2026-08-09 —— 本文写完的<b>第二天</b>。素材也在盘上:<code>data/demo/docs/</code> 有 GB50016 的 PDF、<code>data/demo/drawings/</code> 有 3 张 DXF</td>
+          <td><code>backend/src/gyt/graph.py</code> 的 <code>AGENT_REGISTRY</code>(五条 <code>AgentSpec</code>);<code>ls backend/src/gyt/agents/</code>;<code>ls data/demo/docs data/demo/drawings</code></td></tr>
+      <tr><td>多处 <b>「15/22 = 68.2%,当前满上限」</b>「7 条指向还没落地的 Agent,<b>结构性不可能对</b>」「想过 0.90 两个 Agent 必须都落地」(03 家底 / 09 评委必问)</td>
+          <td>那 7 条 = knowledge R08~R11 + cad R15~R17,<b>指向的 Agent 现在都在册,结构性障碍没有了</b>,当前结构上限就是 22/22。最近一次留档是 <b>routing 22/22、rag 20/20</b>,记在 commit <code>9b120be</code> 的提交信息里。<b>但那是一次测量不是当前值</b> —— 分数由外部 LLM 决定,要引用先自己重跑</td>
+          <td><code>git log -1 --format=%B 9b120be</code>;<code>git diff 9b120be..HEAD -- backend/src/gyt/graph.py backend/eval/datasets/routing.csv backend/eval/scorers.py</code> 为空(输入自那次测量起未改)</td></tr>
+      <tr><td>05 场景把六个最值钱的联动放在 <b>「等 knowledge / cad 落地后能跑的六个」</b> 标题下(含被标为「排第一无争议」的 B1 <code>safety→knowledge→schedule</code>)</td>
+          <td><b>这六个现在都能跑。</b>这条比其它几条更该看一眼:它不是把人指错路,是<b>主动劝人别走一条已经修通的路</b> —— 做演示编排的人照标题读,会把排名第一的场景直接划掉</td>
+          <td>同上一行</td></tr>
+      <tr><td>多处 <b>「19 条断言」</b>(09 收尾话术「真机 19 条断言全过」、07 断裂 P1「唯一防线是手动跑的 19 条断言」、10 彩排自检「19 条断言的日期锚死在 2026-08-08…彩排前先按当天重算」)</td>
+          <td>断言数是 <b>25</b>(A10·B2·C3·D4·E3·F3),以 <code>live_acceptance.py</code> 第 1 行为准。<b>日期那条更是反向指导</b>:W5·T4 之后脚本里没有会随日期失效的字面量了,四句提问的原话和全部期望日期由 <code>acceptance_dates.py</code> 现算 —— 照旧指引去「重算这几行」找不到要改的行,动手写死回去反而把撞车问题装回来。见 TODO-29。<br>另:「19 条断言全过」这句<b>今天没有依据</b> —— W4 方案最新的 T6 状态原话是「缺口换成了<b>真机没跑过</b>」</td>
+          <td><code>backend/scripts/live_acceptance.py</code> 第 1 行(断言条数)与第 7~17 行(跑法块,其中 12~16 是清库路径);<code>backend/scripts/acceptance_dates.py</code>;<code>docs/W4_跨平台运行方案.md</code> §12 的 T6 条目</td></tr>
+      <tr><td>10 彩排 T-60 自检:「台账清干净:<code>rm -f backend/data/gyt.sqlite3</code>」</td>
+          <td><b>这条是空操作,而且是最疼的一种错。</b>数据根目录 2026-08-09 起统一到<b>仓库根</b>,后端只写 <code>&lt;仓库根&gt;/data/</code>;<code>backend/data/</code> 里那份是历史遗留(<b>本机两份都还在</b>)。删错的后果不是「没生效」而是「以为清干净了」:真库带着旧台账上台,A1 记的任务拿到 T4 不是 T1,A1/A4/D 组当场红一片,而人会去查 schedule 的编号逻辑——方向全错。<b>正确命令是在仓库根执行 <code>rm -f data/gyt.sqlite3</code></b></td>
+          <td><code>backend/src/gyt/config.py</code> 的 <code>_default_data_dir()</code>;<code>live_acceptance.py</code> 头注第 12~16 行(脚本跑到 D 组还会把自己实际读的库路径原样打出来,以那一行为准)</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note"><p><b>没过期的部分:</b>01/02 的机制推演、五个结构件、<b>「safety 90%」是识图工具的分(评测直调工具、绕过 Agent 本体)</b>、<b>「routing 只测第一跳」</b>这两条口径说明、以及 07 里除断言条数外的各条断裂点 —— 都还成立。</p></div>
+</section>
 
 <!-- ══ 01 ══ -->
 <section id="m">
@@ -279,14 +314,15 @@ footer p{max-width:44em}
       <tr><td>supervisor → safety(单跳完整链)</td><td class="st s-warn"><span class="dot d-warn"></span>间接</td><td>路由层 R01–R04 绿;识图层 90.0%(27/30)</td><td>没有一条断言直测完整链。<b>路由只测第一跳,识图评测绕过 Agent 本体</b></td></tr>
       <tr><td>safety → schedule(不出文档直接记整改)</td><td class="st s-warn"><span class="dot d-warn"></span>未测</td><td>机制上同 C3,但 C3 走的是 inspection 之后</td><td>零断言。<b>别把 C3 说成是这条</b></td></tr>
       <tr><td>report 被单独调用</td><td class="st s-warn"><span class="dot d-warn"></span>路由不可达</td><td>刻意不做登记项,<code>transfer_to_report</code> 不存在</td><td>非缺陷:硬造 inspection/report 的区分连人都分不稳,是 0.90 门槛的毒药</td></tr>
-      <tr><td>knowledge → schedule / → report</td><td class="st s-bad"><span class="dot d-bad"></span>未实现</td><td>目录不存在;队友分支<b>零独有提交</b>;<code>data/demo/docs/</code> 空</td><td>整个 Agent + 素材 + rag runner 接线</td></tr>
-      <tr><td>cad → 任意</td><td class="st s-bad"><span class="dot d-bad"></span>未实现</td><td>同上,<code>data/demo/drawings/</code> 空</td><td>整个 Agent + DXF 素材</td></tr>
+      <tr><td>knowledge → schedule / → report</td><td class="st s-bad"><span class="dot d-bad"></span><s>未实现</s> ⛔已作废</td><td><s>目录不存在;队友分支<b>零独有提交</b>;<code>data/demo/docs/</code> 空</s><br><b>2026-08-09 已落地</b>(commit <code>9b120be</code>);<code>data/demo/docs/</code> 有 GB50016 的 PDF;rag runner 也接上了</td><td><s>整个 Agent + 素材 + rag runner 接线</s></td></tr>
+      <tr><td>cad → 任意</td><td class="st s-bad"><span class="dot d-bad"></span><s>未实现</s> ⛔已作废</td><td><s>同上,<code>data/demo/drawings/</code> 空</s><br><b>2026-08-09 已落地</b>(commit <code>b4fc154</code>);<code>data/demo/drawings/</code> 有 3 张 DXF</td><td><s>整个 Agent + DXF 素材</s></td></tr>
       <tr><td>ping → 任意</td><td class="st s-bad"><span class="dot d-bad"></span>已摘除</td><td>空正域条目,三轮改措辞收不住(否定句「不派带图纸的」里的 X 照样当钓饵)</td><td>不会回来</td></tr>
     </tbody>
   </table></div>
 
-  <div class="note w"><p><b>68.2% 这个数字必须带限定说。</b>22 条里有 7 条指向<b>还没落地的 Agent</b>(knowledge 4 + cad 3),结构性不可能对。<b>15/15 全绿 = 15/22 = 当前满上限</b>,不是模型不行。而且这 7 条现在的失败模式是「如实说做不了」而不是乱派。哪怕只补 knowledge 也只到 86.4%,<b>想过 0.90,两个 Agent 必须都落地</b>。</p>
-  <p>另外两处口径:① 「safety 90%」是<b>识图工具</b>的分,评测直接调工具、绕过 Agent 本体,代码注释白纸黑字写着这个代价;② 「routing 68.2%」<b>只测第一跳</b>,拿到首个交接就停流,子 Agent 一步都不跑。</p></div>
+  <div class="note w"><p><s><b>68.2% 这个数字必须带限定说。</b>22 条里有 7 条指向<b>还没落地的 Agent</b>(knowledge 4 + cad 3),结构性不可能对。<b>15/15 全绿 = 15/22 = 当前满上限</b>,不是模型不行。而且这 7 条现在的失败模式是「如实说做不了」而不是乱派。哪怕只补 knowledge 也只到 86.4%,<b>想过 0.90,两个 Agent 必须都落地</b>。</s></p>
+  <p>⛔ <b>上面这段已作废(2026-08-11 旁注,原句留档不改;见 <a href="#stale">00 / 校订</a>)。</b>两个 Agent 都落地了,那 7 条不再有结构性障碍,<b>当前结构上限 = 22/22</b>。最近一次留档 routing 22/22、rag 20/20(commit <code>9b120be</code> 的提交信息),测量输入自那以后一行未改 —— 但那是一次测量不是当前值,<b>要报数先自己重跑</b>。</p>
+  <p><b>下面这两处口径没过期,仍然要照说:</b>① 「safety 90%」是<b>识图工具</b>的分,评测直接调工具、绕过 Agent 本体,代码注释白纸黑字写着这个代价;② routing <b>只测第一跳</b>,拿到首个交接就停流,子 Agent 一步都不跑。</p></div>
 </section>
 
 <!-- ══ 04 ══ -->
@@ -347,7 +383,12 @@ footer p{max-width:44em}
       <dt>价值</dt><dd>一个会对着会议室照片一本正经报出三条隐患的工具,<b>工人两天就关掉了</b></dd></dl></div>
   </div>
 
-  <h3>等 knowledge / cad 落地后能跑的六个</h3>
+  <h3><s>等 knowledge / cad 落地后能跑的六个</s> → 这六个现在都能跑</h3>
+  <div class="note w"><p>⛔ <b>标题已作废(2026-08-11 旁注,原标题留档不改;见 <a href="#stale">00 / 校订</a>)。</b>
+  <code>knowledge</code> 与 <code>cad</code> 都在本文写完的<b>第二天(2026-08-09)</b>挂进了 <code>AGENT_REGISTRY</code>
+  (commit <code>9b120be</code> / <code>b4fc154</code>),素材也在盘上。
+  <b>下面 B1~B6 六个场景不再有「等」这个前提</b> —— 尤其 B1,本文自己把它评为「排第一无争议」。
+  照旧标题读的人会把排名第一的演示场景直接从主线里划掉,那不是走错路,是<b>被劝着不走一条已经修通的路</b>。</p></div>
   <div class="grid g2">
     <div class="card hi"><h4><span class="no">B1</span>工长杠:「差不多就行了,哪有那么多讲究」 <span class="role">安全员</span></h4>
       <div class="q">「这个临边按规范到底该咋整改,栏杆得多高?哪条写的?」→「按这个记一条整改任务,周五之前」</div>
@@ -459,7 +500,7 @@ footer p{max-width:44em}
     <div class="card bad"><h4>P0 · 熔断无用户可见兜底</h4><p>见 §06 发现 2+3。<b>三跳就到顶,四跳出英文 toast。</b></p></div>
     <div class="card bad"><h4>P0 · 密钥/额度故障文案是错的</h4><p>只显式接住「Key 为空」;Key 填错、账号没充值、额度耗尽三种全落回通用文案。<b>额度耗尽若走 429,会说「用的人太多请过一会儿再试」——正确动作是去充值</b>。而且<b>图起得来不代表识图能用</b>:建图只校验 DeepSeek,Kimi 的 Key 要到调工具那一刻才检查。</p></div>
     <div class="card bad"><h4>P0 · supervisor 的汇报红线零结构件</h4><p>四条汇报规则里<b>只有第 4 条有结构件</b>(渲染层)。前三条纯提示词,而 supervisor <b>一个中间件都没有</b>。<code>ok=false</code> 时它把失败说成成功,<b>系统里没有任何东西会发现</b>。项目自己的结论是「三次栽在用提示词管行为上」——这条是第四次的候选。</p></div>
-    <div class="card warn"><h4>P1 · Agent 本体那一层零评测覆盖</h4><p>评测注释白纸黑字:「Agent 本体那一层没有被评测覆盖。它会不会在该调工具时不调、会不会讲漏一项——这套测不到」。<b>①④⑩ 这类联动病在自动化评测里完全测不出</b>,唯一防线是手动跑的 19 条断言。</p></div>
+    <div class="card warn"><h4>P1 · Agent 本体那一层零评测覆盖</h4><p>评测注释白纸黑字:「Agent 本体那一层没有被评测覆盖。它会不会在该调工具时不调、会不会讲漏一项——这套测不到」。<b>①④⑩ 这类联动病在自动化评测里完全测不出</b>,唯一防线是手动跑的 <s>19</s> <b>25</b> 条断言(2026-08-11 旁注:W4·T6 补了 E/F 两组,19 → 25;结论本身没变,防线仍然只有它一条)。</p></div>
     <div class="card warn"><h4>P1 · 防假账只管首答、只重试一次</h4><p>回合<b>中段</b>的编造(工具返回后又多说一条编的)不在管辖内;重试仍不带工具就放行,交熔断兜底——而熔断的用户可见后果见 P0 第一条。</p></div>
     <div class="card warn"><h4>P1 · 防假账在链内会静默失效</h4><p>「回合首答」判定要求上一条是 HumanMessage 或交接回执。<b>链内位置永远为 False</b>(上一条是兄弟的 AIMessage)。schedule 现在不在链里所以无害,<b>哪天串进链,防假账就静默失效了</b>。</p></div>
   </div>
@@ -518,7 +559,11 @@ footer p{max-width:44em}
 
     <div class="ev"><div class="t">2:35 – 3:00</div><div class="a">主动示弱(这是加分不是减分)</div>
       <p class="say">「帮我算算这个月工资能拿多少」</p>
-      <p class="got">supervisor 自己回答做不了 + 现在能做什么,<b>不产生任何交接</b>。「它没有硬找一个同事把这活塞过去。<b>做不了就说做不了。</b>在工地上这比什么都重要——<b>一个会编答案的助手,比没有助手更危险。</b>」<br><b>收尾:</b>「三个同事、一次拍照、一份能存档的记录、一条落了库的整改任务。识图 90%,真机 19 条断言全过,这套调用轨迹你们每一步都看见了——<b>它不是录像,是现在跑出来的</b>。」</p></div>
+      <p class="got">supervisor 自己回答做不了 + 现在能做什么,<b>不产生任何交接</b>。「它没有硬找一个同事把这活塞过去。<b>做不了就说做不了。</b>在工地上这比什么都重要——<b>一个会编答案的助手,比没有助手更危险。</b>」<br><b>收尾:</b>「三个同事、一次拍照、一份能存档的记录、一条落了库的整改任务。<s>识图 90%,真机 19 条断言全过,</s>这套调用轨迹你们每一步都看见了——<b>它不是录像,是现在跑出来的</b>。」</p>
+      <div class="note w"><p>⛔ <b>划掉那半句已作废(2026-08-11 旁注,原话留档不改;见 <a href="#stale">00 / 校订</a>)。这是要当着评委念出去的台词,别照原样念:</b></p>
+      <p>① <b>断言数是 25 不是 19</b>(<code>live_acceptance.py</code> 第 1 行)。<br>
+      ② <b>「全过」今天没有依据</b> —— W4 方案最新的 T6 状态原话是「缺口换成了<b>真机没跑过</b>」。<b>要念这句,先真跑一遍并按当场结果说数</b>;跑不了就整句拿掉,别报一个没人验过的数。<br>
+      ③ 「识图 90%」本身还准(27/30,2026-08-08 人工盲审裁决后),但要按本文 03 节自己的口径带上限定:<b>那是识图工具的分,评测直调工具、绕过了 Agent 本体</b>。</p></div></div>
   </div>
 
   <div class="note w"><p><b>台本纪律(直接来自 §06 发现 2):</b>逐句过一遍台词,任何一句满足下面之一就<b>拆成两句</b>——需要 ≥4 次派活;让 schedule 一次记 ≥4 条或改 ≥2 条无 T 号的任务;一次上传 ≥4 张照片。三件事 7 步是<b>能过但零余量</b>。</p></div>
@@ -540,8 +585,11 @@ footer p{max-width:44em}
       <p>标准答案<b>人定</b>(铁律第一条:让 AI 生成标准答案再考 AI,分数没有任何意义);分母有<b>硬闸</b>(可判分行少于 30 就不跑模型直接判不通过);判分<b>集合完全相等</b>才算对,不给部分分。</p>
       <p><b>最有说服力的是我们记录了自己的失败:</b>首轮 46.7% FAIL,复盘发现根因不是模型而是<b>数据集选型错了</b>——候选池里真工地只占 45%。方法论错误也写下来了:「验证了统计分布,没验证语义。<b>数字全部合理,内容全是错的。</b>」</p></div>
     <div class="card"><h4>路由 90% 门槛过了吗?</h4>
-      <p><b>直接承认:没过,15/22 = 68.2%。</b>但 7 条红<b>全部</b>落在还没挂进登记表的两位身上,其中 6 条的实际行为是「如实说做不了」——<b>那是正确的失败模式,不是乱派</b>。</p>
-      <p><b>而且我们没为了刷分去救它:</b>最省事的做法是往能力说明里加一句「不看图纸」——<b>这条路踩过三次</b>,写否定句「不派带图纸的」结果三条图纸请求全被钓来,因为「不要 X」里的 X 照样当钓饵。<b>三轮措辞收不住,说明这不是措辞问题。空等正确的 Agent 落地才是对的。</b></p></div>
+      <p><s><b>直接承认:没过,15/22 = 68.2%。</b>但 7 条红<b>全部</b>落在还没挂进登记表的两位身上,其中 6 条的实际行为是「如实说做不了」——<b>那是正确的失败模式,不是乱派</b>。</s></p>
+      <p><b>而且我们没为了刷分去救它:</b>最省事的做法是往能力说明里加一句「不看图纸」——<b>这条路踩过三次</b>,写否定句「不派带图纸的」结果三条图纸请求全被钓来,因为「不要 X」里的 X 照样当钓饵。<b>三轮措辞收不住,说明这不是措辞问题。空等正确的 Agent 落地才是对的。</b></p>
+      <div class="note w"><p>⛔ <b>划掉那段已作废(2026-08-11 旁注,原答案留档不改;见 <a href="#stale">00 / 校订</a>)。这也是要当着评委说的话:</b></p>
+      <p>那两位<b>已经落地了</b>(2026-08-09,commit <code>9b120be</code> / <code>b4fc154</code>),7 条红的结构性障碍不存在了,<b>当前结构上限就是 22/22</b>。最近一次留档是 <b>routing 22/22、rag 20/20</b>,写在 <code>9b120be</code> 的提交信息里,而那次测量的输入(<code>graph.py</code> / <code>routing.csv</code> / <code>scorers.py</code>)自那以后一行未改。</p>
+      <p><b>但别把 22/22 当成能张口就报的现状</b> —— 那是一次测量,分数最终由外部 LLM 决定。<b>要在评委面前报数就先自己重跑一遍,按当场结果说。</b>下半段「没为了刷分去救它」的那个方法论故事本身仍然成立,而且现在有了更好的结局:<b>空等正确的 Agent 落地,等到了。</b></p></div></div>
   </div>
 </section>
 
@@ -568,12 +616,12 @@ footer p{max-width:44em}
     <li><b>三个结构件在位</b>(30 秒零成本):<code>grep add_handoff_back_messages=True</code> / <code>grep RequireLedgerTool</code> / <code>grep pre_model_hook=ingest_uploads</code>。任一条空 = <b>今天不要演</b>。</li>
     <li><b>两处手工同源常量真的同源</b>(无测试守着,只能眼看):<code>grep '^SUPERVISOR_NAME' graph.py focus.py</code>。</li>
     <li><b><code>--allow-blocking</code> 在起服务的命令里</b>:缺了它缓存全失效,每张照片 60 秒还真花钱,<b>而日志只写 "run succeeded"</b>。</li>
-    <li><b>台账清干净</b>:<code>rm -f backend/data/gyt.sqlite3</code>。最后一次彩排后立刻清,清完不再跑台账动作。<b>更稳的是话术兜底:演示者永远不先报 T 号,等屏幕出了再念。</b></li>
+    <li><b>台账清干净</b>:<s><code>rm -f backend/data/gyt.sqlite3</code></s> → <b>⛔ 这条已作废(2026-08-11 旁注,原句留档不改;详见 <a href="#stale">00 / 校订</a>)。正确命令是在<b>仓库根</b>执行 <code>rm -f data/gyt.sqlite3</code>。</b>数据根目录 2026-08-09 起统一到仓库根,<code>backend/data/</code> 那份是历史遗留、后端已经不写那儿,<b>删它是空操作</b> —— 而后果不是「没生效」是「以为清干净了」:真库带着旧台账上台,A1 记的任务拿到 T4 不是 T1,A1/A4/D 组当场红一片。最后一次彩排后立刻清,清完不再跑台账动作。<b>更稳的是话术兜底:演示者永远不先报 T 号,等屏幕出了再念。</b></li>
     <li><b>前端覆盖件生效自检</b>(<code>frontend/</code> 不进 git,换机器就没了):随便问一句查任务,看三件事——痕迹是中文、表格是圆角卡片带徽章、同一张表<b>只出现一次</b>。要在开演前 60 分钟做,不是前 5 分钟。</li>
     <li><b>联动三件套单独复演</b>:多轮后再上传照片(子 Agent 说「我这就安排 XX 同事」= 传染复发,立刻停)→ 「把这些隐患记成整改任务」(schedule 必须直接动手,不许反问「隐患是什么」)→ 「T1 干完了」后立刻查库。</li>
     <li><b>告知队友:演示期间禁跑评测</b>。Kimi 组织级并发 3,一跑就是 22 分钟持续占用,会把评委的请求挤成 429。</li>
     <li><b>真机单张照片跑一次</b>验证 Kimi Key 活着——<b>图起得来不代表识图能用</b>。</li>
-    <li>⚠️ <b>19 条断言的日期锚死在 2026-08-08</b>(8月9日周日/8月14日周五/8月10日周一)。<b>演示日不是这天,A1/A3/A4/C3 会红,但那是断言过期不是系统坏了</b>——彩排前先按当天重算这几行,否则会浪费一小时排查一个不存在的 bug。</li>
+    <li><s>⚠️ <b>19 条断言的日期锚死在 2026-08-08</b>(8月9日周日/8月14日周五/8月10日周一)。<b>演示日不是这天,A1/A3/A4/C3 会红,但那是断言过期不是系统坏了</b>——彩排前先按当天重算这几行,否则会浪费一小时排查一个不存在的 bug。</s><br><b>⛔ 这条已作废(2026-08-11 旁注,原句留档不改)。见 TODO-29 与 <a href="#stale">00 / 校订</a>。</b>断言数现在是 <b>25</b>;W5·T4 之后 <code>live_acceptance.py</code> 里没有会随日期失效的字面量了,四句提问的原话和全部期望日期由 <code>backend/scripts/acceptance_dates.py</code> <b>现算</b>。<b>照旧指引去「重算这几行」找不到要改的行</b>,动手把短语写死回去反而会把 T4 拆掉的撞车问题原样装回来(每周有两天在验错东西,而且屏幕全绿)。<b>这一条现在什么都不用做。</b></li>
   </ul>
 </section>
 

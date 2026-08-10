@@ -212,7 +212,12 @@ def _rewrite(message: HumanMessage) -> HumanMessage | None:
                         )
                     )
             elif str(part.get("mimeType") or "").lower() == "application/pdf":
-                # 上传按钮允许 PDF,那是 knowledge Agent 的活(队友泳道,还没接)。
+                # 上传按钮允许 PDF,那是 knowledge Agent 的活。
+                # ⚠️ 这行以前写「队友泳道,还没接」—— 2026-08-11 已推翻:knowledge
+                # 2026-08-09(9b120be)就挂进 AGENT_REGISTRY 了。**真正没接的是这一段线**:
+                # ingest.py 只从 `demo_assets_dir` 下预置的规范建库,没有「用户上传的 PDF
+                # → 增量入库」这条路。所以这里仍然只能拒,但理由不是「Agent 没写」。
+                # 照旧说法改代码的人会以为删掉这个分支就行 —— 那会让上传的 PDF 静默丢掉。
                 # 给一句**准确**的话 —— 说"请转成 JPG"是错的,传 PDF 本就是按钮允许的。
                 pdf_rejected += 1
         elif kind in ("image_url", "image"):

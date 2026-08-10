@@ -208,11 +208,19 @@ build-knowledge: ## 建/更新规范知识库(PDF 切分 + BGE-M3 向量化 → 
 	cd $(BACKEND_DIR) && $(UV) run python -m gyt.agents.knowledge.ingest
 
 eval: ## 跑评测门槛(默认三套全跑;make eval SUITE=safety 只跑一套)
-	@# safety 已接上(eval/hooks.py:RUNNERS);routing / rag 还没接,会打印 SKIP —— 那是正常状态。
-	@# ⚠️ safety 会**真的调 kimi-k3 并真的花钱**:实测单张 10~60 秒,30 张串行约 22 分钟。
-	@#    第二轮起命中磁盘缓存,秒级返回、零花费 —— 但改了 vision_prompt.md 正文
-	@#    或 prompt_version 会让缓存全失效,又是一轮 22 分钟(见 TODO-11)。
-	@#    先用 `make eval-smoke` 拿 1 张探链路,别一上来就押 22 分钟。
+	@# 三套**都已接上**(eval/hooks.py:RUNNERS 里 safety/routing/rag 三个键齐)。
+	@# 这里以前写着「routing / rag 还没接,会打印 SKIP —— 那是正常状态」,现在不是了:
+	@# 不带 SUITE 跑就是**三套全真跑**,今天再看到 SKIP 说明数据集或注入点出了问题,别当正常。
+	@# ⚠️ 三套都花钱,而且花法不同,别只按 safety 估:
+	@#    safety  30 张 —— **真的调 kimi-k3**,实测单张 10~60 秒,串行约 22 分钟。
+	@#    routing 22 行 —— 每行一次 DeepSeek 文本调用(只跑第一跳,拿到首个交接就停)。
+	@#    rag     20 行 —— 直调 search_regulation 不过模型,但**要求本机向量库已建好**
+	@#                     (先 make build-knowledge),没建会整套判失败。
+	@# safety 那 22 分钟只花一次:第二轮起命中磁盘缓存,秒级返回、零花费 ——
+	@# 但改了 vision_prompt.md 正文或 prompt_version 会让缓存全失效,又是一轮(见 TODO-11)。
+	@# 先用 `make eval-smoke` 拿 1 张探链路,别一上来就押 22 分钟。
+	@# (2026-08-11:这里原本把 safety 的花费警告连着写了两遍 —— 本文件自己的规矩是
+	@#  「同一句话别各抄一份,文案漂移过一次」,已合并成上面这一处。)
 	@$(CHECK_ENV)
 	cd $(BACKEND_DIR) && $(UV) run --env-file ../$(ENV_FILE) \
 		python -m $(EVAL_MODULE) --suite $(SUITE) --runners $(EVAL_RUNNERS)
@@ -283,11 +291,15 @@ frontend: ## 拉取并初始化前端(agent-chat-ui)
 		|| { echo "[错误] 找不到 $(FRONTEND_SETUP),前端初始化脚本还没就位"; exit 1; }
 	bash $(FRONTEND_SETUP)
 
-serve-artifacts: ## 起只读静态服务,让聊天界面里的巡检记录能点开(演示前和 make dev 一起起)
+serve-artifacts: ## 起只读静态服务,让聊天界面里的巡检记录能点开(演示前和后端一起起)
 	@# 为什么需要它:docx 落在 $(ARTIFACTS_DIR),而 langgraph.json 只声明了图 ——
 	@# **没有任何 HTTP 端点能把文件给出去**。于是「拍照自动出 Word」这个卖点,
 	@# 在界面上的最终形态曾经只是折叠 JSON 里的一个 path 字符串。
 	@# 前端覆盖件 tool-calls.tsx 的巡检记录卡片指向的就是这个端口。
+	@#
+	@# 和哪条启动路径一起起都行(make dev **或** make dev-docker / make up)——
+	@# 它读的是宿主 $(ARTIFACTS_DIR),而容器把同一个 ./data 挂进去,两边是同一份产物。
+	@# 别写成「和 make dev 一起起」:Intel Mac 上 make dev 根本跑不起来(装不上 torch)。
 	@#
 	@# 只绑 127.0.0.1 —— 与 docker-compose.yml 同一条红线。这里面是工地现场照片和
 	@# 巡检记录(含可识别人脸,见 TODO-22),绑 0.0.0.0 等于把它们发给整个局域网。

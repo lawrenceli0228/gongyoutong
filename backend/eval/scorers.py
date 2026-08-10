@@ -26,11 +26,17 @@ from pathlib import Path
 from typing import Any, Final
 
 # ---------------------------------------------------------------------------
-# 受控词表与三态标签 —— 与 eval/README.md、agents/safety/prompt.md 同源
+# 受控词表与三态标签 —— 与 eval/README.md、agents/safety/vision_prompt.md 同源
 #
 # 这三份东西必须**始终一致**:
-#   README 词表  ==  本文件 VIOLATION_VOCAB  ==  Safety 提示词的输出约束
+#   README 词表  ==  本文件 VIOLATION_VOCAB  ==  vision_prompt.md 那张「只能用这 8 个词」的表格
 # 标注用的词和模型输出的词对不上,判分就永远是错的。要改就三处一起改。
+#
+# ⚠️ 第三处**不是** agents/safety/prompt.md(这行注释以前就是这么写的,是错的)。
+#    判断在视觉档做,词表只在 vision_prompt.md 里;prompt.md 是 Safety 本体的文本档提示词,
+#    它自己头注明令「别在这儿再抄一份词表」。照旧指路牌去改的人会改一个不生效的文件,
+#    而真正喂给 kimi 的那份一个字没动 —— 判分从此系统性错位。
+#    唯一的自动化守卫 tests/unit/test_safety.py 读的也是 VISION_PROMPT_FILENAME。
 # ---------------------------------------------------------------------------
 
 VIOLATION_VOCAB: Final[frozenset[str]] = frozenset(
@@ -55,13 +61,23 @@ AGENT_NONE: Final[str] = "none"
 """路由集里「不该派给任何子 Agent」的取值。模型没派活时也归一到它。"""
 
 ROUTING_AGENTS: Final[frozenset[str]] = frozenset(
-    {"safety", "inspection", "knowledge", "schedule", "cad", "report", AGENT_NONE}
+    {"safety", "inspection", "knowledge", "schedule", "cad", AGENT_NONE}
 )
 """路由集 expected_agent 的合法取值,**与 eval/README.md 的 routing 小节同源,要改一起改**。
 
 不校验的话,标注侧一个拼写错误(knowlege 漏了 d)会让那一行永远不可能被判对,
 而报出的失败原因是「派错人了」—— 把矛头指向模型。routing 门槛是三套里最高的 90%,
 20 条里错标 2 条就直接把上限压到 90%,团队会以为是 Supervisor 不行而去反复改提示词。
+
+**这里必须恰好等于「可被路由到的集合」= `graph.AGENT_REGISTRY` 的五个 name + none。**
+2026-08-11 从这张表里删掉了 `report`,因为它给白名单开了个口子:
+`report` 不在 `AGENT_REGISTRY` 里,它只是英雄链 `inspection` 子图**内部**的第二跳
+(`graph.py` 的 `add_edge(safety, "report")` 硬边),`transfer_to_report` 这条路根本不存在;
+而 `run_routing_row` 取的正是 supervisor 第一跳的 `transfer_to_X` —— 实际值**永远不可能是
+report**。于是标成 `expected_agent=report` 的行能过白名单、却永远判不对,
+报出来的原因还是「派错人了」——**正是上面这段话说要防的那件事,唯独对 report 失效**。
+而 report 恰恰是最容易标错的那个值:要加一条「拍照出报告」的行,直觉会写 report 而不是
+inspection。当时 routing.csv 里 0 行用它,所以没造成损失 —— 那是运气,不是设计。
 """
 
 RAG_TYPE_NO_ANSWER: Final[str] = "no_answer"
@@ -471,7 +487,13 @@ def _validate_rag_points(row_id: str, raw_points: Any) -> None:
 
 
 def validate_rag_row(row: Mapping[str, str]) -> None:
-    """校验知识集的一行:type 合法 + no_answer 行后四列留空 + 其余行三要素齐且要点可判。"""
+    """校验知识集的一行:type 合法 + no_answer 行不许带答案/出处 + 其余行三要素齐且要点可判。
+
+    ⚠️ no_answer 那一支**只查 expected_answer_points 与 expected_source 两列**,
+    不查 `expected_page`、不查 `note` —— `note` 本来就该能写标注理由
+    (现有 K17~K20 四行都写着「负向-非规范」)。以前这里的报错文案写的是
+    「后四列必须全部留空」,和自己的判据对不上,照它去清空 note 是白改。
+    """
     row_id = _text(row.get("id")) or "?"
     row_type = _compact(row.get("type"))
     if row_type not in RAG_TYPES:
@@ -481,7 +503,10 @@ def validate_rag_row(row: Mapping[str, str]) -> None:
         )
     if row_type == RAG_TYPE_NO_ANSWER:
         if _text(row.get("expected_source")) or _text(row.get("expected_answer_points")):
-            raise DatasetError(f"知识集 {row_id} 是 no_answer 行,后四列必须全部留空。")
+            raise DatasetError(
+                f"知识集 {row_id} 是 no_answer 行,expected_answer_points 与 "
+                "expected_source 必须留空(note 可以写标注理由)。"
+            )
         return
     missing = [
         name

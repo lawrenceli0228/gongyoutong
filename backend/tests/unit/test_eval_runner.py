@@ -118,6 +118,7 @@ def _rag_row(
     source: str = "施工规范A.pdf",
     page: str = "23",
     row_id: str = "K01",
+    note: str = "",
 ) -> dict[str, str]:
     return {
         "id": row_id,
@@ -126,7 +127,7 @@ def _rag_row(
         "expected_answer_points": points,
         "expected_source": source,
         "expected_page": page,
-        "note": "",
+        "note": note,
     }
 
 
@@ -742,13 +743,25 @@ def test_validate_rag_row_requires_three_elements() -> None:
         validate_rag_row(_rag_row(page=""))
 
 
-def test_validate_rag_no_answer_row_must_leave_tail_columns_empty() -> None:
+def test_validate_rag_no_answer_row_must_leave_answer_and_source_empty() -> None:
+    """no_answer 行不许带答案要点和出处;**note 照样可以写标注理由**。
+
+    判据只有这两列 —— 用例名和报错文案以前都说「后四列全部留空」,
+    而 `expected_page` 和 `note` 填了本来就放行(仓库里 K17~K20 的 note
+    写的正是「负向-非规范」)。文案说 4 列、代码查 2 列、数据填 1 列,
+    三方各说各的,照文案去清空 note 是白改。
+    """
     # Act & Assert:no_answer 行填了出处,说明标注的人理解错了这类样本的用途
-    with pytest.raises(DatasetError, match="必须全部留空"):
+    with pytest.raises(DatasetError, match="必须留空"):
         validate_rag_row(_rag_row(row_type="no_answer", points="", source="某规范.pdf"))
 
     # 正确写法不该报错
     validate_rag_row(_rag_row(row_type="no_answer", points="", source="", page=""))
+
+    # note 填了标注理由**不该**被拦下来 —— 仓库里现有的四行 no_answer 就是这么填的
+    validate_rag_row(
+        _rag_row(row_type="no_answer", points="", source="", page="", note="负向-非规范")
+    )
 
 
 # ===========================================================================
@@ -1274,9 +1287,14 @@ def test_main_verbose_flag_prints_passing_rows(
 FILLED_DATASETS: Final[dict[str, int]] = {"safety": 30, "routing": 22, "rag": 20}
 """已经填完真数据的套 → 应有的可判分行数。
 
-safety 于 2026-08-07 填完(27 张人工标注 + 3 张自备干扰项)。
-routing / rag 仍是占位状态,由各自泳道负责人填完后往这里加一行。
-数字必须 ≥ config 里的 eval_min_rows_*,否则跑分脚本会直接判不通过。
+三套**都已填完**:safety 于 2026-08-07(27 张人工标注 + 3 张自备干扰项)、
+routing 与 rag 于 2026-08-09(随 cad / knowledge 落地)。所以下面那条
+「没登记的套必须还看得出是占位状态」的分支现在一条都走不到 —— 留着是为了
+将来加第四套时仍有提示,不是说还有谁没填。
+
+数字必须 ≥ config 里的 eval_min_rows_*(20 / 30 / 20),否则跑分脚本会直接判不通过。
+⚠️ **三套都恰好卡在下限上,一条不多**:safety 30=30、rag 20=20、routing 22 只富余 2 条。
+删数据行、或让某行的备注里蹦出「待替换/请替换」被剔出分母,都会当场把整套打到硬闸以下。
 """
 
 
@@ -1286,8 +1304,7 @@ def test_shipped_datasets_are_readable() -> None:
     这条用例同时是给「填数据的人」用的进度指示器:
       · 还没填的套 —— 必须仍能看出是占位状态(有「待替换」字样);
       · 填完的套 —— 登记进 FILLED_DATASETS,改为断言**真实可判分条数**。
-    等谁把 routing / rag 填完,本用例会红并提示往 FILLED_DATASETS 里加一行 ——
-    那正是提醒他顺手核对条数够不够门槛的时机。
+    三套现在都在 FILLED_DATASETS 里,所以走的全是第二条分支;第一条分支留给将来的第四套。
     """
     for name, spec in SUITES.items():
         rows = load_rows(spec)
