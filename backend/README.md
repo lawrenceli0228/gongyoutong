@@ -153,6 +153,24 @@ cp .env.example .env
 
 `.env` 在 `.gitignore` 里,**永远不要提交**。密钥不小心推上去了 → 立刻去控制台吊销重发。
 
+### 1.5 先选路线:你这台机器装得上依赖吗
+
+三条路线不是口味问题,**先用一条命令定生死**:
+
+```bash
+cd backend && uv sync --dry-run     # 只解析不安装,几秒出结果
+```
+
+| 结果 | 走哪条 |
+|---|---|
+| 成功 | **路线 A**(本地跑,最快)。想更接近演示环境时再切路线 B |
+| 报 `doesn't have a source distribution or wheel for the current platform` | **路线 A2**(容器里开发)。本机这条路是**断的**,不是慢 |
+
+已知会失败的机器:**Intel Mac**。`torch 2.13.0` 的 macOS 轮子只有 `arm64`
+(实测报 `You're on macOS (macosx_14_0_x86_64), but torch only has wheels for ...`),
+而 `sentence-transformers` → `torch` 是 knowledge Agent 的硬依赖,绕不开。
+Windows 与 Apple Silicon 不受影响,PyPI 上有对应轮子。
+
 ### 2. 路线 A:本地跑(开发日常,改代码秒生效)
 
 ```bash
@@ -173,7 +191,57 @@ curl -s http://localhost:2024/runs/wait \
 
 > `make dev` 的工作目录是 `backend/`,但配置照样读得到仓库根的 `.env`:
 > `backend/langgraph.json` 里写了 `"env": "../.env"`,langgraph CLI 会先把它灌进环境变量。
-> 副作用:本地跑时数据目录落在 `backend/data/`(容器里是 `/app/data`),两边不共用。
+>
+> **数据目录不受工作目录影响**:`Settings.data_dir` 的默认值是按 `src/gyt/config.py`
+> 自身的位置往上数出来的仓库根(见 `_default_data_dir`),所以本地跑写的是**仓库根的 `data/`**;
+> 容器里 `GYT_DATA_DIR=/app/data`,而 compose 把宿主 `./data` 挂到那儿 —— **两边是同一份数据**。
+> 这一点不是锦上添花:LLM 缓存(尤其预热过的视觉缓存)、SQLite 台账、Chroma 向量库、
+> 产物注册表全在这个目录下,分成两份的时候「本地销掉的账,进容器一看还是 open」。
+>
+> 这个默认值以前是相对路径 `data`,会跟着进程工作目录跑,`make dev` 因此落在 `backend/data/`。
+> 你的机器上如果还留着那个旧目录,跑一次搬迁脚本把它并进来:
+>
+> ```bash
+> python3 backend/scripts/migrate_data_dir.py            # 默认只演练,先看清楚要搬什么
+> python3 backend/scripts/migrate_data_dir.py --apply    # 真搬(复制,不删源)
+> ```
+>
+> 只用标准库、在哪个目录敲都行(路径是从脚本自身位置推的)。确认新目录一切正常之后,
+> 再加 `--remove-source` 或自己手动删掉 `backend/data/`。
+
+### 2.5 路线 A2:容器里开发(本机装不上依赖时走这条)
+
+**后端跑在容器里,你在宿主正常编辑文件。** 不是"退而求其次" —— 除了首次构建镜像那几分钟,
+日常体验和路线 A 几乎一样。
+
+```bash
+make dev-docker    # 起容器 + 把宿主 backend/src 挂进去(只读)+ 打开热重载
+make test-docker   # 同一套用例在容器里跑
+make down          # 收摊
+```
+
+改了东西之后要做什么,**照这张表,别猜**:
+
+| 改了什么 | 要做什么 | 多久 |
+|---|---|---|
+| `backend/src/**/*.py` | **什么都不用做**,自动重载 | 秒级(实测 0.9s) |
+| `prompt.md` 等非 `.py` | `docker compose -f docker-compose.yml -f docker-compose.dev.yml restart backend` | 秒级 |
+| `pyproject.toml` / `uv.lock` / `langgraph.json` / `Dockerfile` | 重来一次 `make dev-docker`(它带 `--build`) | 分钟级 |
+
+为什么 `.md` 不自动重载:`langgraph dev` 底下是 uvicorn 的 reload,监视清单写死
+`default_includes = ["*.py"]`,而 langgraph CLI 没有透出 `--reload-include`。
+**这是查过源码的,不是猜的** —— 别把「改提示词立刻生效」写进任何文档。
+
+`make dev-docker` 里的 `--build` 不能省:挂载换掉的是**源码**,换不掉镜像层里的**依赖**。
+镜像旧一步,容器会在图加载期 `ModuleNotFoundError` 直接崩,而 `docker compose up -d`
+早就返回 0 了 —— 你只会看到一句"[已启动]"和一个根本没起来的服务。
+
+**改了代码没反应?** 宿主文件系统不往容器传 inotify 事件(WSL2、网络盘常见)。
+macOS Docker Desktop 实测是能传的;传不到就改用轮询:
+
+```bash
+GYT_WATCH_POLLING=1 make dev-docker
+```
 
 ### 3. 路线 B:容器跑(接近演示环境,验证"冷启动零下载")
 
@@ -205,7 +273,9 @@ BGE-M3 权重一个道理:提交「源 PDF + 建库代码」,各处重建),所�
 make build-knowledge   # 首次约 15 分钟(下 2.2GB 权重 + 抽嵌全书);之后 manifest 命中秒过
 ```
 
-- **本地开发**:上面这条即可(建到 `backend/data/chroma`,与 `make dev` 同一目录)。
+- **本地开发**:上面这条即可(建到仓库根 `data/chroma`,和 `make dev` 读的是同一份)。
+  容器挂的也是这个 `./data`,所以本机建过一次、`make up` 起来就能直接用 ——
+  前提是本机和镜像用的是同一个 embedding 模型(见本节末尾那条同步提醒),换模型要带 `--rebuild`。
   嫌手动麻烦,也可以在 `.env` 里设 `GYT_KNOWLEDGE_PREBUILD_AT_STARTUP=true` ——
   `make dev` 首次启动会自动建(会卡那 15 分钟一次),之后每次秒起。
 - **容器 / 生产**:**先把挂载的 `./data` 卷建好,再起服务**:
@@ -232,6 +302,12 @@ make lint   # ruff 只报不改
 make fmt    # ruff 格式化 + 自动修
 make e2e    # 冷启动冒烟(真起 compose,分钟级,平时不用跑)
 ```
+
+`make test` 的前提是本机 `make setup` 成功过。装不上依赖的机器(见路线 A 末尾那条)
+用 `make test-docker`:同一套用例在容器里跑,比 `make test` 慢十几秒。
+它会先拿宿主的 `backend/uv.lock` 和镜像里那份对账,对不上就直接拦下来让你
+`docker compose build backend` —— 因为镜像比代码旧的表现是一连串 `ModuleNotFoundError`,
+不拦的话人会去查测试、查挂载,唯独想不到是镜像该重建了。
 
 ---
 
@@ -263,8 +339,10 @@ backend/
 仓库根/
 ├── .env / .env.example       所有 GYT_* 配置(.env 不进 git)
 ├── docker-compose.yml        backend(默认) + frontend(--profile ui)
+├── docker-compose.dev.yml    开发档覆盖件(make dev-docker / test-docker 用)
 ├── Makefile                  所有开发命令的入口
 └── data/                     运行期数据,不进 git;只有 data/demo/ 例外(演示数据集)
+                              本机跑和容器跑都是这一份(容器里挂成 /app/data)
 ```
 
 ---
@@ -596,3 +674,9 @@ docker image prune -a       # 清没被容器引用的镜像(会导致下次重�
 
 不会。`.gitignore` 忽略 `/data/*` 和 `backend/data/`,唯独放行 `data/demo/`(演示数据集要进仓库)。
 新建演示数据目录记得放个 `.gitkeep`,否则 git 记不住空目录,别人冷启动会缺目录。
+
+`backend/data/` 那条现在只是**兜住历史遗留目录**:数据根目录已经统一到仓库根 `data/`,
+新装的机器不会再自己生成 `backend/data/`(除非你把 `GYT_DATA_DIR` 手动设成相对路径 `data`
+再从 `backend/` 下启动 —— 别这么干,理由见 `.env.example` 里那一段)。
+留着这条规则是因为老机器上那份还在,删掉规则会让一堆缓存/台账文件突然冒出来要求提交。
+搬迁方式见上面「路线 A」那段。

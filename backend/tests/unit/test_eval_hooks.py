@@ -157,9 +157,17 @@ def test_RUNNERS是只读的() -> None:
 
 
 def test_照片目录指向仓库里的演示素材() -> None:
-    """PHOTOS_DIR 必须按 __file__ 推导,**不能**用 Settings.data_dir ——
-    后者是按进程工作目录解析的运行期目录(backend/data),演示素材不在那儿。
-    prefilter.py 踩过同一个坑:相对路径会让照片被静默写到 backend/data/。
+    """PHOTOS_DIR 必须是按 __file__ 推出来的**绝对**路径,不能是跟着 cwd 跑的相对路径。
+
+    历史教训:prefilter.py 当年用相对路径写默认输出,`python -m eval.prefilter` 从
+    backend/ 下跑,27 张照片就被静默写进了 backend/data/(目录自动新建,一声不吭)。
+
+    ⚠️ 旧注释里"data_dir 是按进程工作目录解析的运行期目录(backend/data)"这句**已经作废** ——
+    ``Settings.data_dir`` 的默认值现在按 config.py 的 __file__ 推导仓库根,默认布局下
+    ``demo_assets_dir`` 与这里的 PHOTOS_DIR 指的是同一个目录。eval 这边仍旧锚 __file__
+    的理由(以及与 knowledge/cad 之间那条已知偏差)写在 hooks.REPO_ROOT 的说明里。
+
+    这条用例只钉形状,不钉具体前缀:tmp 目录下也能满足,换机器/换 checkout 都不会假红。
     """
     assert PHOTOS_DIR.name == "photos"
     assert PHOTOS_DIR.parent.name == "demo"

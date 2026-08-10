@@ -1,0 +1,148 @@
+# =============================================================================
+# 工友通(GYT)开发档覆盖件 —— 只干一件事:改后端源码不用重建镜像
+#
+#   docker-compose.yml(基础档)              本文件(叠在上面)
+#   ┌──────────────────────────────┐        ┌────────────────────────────────┐
+#   │ build / image / container_name│        │ volumes: 追加                  │
+#   │ ports: 127.0.0.1:2024:2024    │ ──叠─▶ │   ./backend/src → /app/src(ro)│
+#   │ env_file / environment        │        │ environment: 追加两个开发期变量 │
+#   │ volumes: ./data → /app/data   │        │ command: 覆盖(去掉 --no-reload)│
+#   │ healthcheck / restart         │        └────────────────────────────────┘
+#   └──────────────────────────────┘
+#
+# 用法(-f 的顺序不能反,后面的文件覆盖前面的):
+#
+#     docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# 但正常别手敲这串,Makefile 已经封好了:
+#
+#     make dev-docker     起开发档后端(改 .py 自动重载)
+#     make test-docker    在容器里跑 pytest(本机装不了 torch 时的救命目标)
+#     make down           停掉(基础档的 down 就能收干净,项目名同为 gyt)
+#
+# 为什么只写"要改的那几行":
+#   compose 的合并规则是「标量覆盖、列表按挂载点/端口去重后合并」,
+#   把基础档抄一遍的下场是两边悄悄漂移 —— 端口那条红线尤其漂不起(见文件末尾)。
+#
+# -----------------------------------------------------------------------------
+# 为什么挂 /app/src 就够了(不是猜的,是查过的)
+# -----------------------------------------------------------------------------
+#   backend/Dockerfile 里 `COPY . /app`(构建上下文是 backend/),所以镜像里源码在
+#   /app/src;紧接着 `uv sync --frozen --no-dev` 把 gyt **装成可编辑(editable)**,
+#   也就是说 import gyt 最终落到 /app/src 这条路径上,而不是拷进 .venv 的一份副本。
+#   容器内实测:
+#       python -c "import gyt; print(gyt.__file__)"  →  /app/src/gyt/__init__.py
+#   把宿主的 backend/src 盖到 /app/src 上,改一行 Python 立刻就是容器里跑的那一行。
+#
+#   注意这条只覆盖 **src/**。下面这些改了仍然要重建镜像(`docker compose build backend`):
+#       pyproject.toml / uv.lock  —— 依赖装在镜像层里,不在挂载卷里
+#       langgraph.json            —— 没挂,容器读的是镜像里那份
+#       Dockerfile / .dockerignore
+#   (make test-docker 会拿宿主的 uv.lock 和镜像里那份对一下,不一致就直接拦下来
+#     并让你去重建 —— 免得对着"依赖怎么少了一半"的报错查半天。)
+#
+# -----------------------------------------------------------------------------
+# 为什么是 :ro(只读)
+# -----------------------------------------------------------------------------
+#   容器只该**读**源码。加 :ro 是拿文件系统当护栏:哪天有人往容器里写了个脚本、
+#   或者某个工具顺手在源码目录里落了产物,受害的是宿主机上正在编辑的代码 ——
+#   这种脏数据没有 undo。容器里要写的东西一律去 /app/data(基础档已经挂好)。
+#
+#   副作用只有一个,已实测无害:源码目录只读 → 解释器写不了 __pycache__。
+#   CPython 遇到写不进去会自己吞掉、照常运行(实测 import gyt 正常)。
+#   镜像里 base 阶段的 ENV 本来就有 PYTHONDONTWRITEBYTECODE=1(backend/Dockerfile),
+#   所以这件事**现在已经不会发生**;下面那行是把它显式钉一遍,防的是将来有人动
+#   Dockerfile 的 ENV —— 不是在省什么当下的开销,别把它当成本文件带来的收益。
+#
+# -----------------------------------------------------------------------------
+# 为什么必须覆盖 command
+# -----------------------------------------------------------------------------
+#   Dockerfile 的 CMD 带 `--no-reload`(演示/生产不需要热重载,省内存也更稳)。
+#   只挂源码不改 command 的话:代码是新的,但进程还是旧模块 —— 看起来"挂载没生效",
+#   实际是根本没人告诉它去重新加载。所以这两件事必须成对出现。
+#
+#   ⚠️ `--allow-blocking` 一个字都不能少(与 Makefile 的 dev 目标同一条铁律)。
+#      缺了它 blockbuster 会把 config 的「访问即 mkdir」判成违规,
+#      **磁盘缓存读写全部静默失败**,每次提问都真花钱,而日志里只有
+#      "Background run succeeded",看不出任何异常。
+#
+# -----------------------------------------------------------------------------
+# 热重载到底重载什么 —— 别把没验证过的承诺写进文档
+# -----------------------------------------------------------------------------
+#   `langgraph dev`(不带 --no-reload)等价于 uvicorn.run(..., reload=True),
+#   而且它**没有**透出 --reload-include 之类的开关(langgraph_cli/cli.py 里
+#   reload_includes 恒为 None)。uvicorn 这边的默认监视清单写死在
+#   uvicorn/supervisors/watchfilesreload.py:`default_includes = ["*.py"]`。
+#
+#   所以判据只有一条,别扩大解释:
+#       改 *.py            → 自动重载,几秒生效,不用管容器
+#       改 prompt.md 等    → **不会**自动重载。要 `make down` 后重来,或者
+#                            docker compose -f ... -f ... restart backend(秒级)。
+#                            提示词是建图时 load_prompt() 读进去的,重启进程就会重读,
+#                            **但不用重建镜像**(分钟级那种)—— 这才是本文件省下的东西。
+#
+#   两个已知代价,先说清楚免得当成 bug:
+#     · 重载 = 整个进程重起 = 整张图重建。knowledge 的 get_embeddings() 挂着
+#       lru_cache,重载会把它丢掉,**下一次**知识检索要重新加载 BGE-M3 权重
+#       (几十秒)。所以演示前一秒别改代码。
+#     · 监视根目录是进程工作目录 /app(uvicorn 的默认值 Path.cwd()),
+#       连 /app/.venv 一起看着。容器内实测目录数 1231、inotify 上限 1048576,
+#       差着三个数量级,不用担心 watch 耗尽。
+#
+#   文件变更能不能穿过绑定挂载传到容器里,取决于宿主的文件系统实现:
+#     · macOS(Docker Desktop):实测**能**。容器内 watchfiles 用 inotify 就收到了
+#       宿主的改动,不需要轮询。
+#     · Windows/WSL2 与某些 NFS/虚拟盘:可能收不到 inotify 事件。收不到的表现是
+#       "改了代码没反应",不是报错。这时候把轮询打开再试:
+#           GYT_WATCH_POLLING=1 make dev-docker
+#       (watchfiles 的自动判定只认 WSL 宿主,别指望它在所有场景下自己开。)
+# =============================================================================
+
+services:
+  backend:
+    # volumes 是列表,compose 会按**容器内挂载点**去重后合并 ——
+    # 基础档的 ./data:/app/data 会原样保留,这里只是追加一条。
+    volumes:
+      - ./backend/src:/app/src:ro
+
+    # environment 是映射,按键合并:基础档的 GYT_DATA_DIR / HF_HUB_OFFLINE 不受影响。
+    environment:
+      # 显式钉一遍(镜像里已经是 1,理由见上面 :ro 那一节)。
+      PYTHONDONTWRITEBYTECODE: "1"
+      # 热重载的逃生阀。留空 = 交给 watchfiles 自己判断(它只在 WSL 宿主下自动开轮询);
+      # 宿主文件系统不传 inotify 事件时,用 GYT_WATCH_POLLING=1 强制改成轮询。
+      # 注意它是"改了代码没反应"的解药,不是常开项 —— 轮询要把整棵 /app 反复走一遍。
+      WATCHFILES_FORCE_POLLING: ${GYT_WATCH_POLLING:-}
+
+    # 覆盖 Dockerfile 的 CMD:只去掉 --no-reload,其余参数逐字保持一致。
+    #   --host 0.0.0.0  容器内必须监听所有网卡,否则宿主映射端口连不上
+    #                   (这不是把服务暴露到局域网 —— 拦在宿主侧的端口绑定上,见下)
+    #   --no-browser    容器里没有浏览器可开
+    #   --allow-blocking 见上面那条铁律,别删
+    command:
+      - langgraph
+      - dev
+      - --host
+      - 0.0.0.0
+      - --port
+      - "2024"
+      - --no-browser
+      - --allow-blocking
+
+# =============================================================================
+# 这个文件永远不许出现的东西:ports
+#
+#   基础档里是 `127.0.0.1:2024:2024`。**开发档不许把它放成 `2024:2024`**,
+#   哪怕只是"临时让手机连一下试试"。
+#
+#   Docker 的短语法不带地址时发布到 0.0.0.0,也就是整个局域网都能访问。
+#   而这个端口后面挂的是一个零鉴权、零限流的 Agent 执行端点
+#   (langgraph.json 里没有 "auth" 键,代码里也没有任何鉴权/CORS 限制),
+#   容器里还揣着两家供应商的真实 API Key。同网段任何人 curl 一下 /runs/stream
+#   就能拿你的额度跑任务,POST /threads/search 就能读走工人刚传的照片和图纸。
+#
+#   而且开发档比生产档更危险:它开着热重载、跑在你自己机器上、连着你自己的 Key,
+#   还常年忘了关。浏览器走 localhost 的场景完全不受影响,不需要动这一行。
+#   真要让别的设备访问,先加 backend/auth.py 并在 langgraph.json 里声明
+#   "auth": {"path": "./auth.py:auth"},别靠"没人知道我 IP"。
+# =============================================================================

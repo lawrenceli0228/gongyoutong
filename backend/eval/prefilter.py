@@ -125,6 +125,12 @@ REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 本模块只能以 `python -m eval.prefilter` 从 backend/ 下运行,相对路径会解析成
 backend/data/... 和 backend/backend/eval/...。第一次跑就是这么把 27 张照片
 和草稿 CSV 写到了两个错地方,而且当时没报任何错(目录是自动新建的)。
+
+后来同一类坑在 ``Settings.data_dir`` 上又犯了一次(默认值曾是 ``Path("data")``,
+于是 `make dev` 写 backend/data/、容器写 /app/data,两份数据互相看不见)。
+那边现在已经改成按 config.py 的 ``__file__`` 推导仓库根 —— 所以**别再把这段读成
+"演示照片应该去 backend/data 找"**:默认布局下 <仓库根>/data/demo 才是那一份,
+也正是本文件下面 ``--out-photos`` 默认值指的地方。
 """
 
 PHOTO_STEM: Final[str] = "photo_{:02d}"

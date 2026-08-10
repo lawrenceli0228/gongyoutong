@@ -25,6 +25,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from typing import Final
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -35,12 +36,35 @@ from gyt.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# <repo>/data/demo/docs —— 规范原文 PDF 放这(源资产,随仓库走)。
-# 本文件 backend/src/gyt/agents/knowledge/ingest.py:parents[5] = 仓库根。
-_REPO_ROOT = Path(__file__).resolve().parents[5]
-DEFAULT_DOCS_DIR = _REPO_ROOT / "data" / "demo" / "docs"
+# 规范原文 PDF 所在的子目录,挂在 config.demo_assets_dir 底下(= <data_dir>/demo/docs)。
+_DOCS_SUBDIR: Final[str] = "docs"
 
 _MANIFEST_NAME = "_ingest_manifest.json"
+
+
+def _default_docs_dir() -> Path:
+    """规范原文 PDF 的默认目录(``<data_dir>/demo/docs``)。**每次调用都现查配置**。
+
+    以前这里是一对模块级常量::
+
+        _REPO_ROOT = Path(__file__).resolve().parents[5]
+        DEFAULT_DOCS_DIR = _REPO_ROOT / "data" / "demo" / "docs"
+
+    两个洞叠在一起,而且症状一模一样(都是"库是空的"):
+
+    1. **层数按本机目录结构写死。** 本机文件在
+       ``<仓库根>/backend/src/gyt/agents/knowledge/ingest.py``,往上 5 层正好是仓库根;
+       但容器的构建上下文是 ``backend/``、``COPY . /app``,文件落在
+       ``/app/src/gyt/agents/knowledge/ingest.py``,**少了一层**,往上 5 层变成 ``/`` ——
+       目录被算成 ``/data/demo/docs``,根本不存在。
+    2. **常量还被当函数默认参数用。** 默认参数在 import 时求值一次就定死,测试里
+       改完 ``GYT_DATA_DIR`` 再 ``get_settings.cache_clear()`` 也换不动它。
+
+    改成函数之后,取值时刻 = 调用时刻,配置指哪就扫哪。
+    路径本身则由 ``config.demo_assets_dir`` 统一给,本机与容器自动对齐。
+    """
+    return get_settings().demo_assets_dir / _DOCS_SUBDIR
+
 
 # 中文规范切分:块不宜过大(稀释召回)也不宜过小(丢上下文)。优先按段/句切,
 # 尽量别把「第 3.2.1 条」这类切碎。500 字符 ≈ 一两段。
@@ -145,11 +169,17 @@ def _save_manifest(manifest: dict[str, str]) -> None:
     )
 
 
-def build_index(docs_dir: Path = DEFAULT_DOCS_DIR, *, rebuild: bool = False) -> dict[str, int]:
+def build_index(docs_dir: Path | None = None, *, rebuild: bool = False) -> dict[str, int]:
     """扫目录建库。幂等:文件 sha 未变则跳过(不重复 embedding)。返回 {文件名: 入库块数}。阻塞。
 
     rebuild=True 时无视 manifest,每份都重嵌(换 embedding 模型/改切分后用)。
+
+    ``docs_dir=None`` = 现查配置(``_default_docs_dir()``)。**默认值必须是 None,
+    不许写成模块级常量** —— 函数默认参数在 import 时求值一次就定死,配置再改也换不动,
+    而且 import 期就会顺手构造一次 Settings。理由详见 ``_default_docs_dir`` 的说明。
     """
+    if docs_dir is None:
+        docs_dir = _default_docs_dir()
     if not docs_dir.is_dir():
         logger.warning("规范目录不存在:%s(知识库会是空的)", docs_dir)
         return {}
@@ -169,15 +199,20 @@ def build_index(docs_dir: Path = DEFAULT_DOCS_DIR, *, rebuild: bool = False) -> 
     return result
 
 
-def ensure_index_built(docs_dir: Path = DEFAULT_DOCS_DIR) -> None:
+def ensure_index_built(docs_dir: Path | None = None) -> None:
     """方案 B 启动预置:docs 下有规范但索引缺/有改动时就地建一次;已建好(manifest 命中)秒过。
 
     幂等 + **安全**:建库失败只记日志、不抛 —— 知识库塌了不该拖垮整个服务(检索侧拿不到库
     自会回「无依据」)。**默认不在启动时被调**:由 config.knowledge_prebuild_at_startup 开关控制,
     该开关默认 False,专为**保护测试不触发 2.2GB 建库**(测试 chroma_dir 是 tmp,一调必重建)。
     dev/生产要「零操作起库」就在 .env / compose 里把开关打开(首次会阻塞启动约 15 分钟)。
+
+    ``docs_dir=None`` 同 build_index:现查配置,不是 import 期定死的常量。
+    取默认值这一步也放在 try 里面 —— 本函数对外承诺"绝不抛",配置读坏了也一样。
     """
     try:
+        if docs_dir is None:
+            docs_dir = _default_docs_dir()
         if not docs_dir.is_dir():
             return
         manifest = _load_manifest()
@@ -199,12 +234,36 @@ def ensure_index_built(docs_dir: Path = DEFAULT_DOCS_DIR) -> None:
 
 
 def main() -> int:
-    """CLI:``uv run python -m gyt.agents.knowledge.ingest [--rebuild]``。"""
+    """CLI:``uv run python -m gyt.agents.knowledge.ingest [--rebuild]``。
+
+    **失败必须长得像失败。** 以前这里只有一句「没有新增入库(目录为空,或全部已入库/未改动)」
+    加 exit 0 —— 而它同时覆盖了两种截然相反的情况:
+
+        真·成功:规范都在,sha 没变,跳过重嵌   ← 该绿
+        真·失败:规范目录压根不存在(路径算错/容器没挂卷/资产没同步)  ← 该红,却也绿了
+
+    队友的启动手册就把那句话当成了成功判据,于是"资产根本没进来"在验收里显示为通过,
+    一直拖到演示时 knowledge 回一句"规范里查不到"才暴露 —— 而那句话跟真查不到一模一样。
+    现在把两种失败提到建库之前,各自给一句能直接照着排查的中文提示 + 退出码 1。
+    """
     import sys
 
-    result = build_index(rebuild="--rebuild" in sys.argv)
+    docs_dir = _default_docs_dir()
+    if not docs_dir.is_dir():
+        print(f"[错误] 规范目录不存在:{docs_dir}")
+        print("       容器里:确认 compose 把仓库根 ./data 挂到了 /app/data;")
+        print("       本机:确认演示资产在仓库根 data/demo/docs 下(不是 backend/data)。")
+        return 1
+    pdfs = sorted(docs_dir.glob("*.pdf"))
+    if not pdfs:
+        print(f"[错误] {docs_dir} 里一份 PDF 都没有 —— 这样建出来的知识库会是空的。")
+        print("       把规范原文 PDF 放进这个目录再重跑。")
+        return 1
+
+    result = build_index(docs_dir, rebuild="--rebuild" in sys.argv)
     if not result:
-        print("没有新增入库(目录为空,或全部已入库/未改动)。")
+        # 走到这里说明目录在、PDF 也在,只是 sha 都没变 —— 这才是真的成功。
+        print(f"全部已入库、无需重建(共 {len(pdfs)} 份规范)。")
         return 0
     print("已建库:")
     for name, n in result.items():
@@ -216,8 +275,9 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
+# DEFAULT_DOCS_DIR 已删除(全仓无引用点,grep 过 src / tests / scripts / eval)。
+# 要拿默认目录请调 _default_docs_dir() —— 常量会在 import 时把配置定死,那正是这次的病根。
 __all__ = [
-    "DEFAULT_DOCS_DIR",
     "build_index",
     "ensure_index_built",
     "ingest_pdf",

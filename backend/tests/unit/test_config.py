@@ -23,8 +23,15 @@ from gyt.config import (
     ALLOWED_IMAGE_EXT,
     ENV_PREFIX,
     Settings,
+    _default_data_dir,
     get_settings,
 )
+
+# 仓库根,从**本测试文件**的位置独立推一遍(本文件是 <仓库根>/backend/tests/unit/test_config.py):
+#   parents[0]=unit  parents[1]=tests  parents[2]=backend  parents[3]=<仓库根>
+# 刻意**不**复用 config.py 里那句 parents[3] —— 两边各算各的,只有真的指向同一个目录才算对。
+# 抄同一个表达式来断言,等于自己给自己打分:哪天有人把 config.py 挪了层数,测试也跟着一起错。
+_REPO_ROOT_FROM_TEST = Path(__file__).resolve().parents[3]
 
 # 由字段名反推出的环境变量名(全小写),用来精确清场。
 # 刻意不按 "GYT_" 前缀一刀切:conftest 里的 GYT_E2E 是测试开关而不是 Settings 字段,
@@ -103,10 +110,92 @@ def test_default_file_limits_and_thresholds(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.photo_max_mb == 10.0
     assert settings.photo_compress_target_mb == 4.0
     assert settings.photo_compress_max_edge_px == 2048
-    assert settings.data_dir == Path("data")
+    # data_dir 的默认值不再是 Path("data") —— 它有自己一组用例,见下面「数据根目录」一节。
     assert settings.eval_threshold_routing == 0.90
     assert settings.eval_threshold_safety == 0.80
     assert settings.eval_threshold_rag == 0.80
+
+
+# ---------------------------------------------------------------------------
+# 数据根目录(本次「两份数据」事故的命脉,单开一节)
+# ---------------------------------------------------------------------------
+
+
+def test_默认数据根目录是仓库根的data而不是backend下的data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """默认值必须按**本文件位置**算出仓库根,绝不能跟着进程工作目录跑。
+
+    以前默认值是 ``Path("data")``:`make dev` 的配方里先 cd 到 backend,数据就落
+    ``backend/data/``;容器里 compose 挂的是仓库根 ``./data``。于是 LLM 缓存、
+    SQLite 台账、Chroma 向量库、产物注册表**四样各有两份、互相看不见**
+    (2026-08-09 本机实测:backend/data/cache 762 个文件、仓库根 data/cache 779 个,
+    两处还各有一份 gyt.sqlite3 —— 那份陈年快照差点让真机验收的库级断言假绿灯,
+    详见 config._default_data_dir 的 docstring)。
+
+    这条用例钉三件事:① 是绝对路径;② 等于 <仓库根>/data;③ **不是** <仓库根>/backend/data。
+    最后再换个工作目录复算一次 —— 只有"换了 cwd 结果不变"才真的证明它与 cwd 无关。
+    """
+    # Arrange & Act:_pristine_settings 会先摘掉 conftest 预置的 GYT_DATA_DIR
+    settings = _pristine_settings(monkeypatch)
+
+    # Assert
+    assert settings.data_dir.is_absolute(), "相对路径会跟着 cwd 跑,默认值必须是绝对路径"
+    assert settings.data_dir == _REPO_ROOT_FROM_TEST / "data"
+    assert settings.data_dir != _REPO_ROOT_FROM_TEST / "backend" / "data", (
+        "落回 backend/data 就是这次事故本身:换种启动方式数据就分裂成两份"
+    )
+
+    # Act & Assert:把进程挪到别处再算一次,结果一个字都不该变
+    monkeypatch.chdir(tmp_path)
+    assert _default_data_dir() == _REPO_ROOT_FROM_TEST / "data"
+
+
+def test_环境变量仍然盖得住默认工厂(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把默认值换成 ``default_factory`` **不许**动摇优先级表 —— 容器全靠 env 指路。
+
+    依据:pydantic-settings 的取值方式是「先由各配置来源(init 参数 / 环境变量 / .env)
+    凑出一个 dict,再把它交给模型构造」,字段默认值(含 default_factory)只在
+    **所有来源都没给这个字段**时才会被调用。所以 Dockerfile 里那句
+    ``ENV GYT_DATA_DIR=/app/data`` 照样是赢家 —— 这很关键,因为容器里代码少一层目录
+    (/app/src/gyt/config.py),默认工厂算出来是 /data,是错的。
+    """
+    # Arrange
+    monkeypatch.setenv("GYT_DATA_DIR", "/app/data")
+
+    # Act & Assert:环境变量赢
+    assert Settings(_env_file=None).data_dir == Path("/app/data")
+
+    # Act & Assert:把环境变量摘掉,才轮到默认工厂
+    monkeypatch.delenv("GYT_DATA_DIR")
+    assert Settings(_env_file=None).data_dir == _default_data_dir()
+
+
+def test_demo源资产目录不会被自动创建(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``demo_assets_dir`` 是唯一一个"访问不创建"的路径属性 —— 反着钉一遍。
+
+    其它 *_dir 是运行期产物,建出来天经地义;demo/ 是随仓库走、进 git 的源资产。
+    它不存在意味着"资产没跟过来 / 容器忘了挂卷"。这时候悄悄 mkdir 一个空目录,
+    只会把"资产丢了"伪装成"知识库是空的" —— 演示当天这两件事表现完全一样。
+    """
+    # Arrange
+    data_root = tmp_path / "gyt-data"
+    monkeypatch.setenv("GYT_DATA_DIR", str(data_root))
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    # Act
+    demo_dir = settings.demo_assets_dir
+
+    # Assert:路径对,但一个目录都没建出来(连 data_dir 本身都没有)
+    assert demo_dir == data_root / "demo"
+    assert not demo_dir.exists(), "源资产目录不许被自动创建"
+    assert not data_root.exists(), "取 demo_assets_dir 不该顺手把 data_dir 也建出来"
+
+    # Act & Assert:对照组 —— 换个"访问即创建"的属性,data_root 立刻出现,而 demo 依旧没有
+    assert settings.cache_dir.is_dir()
+    assert data_root.is_dir()
+    assert not demo_dir.exists(), "别的属性建目录时也不许连带把 demo/ 建出来"
 
 
 # ---------------------------------------------------------------------------

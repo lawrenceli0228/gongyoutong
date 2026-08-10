@@ -152,7 +152,14 @@ def test_注入串当标题存取原样表安然无恙() -> None:
 
 def test_库文件落在测试独占的临时目录(tmp_path: Path) -> None:
     """conftest 把 GYT_DATA_DIR 指到 tmp_path/data,库文件必须落在那里 ——
-    而不是悄悄写进仓库的 backend/data(prefilter.py 踩过同类相对路径坑)。"""
+    而不是悄悄写进仓库里那份真台账(默认是 <仓库根>/data/gyt.sqlite3)。
+
+    这类坑本项目栽过两次:prefilter.py 的相对路径把 27 张照片写到了 backend/data/;
+    ``Settings.data_dir`` 的默认值曾是 ``Path("data")``,`make dev` 在 backend/ 下跑就写
+    backend/data/、容器写 /app/data,两份数据互相看不见。默认值现在已按 config.py 的
+    __file__ 推导仓库根 —— 但**测试恰恰不能依赖那个默认值**:跑一遍单测就往真台账里
+    塞几条测试行,轻则污染演示数据,重则让真机验收的库级断言(D4 要求"恰好 3 条")
+    读到测试造出来的幽灵行。所以这条钉的是隔离,不是默认值。"""
     tasks.create("落位检查", None)
 
     expected = tmp_path / "data" / "gyt.sqlite3"

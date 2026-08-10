@@ -8,7 +8,7 @@
     定案:不碰上传管线、不碰前端,改用**启动预注册** ——
 
         进程启动
-          │ 扫 <repo>/data/demo/drawings/*.dxf
+          │ 扫 <data_dir>/demo/drawings/*.dxf(本机 <仓库根>/data/…,容器 /app/data/…)
           ▼ 逐个 artifacts.register(kind=DRAWING) → 拿到 32 位 id
         建【中文名 → artifact_id】映射表 DEMO_DRAWINGS
           │ 名字取自同目录 names.json(没配就用文件名主干)
@@ -26,19 +26,43 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
+from typing import Final
 
+from gyt.config import get_settings
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind
 
 logger = logging.getLogger(__name__)
 
-# <repo>/data/demo/drawings —— 演示图纸是**源资产**(随仓库走),不在可写的 data_dir 下。
-# 本文件 src/gyt/agents/cad/demo_registry.py:parents[5] = 仓库根。
-_REPO_ROOT = Path(__file__).resolve().parents[5]
-DEFAULT_DRAWINGS_DIR = _REPO_ROOT / "data" / "demo" / "drawings"
+# 演示 DXF 所在的子目录,挂在 config.demo_assets_dir 底下(= <data_dir>/demo/drawings)。
+_DRAWINGS_SUBDIR: Final[str] = "drawings"
 
 # 同目录可选的【文件名 → 中文展示名】配置。没有它就退回文件名主干。
 _NAMES_FILENAME = "names.json"
+
+
+def _default_drawings_dir() -> Path:
+    """演示 DXF 图纸的默认目录(``<data_dir>/demo/drawings``)。**每次调用都现查配置**。
+
+    以前这里是一对模块级常量::
+
+        _REPO_ROOT = Path(__file__).resolve().parents[5]
+        DEFAULT_DRAWINGS_DIR = _REPO_ROOT / "data" / "demo" / "drawings"
+
+    两个洞叠在一起,而且症状一样(都是"一张图都没有"):
+
+    1. **层数按本机目录结构写死。** 本机文件在
+       ``<仓库根>/backend/src/gyt/agents/cad/demo_registry.py``,往上 5 层正好是仓库根;
+       容器的构建上下文是 ``backend/``、``COPY . /app``,文件落在
+       ``/app/src/gyt/agents/cad/demo_registry.py``,**少了一层**,往上 5 层变成 ``/`` ——
+       目录被算成 ``/data/demo/drawings``,不存在。
+    2. **常量还被当函数默认参数用。** 默认参数在 import 时求值一次就定死,
+       测试改完 ``GYT_DATA_DIR`` 再 ``get_settings.cache_clear()`` 也换不动它。
+
+    改成函数之后,取值时刻 = 调用时刻;路径由 ``config.demo_assets_dir`` 统一给出,
+    本机(``<仓库根>/data/demo``)与容器(``/app/data/demo``)自动对齐。
+    """
+    return get_settings().demo_assets_dir / _DRAWINGS_SUBDIR
 
 
 def _load_names(drawings_dir: Path) -> dict[str, str]:
@@ -54,13 +78,19 @@ def _load_names(drawings_dir: Path) -> dict[str, str]:
     return {str(k): str(v) for k, v in loaded.items()} if isinstance(loaded, dict) else {}
 
 
-def register_demo_drawings(drawings_dir: Path = DEFAULT_DRAWINGS_DIR) -> dict[str, str]:
+def register_demo_drawings(drawings_dir: Path | None = None) -> dict[str, str]:
     """扫目录、逐个登记,返回【展示名 → artifact_id】映射(每次调用都真的重登记一遍)。
 
     · 名字:names.json 里配了用配的,没配用文件名主干(如 plan_gbk → "plan_gbk")。
     · 重名:同名后来的覆盖先来的,记一条 warning(演示配置错更该吵,不该静默)。
     · 目录不存在/无 .dxf:返回空表并 warning —— 演示当天这就是「一张图都没有」的信号。
+
+    ``drawings_dir=None`` = 现查配置(``_default_drawings_dir()``)。**默认值必须是 None,
+    不许写成模块级常量** —— 函数默认参数在 import 时求值一次就定死,配置再改也换不动,
+    而且 import 期就会顺手构造一次 Settings。理由详见 ``_default_drawings_dir``。
     """
+    if drawings_dir is None:
+        drawings_dir = _default_drawings_dir()
     if not drawings_dir.is_dir():
         logger.warning("演示图纸目录不存在:%s(list_drawings 会是空的)", drawings_dir)
         return {}
@@ -69,9 +99,7 @@ def register_demo_drawings(drawings_dir: Path = DEFAULT_DRAWINGS_DIR) -> dict[st
     mapping: dict[str, str] = {}
     for dxf in sorted(drawings_dir.glob("*.dxf")):
         display = names.get(dxf.name, dxf.stem)
-        artifact_id = artifacts.register(
-            dxf, kind=ArtifactKind.DRAWING, original_name=dxf.name
-        )
+        artifact_id = artifacts.register(dxf, kind=ArtifactKind.DRAWING, original_name=dxf.name)
         if display in mapping:
             logger.warning("演示图纸展示名重复:「%s」被后一个文件覆盖", display)
         mapping[display] = artifact_id
@@ -89,8 +117,9 @@ def get_demo_drawings() -> dict[str, str]:
     return register_demo_drawings()
 
 
+# DEFAULT_DRAWINGS_DIR 已删除(全仓无引用点,grep 过 src / tests / scripts / eval)。
+# 要拿默认目录请调 _default_drawings_dir() —— 常量会在 import 时把配置定死,那正是这次的病根。
 __all__ = [
-    "DEFAULT_DRAWINGS_DIR",
     "get_demo_drawings",
     "register_demo_drawings",
 ]

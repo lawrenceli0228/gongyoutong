@@ -104,43 +104,63 @@ async def _load_index(drawing: str) -> tuple[dict[str, Any] | None, str, Envelop
     try:
         meta = await asyncio.to_thread(artifacts.read_meta, drawing_id)
     except ArtifactNotFound:
-        return None, drawing_id, fail(
-            ErrorCode.NOT_FOUND,
-            user_msg=f"这张图纸找不到了,可能没预注册。现在能看的有:{_drawings_hint()}。",
+        return (
+            None,
+            drawing_id,
+            fail(
+                ErrorCode.NOT_FOUND,
+                user_msg=f"这张图纸找不到了,可能没预注册。现在能看的有:{_drawings_hint()}。",
+            ),
         )
 
     ext = str(meta.get("ext", "")).lower()
     if ext not in ALLOWED_CAD_EXT:
         kinds = "、".join(sorted(ALLOWED_CAD_EXT))
-        return None, drawing_id, fail(
-            ErrorCode.FILE_UNSUPPORTED,
-            user_msg=f"这个文件不是图纸格式,我只看得了 {kinds}。",
+        return (
+            None,
+            drawing_id,
+            fail(
+                ErrorCode.FILE_UNSUPPORTED,
+                user_msg=f"这个文件不是图纸格式,我只看得了 {kinds}。",
+            ),
         )
 
     settings = get_settings()
     size = int(meta.get("size_bytes", 0))
     if size > settings.drawing_max_mb * _BYTES_PER_MB:
-        return None, drawing_id, fail(
-            ErrorCode.FILE_TOO_LARGE,
-            user_msg=(
-                f"这张图纸有 {size / _BYTES_PER_MB:.1f}MB,超过了 "
-                f"{settings.drawing_max_mb:.0f}MB 的上限,先精简一下再看。"
+        return (
+            None,
+            drawing_id,
+            fail(
+                ErrorCode.FILE_TOO_LARGE,
+                user_msg=(
+                    f"这张图纸有 {size / _BYTES_PER_MB:.1f}MB,超过了 "
+                    f"{settings.drawing_max_mb:.0f}MB 的上限,先精简一下再看。"
+                ),
             ),
         )
 
     try:
         idx = await index.ensure_index(drawing_id)
     except ArtifactNotFound:
-        return None, drawing_id, fail(
-            ErrorCode.NOT_FOUND,
-            user_msg=f"这张图纸的文件不见了。现在能看的有:{_drawings_hint()}。",
+        return (
+            None,
+            drawing_id,
+            fail(
+                ErrorCode.NOT_FOUND,
+                user_msg=f"这张图纸的文件不见了。现在能看的有:{_drawings_hint()}。",
+            ),
         )
     except ezdxf.DXFError as exc:  # DXFStructureError 等都是它的子类
         logger.info("图纸 %s 解析失败:%s", drawing_id, exc)
-        return None, drawing_id, fail(
-            ErrorCode.FILE_CORRUPT,
-            user_msg="这张图纸打不开,可能文件传坏了或不是标准 DXF,换一张再看。",
-            detail=f"ezdxf 解析 {drawing_id} 失败:{type(exc).__name__}: {exc}",
+        return (
+            None,
+            drawing_id,
+            fail(
+                ErrorCode.FILE_CORRUPT,
+                user_msg="这张图纸打不开,可能文件传坏了或不是标准 DXF,换一张再看。",
+                detail=f"ezdxf 解析 {drawing_id} 失败:{type(exc).__name__}: {exc}",
+            ),
         )
     return idx, drawing_id, None
 

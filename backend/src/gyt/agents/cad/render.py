@@ -65,9 +65,7 @@ def to_png(path: Path) -> bytes:
     buf = io.BytesIO()
     # bbox_inches="tight" 贴着图元裁掉四周空白,细长/小图也能填满画面;
     # 显式白底,免得默认透明背景在看图器里叠出诡异颜色。
-    fig.savefig(
-        buf, format="png", dpi=_DPI, facecolor="white", bbox_inches="tight", pad_inches=0.2
-    )
+    fig.savefig(buf, format="png", dpi=_DPI, facecolor="white", bbox_inches="tight", pad_inches=0.2)
     return buf.getvalue()
 
 

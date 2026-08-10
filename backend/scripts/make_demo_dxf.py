@@ -35,7 +35,7 @@ def _add_span_dim(msp, *, layer: str) -> None:
     """加一道水平线性标注,读数 = SPAN_MM。render() 必须调,否则标注不出图元。"""
     msp.add_line((0, 0), (SPAN_MM, 0), dxfattribs={"layer": layer})
     dim = msp.add_linear_dim(
-        base=(0, -500),          # 尺寸线的位置(基线)
+        base=(0, -500),  # 尺寸线的位置(基线)
         p1=(0, 0),
         p2=(SPAN_MM, 0),
         dxfattribs={"layer": layer},
@@ -176,8 +176,7 @@ def main() -> int:
             print(f"  ✗ {p}")
         return 1
     print(
-        "自检通过:普通图可读 / GBK 图解回中文「轴线」且 encoding=gbk 版本≤AC1018 / "
-        "损坏图如期读失败"
+        "自检通过:普通图可读 / GBK 图解回中文「轴线」且 encoding=gbk 版本≤AC1018 / 损坏图如期读失败"
     )
     return 0
 

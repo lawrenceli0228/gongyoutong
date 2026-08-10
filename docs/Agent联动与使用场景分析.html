@@ -1,0 +1,586 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent 联动与使用场景 · 工友通</title>
+<style>
+:root{
+  --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5;
+  --accent:#c2410c; --accent-soft:#fff1e8;
+  --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec;
+  --warn:#b45309; --warn-soft:#fdf3e2;
+  --bad:#a52a2a; --bad-soft:#fbeceb;
+  --sans:"PingFang SC","Hiragino Sans GB","Noto Sans SC",system-ui,-apple-system,sans-serif;
+  --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme:dark){
+  :root{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+    --line:#37332c; --line-soft:#2a2620;
+    --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+    --ok:#6fbf8f; --ok-soft:#12271a; --warn:#e0a34e; --warn-soft:#2b2010;
+    --bad:#e97a70; --bad-soft:#2c1614; }
+}
+:root[data-theme="light"]{ --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5; --accent:#c2410c; --accent-soft:#fff1e8; --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec; --warn:#b45309; --warn-soft:#fdf3e2; --bad:#a52a2a; --bad-soft:#fbeceb; }
+:root[data-theme="dark"]{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+  --line:#37332c; --line-soft:#2a2620; --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+  --ok:#6fbf8f; --ok-soft:#12271a; --warn:#e0a34e; --warn-soft:#2b2010; --bad:#e97a70; --bad-soft:#2c1614; }
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;
+  font-feature-settings:"tnum";text-underline-offset:3px}
+.wrap{max-width:1180px;margin:0 auto;padding:0 24px 96px;
+  display:grid;grid-template-columns:1fr;gap:0}
+@media(min-width:1080px){ .wrap{grid-template-columns:184px minmax(0,1fr);gap:56px;padding-right:40px} }
+
+/* ── 目录 ── */
+nav{display:none}
+@media(min-width:1080px){
+  nav{display:block;position:sticky;top:0;align-self:start;padding-top:132px;height:100vh;overflow-y:auto}
+  nav a{display:block;font-size:12.5px;color:var(--ink-faint);text-decoration:none;
+    padding:5px 0 5px 11px;border-left:2px solid var(--line-soft);transition:.15s}
+  nav a:hover{color:var(--accent);border-left-color:var(--accent)}
+  nav a b{font-family:var(--mono);font-size:10.5px;margin-right:6px;opacity:.6}
+}
+main{min-width:0}
+
+/* ── 头部 ── */
+header{padding:76px 0 0}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--accent);margin-bottom:20px}
+h1{font-size:clamp(30px,4.6vw,50px);line-height:1.14;letter-spacing:-.022em;font-weight:680;
+  margin:0 0 20px;text-wrap:balance;max-width:19em}
+.lede{font-size:clamp(16px,1.5vw,18.5px);color:var(--ink-soft);max-width:46em;margin:0 0 40px;line-height:1.72}
+.lede b{color:var(--ink);font-weight:600}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));
+  gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--r);
+  overflow:hidden;margin-bottom:14px}
+.stat{background:var(--card);padding:16px 18px}
+.stat .n{font-size:27px;font-weight:660;letter-spacing:-.02em;line-height:1.2;font-variant-numeric:tabular-nums}
+.stat .n s{text-decoration:none;font-size:14px;color:var(--ink-faint);font-weight:500;margin-left:2px}
+.stat .k{font-size:11.5px;color:var(--ink-faint);margin-top:3px}
+.meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);padding-bottom:8px}
+
+/* ── 章节 ── */
+section{padding-top:64px;scroll-margin-top:24px}
+h2{font-size:12px;font-family:var(--mono);letter-spacing:.15em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 8px;font-weight:600}
+h2 + .h{font-size:clamp(21px,2.3vw,27px);font-weight:640;letter-spacing:-.016em;margin:0 0 8px;line-height:1.3;text-wrap:balance}
+.sub{color:var(--ink-soft);max-width:44em;margin:0 0 28px;font-size:15.5px}
+h3{font-size:16.5px;font-weight:620;margin:36px 0 12px;letter-spacing:-.008em}
+p{margin:0 0 14px;max-width:44em}
+code{font-family:var(--mono);font-size:.855em;background:var(--line-soft);
+  padding:1.5px 5px;border-radius:4px;word-break:break-word}
+a{color:var(--accent)}
+
+/* ── 时序图 ── */
+.flow{border:1px solid var(--line);border-radius:var(--r);background:var(--card);overflow:hidden;margin:8px 0 22px}
+.hop{display:grid;grid-template-columns:56px 1fr;border-top:1px solid var(--line-soft);align-items:start}
+.hop:first-child{border-top:0}
+.hop > .i{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);
+  padding:15px 0 15px 16px;letter-spacing:.06em}
+.hop > .b{padding:13px 18px 14px 4px}
+.hop .who{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px}
+.hop .d{font-size:13.5px;color:var(--ink-soft);line-height:1.6}
+.hop .d em{font-style:normal;color:var(--accent);font-weight:600}
+.hop.hard{background:var(--accent-soft)}
+.hop.cut{background:var(--warn-soft)}
+
+.pill{display:inline-flex;align-items:center;font-family:var(--mono);font-size:11.5px;font-weight:600;
+  padding:2.5px 9px;border-radius:20px;border:1px solid;white-space:nowrap;letter-spacing:.01em}
+.p-sup{color:var(--blue);border-color:var(--blue);background:var(--blue-soft)}
+.p-ag{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.p-tool{color:var(--ink-soft);border-color:var(--line);background:var(--paper)}
+.p-sys{color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}
+.tag{font-size:11px;font-family:var(--mono);color:var(--ink-faint);letter-spacing:.05em}
+
+.chain{display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap}
+.chain .ar{color:var(--ink-faint);font-size:11px;font-family:var(--mono)}
+.chain .ar.h{color:var(--accent);font-weight:700}
+
+/* ── 卡片组 ── */
+.grid{display:grid;gap:14px;margin:6px 0 20px}
+@media(min-width:720px){ .g2{grid-template-columns:1fr 1fr} .g3{grid-template-columns:repeat(3,1fr)} }
+.card{border:1px solid var(--line);border-radius:var(--r);background:var(--card);padding:17px 19px}
+.card h4{margin:0 0 7px;font-size:15.5px;font-weight:620;letter-spacing:-.008em;display:flex;
+  align-items:baseline;gap:8px;flex-wrap:wrap}
+.card h4 .no{font-family:var(--mono);font-size:11.5px;color:var(--accent);font-weight:700}
+.card p{font-size:14px;color:var(--ink-soft);margin:0 0 9px;max-width:none;line-height:1.68}
+.card p:last-child{margin-bottom:0}
+.card .q{color:var(--ink);font-size:14.5px;border-left:2.5px solid var(--accent);
+  padding:2px 0 2px 11px;margin:0 0 10px;line-height:1.6}
+.card dl{margin:10px 0 0;font-size:13px;display:grid;grid-template-columns:auto 1fr;gap:4px 12px}
+.card dt{color:var(--ink-faint);font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;padding-top:3px}
+.card dd{margin:0;color:var(--ink-soft);line-height:1.6}
+.card.hi{border-color:var(--accent);border-width:1.5px}
+.card.bad{border-left:3px solid var(--bad)}
+.card.warn{border-left:3px solid var(--warn)}
+.card.ok{border-left:3px solid var(--ok)}
+
+.role{display:inline-block;font-size:11.5px;padding:1.5px 8px;border-radius:5px;
+  background:var(--blue-soft);color:var(--blue);font-weight:600}
+
+/* ── 表格 ── */
+.tw{overflow-x:auto;margin:8px 0 22px;border:1px solid var(--line);border-radius:var(--r);background:var(--card)}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:620px}
+th{text-align:left;font-size:10.5px;font-family:var(--mono);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:600;padding:11px 15px;border-bottom:1px solid var(--line);
+  background:var(--line-soft);white-space:nowrap}
+td{padding:11px 15px;border-bottom:1px solid var(--line-soft);vertical-align:top;color:var(--ink-soft);line-height:1.6}
+tr:last-child td{border-bottom:0}
+td:first-child{color:var(--ink);font-weight:550}
+td b{color:var(--ink);font-weight:600}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.d-ok{background:var(--ok)} .d-warn{background:var(--warn)} .d-bad{background:var(--bad)}
+.st{font-family:var(--mono);font-size:11px;font-weight:600;white-space:nowrap}
+.s-ok{color:var(--ok)} .s-warn{color:var(--warn)} .s-bad{color:var(--bad)}
+
+/* ── 提示块 ── */
+.note{border-left:3px solid var(--blue);background:var(--blue-soft);padding:14px 17px;
+  border-radius:0 var(--r) var(--r) 0;margin:16px 0 22px;font-size:14.5px;color:var(--ink-soft)}
+.note b{color:var(--ink)}
+.note.a{border-left-color:var(--accent);background:var(--accent-soft)}
+.note.w{border-left-color:var(--warn);background:var(--warn-soft)}
+.note p:last-child{margin-bottom:0}
+.new{display:inline-block;font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:.1em;
+  background:var(--accent);color:var(--paper);padding:2px 6px;border-radius:4px;vertical-align:2px}
+
+/* ── 时间轴 ── */
+.tl{border-left:2px solid var(--line);margin:8px 0 22px;padding-left:0}
+.ev{position:relative;padding:0 0 22px 26px}
+.ev::before{content:"";position:absolute;left:-6px;top:7px;width:10px;height:10px;border-radius:50%;
+  background:var(--paper);border:2px solid var(--accent)}
+.ev .t{font-family:var(--mono);font-size:11px;color:var(--accent);font-weight:600;letter-spacing:.04em}
+.ev .a{font-size:15px;font-weight:600;margin:2px 0 5px}
+.ev .say{border-left:2.5px solid var(--line);padding-left:11px;font-size:14px;color:var(--ink-soft);
+  margin:0 0 7px;line-height:1.65}
+.ev .got{font-size:13.5px;color:var(--ink-soft);margin:0}
+.ev .got b{color:var(--ink)}
+.ev code{font-size:12.5px}
+
+ul{margin:0 0 14px;padding-left:20px;max-width:44em}
+li{margin-bottom:6px;color:var(--ink-soft)}
+li b{color:var(--ink)}
+hr{border:0;border-top:1px solid var(--line);margin:44px 0 0}
+footer{padding-top:26px;font-size:13px;color:var(--ink-faint)}
+footer p{max-width:44em}
+</style>
+
+<div class="wrap">
+<nav aria-label="目录">
+  <a href="#m"><b>01</b>联动机制</a>
+  <a href="#f"><b>02</b>三种形态</a>
+  <a href="#c"><b>03</b>能力矩阵</a>
+  <a href="#s"><b>04</b>使用场景</a>
+  <a href="#chem"><b>05</b>台账的化学反应</a>
+  <a href="#new"><b>06</b>三个新发现</a>
+  <a href="#br"><b>07</b>断裂点</a>
+  <a href="#neg"><b>08</b>做不到的</a>
+  <a href="#demo"><b>09</b>演示编排</a>
+  <a href="#fix"><b>10</b>立即可修</a>
+</nav>
+
+<main>
+<header>
+  <div class="eyebrow">工友通 · 多智能体系统分析</div>
+  <h1>三个 Agent 怎么联动,能干什么,哪里会断</h1>
+  <p class="lede">五路并行深挖后的收敛结论。核心一句:<b>一条 messages 通道贯穿全场,进去是全量、出来只剩一条</b>——所以 Envelope 原始数据永远到不了 supervisor,<b>兄弟 Agent 的那句人话就是跨 Agent 数据流的全部载体</b>。派活交给 LLM,英雄链第二跳交给写死的图边,大文件只传 32 位编号。整套联动不靠提示词自觉,靠五个结构件兜着。</p>
+
+  <div class="stats">
+    <div class="stat"><div class="n">3<s>+1</s></div><div class="k">登记 Agent(链内还有 report)</div></div>
+    <div class="stat"><div class="n">19<s>/19</s></div><div class="k">真机断言,4 条查库</div></div>
+    <div class="stat"><div class="n">4<s>条</s></div><div class="k">真·跨 Agent 协同证据</div></div>
+    <div class="stat"><div class="n">15<s>/22</s></div><div class="k">路由 = 当前满上限</div></div>
+    <div class="stat"><div class="n">3<s>次</s></div><div class="k">熔断前最多派活(实测)</div></div>
+  </div>
+  <div class="meta">2026-08-08 · 基准 main@b140032 · 结论均落到 文件:行号,已剔除计划文档里的设想</div>
+</header>
+
+<!-- ══ 01 ══ -->
+<section id="m">
+  <h2>01 / 机制</h2>
+  <div class="h">一次提问,消息逐跳去了哪</div>
+  <p class="sub">场景:点上传按钮发一张工地照片,说「查一下这张照片,顺便出份巡检记录」。这正是真机验收 C1/C2 断言的那句话。</p>
+
+  <div class="flow">
+    <div class="hop"><div class="i">HOOK</div><div class="b">
+      <div class="who"><span class="pill p-sys">ingest_uploads</span><span class="tag">pre_model_hook · 唯一模态闸</span></div>
+      <div class="d">图片以多模态 content 块进来,而全线走 DeepSeek 文本档 —— <em>不支持视觉,直接 400,且前端不渲染这个错</em>。钩子在调模型前把图存成产物、把消息<b>永久</b>改写成「(照片编号:32位hex)」。</div></div></div>
+
+    <div class="hop"><div class="i">跳 1</div><div class="b">
+      <div class="who"><span class="pill p-sup">supervisor</span><span class="tag">DeepSeek · temp=0 · 只派活不干活</span></div>
+      <div class="d">读 roster(每个 Agent 的 summary 就是路由的唯一依据)→ 发 <code>transfer_to_inspection</code>。交接把<b>全量历史</b>整份交出去,进入方向零裁剪。</div></div></div>
+
+    <div class="hop hard"><div class="i">跳 2</div><div class="b">
+      <div class="who"><span class="chain"><span class="pill p-ag">safety</span><span class="ar h">══硬边══▶</span><span class="pill p-ag">report</span></span><span class="tag">inspection 子图</span></div>
+      <div class="d">safety 调 <code>analyze_site_photo</code> → Kimi 视觉 → 八类受控违规项 + 确定性定级。然后<em>没有任何人再下一次命令</em>,写死的图边把它送进 report。report <b>不读 safety 的话</b>,拿同一个编号重调 analyze(提示词冻结→缓存必中→逐字节一致),LLM 在链里只搬运编号。</div></div></div>
+
+    <div class="hop cut"><div class="i">回灌</div><div class="b">
+      <div class="who"><span class="pill p-sys">output_mode = last_message</span><span class="tag">这是那把刀</span></div>
+      <div class="d">只把<b>最后一条</b> AIMessage 带回外层。<em>全部 ToolMessage —— 也就是全部 Envelope 原始数据 —— 在这里被丢弃</em>。supervisor 永远看不到 violations 数组、severity、report_id,它只看到子 Agent 写出来的那段人话。</div></div></div>
+
+    <div class="hop"><div class="i">跳 3</div><div class="b">
+      <div class="who"><span class="pill p-sup">supervisor</span><span class="tag">收工 → END</span></div>
+      <div class="d">上下文里出现「已交回」标记(<code>add_handoff_back_messages</code>),模型读懂这是收工信号,不再派活,补一两句短话收尾。</div></div></div>
+  </div>
+
+  <div class="note a"><p><b>为什么「保留兄弟 Agent 的发言」是命根子。</b>Envelope 已经在回灌那一刀里被丢了。所以 <code>FocusOnOwnWork</code> 滤网<b>只滤 supervisor 的派活腔</b>,兄弟的那段人话是跨 Agent 数据流的<b>全部</b>载体——再滤一次就是零。第一版滤网连兄弟成果一起滤,巡检跑完用户说「把这些隐患记成整改任务」,schedule 两眼一抹黑,只能反问「你说的隐患具体是什么」。</p></div>
+
+  <h3>五个结构件,各防一个具体故障</h3>
+  <div class="tw"><table>
+    <thead><tr><th>结构件</th><th>防的是什么(全是真机抓到的)</th><th>为什么提示词摁不住</th></tr></thead>
+    <tbody>
+      <tr><td>FocusOnOwnWork<br><span class="tag">core/focus.py</span></td><td>子 Agent 读到「我这就安排 safety 同事看一下」,<b>跟着演起了调度者</b>,把活推回去,两边互等,界面零错误</td><td>few-shot 污染是上下文的属性。temp=0 拦不住,写「你就是那个同事」也拦不住——历史里一句现成的示范比告诫更有说服力</td></tr>
+      <tr><td>add_handoff_back<br>_messages=True<br><span class="tag">graph.py:413</span></td><td>嫌那对英文消息是装饰想省 token 关掉 → 它其实是<b>收工信号</b> → supervisor 对同一件事反复派,<b>真机连炸两发</b></td><td>没有协议消息,模型只能靠语义猜「这一跳结束了没有」</td></tr>
+      <tr><td>硬边 safety→report<br><span class="tag">graph.py:184</span></td><td>交给 LLM 决策第二跳,<b>演示当场会随机漏掉出报告那一环</b></td><td>把概率变成必然,只能靠图边。单测直接读图边,不读提示词</td></tr>
+      <tr><td>RequireLedgerTool<br><span class="tag">schedule/guard.py</span></td><td>多轮后不调工具、照上文自己的回执补一条「销了:T1 已完成」——<b>库里 T1 还是 open</b>,后续表格里的「已完成」也是编的</td><td>自我模仿:上文全是自己的成功回执,补一条比调工具「顺手」</td></tr>
+      <tr><td>渲染层 stripLedgerEcho<br><span class="tag">ai.tsx</span></td><td>同一份清单出现两次;或表格折叠后只说「见上表」而用户什么都看不到。<b>实测三连三种违令姿势</b></td><td>「别复述」这类指令摁不住;supervisor 有「最终回答要自包含」的本能。改成谁产谁展示 + 渲染层裁掉复读</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ══ 02 ══ -->
+<section id="f">
+  <h2>02 / 形态</h2>
+  <div class="h">三种联动,可靠性与说服力正好相反</div>
+  <div class="grid g3">
+    <div class="card ok"><h4>硬边</h4>
+      <p><span class="chain"><span class="pill p-ag">safety</span><span class="ar h">══▶</span><span class="pill p-ag">report</span></span></p>
+      <p>写死的图边,不经 LLM。<b>彩排一百次成功一百次</b>,载荷全量双向、连合成交接消息都没有。</p>
+      <p>弱点:评委会问「这跟一段 <code>if</code> 有什么区别」——答案是没区别,而这正是故意的。<b>用刻意去掉智能的环节去证明智能,是自相矛盾的。</b></p></div>
+    <div class="card hi"><h4>动态跳</h4>
+      <p><span class="chain"><span class="pill p-ag">inspection</span><span class="ar">→</span><span class="pill p-sup">supervisor</span><span class="ar">→</span><span class="pill p-ag">schedule</span></span></p>
+      <p>supervisor 真决策。用户只说「把这些隐患记成整改任务,下周一之前搞定」,它转给一个<b>跟照片毫无关系的同事</b>,还把上一位的结论当标题带过去了。</p>
+      <p><b>两个 Agent 之间零联动代码。</b>有库级铁证(D3:整改任务真实落库、期限=下周一)。</p></div>
+    <div class="card"><h4>单跳</h4>
+      <p><span class="chain"><span class="pill p-sup">supervisor</span><span class="ar">→</span><span class="pill p-ag">safety</span></span> / <span class="pill p-ag">schedule</span></p>
+      <p>一问一答。schedule 的四工具(记/查/改/销)+ safety 的识图,是使用频次最高的形态。</p>
+      <p>负向也算能力:模糊请求会追问不乱派,超范围如实说做不了、<b>且严禁再发交接工具</b>(手嘴一致规则)。</p></div>
+  </div>
+  <div class="note"><p><b>演示别二选一。</b>硬边证明「可靠」,动态跳证明「真的是多智能体」。分开演,任何一个都要挨一刀:硬边像流水线,动态跳像待办 App。合起来,<b>转折点本身就是论证</b>——顺序必须 硬边 → 动态跳,因为后者需要前者产出的隐患内容才成立。</p></div>
+</section>
+
+<!-- ══ 03 ══ -->
+<section id="c">
+  <h2>03 / 家底</h2>
+  <div class="h">已验证 vs 纸面,诚实分级</div>
+  <p class="sub">团队最怕的是把没验证过的东西当成能力去讲。下面每一行的证据都可回溯。</p>
+  <div class="tw"><table>
+    <thead><tr><th>联动组合</th><th>状态</th><th>证据</th><th>缺什么</th></tr></thead>
+    <tbody>
+      <tr><td>safety ══▶ report(链内)</td><td class="st s-ok"><span class="dot d-ok"></span>真机</td><td>C2 断言 <code>GYT-</code> 编号出现;单测锁图边</td><td>无,这条最扎实</td></tr>
+      <tr><td>supervisor → inspection</td><td class="st s-ok"><span class="dot d-ok"></span>真机</td><td>C1 断言交接真的发出;routing R05–R07 全绿</td><td>无</td></tr>
+      <tr><td>inspection → schedule</td><td class="st s-ok"><span class="dot d-ok"></span>真机+查库</td><td>C3(日期+T号)+ D3(库里真有整改任务)</td><td>无。<b>目前唯一被验证的真·跨 Agent 业务协同</b></td></tr>
+      <tr><td>supervisor → schedule</td><td class="st s-ok"><span class="dot d-ok"></span>真机+查库</td><td>A1–A10 十条 + D1–D4 四条库级</td><td>无</td></tr>
+      <tr><td>supervisor → safety(单跳完整链)</td><td class="st s-warn"><span class="dot d-warn"></span>间接</td><td>路由层 R01–R04 绿;识图层 90.0%(27/30)</td><td>没有一条断言直测完整链。<b>路由只测第一跳,识图评测绕过 Agent 本体</b></td></tr>
+      <tr><td>safety → schedule(不出文档直接记整改)</td><td class="st s-warn"><span class="dot d-warn"></span>未测</td><td>机制上同 C3,但 C3 走的是 inspection 之后</td><td>零断言。<b>别把 C3 说成是这条</b></td></tr>
+      <tr><td>report 被单独调用</td><td class="st s-warn"><span class="dot d-warn"></span>路由不可达</td><td>刻意不做登记项,<code>transfer_to_report</code> 不存在</td><td>非缺陷:硬造 inspection/report 的区分连人都分不稳,是 0.90 门槛的毒药</td></tr>
+      <tr><td>knowledge → schedule / → report</td><td class="st s-bad"><span class="dot d-bad"></span>未实现</td><td>目录不存在;队友分支<b>零独有提交</b>;<code>data/demo/docs/</code> 空</td><td>整个 Agent + 素材 + rag runner 接线</td></tr>
+      <tr><td>cad → 任意</td><td class="st s-bad"><span class="dot d-bad"></span>未实现</td><td>同上,<code>data/demo/drawings/</code> 空</td><td>整个 Agent + DXF 素材</td></tr>
+      <tr><td>ping → 任意</td><td class="st s-bad"><span class="dot d-bad"></span>已摘除</td><td>空正域条目,三轮改措辞收不住(否定句「不派带图纸的」里的 X 照样当钓饵)</td><td>不会回来</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note w"><p><b>68.2% 这个数字必须带限定说。</b>22 条里有 7 条指向<b>还没落地的 Agent</b>(knowledge 4 + cad 3),结构性不可能对。<b>15/15 全绿 = 15/22 = 当前满上限</b>,不是模型不行。而且这 7 条现在的失败模式是「如实说做不了」而不是乱派。哪怕只补 knowledge 也只到 86.4%,<b>想过 0.90,两个 Agent 必须都落地</b>。</p>
+  <p>另外两处口径:① 「safety 90%」是<b>识图工具</b>的分,评测直接调工具、绕过 Agent 本体,代码注释白纸黑字写着这个代价;② 「routing 68.2%」<b>只测第一跳</b>,拿到首个交接就停流,子 Agent 一步都不跑。</p></div>
+</section>
+
+<!-- ══ 04 ══ -->
+<section id="s">
+  <h2>04 / 场景</h2>
+  <div class="h">今天就能跑的八个</div>
+  <p class="sub">全部卡在代码的真实边界内。日期按 <code>dates.py</code> 真实推算,锚定 2026-08-08(周六)。按「业务价值 × 演示观赏性」排序。</p>
+
+  <div class="grid g2">
+    <div class="card hi"><h4><span class="no">A1</span>甲方三点进场,他两点半绕最后一圈 <span class="role">安全员</span></h4>
+      <div class="q">「这张拍完给我留个档,回头检查组要看」<br>接着:「把这几处记成整改任务,下周一之前弄完」</div>
+      <dl><dt>链路</dt><dd><span class="chain"><span class="pill p-ag">inspection</span><span class="ar h">══▶</span><span class="pill p-ag">report</span><span class="ar">→</span><span class="pill p-ag">schedule</span></span></dd>
+      <dt>产出</dt><dd>一句话结论 + 一份 Word《巡检记录 GYT-…》+ 台账多一条 T 号任务,期限 8月10日</dd>
+      <dt>痛点</dt><dd>现在是拍照→发微信群→回办公室打开模板→手打隐患手插图→再在本子上记一笔。<b>一处隐患 15–20 分钟,三处就是一下午</b>;群消息刷过去就找不到了,整改期限只活在工头脑子里</dd></dl>
+      <p style="margin-top:10px"><b>排第一</b>:唯一一句话同时点亮多 Agent 协同、多模态、工作流自动化三样,而且有<b>能拿在手里的实体产出</b>。</p></div>
+
+    <div class="card hi"><h4><span class="no">A2</span>次日早上七点班前会,先看欠账再去复拍 <span class="role">安全员</span></h4>
+      <div class="q">「下周三之前还有哪些活没干完」→「T3 那个通道清出来了,你看这张」→「T3 干完了」</div>
+      <dl><dt>链路</dt><dd><span class="chain"><span class="pill p-ag">schedule</span><span class="ar">→</span><span class="pill p-ag">safety</span><span class="ar">→</span><span class="pill p-ag">schedule</span></span></dd>
+      <dt>产出</dt><dd>四列表格(逾期排最前)+ 复检判读 + 库里 T3 真的变 <code>done</code></dd>
+      <dt>痛点</dt><dd>整改闭环最容易断在「上次到底说了哪几处」——现在要翻聊天记录、翻纸质整改单。<b>漏一条,甲方复查时当场打脸</b></dd></dl>
+      <p style="margin-top:10px"><b>排第二</b>:把 A1 收口成闭环。<b>闭环才是产品,单点是玩具。</b>而且可以当场敲一行 sqlite 给评委看。</p></div>
+
+    <div class="card"><h4><span class="no">A3</span>中午十二点半路过配电箱,箱门敞着插排叠三层 <span class="role">架子工老李</span></h4>
+      <div class="q">「瞅瞅这照片,现场有没有啥事」</div>
+      <dl><dt>链路</dt><dd><span class="pill p-ag">safety</span></dd>
+      <dt>产出</dt><dd>「这儿有 1 处问题——用电隐患,级别较大。右边那圈线看不清有没有破皮,你到跟前再看一眼」</dd>
+      <dt>痛点</dt><dd>老李不懂规范、不会填隐患上报单,现在的选择只有装没看见或发群里被刷走。这条是<b>零门槛上报</b>:不需要知道这叫「用电隐患」,不需要知道该找谁</dd></dl>
+      <p style="margin-top:10px">业务价值最高(覆盖几百工人 vs 两三个安全员),观赏性中等——单 Agent 画面太短。</p></div>
+
+    <div class="card"><h4><span class="no">A4</span>下午五点主任电话:「刚那个你补份材料上来」 <span class="role">安全员</span></h4>
+      <div class="q">「把刚才那张照片的检查结果整理成巡检报告」</div>
+      <dl><dt>链路</dt><dd><span class="chain"><span class="pill p-ag">safety</span><span class="ar" style="color:var(--ink-faint)">已查</span><span class="ar">→</span><span class="pill p-ag">inspection</span></span></dd>
+      <dt>产出</dt><dd>Word,内容与两小时前口头说的<b>逐字节一致</b></dd>
+      <dt>痛点</dt><dd>人工补材料最容易「越补越漂亮」:口头说 2 处写成 3 处。<b>留档材料一旦和现场判断不一致,追责时就是伪证</b></dd></dl>
+      <p style="margin-top:10px">专治必问题「你这多 Agent 是不是硬编死的」——A4 和 A1 是<b>同一张照片、不同措辞、派到不同 Agent</b>。</p></div>
+
+    <div class="card"><h4><span class="no">A5</span>上午十点办公室泡茶,先看欠账再挑要留证据的 <span class="role">项目经理</span></h4>
+      <div class="q">「下周三之前还有啥没干完」→「T5 那个临边防护我拍了张,出份巡检记录」</div>
+      <dl><dt>链路</dt><dd><span class="chain"><span class="pill p-ag">schedule</span><span class="ar">→</span><span class="pill p-ag">inspection</span></span></dd>
+      <dt>痛点</dt><dd>项目经理最缺的不是信息,是<b>能拿去开会的一页纸</b></dd></dl></div>
+
+    <div class="card"><h4><span class="no">A6</span>早上七点站在队伍前,一手喇叭一手手机念活儿 <span class="role">班组长</span></h4>
+      <div class="q">「记一下:明天上午复检三层钢筋」「再记一条:后天清点脚手架扣件」「月底前完成外架验收」</div>
+      <dl><dt>产出</dt><dd>T1 8月9日(周日)/ T2 8月10日(周一)/ T3 8月31日(周一)</dd>
+      <dt>痛点</dt><dd>现在记在烟盒背面。<b>「明天上午」一过夜就成错话</b>——系统在存库那一刻就把它固化成 8月9日</dd></dl>
+      <p style="margin-top:10px">⚠️ 但<b>一次别超过 3 条</b>,原因见 §06 第二个发现。</p></div>
+
+    <div class="card warn"><h4><span class="no">A7</span>周六上午,他嘴一快说错了周次 <span class="role">班组长</span></h4>
+      <div class="q">「本周三之前有啥任务没干完」</div>
+      <dl><dt>产出</dt><dd>不猜,直接顶回来:「本周三已经过了(今天周六)。要查下周的就说『下周三』」</dd>
+      <dt>价值</dt><dd>最不起眼也最值钱:<b>期限猜错一次,师傅白跑一趟,整个台账的信用当场归零</b></dd></dl>
+      <p style="margin-top:10px">演示时可能被当成 bug,话术要先立:<b>「这是故意的。替他圆成下周三,师傅就白跑一天。宁可让它问一句。」</b></p></div>
+
+    <div class="card warn"><h4><span class="no">A8</span>手滑把上午开会的照片发进来了 <span class="role">文员</span></h4>
+      <div class="q">「这张看看有啥问题」</div>
+      <dl><dt>产出</dt><dd>「这张我看着不像作业现场,倒像在办公室里。是不是发错了?要真是你们现场,换个角度带上作业面再拍一张」——<b>给出路,不把人堵死</b></dd>
+      <dt>价值</dt><dd>一个会对着会议室照片一本正经报出三条隐患的工具,<b>工人两天就关掉了</b></dd></dl></div>
+  </div>
+
+  <h3>等 knowledge / cad 落地后能跑的六个</h3>
+  <div class="grid g2">
+    <div class="card hi"><h4><span class="no">B1</span>工长杠:「差不多就行了,哪有那么多讲究」 <span class="role">安全员</span></h4>
+      <div class="q">「这个临边按规范到底该咋整改,栏杆得多高?哪条写的?」→「按这个记一条整改任务,周五之前」</div>
+      <dl><dt>链路</dt><dd><span class="chain"><span class="pill p-ag">safety</span><span class="ar">→</span><span class="pill p-ag">knowledge</span><span class="ar">→</span><span class="pill p-ag">schedule</span></span></dd>
+      <dt>痛点</dt><dd>现在这场争论的赢家是<b>嗓门大的人</b>。查规范要回办公室翻 PDF,现场没人会去查。<b>带页码的出处能当场截图发给工长——把「我觉得」变成「书上第 23 页」</b></dd></dl>
+      <p style="margin-top:10px"><b>排第一无争议</b>:唯一串起「看得见的+说得清的+追得上的」三种能力,正是安全管理闭环的完整形状:发现→定性→定责定期→复检。</p></div>
+
+    <div class="card"><h4><span class="no">B2</span>早上八点临建板房交底 <span class="role">技术员</span></h4>
+      <div class="q">「打开地下室那张图,看看柱距多大」→「记一条:明天放线复核 3-5 轴柱距」</div>
+      <dl><dt>链路</dt><dd><span class="chain"><span class="pill p-ag">cad</span><span class="ar">→</span><span class="pill p-ag">schedule</span></span></dd>
+      <dt>价值</dt><dd><b>图纸从只读变成可执行</b>。现在要开电脑开 CAD 找图层量距离,手机上根本看不了</dd></dl></div>
+
+    <div class="card"><h4><span class="no">B3</span>下午三点动火点上吵起来了 <span class="role">电焊工 × 安全员</span></h4>
+      <div class="q">「动火作业到底要办什么手续,哪条规范说的」</div>
+      <dl><dt>痛点</dt><dd>现在要么靠资历压人,要么等第二天问上级。<b>动火是「重大」级隐患,吵输的那一方一让步就可能是一场火灾</b></dd></dl></div>
+
+    <div class="card"><h4><span class="no">B5</span>通知说地下室要查洞口,他不知道洞口在哪 <span class="role">安全员</span></h4>
+      <div class="q">「地下室那张图,3 轴附近的洞口都在哪」→ 到现场:「这个洞口盖没盖好」</div>
+      <dl><dt>链路</dt><dd><span class="chain"><span class="pill p-ag">cad</span><span class="ar">→</span><span class="pill p-ag">safety</span></span></dd>
+      <dt>痛点</dt><dd><b>「图上有、现场没有」是洞口伤亡事故的标准剧本。</b>现在靠安全员的记忆挨个找,新来的根本找不全</dd></dl></div>
+
+    <div class="card"><h4><span class="no">B4</span>上午十点在绑扎面上,料单和图纸对不上 <span class="role">钢筋工</span></h4>
+      <div class="q">「图纸里 KL3 那道梁跨度多少」</div>
+      <dl><dt>痛点</dt><dd>爬下脚手架→找技术员→技术员开电脑→爬回去。<b>一趟二十分钟,一天四五趟</b></dd></dl></div>
+
+    <div class="card warn"><h4><span class="no">B6</span>甲方问「你们外架间距合规吗」 <span class="role">项目经理</span></h4>
+      <div class="q">「图上脚手架立杆间距是多少?规范要求是多少?」</div>
+      <dl><dt>链路</dt><dd><span class="chain"><span class="pill p-ag">cad</span><span class="ar">→</span><span class="pill p-ag">knowledge</span></span> 两跳再汇总</dd>
+      <dt>风险</dt><dd>观赏性天花板,风险也是天花板:要 supervisor 连派两跳并自己攒结果。<b>彩排两次全绿再决定放不放进主线</b></dd></dl></div>
+  </div>
+</section>
+
+<!-- ══ 05 ══ -->
+<section id="chem">
+  <h2>05 / 化学反应</h2>
+  <div class="h">最平淡的那个 Agent,是整套系统的主心骨</div>
+  <p>看代码就明白了:<b>safety / inspection / knowledge / cad 全是「读」,只有 schedule 是「写」。</b>前四个都是一问一答、答完就散的无状态问答;<code>db/tasks.py</code> 是整个系统里唯一一处把东西<b>留下来</b>的地方。</p>
+  <div class="grid g3">
+    <div class="card"><h4>① 事实 → 承诺</h4><p>safety 的输出是一个事实判断(「这儿有临边无防护」),它本身<b>不推动任何事情发生</b>。schedule 给它接上了责任的时间维度——「8月10日之前」。<b>这是从「知道」到「办了」之间唯一的桥。</b></p></div>
+    <div class="card"><h4>② T 号 = 复检锚点</h4><p>复检时最难的一句是「上次说的到底是哪几处」。<code>T3</code> 就是这个锚点,而且<b>可以在电话里口头传递</b>——刻意做成「T3」而不是 32 位 hex。工人在噪音里对着手机喊「T3 干完了」,系统认;喊一串十六进制,不可能。</p></div>
+    <div class="card"><h4>③ 唯一能答「我今天该干什么」</h4><p>其它四个只能被动应答;schedule 因为有 <code>due_date</code> 与 today 的比较,是<b>唯一能主动指出优先级</b>的——逾期的排最前。早上七点那张表第一行标着「已逾期」的,就是现在最该管的事。</p></div>
+  </div>
+  <div class="note a"><p><b>结构性结论:没有 schedule,这套系统的多 Agent 协同只是「多问了几次」;有了它,才叫工作流。</b>演示顺序上它应该同时出现在开头和结尾——开头查欠账定调,结尾销项收口,中间的照片和条文都是为了填这张表。</p></div>
+  <div class="note w"><p><b>边界别在演示里许诺:</b>台账<b>没有责任人字段</b>、<b>没有任何提醒推送</b>、粒度<b>只到天</b>(「明天上午」的「上午」会被剥掉)、没有周期任务。</p></div>
+</section>
+
+<!-- ══ 06 ══ -->
+<section id="new">
+  <h2>06 / 增量</h2>
+  <div class="h">三个此前没被记录的问题 <span class="new">新</span></div>
+  <p class="sub">这三条不在任何注释、commit 或 TODOS 里。前两条已用假模型探针在本机实测验证(不联网、不花钱)。</p>
+
+  <div class="grid">
+    <div class="card bad"><h4><span class="no">发现 1</span>走英雄链时,safety 的隐患明细<b>根本不进顶层上下文</b>——「保留兄弟发言」这条修复在这条路径上是无效的</h4>
+      <p><b>机理:</b><code>output_mode="last_message"</code> 只回灌子图的最后一条消息,而 inspection 的最后一条是 <b>report</b> 的话。safety 的明细留在子图内部,<b>从未写进顶层 messages</b>。</p>
+      <p><b>实测:</b>用假模型跑真 <code>create_supervisor</code> + safety→report 子图,顶层 7 条消息里 safety 那句「…临边无防护」<b>完全不存在</b>,只剩 report 的一句总结。</p>
+      <p><b>后果:</b>C3(巡检后记整改任务)之所以能过,是因为断言只要求标题含「整改/隐患」;库里那条真实标题里的违规项,<b>只可能来自 report 提示词要求的「点名重大项」</b>——也就是说<b>明细能不能传下去,取决于 report 那句话说得够不够全,这是概率性的,不是结构性的</b>。</p>
+      <p><b>建议:</b>给 inspection 用 <code>full_history</code>,或让 report 的信封 <code>user_msg</code> 显式带上完整 violations 列表(现在只报数量和最高级别)。</p></div>
+
+    <div class="card bad"><h4><span class="no">发现 2</span><code>recursion_limit=8</code> 与提示词<b>直接冲突</b>:实测顶层最多派 3 次活、子 Agent 最多 3 轮工具</h4>
+      <p><b>实测(本机,langgraph 1.2.10):</b>一次派活 = 2 个顶层超步,收尾 1 个 → 2N+1。三件事 7 步<b>贴着上限</b>,<b>四件事 9 步当场熔断</b>。而子 Agent 内部连续工具轮<b>第 4 轮熔断</b>。</p>
+      <p><b>冲突点:</b>supervisor 提示词规则 2 要求「一句话里有多件事就拆开、一位一位派」;schedule 提示词要求「一条一条记,<b>每条调一次工具</b>」;上传钩子会把 4 张照片的编号全列出来而 safety 要求「一个一个来」。<b>三处提示词都在鼓励模型去撞那个 8。</b></p>
+      <p><b>会炸的真实句子:</b>「先看这张照片有没有隐患,再出份巡检记录,把隐患记成整改任务下周一之前,顺便把 T2 也改到周五」= 4 跳。或「记 4 条任务:…」= 4 轮工具。</p>
+      <p><b>连带发现:</b>熔断<b>不回滚已落库的写入</b>——每个 db 操作独立连接独立提交,没有跨工具事务。「记 4 条」在第 4 轮炸掉时<b>前 3 条已经真的进库了</b>,而用户看到的是英文报错;重试一次就变成 6 条+3 条重复行。</p>
+      <p><b>还有:</b>这一个数字同时绑了两个语义(顶层派活次数 / 子 Agent 工具轮数)。想让 schedule 支持一次记 5 条,就必须同时放宽 supervisor 的派活次数。<b>应该拆成两个旋钮。</b></p></div>
+
+    <div class="card bad"><h4><span class="no">发现 3</span>熔断在舞台上会出一个<b>英文报错</b>,后端零处理</h4>
+      <p><b>已核实:</b><code>grep GraphRecursionError backend/src/</code> 只命中 <code>graph.py:377</code> 的一句<b>注释</b>,没有任何 handler。而 Agent 路径的错误文案中文化是 TODO-9,<b>未做</b>。</p>
+      <p><b>用户实际看到:</b><code>toast.error("An error occurred. Please try again.")</code> + <code>Recursion limit of 8 reached…</code>。而这个 toast 在<b>上游文件</b> <code>thread/index.tsx</code> 里,<b>不是三个覆盖件之一</b>——换机器重新生成前端也不会变。</p>
+      <p><b>合起来看:</b>发现 2 说明三跳就到顶、四跳就炸,发现 3 说明炸了会出英文。<b>演示时评委一句话里塞四件事,就能同时踩中这两条。</b></p></div>
+  </div>
+
+  <h3>另外几条较轻但值得记</h3>
+  <ul>
+    <li><b><code>SUPERVISOR_NAME</code> 两处手工同源,零测试守着</b>(已核实:<code>graph.py:144</code> 与 <code>focus.py:50</code> 各定义一份,测试只断言「节点名在图里」)。改名 → 滤网静默失效 → 派活腔传染原样复发,<b>而没有任何测试会红</b>。</li>
+    <li><b>滤网只按 <code>name</code> 判定,而流式期消息可能还没带 name。</b>前端已为这个现象打过补丁(注释写着「只按 name 折叠的话这句英文会先裸奔一会儿,真机截图踩过」),同一个现象在后端未被考虑——若某条 supervisor 消息进入子 Agent 上下文时 name 为空,<b>传染通道就重新打开</b>。</li>
+    <li><b>上传钩子只看 <code>messages[-1]</code>。</b>若前端一次提交带两条 human 消息、或流式中断后重发,倒数第二条里的 image 块会原样留在 state 里,下一次任何模型调用都会 400——正是「点了发送没反应」那个现象。</li>
+    <li><b>pydantic 参数校验发生在 <code>tool_guard</code> 之前</b>,英文报错会绕过信封契约直送 Agent,然后被「如实转述 user_msg」讲给工人听。</li>
+    <li><b>内部绝对路径进了 LLM 上下文</b>(<code>report/tools.py:176</code> 把 <code>str(path)</code> 放进 <code>data</code>)。三条硬约束只管住了 <code>detail</code>,<code>data</code> 不在约束范围内——不算违规,但与「不出现内部路径」的取向不同调。</li>
+    <li><b>评测词表的指路牌指向错文件</b>:<code>scorers.py</code> 和 <code>eval/README.md</code> 都写「同源位置 = <code>safety/prompt.md</code>」,而词表实际在 <code>vision_prompt.md</code>。<b>照着指路牌去改的人会改错文件。</b></li>
+  </ul>
+</section>
+
+<!-- ══ 07 ══ -->
+<section id="br">
+  <h2>07 / 断裂</h2>
+  <div class="h">联动会在哪里断:十二类失败模式</div>
+  <p class="sub">18 条已记录的真实故障归成十二类。带 <span class="st s-bad">敞着</span> 的是目前只靠提示词、没有结构件兜底的。</p>
+  <div class="tw"><table>
+    <thead><tr><th>类型</th><th>本质</th><th>兜底</th></tr></thead>
+    <tbody>
+      <tr><td>① 身份污染</td><td>共享 messages 让子 Agent 把 supervisor 的语气当成「我该怎么说话」的示范,于是去演调度者。<b>这是上下文的属性,不是措辞的属性</b></td><td class="st s-ok">FocusOnOwnWork</td></tr>
+      <tr><td>② 收工信号丢失</td><td>交接靠<b>协议消息</b>而非语义表达「这一跳结束了」。删掉协议消息,模型只能靠猜,于是反复派</td><td class="st s-ok">handoff_back=True</td></tr>
+      <tr><td>③ 信息流被滤断/截断</td><td>为治①而裁上下文,裁过头把协同数据一起裁了;裁不干净则留下配不上对的孤儿消息直接 400。<b>滤网必须精确到「滤谁的、滤什么形态」</b></td><td class="st s-warn">滤网+回归测试<br>但见发现 1</td></tr>
+      <tr><td>④ 幻觉回执</td><td>多轮后上文全是自己的成功回执,补一条比调工具「顺手」。<b>回执与事实之间没有结构性联结时,回执就是文本</b></td><td class="st s-ok">RequireLedgerTool<br>+ 库级断言</td></tr>
+      <tr><td>⑤ 模态不匹配</td><td>便宜的文本档承担对话主线,而演示日主输入是图片。闸门必须在模型调用前、<b>状态层面</b>完成转换</td><td class="st s-ok">ingest_uploads</td></tr>
+      <tr><td>⑥ 缓存三洞</td><td>串味(键少一维就取走别人的答案)/ 钉死(把失败缓存了就永久钉死,「请再试一次」永远不会成功)/ 投毒(能写目录就能决定 Agent 说什么)</td><td class="st s-warn">cache_extra +<br>is_usable 闸门<br>HMAC 未做</td></tr>
+      <tr><td>⑦ 路由钓饵</td><td><code>summary</code> 是路由唯一依据,而<b>词法匹配不认否定句</b>——「不要 X」里的 X 照样吸引</td><td class="st s-ok">摘除空正域条目<br>每条补免责句</td></tr>
+      <tr><td>⑧ 手嘴不一致</td><td>正文与同一轮的工具调用可以互相矛盾,而<b>系统只认手</b>。关思考模式把这个概率放大了</td><td class="st s-bad">纯提示词(规则 5)<br>病灶还在</td></tr>
+      <tr><td>⑨ 双嗓子/复读</td><td>supervisor 架构天然两个嗓子。「谁产谁展示」必须在渲染层定死,不能赌提示词</td><td class="st s-ok">stripLedgerEcho</td></tr>
+      <tr><td>⑩ 静默降级</td><td>链路断了却零异常痕迹:缓存全失效只写 "run succeeded";视觉黑屏 10 分钟不报错;<b>改一个提示词字段名,违规照片被讲成没问题而全部测试照绿</b></td><td class="st s-warn">--allow-blocking<br>+ OUTPUT_KEYS 守卫</td></tr>
+      <tr><td>⑪ 并发挤占</td><td>Kimi <b>组织级并发上限 3</b>。队友跑评测会把评委的请求挤成 429</td><td class="st s-bad">口头约定<br>无信号量</td></tr>
+      <tr><td>⑫ 尺子失真</td><td>词表/数据集/指路牌不同源时,分数指向一个不存在的系统,团队会去反复改一个没病的提示词</td><td class="st s-warn">三处同源清单<br>但指路牌有错</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>仍然敞着的口子,按「翻车概率 × 后果」排</h3>
+  <div class="grid g2">
+    <div class="card bad"><h4>P0 · 熔断无用户可见兜底</h4><p>见 §06 发现 2+3。<b>三跳就到顶,四跳出英文 toast。</b></p></div>
+    <div class="card bad"><h4>P0 · 密钥/额度故障文案是错的</h4><p>只显式接住「Key 为空」;Key 填错、账号没充值、额度耗尽三种全落回通用文案。<b>额度耗尽若走 429,会说「用的人太多请过一会儿再试」——正确动作是去充值</b>。而且<b>图起得来不代表识图能用</b>:建图只校验 DeepSeek,Kimi 的 Key 要到调工具那一刻才检查。</p></div>
+    <div class="card bad"><h4>P0 · supervisor 的汇报红线零结构件</h4><p>四条汇报规则里<b>只有第 4 条有结构件</b>(渲染层)。前三条纯提示词,而 supervisor <b>一个中间件都没有</b>。<code>ok=false</code> 时它把失败说成成功,<b>系统里没有任何东西会发现</b>。项目自己的结论是「三次栽在用提示词管行为上」——这条是第四次的候选。</p></div>
+    <div class="card warn"><h4>P1 · Agent 本体那一层零评测覆盖</h4><p>评测注释白纸黑字:「Agent 本体那一层没有被评测覆盖。它会不会在该调工具时不调、会不会讲漏一项——这套测不到」。<b>①④⑩ 这类联动病在自动化评测里完全测不出</b>,唯一防线是手动跑的 19 条断言。</p></div>
+    <div class="card warn"><h4>P1 · 防假账只管首答、只重试一次</h4><p>回合<b>中段</b>的编造(工具返回后又多说一条编的)不在管辖内;重试仍不带工具就放行,交熔断兜底——而熔断的用户可见后果见 P0 第一条。</p></div>
+    <div class="card warn"><h4>P1 · 防假账在链内会静默失效</h4><p>「回合首答」判定要求上一条是 HumanMessage 或交接回执。<b>链内位置永远为 False</b>(上一条是兄弟的 AIMessage)。schedule 现在不在链里所以无害,<b>哪天串进链,防假账就静默失效了</b>。</p></div>
+  </div>
+</section>
+
+<!-- ══ 08 ══ -->
+<section id="neg">
+  <h2>08 / 边界</h2>
+  <div class="h">用户一定会问、而系统做不到的三件事</div>
+  <p class="sub">危险度按「回答看起来有多像成功」排——<b>报错不可怕,可怕的是看起来成功了</b>。</p>
+  <div class="grid g3">
+    <div class="card bad"><h4><span class="no">N3</span>「这条派给老张,明早八点提醒他」<br><span class="st s-bad">最危险</span></h4>
+      <p><b>会发生:</b>「老张」被当成标题的一部分记进去,「早上」被日期解析剥掉、「八点」进不了库(粒度到天),<b>提醒那半句被静默丢掉</b>。</p>
+      <p><b>为什么最危险:</b>三个里唯一一个<b>看起来完全成功</b>的。用户以为老张明早会收到提醒,老张什么都收不到,<b>活就漏了</b>。</p>
+      <p><b>建议:</b>schedule 提示词加一条——听到「提醒/通知/派给某人」必须明说「台账只记事和期限,提不了醒也记不了责任人,你记完自己跟工友说一声」。</p></div>
+    <div class="card bad"><h4><span class="no">N2</span>(贴整改后的照片)「你看看,这回整改好了没」<br><span class="st s-bad">高</span></h4>
+      <p><b>会发生:</b>当成一张全新的、无上下文的照片独立判读,只会说「这张里没看到这 8 类问题」。<b>不会说「上次那处临边已整改」,也不知道「上次」是哪张。</b></p>
+      <p><b>为什么危险:</b>回答看起来是成功的,用户很容易读成「系统确认整改完成了」,而系统其实只是<b>没在新照片里看见问题</b>。这是一次<b>语义偷换,不是一次报错</b>。</p>
+      <p><b>根因:</b>没有 <code>compare_rectification(before,after)</code> 这类工具;照片与 T 号之间零字段关联。TODO-21 列为「可选、约半天」,至今未做。</p></div>
+    <div class="card warn"><h4><span class="no">N1</span>「今天的施工日报给我出一份」<br><span class="st s-warn">中</span></h4>
+      <p><b>会发生:</b>大概率派给 inspection(summary 里有「出报告/留档」这些钩子),然后向用户要<b>照片编号</b>,拿到后仍然只能出<b>单张照片</b>的巡检记录;追问才会如实说「日报功能还没上线」。</p>
+      <p><b>根因:</b>报告工具吃的是<b>一张照片</b>;日报需要隐患台账的多条聚合,而库里<b>只有 tasks 表,没有隐患表</b>。</p>
+      <p><b>建议:</b>会诚实说做不了,但路由绕一圈才说,体验难看。演示前给一条「日报直接回绝」的短路。</p></div>
+  </div>
+</section>
+
+<!-- ══ 09 ══ -->
+<section id="demo">
+  <h2>09 / 演示</h2>
+  <div class="h">3 分钟主脚本</div>
+  <p class="sub">开场先给场景后给架构——<b>不要开场就说「我们做了一个多智能体系统」</b>,那是评委听腻的话。</p>
+
+  <div class="tl">
+    <div class="ev"><div class="t">0:00 – 0:12</div><div class="a">开场,不碰键盘</div>
+      <p class="say">「工地上一个班组长,一天绕不开三件事:发现隐患、留下记录、安排整改。今天他一件都不用填表——他只需要说人话,和拍一张照片。」</p></div>
+
+    <div class="ev"><div class="t">0:12 – 0:45</div><div class="a">一句话触发整条工作流</div>
+      <p class="say">传照片 + 「查一下这张照片,顺便出份巡检记录」</p>
+      <p class="got">屏幕上灰字痕迹一行行冒出来:<code>转给 inspection</code> → <code>查看现场照片·已返回结果</code> → <code>安全巡检员·已交给调度中枢</code> → <code>生成巡检记录</code> → 正文报出隐患数 + 最高级别 + <code>GYT-…</code> 编号。<br><b>解说(边指边说):</b>「注意这几行灰字——这<b>不是进度条,是活在被转手</b>。第一行派出去了,第二行有人真的去看了照片,然后<b>没有任何人再下一次命令</b>,记录就自己出来了。」</p>
+      <p class="got" style="margin-top:8px"><b>⚠️ 预期 15–30 秒静默</b>:视觉命中缓存是毫秒级,但<b>文本档必然 miss</b>——每次上传生成新 uuid4 编号,编号进了消息正文,缓存键就变了。上面这段解说词就是为填这段静默写的,<b>分三口讲,别一口气讲完</b>。</p></div>
+
+    <div class="ev"><div class="t">0:45 – 1:10</div><div class="a">展开痕迹 —— 全场唯一的架构证据</div>
+      <p class="say">点开「安全巡检员 · 已交给调度中枢」那一行</p>
+      <p class="got">「这是安全巡检员自己写的原话。它没有直接讲给用户听——<b>这套系统里只有调度中枢一个嗓子对外说话</b>。折起来是为了让戴着安全帽在噪音里看手机的师傅看得清;展开来,就是<b>『这活是谁干的』的第一手记录</b>。」<br>再点开报告工具,指着 <code>severity</code>:「级别不是模型现想的,在代码里写死成一张表。<b>安全员不认可,改这张表就行,不用动模型、不用重训。</b>」</p></div>
+
+    <div class="ev"><div class="t">1:10 – 1:25</div><div class="a">打开那份 Word</div>
+      <p class="got">落款小字:「本记录由工友通 AI 初筛生成…以持证安全员现场判定为准」——<b>「这句话不是我现在讲给评委听的,它印在每一份文件上。」</b><br>「还有:这份文档里的隐患内容<b>一个字都没经过大模型转抄</b>。生成报告的 Agent 不读上一个 Agent 的话,它拿同一个编号<b>重新问了一遍</b>,提示词冻结、缓存必中、逐字节一致。模型在这条链里只搬运一串 32 位编号,<b>搬错一位当场报错,不可能产出一份内容错误却看起来正常的文件</b>。」</p></div>
+
+    <div class="ev"><div class="t">1:25 – 2:05</div><div class="a">动态路由 —— 多智能体的真证据</div>
+      <p class="say">同一线程:「把这些隐患记成一条整改任务,下周一之前搞定」</p>
+      <p class="got"><b>等待期间说:</b>「刚才那一步是我们<b>写死</b>的一条图边——拍照必然出报告,不交给模型判断,因为演示不能赌。<b>但这一步没有任何联动代码。</b>我没告诉它去找谁,它也不知道隐患和任务之间有什么关系。」<br><b>结果出来后:</b>「它转给的是<b>任务管理</b>——一个跟照片毫无关系的同事。而且它把上一位的结论<b>当成任务标题带过去了</b>。这两个 Agent 之间,我们一行胶水代码都没写。」</p></div>
+
+    <div class="ev"><div class="t">2:05 – 2:35</div><div class="a">工作表格 + 闭环销项</div>
+      <p class="say">「下周三之前还有哪些任务没完成」→ 用屏幕上真出现的号:「T1 干完了」</p>
+      <p class="got">四列表格 + 彩色状态徽章,表格<b>恰好出现一次</b>。「『下周三』是几月几号,<b>是代码算的,不是模型算的</b>。模型算错一次,师傅就白跑一天工地。」<br>「隐患→整改→销项,一条闭环。而且这条销项<b>真的落库了</b>——我们有一组断言专门直接查数据库,<b>回执说什么不算数,库里有没有才算</b>。」</p></div>
+
+    <div class="ev"><div class="t">2:35 – 3:00</div><div class="a">主动示弱(这是加分不是减分)</div>
+      <p class="say">「帮我算算这个月工资能拿多少」</p>
+      <p class="got">supervisor 自己回答做不了 + 现在能做什么,<b>不产生任何交接</b>。「它没有硬找一个同事把这活塞过去。<b>做不了就说做不了。</b>在工地上这比什么都重要——<b>一个会编答案的助手,比没有助手更危险。</b>」<br><b>收尾:</b>「三个同事、一次拍照、一份能存档的记录、一条落了库的整改任务。识图 90%,真机 19 条断言全过,这套调用轨迹你们每一步都看见了——<b>它不是录像,是现在跑出来的</b>。」</p></div>
+  </div>
+
+  <div class="note w"><p><b>台本纪律(直接来自 §06 发现 2):</b>逐句过一遍台词,任何一句满足下面之一就<b>拆成两句</b>——需要 ≥4 次派活;让 schedule 一次记 ≥4 条或改 ≥2 条无 T 号的任务;一次上传 ≥4 张照片。三件事 7 步是<b>能过但零余量</b>。</p></div>
+
+  <h3>演示日最大的隐形杀手:打码与焐热的顺序</h3>
+  <div class="note a"><p>视觉缓存键算在<b>图片内容</b>上。TODO-22 要求投屏前人脸打码,而<b>打码 = 改字节 = 换了一张图 = 缓存全废</b>。这两个 TODO 各写了一半,没有人把它们连起来。<b>顺序不可交换:① 先打码覆盖原文件 → ② 再用打码后的文件焐热 → ③ 再冻结 vision_prompt / prompt_version / 视觉型号 / .env。</b></p>
+  <p>当场发现已经反了:立刻改口「这一步是<b>真的在调视觉模型</b>,不是预录的——所以要几十秒」,然后把 0:12 那段解说词展开讲满。<b>不要沉默,不要刷新页面。</b></p></div>
+
+  <h3>评委必问的四个,答案要落到代码</h3>
+  <div class="grid g2">
+    <div class="card"><h4>多智能体是不是花架子?一个大模型加几个工具不也行?</h4>
+      <p><b>①模型分档做不到单体:</b>只有识图那一个工具内部直调 Kimi($3/M),其余全走 DeepSeek($0.14/M)。单体架构里图片必然进消息历史,<b>每轮把几 MB base64 重发一遍</b>。</p>
+      <p><b>②上下文隔离是修故障修出来的,不是设计洁癖:</b>共享 messages 时子 Agent 会模仿派活腔把活推回去,两边互等、界面零报错。而且<b>只能滤调度中枢的话、必须留兄弟的话</b>——滤多了协同当场断。</p>
+      <p><b>③每个 Agent 的红线互斥:</b>台账那位「回合首答必须带工具调用」,这条套在识图上是错的(它有时就该只说话)。<b>一份提示词承载不了三套互斥红线。</b></p></div>
+    <div class="card"><h4>怎么保证它不胡说?</h4>
+      <p><b>四层,每层都能就地翻代码:</b>提示词红线(编号页码尤其不许顺手补全)→ 结构件兜底(因为提示词只是概率生效)→ <b>确定性下沉</b>(日期换算、隐患定级、报告内容全从模型手里拿走)→ 可量化且可证伪(评测集<b>故意</b>放 5 张非工地干扰项 + 7 张合规照)。</p>
+      <p><b>杀伤力最大的一句:</b>「我们连<b>不许悄悄修好</b>都写进了代码。模型吐出受控词表以外的词,工具<b>原样透传不做纠正</b>——因为在这里修好,评测就永远发现不了提示词坏了。<b>让错误可见,比让它消失更重要。</b>」</p></div>
+    <div class="card"><h4>90% 是怎么算的?会不会自己给自己判卷?</h4>
+      <p>标准答案<b>人定</b>(铁律第一条:让 AI 生成标准答案再考 AI,分数没有任何意义);分母有<b>硬闸</b>(可判分行少于 30 就不跑模型直接判不通过);判分<b>集合完全相等</b>才算对,不给部分分。</p>
+      <p><b>最有说服力的是我们记录了自己的失败:</b>首轮 46.7% FAIL,复盘发现根因不是模型而是<b>数据集选型错了</b>——候选池里真工地只占 45%。方法论错误也写下来了:「验证了统计分布,没验证语义。<b>数字全部合理,内容全是错的。</b>」</p></div>
+    <div class="card"><h4>路由 90% 门槛过了吗?</h4>
+      <p><b>直接承认:没过,15/22 = 68.2%。</b>但 7 条红<b>全部</b>落在还没挂进登记表的两位身上,其中 6 条的实际行为是「如实说做不了」——<b>那是正确的失败模式,不是乱派</b>。</p>
+      <p><b>而且我们没为了刷分去救它:</b>最省事的做法是往能力说明里加一句「不看图纸」——<b>这条路踩过三次</b>,写否定句「不派带图纸的」结果三条图纸请求全被钓来,因为「不要 X」里的 X 照样当钓饵。<b>三轮措辞收不住,说明这不是措辞问题。空等正确的 Agent 落地才是对的。</b></p></div>
+  </div>
+</section>
+
+<!-- ══ 10 ══ -->
+<section id="fix">
+  <h2>10 / 行动</h2>
+  <div class="h">立即可修,按投入产出比</div>
+  <div class="tw"><table>
+    <thead><tr><th>做什么</th><th>为什么</th><th>成本</th><th>动缓存?</th></tr></thead>
+    <tbody>
+      <tr><td><b>前端 AGENT_NAMES 补一行 <code>inspection: "巡检出记录"</code></b></td><td>已核实缺失。它恰好是主演示<b>第一屏第一行灰字</b>,现在显示英文</td><td>60 秒</td><td class="st s-ok">不动</td></tr>
+      <tr><td><b>让巡检记录在界面里可见可点开</b></td><td>卖点写的是「自动出 Word」,而判决性产出在界面上的最终形态是折叠 JSON 里的一个路径字符串。<b>硬边、数据保真、免责落款这一整套精巧设计,如果没人看到那份文档,等于全部白做</b></td><td>第 0 档 0 分钟(Finder 提前打开+彩排双击)<br>第 1 档 30–45 分钟(渲染卡片+本地静态服务)</td><td class="st s-ok">不动</td></tr>
+      <tr><td><b>捕获 GraphRecursionError 换成中文话术</b></td><td>发现 3。三跳到顶、四跳出英文 toast,而这个 toast 在上游文件里、换机器也不会变</td><td>约半天(与 TODO-9 同一次改动)</td><td class="st s-ok">不动</td></tr>
+      <tr><td><b>schedule 提示词加「提不了醒、记不了责任人」</b></td><td>N3 是唯一<b>看起来完全成功</b>的失败——用户以为老张会收到提醒,活就漏了</td><td>10 分钟</td><td class="st s-warn">改提示词<br>需 +prompt_version?<br>schedule 不吃视觉缓存,安全</td></tr>
+      <tr><td><b>把 recursion_limit 拆成顶层/子 Agent 两个旋钮</b></td><td>发现 2。一个数字绑两个语义,想让台账支持一次记 5 条就必须同时放宽派活次数(放大死循环烧钱上限)</td><td>约 1 小时</td><td class="st s-warn">会动路径甲缓存<br>(llm_string 含配置)</td></tr>
+      <tr><td><b>给 report 的 user_msg 带上完整 violations</b></td><td>发现 1。现在明细能不能传给 schedule <b>取决于 report 那句话说得够不够全,是概率性的</b></td><td>约 1 小时 + 补断言</td><td class="st s-ok">不动视觉缓存</td></tr>
+      <tr><td><b>加一条测试把两处 <code>SUPERVISOR_NAME</code> 绑住</b></td><td>已核实零测试。改名 → 滤网静默失效 → 派活腔传染复发,<b>而没有任何测试会红</b></td><td>10 分钟</td><td class="st s-ok">不动</td></tr>
+      <tr><td><b>修正评测词表的指路牌</b></td><td>指向 <code>prompt.md</code> 而词表在 <code>vision_prompt.md</code>,<b>照着改的人会改错文件</b></td><td>5 分钟</td><td class="st s-ok">只改注释</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>演示前 T-60 自检(只列联动相关)</h3>
+  <ul>
+    <li><b>三个结构件在位</b>(30 秒零成本):<code>grep add_handoff_back_messages=True</code> / <code>grep RequireLedgerTool</code> / <code>grep pre_model_hook=ingest_uploads</code>。任一条空 = <b>今天不要演</b>。</li>
+    <li><b>两处手工同源常量真的同源</b>(无测试守着,只能眼看):<code>grep '^SUPERVISOR_NAME' graph.py focus.py</code>。</li>
+    <li><b><code>--allow-blocking</code> 在起服务的命令里</b>:缺了它缓存全失效,每张照片 60 秒还真花钱,<b>而日志只写 "run succeeded"</b>。</li>
+    <li><b>台账清干净</b>:<code>rm -f backend/data/gyt.sqlite3</code>。最后一次彩排后立刻清,清完不再跑台账动作。<b>更稳的是话术兜底:演示者永远不先报 T 号,等屏幕出了再念。</b></li>
+    <li><b>前端覆盖件生效自检</b>(<code>frontend/</code> 不进 git,换机器就没了):随便问一句查任务,看三件事——痕迹是中文、表格是圆角卡片带徽章、同一张表<b>只出现一次</b>。要在开演前 60 分钟做,不是前 5 分钟。</li>
+    <li><b>联动三件套单独复演</b>:多轮后再上传照片(子 Agent 说「我这就安排 XX 同事」= 传染复发,立刻停)→ 「把这些隐患记成整改任务」(schedule 必须直接动手,不许反问「隐患是什么」)→ 「T1 干完了」后立刻查库。</li>
+    <li><b>告知队友:演示期间禁跑评测</b>。Kimi 组织级并发 3,一跑就是 22 分钟持续占用,会把评委的请求挤成 429。</li>
+    <li><b>真机单张照片跑一次</b>验证 Kimi Key 活着——<b>图起得来不代表识图能用</b>。</li>
+    <li>⚠️ <b>19 条断言的日期锚死在 2026-08-08</b>(8月9日周日/8月14日周五/8月10日周一)。<b>演示日不是这天,A1/A3/A4/C3 会红,但那是断言过期不是系统坏了</b>——彩排前先按当天重算这几行,否则会浪费一小时排查一个不存在的 bug。</li>
+  </ul>
+</section>
+
+<hr>
+<footer>
+  <p>五路并行分析:①机制解剖 ②能力盘点 ③场景挖掘 ④失败模式 ⑤演示编排。全部结论落到 <code>文件:行号</code>,已剔除计划文档里的设想。发现 1、2 由假模型探针在本机实测验证(不联网、不花钱);发现 3 及三处「已核实」由 grep 直接确认。</p>
+  <p style="margin-top:10px;color:var(--ink-faint)">工友通 · 2026-08-08 · main@b140032 · 563 tests green</p>
+</footer>
+</main>
+</div>

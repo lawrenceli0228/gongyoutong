@@ -376,9 +376,7 @@ def test_超大DXF在入口就被挡(tmp_path, monkeypatch) -> None:
     payload = _dxf_bytes(tmp_path)
     state = {
         "messages": [
-            HumanMessage(
-                content=[{"type": "text", "text": "看图"}, _ui_dxf_part(payload)], id="u1"
-            )
+            HumanMessage(content=[{"type": "text", "text": "看图"}, _ui_dxf_part(payload)], id="u1")
         ]
     }
 
