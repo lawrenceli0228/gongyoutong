@@ -1,0 +1,516 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>巡检链防假账与验收去脆化 · 工友通 W5</title>
+<style>
+:root{
+  --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5;
+  --accent:#c2410c; --accent-soft:#fff1e8;
+  --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec;
+  --warn:#b45309; --warn-soft:#fdf3e2;
+  --bad:#a52a2a; --bad-soft:#fbeceb;
+  --sans:"PingFang SC","Hiragino Sans GB","Noto Sans SC",system-ui,-apple-system,sans-serif;
+  --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme:dark){
+  :root{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+    --line:#37332c; --line-soft:#2a2620; --accent:#f97b3d; --accent-soft:#2e1c10;
+    --blue:#6aa5d8; --blue-soft:#152433; --ok:#6fbf8f; --ok-soft:#12271a;
+    --warn:#e0a34e; --warn-soft:#2b2010; --bad:#e97a70; --bad-soft:#2c1614; }
+}
+:root[data-theme="light"]{ --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5; --accent:#c2410c; --accent-soft:#fff1e8; --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec; --warn:#b45309; --warn-soft:#fdf3e2; --bad:#a52a2a; --bad-soft:#fbeceb; }
+:root[data-theme="dark"]{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+  --line:#37332c; --line-soft:#2a2620; --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+  --ok:#6fbf8f; --ok-soft:#12271a; --warn:#e0a34e; --warn-soft:#2b2010; --bad:#e97a70; --bad-soft:#2c1614; }
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;font-feature-settings:"tnum"}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px 96px;display:grid;grid-template-columns:1fr;gap:0}
+@media(min-width:1060px){ .wrap{grid-template-columns:172px minmax(0,1fr);gap:50px;padding-right:34px} }
+nav{display:none}
+@media(min-width:1060px){
+  nav{display:block;position:sticky;top:0;align-self:start;padding-top:124px;height:100vh;overflow-y:auto}
+  nav a{display:block;font-size:12.5px;color:var(--ink-faint);text-decoration:none;
+    padding:5px 0 5px 11px;border-left:2px solid var(--line-soft);transition:.15s}
+  nav a:hover{color:var(--accent);border-left-color:var(--accent)}
+  nav a b{font-family:var(--mono);font-size:10.5px;margin-right:6px;opacity:.6}
+}
+main{min-width:0}
+header{padding:70px 0 0}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--accent);margin-bottom:16px}
+h1{font-size:clamp(29px,4.2vw,46px);line-height:1.15;letter-spacing:-.022em;font-weight:680;
+  margin:0 0 16px;text-wrap:balance;max-width:17em}
+.lede{font-size:clamp(15.5px,1.5vw,18px);color:var(--ink-soft);max-width:45em;margin:0 0 28px;line-height:1.72}
+.lede b{color:var(--ink);font-weight:600}
+.rev{border-left:3px solid var(--warn);background:var(--warn-soft);padding:13px 16px;
+  border-radius:0 var(--r) var(--r) 0;margin:0 0 24px;font-size:14px;color:var(--ink-soft)}
+.rev b{color:var(--ink)}
+section .rev{margin:16px 0 22px}
+.rev p{margin:0 0 10px;max-width:none;font-size:14px}
+.rev p:last-child{margin-bottom:0}
+.rev ol,.rev ul{margin:8px 0;padding-left:20px;max-width:none}
+.rev li{color:var(--ink-soft);font-size:14px;margin-bottom:8px}
+.rev li:last-child{margin-bottom:0}
+.rev .hd{display:block;color:var(--ink);font-weight:650;font-size:15px;margin-bottom:8px}
+.verdict{border:1.5px solid var(--accent);background:var(--accent-soft);border-radius:var(--r);
+  padding:20px 24px;margin-bottom:14px}
+.verdict .t{font-size:19px;font-weight:650;margin-bottom:8px;letter-spacing:-.01em}
+.verdict p{margin:0;color:var(--ink-soft);font-size:15px;max-width:none}
+.meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);padding-bottom:8px}
+section{padding-top:58px;scroll-margin-top:24px}
+h2{font-size:12px;font-family:var(--mono);letter-spacing:.15em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 8px;font-weight:600}
+h2 + .h{font-size:clamp(21px,2.3vw,26px);font-weight:640;letter-spacing:-.016em;margin:0 0 8px;line-height:1.3;text-wrap:balance}
+.sub{color:var(--ink-soft);max-width:44em;margin:0 0 24px;font-size:15.5px}
+h3{font-size:16.5px;font-weight:620;margin:30px 0 12px;letter-spacing:-.008em}
+p{margin:0 0 14px;max-width:44em}
+code{font-family:var(--mono);font-size:.855em;background:var(--line-soft);padding:1.5px 5px;border-radius:4px;word-break:break-word}
+pre{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;
+  overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.62;color:var(--ink-soft);margin:8px 0 20px}
+pre b{color:var(--accent);font-weight:600}
+pre i{color:var(--ok);font-style:normal}
+pre s{color:var(--bad);text-decoration:none}
+.tw{overflow-x:auto;margin:8px 0 22px;border:1px solid var(--line);border-radius:var(--r);background:var(--card)}
+.tw.feat{border:1.5px solid var(--accent);margin:14px 0 18px}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:560px}
+th{text-align:left;font-size:10.5px;font-family:var(--mono);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:600;padding:11px 15px;border-bottom:1px solid var(--line);
+  background:var(--line-soft);white-space:nowrap}
+td{padding:11px 15px;border-bottom:1px solid var(--line-soft);vertical-align:top;color:var(--ink-soft);line-height:1.6}
+tr:last-child td{border-bottom:0}
+td:first-child{color:var(--ink);font-weight:550}
+td b{color:var(--ink);font-weight:600}
+.tw.feat table{font-size:14.5px;min-width:620px}
+.tw.feat th{background:var(--accent-soft);color:var(--accent);border-bottom-color:var(--accent)}
+.note{border-left:3px solid var(--blue);background:var(--blue-soft);padding:14px 17px;
+  border-radius:0 var(--r) var(--r) 0;margin:16px 0 22px;font-size:14.5px;color:var(--ink-soft)}
+.note b{color:var(--ink)}
+.note.a{border-left-color:var(--accent);background:var(--accent-soft)}
+.note.w{border-left-color:var(--warn);background:var(--warn-soft)}
+.note.d{border-left-color:var(--bad);background:var(--bad-soft)}
+.note p{max-width:none}
+.note p:last-child{margin-bottom:0}
+.note pre{margin:10px 0 4px}
+.grid{display:grid;gap:14px;margin:6px 0 20px}
+@media(min-width:720px){ .g2{grid-template-columns:1fr 1fr} .g3{grid-template-columns:repeat(3,1fr)} }
+.card{border:1px solid var(--line);border-radius:var(--r);background:var(--card);padding:17px 19px}
+.card h4{margin:0 0 8px;font-size:15.5px;font-weight:620;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.card h4 .no{font-family:var(--mono);font-size:11.5px;color:var(--accent);font-weight:700}
+.card p{font-size:14px;color:var(--ink-soft);margin:0 0 8px;max-width:none;line-height:1.66}
+.card p:last-child{margin-bottom:0}
+.card.ok{border-left:3px solid var(--ok)} .card.warn{border-left:3px solid var(--warn)}
+.card.bad{border-left:3px solid var(--bad)}
+.st{font-family:var(--mono);font-size:11px;font-weight:600;white-space:nowrap}
+.s-ok{color:var(--ok)} .s-warn{color:var(--warn)} .s-bad{color:var(--bad)}
+.yes{color:var(--ok);font-weight:700} .no{color:var(--bad);font-weight:700}
+.b-bad,.b-warn,.b-ok{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 6px;
+  border-radius:4px;vertical-align:2px;margin-right:8px;white-space:nowrap;letter-spacing:.02em}
+.b-bad{background:var(--bad-soft);color:var(--bad)}
+.b-warn{background:var(--warn-soft);color:var(--warn)}
+.b-ok{background:var(--ok-soft);color:var(--ok)}
+ul{margin:0 0 14px;padding-left:20px;max-width:44em}
+li{margin-bottom:6px;color:var(--ink-soft)}
+li b{color:var(--ink)}
+.task{border:1px solid var(--line);border-radius:var(--r);background:var(--card);padding:14px 17px;margin-bottom:10px}
+.task .hd{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:5px}
+.task .id{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--accent)}
+.task .p1{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;background:var(--bad-soft);color:var(--bad)}
+.task .p2{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;background:var(--warn-soft);color:var(--warn)}
+.task .pd{font-family:var(--mono);font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;background:var(--ok-soft);color:var(--ok)}
+.task.done{border-color:var(--ok);background:linear-gradient(to right,var(--ok-soft) 0 3px,var(--card) 3px)}
+.task.done .id{color:var(--ok)}
+.task .ef{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-left:auto}
+.task .ti{font-weight:600;font-size:15px}
+.task dl{margin:6px 0 0;font-size:13px;display:grid;grid-template-columns:auto 1fr;gap:3px 12px}
+.task dt{color:var(--ink-faint);font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;padding-top:2px}
+.task dd{margin:0;color:var(--ink-soft);line-height:1.58}
+hr{border:0;border-top:1px solid var(--line);margin:44px 0 0}
+footer{padding-top:24px;font-size:13px;color:var(--ink-faint)}
+</style>
+
+<div class="wrap">
+<nav aria-label="目录">
+  <a href="#why"><b>01</b>为什么要有这轮</a>
+  <a href="#have"><b>02</b>已经存在什么</a>
+  <a href="#dec"><b>03</b>七个决策</a>
+  <a href="#shape"><b>04</b>改造后的样子</a>
+  <a href="#task"><b>05</b>实施任务</a>
+  <a href="#test"><b>06</b>测试计划</a>
+  <a href="#fail"><b>07</b>失败模式</a>
+  <a href="#no"><b>08</b>NOT in scope</a>
+  <a href="#par"><b>09</b>并行化</a>
+  <a href="#log"><b>10</b>落地记录</a>
+</nav>
+
+<main>
+<header>
+  <div class="eyebrow">工友通 W5 · plan-eng-review 定稿</div>
+  <h1>巡检链防假账 + 验收去脆化</h1>
+
+  <p class="lede">起因:W4 收尾跑 25 条真机验收,E/F 六条全绿,但老断言里挖出<b>两条真信号</b>。</p>
+
+  <div class="rev"><b>本文档已含落地记录(§10)。</b>六条任务全部落地,<b>但本方案有两条决策被实测推翻</b> —— 推翻的过程比结论有用,原文一律保留在正文里、只在 §10 记纠正。</div>
+
+  <div class="meta">2026-08-10 · <code>/plan-eng-review</code> 定稿 · 分支 <code>lawrence/demo-polish</code> · commit <code>809a890</code>(Lane B)+ 前序 Lane A</div>
+</header>
+
+<!-- 01 -->
+<section id="why">
+  <h2>01 / 起因</h2>
+  <div class="h">为什么要有这一轮</div>
+
+  <p>W4 那一轮验收 19/25。挂掉的 6 条里,4 条是日期字面量过期(测试自己的毛病),
+  <b>另外 2 条是产品的真问题</b>:</p>
+
+  <h3>C2 —— 英雄链会概率性漏掉「出报告」那一环</h3>
+<pre>用户: 查一下这张照片,顺便出份巡检记录(照片编号 xxx)
+  │
+  ├─ supervisor ──transfer_to_inspection──► 英雄链子图
+  │                                            │
+  │                                   START ──► safety ──硬边──► report ──► END
+  │                                                                 │
+  │                                          <i>硬边保证 report 被叫起来 ✅</i>
+  │                                          <s>但没人保证 report 真调工具 ❌</s>
+  │                                                                 │
+  └─ [report] 「巡检记录出好了,编号 GYT-20260809-153739」  <s>← 没调 render_inspection_report</s>
+                                                              <s>磁盘上没有那份 docx</s></pre>
+
+  <p>当初把 <code>safety → report</code> 写成硬边,解决的是「supervisor 有时不派第二跳」。
+  <b>漏的位置换了</b>:硬边把 report 叫起来了,但 report 自己凭上下文编了段话。</p>
+
+  <p>这跟 schedule 那次「不调工具凭记忆编回执」是同一种病。当时的解法是
+  <code>agents/schedule/guard.py</code> 的 <code>RequireLedgerTool</code> —— <b>而 report 是裸的</b>。</p>
+
+  <div class="note w"><p>观察样本只有 2 次(一次挂一次过)。<b>这不是发生率,是个信号</b>,但它长在演示主路径上。</p></div>
+
+  <h3>A8 —— 红了,但查不出是哪种红</h3>
+  <p>A8 断「乱日期报人话带举例」。我去查工具层:</p>
+<pre>「猴年马月」这个期限我没看懂。可以这样说:明天 / 后天 / 3天后 / 周三 / 下周三 / 月底 / 9月1号 / 2026-08-15。</pre>
+  <p>含「明天」✅ 不含「开小差」✅ —— <b>断言在工具层必然通过</b>。所以红在上一层。
+  只剩两种可能:模型根本没调工具,或者调了但把文案改写了。</p>
+  <div class="note d"><p><b>而分不出是哪种</b> —— 脚本只记 PASS/FAIL,不留消息轨迹。想查就得重跑真调模型,
+  而重跑很可能不复现(C2 就是这样)。</p></div>
+</section>
+
+<!-- 02 -->
+<section id="have">
+  <h2>02 / Step 0</h2>
+  <div class="h">已经存在什么</div>
+
+  <div class="tw"><table>
+    <thead><tr><th>需求</th><th>现成的东西</th><th>还缺什么</th></tr></thead>
+    <tbody>
+      <tr><td>防「不调工具」</td><td><code>agents/schedule/guard.py::RequireLedgerTool</code>,真机验证过,6 条单测</td><td>只服务 schedule,写死了台账文案</td></tr>
+      <tr><td>中间件接线口</td><td><code>core/base_agent.create_gyt_agent(extra_middleware=...)</code></td><td>report 没传</td></tr>
+      <tr><td>测试模板</td><td><code>tests/unit/test_require_tool.py</code>(6 条,各分支齐全)</td><td>需参数化成两个 Agent 共用</td></tr>
+      <tr><td>后端的「今天」</td><td><b><code>list_tasks</code> 的 Envelope 里已经有 <code>"today": today_iso</code></b></td><td>验收脚本没读它</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="verdict">
+    <div class="t">这一轮是复用 + 接线,不是新建</div>
+    <p>0 个新服务,1 个模块下沉。</p>
+  </div>
+</section>
+
+<!-- 03 -->
+<section id="dec">
+  <h2>03 / 决策</h2>
+  <div class="h">七个决策</div>
+
+  <div class="tw"><table>
+    <thead><tr><th>#</th><th>决策</th><th>选定</th></tr></thead>
+    <tbody>
+      <tr><td>D1</td><td>防假账结构件放哪</td><td><b>下沉 <code>core/require_tool.py</code>,做成可配置</b></td></tr>
+      <tr><td>D2</td><td>重试仍不调工具时 report 怎么办</td><td><span class="b-warn">已被 D6 推翻</span><b>硬错</b> —— 不让编造的编号出去</td></tr>
+      <tr><td>D3</td><td>验收断言挂了留不留轨迹</td><td><b>失败就 dump 完整消息轨迹</b></td></tr>
+      <tr><td>D4</td><td>验收脚本的「今天」从哪取</td><td><b>从后端取</b>(读 <code>list_tasks</code> 的 <code>data.today</code>)</td></tr>
+      <tr><td>D5</td><td>A10 一周三天必红</td><td><b>按星期分支,两边都断</b></td></tr>
+      <tr><td>T1</td><td>knowledge/cad 也接结构件</td><td>记 TODO,不现在做(无实测证据)</td></tr>
+      <tr><td>T2</td><td>「断措辞」改「断事实」</td><td>记 TODO,要逐条拿捏</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="rev">
+    <span class="hd">⚠️ D2 已被 D6 推翻(2026-08-10 落地时纠正)</span>
+    <p>D2 原文是「report 沿用 schedule 的<b>首答必须调工具</b>判据,只把失败语义改成硬错」。
+    落地后对抗复核实测出两条 HIGH,证明这个判据两头都不对:</p>
+    <ol>
+      <li><b>一次都不触发</b> —— 英雄链是写死的图边,report 首答前最后一条是 safety 的纯文本
+      <code>AIMessage</code>,既不是用户发言也不是 <code>transfer_to_*</code> 回执,<code>_is_turn_start</code> 恒为 False;
+      而 <code>AGENT_REGISTRY</code> 里没有独立的 report,<code>transfer_to_report</code> 这条路压根不存在。</li>
+      <li><b>一旦触发反而打断合法流程</b> —— <code>report/prompt.md</code> 第 23/45 行明文要求两种
+      <b>该纯文本回答</b>的回合(反问「给哪张出记录?」、如实拒答日报),会被顶替成答非所问的话。</li>
+    </ol>
+    <p><b>D6 定案:改用「编号溯源」判据</b> —— 输出里报出的 <code>GYT-…</code> 编号,必须在本回合的工具
+    结果里真的出现过。编号由工具生成(<code>tools.py:151</code>),模型没有合法理由自己造;
+    而反问与拒答压根不含编号,零误伤;且不依赖首答判定,英雄链里真会触发。</p>
+    <p>下面 §3~§7 里凡是写「首答必须调工具 / on_give_up / fail_msg」的地方,<b>report 那一侧
+    都以本框为准</b>;schedule 侧不受影响,<code>RequireToolCall</code> 保持原判据与 pass 档。
+    实现见 <code>core/require_tool.py</code> 顶部「两种判据,别混用」。</p>
+  </div>
+
+  <h3>D2 值得展开:为什么 report 和 schedule 的失败语义不一样</h3>
+<pre>schedule 放行的后果        report 放行的后果
+─────────────────────    ─────────────────────
+嘴上销了、库里没销    →   工友拿到编号 GYT-xxx
+      ↓                        ↓
+D 组直查库,当场揭穿      磁盘上没有那份 docx
+      ↓                        ↓
+  <i>有人兜底 ✅</i>            <s>没有任何人会发现 ❌</s></pre>
+  <p>「没出成」工友看得见也重试得了,「以为出成了」无法补救,而且那个假编号会
+  污染后续所有引用(打印、转发、报给管理员)。</p>
+
+  <h3>D4 值得展开:后端本来就在吐今天</h3>
+  <p><code>schedule/tools.py::list_tasks</code> 的返回体:</p>
+<pre>return ok(data={"tasks": …, "undated": …, "today": today_iso, …})
+                                            <i>↑ 后端 date.today(),容器时区算出来的</i></pre>
+  <p>验收 A2(「下周三之前还有哪些任务没完成」)<b>本来就会调 <code>list_tasks</code></b>。
+  从那条 ToolMessage 里读 <code>data.today</code> 即可 —— <b>零新增接口、零额外模型调用</b>。</p>
+
+  <div class="note w"><p>⚠️ 这条选择的已知弱点:容器时区若配错,脚本会跟着错、静默全绿。<br>
+  缓解(不推翻决策):把取到的 today <b>原样打印</b>,并与 <code>Asia/Shanghai</code> 比一下,
+  不一致时打一条醒目的警告但<b>不判红</b> —— 判红会让部署在别的时区时误报,
+  而警告能让人一眼看见 2026-08-10 那种「容器裸 UTC」的配置事故。</p></div>
+</section>
+
+<!-- 04 -->
+<section id="shape">
+  <h2>04 / 形态</h2>
+  <div class="h">改造后的样子</div>
+
+<pre><b>core/require_tool.py</b>                      ← 新(从 schedule/guard.py 下沉)
+  RequireToolCall(
+      tools_hint="记任务用 add_task…",     <i>← 各 Agent 自己的中文提示词</i>
+      on_give_up="pass" | "fail",         <i>← D2:schedule 放行 / report 硬错</i>
+      fail_msg="巡检记录没生成成功…",       <i>← 硬错时给工友看的人话</i>
+  )
+        │
+        ├── agents/schedule/__init__.py  extra_middleware=[RequireToolCall(… on_give_up="pass")]
+        └── agents/report/__init__.py    extra_middleware=[RequireToolCall(… on_give_up="fail")]
+
+agents/schedule/guard.py                  ← 变成薄薄一层 re-export,或直接删掉改引用</pre>
+
+  <p>中间件层次不变(<code>create_gyt_agent</code> 里 Focus 在外、本件在内):</p>
+
+<pre>middleware=[FocusOnOwnWork(name), RequireToolCall(...)]
+             外层:裁上下文          内层:守住「必须调工具」</pre>
+</section>
+
+<!-- 05 -->
+<section id="task">
+  <h2>05 / 实施</h2>
+  <div class="h">六条任务</div>
+
+  <div class="task done"><div class="hd"><span class="id">T1</span><span class="p1">P1</span><span class="pd">已完成</span><span class="ti">结构件 —— <code>RequireLedgerTool</code> 下沉为 <code>core/require_tool.py::RequireToolCall</code></span><span class="ef">human ~2h / CC ~25min</span></div>
+    <dl><dt>由来</dt><dd>D1;report 裸奔,而 schedule 已有验证过的实现</dd>
+    <dt>文件</dt><dd><code>core/require_tool.py</code>(新)、<code>agents/schedule/guard.py</code>(退化/删除)、<code>agents/schedule/__init__.py</code></dd>
+    <dt>参数化</dt><dd><code>tools_hint</code>(中文提示词)、<code>on_give_up</code>(pass/fail)、<code>fail_msg</code></dd>
+    <dt>验证</dt><dd><code>test_require_tool.py</code> 改参数化后 6 条全过,schedule 行为一字不变</dd></dl></div>
+
+  <div class="task done"><div class="hd"><span class="id">T2</span><span class="p1">P1</span><span class="pd">已完成</span><span class="ti">接线 —— report 挂上结构件,失败语义为硬错</span><span class="ef">human ~1h / CC ~15min</span></div>
+    <dl><dt>由来</dt><dd>D2;放行等于让工友拿到不存在的巡检记录编号</dd>
+    <dt>文件</dt><dd><code>agents/report/__init__.py</code></dd>
+    <dt>验证</dt><dd>新单测断言「重试仍不调工具 → 返回 fail Envelope 且 user_msg 是人话」</dd></dl></div>
+
+  <div class="task done"><div class="hd"><span class="id">T3</span><span class="p1">P1</span><span class="pd">已完成</span><span class="ti">验收 —— 失败时 dump 该线程完整消息轨迹</span><span class="ef">human ~30min / CC ~10min</span></div>
+    <dl><dt>由来</dt><dd>D3;A8 今天查不动的直接原因</dd>
+    <dt>文件</dt><dd><code>scripts/live_acceptance.py</code></dd>
+    <dt>落盘</dt><dd><code>data/</code> 下已被 <code>.gitignore</code> 忽略的目录,含工具调用与模型原话</dd>
+    <dt>验证</dt><dd>故意让一条断言失败,确认文件里能看出「工具调了没」</dd></dl></div>
+
+  <div class="task done"><div class="hd"><span class="id">T4</span><span class="p1">P1</span><span class="pd">已完成</span><span class="ti">验收 —— 日期字面量改成从后端 today 现算</span><span class="ef">human ~1.5h / CC ~20min</span></div>
+    <dl><dt>由来</dt><dd>D4;实测这套验收只有 2026-08-08 那一天能全绿</dd>
+    <dt>文件</dt><dd><code>scripts/live_acceptance.py</code></dd>
+    <dt>断言</dt><dd>A1(明天)· A3(改到周五)· A4/D2(后天)· C3/D3(下周一)· D1(周五)</dd>
+    <dt>附</dt><dd>打印后端 today,与 <code>Asia/Shanghai</code> 不一致时警告(不判红)</dd>
+    <dt>验证</dt><dd>模拟连续 10 天,每天都应能全绿</dd></dl></div>
+
+  <div class="task done"><div class="hd"><span class="id">T5</span><span class="p2">P2</span><span class="pd">已完成</span><span class="ti">验收 —— A10 按星期分支,两边都断</span><span class="ef">human ~30min / CC ~10min</span></div>
+    <dl><dt>由来</dt><dd>D5;现在一周有三天必红,而那三天工具的行为是<b>对的</b></dd>
+    <dt>文件</dt><dd><code>scripts/live_acceptance.py</code></dd>
+    <dt>判据</dt><dd>周四~周日断「本周三已经过了」;周一~周三断「正常解析成本周三且不报错」</dd>
+    <dt>验证</dt><dd>同 T4 的十日模拟</dd></dl></div>
+
+  <div class="task done"><div class="hd"><span class="id">T6</span><span class="p2">P2</span><span class="pd">已完成</span><span class="ti">文档 —— 同源清单 + TODOS</span><span class="ef">human ~15min / CC ~5min</span></div>
+    <dl><dt>CLAUDE.md</dt><dd>加一行:防假账结构件的两处挂载点</dd>
+    <dt>TODOS.md</dt><dd>加两条(knowledge/cad 扩展 · 断措辞改断事实)</dd></dl></div>
+</section>
+
+<!-- 06 -->
+<section id="test">
+  <h2>06 / 测试</h2>
+  <div class="h">测试计划</div>
+
+<pre>CODE PATHS                                              需要补的测试
+[+] <b>core/require_tool.py</b>
+  ├── _is_turn_start()                                  参数化沿用 test_schedule_guard 的 3 条
+  ├── _lacks_tool_call()                                沿用
+  └── wrap/awrap_model_call
+      ├── 首答带工具 → 直通                              沿用
+      ├── 首答不带 → 重试                                沿用
+      ├── on_give_up="pass" → 放行(schedule)            沿用
+      ├── on_give_up="fail" → 返回 fail Envelope        <i>★ 新,P1</i>
+      └── on_give_up 缺省值                              <i>★ 新,防将来接入时漏配</i>
+[+] <b>agents/report/__init__.py</b>
+      └── guard 真的挂上了(不只是「能组装」)             <i>★ 新,P1</i>
+[+] <b>scripts/live_acceptance.py</b>
+      ├── 从 ToolMessage 取 today                        <i>★ 新(纯函数,可单测)</i>
+      ├── 十日模拟:每天都能全绿                          <i>★ 新,P1 —— 这是 T4/T5 的验收本身</i>
+      └── 失败 dump 路径                                 <i>★ 新</i></pre>
+
+  <div class="note"><p><b>注意 <code>guard 真的挂上了</code> 这条怎么测</b>:<code>create_gyt_agent</code> 返回的是编译好的图,
+  中间件不好直接反查。建议让 <code>build_report_agent()</code> 把中间件列表暴露成可断言的形式,
+  或者用一个「首答不调工具」的假模型跑一遍真实 agent,断言拿到的是 fail Envelope ——
+  <b>后者是行为断言,优于结构断言</b>,推荐后者。</p></div>
+</section>
+
+<!-- 07 -->
+<section id="fail">
+  <h2>07 / 失败模式</h2>
+  <div class="h">每条:有无测试 / 有无错误处理 / 工友看不看得见</div>
+
+  <div class="tw"><table>
+    <thead><tr><th>新代码路径</th><th>一种真实的生产失败</th><th>有测试?</th><th>有错误处理?</th><th>工友看得见?</th></tr></thead>
+    <tbody>
+      <tr><td><code>RequireToolCall</code> 重试</td><td>模型两次都不调工具</td><td class="s-ok">T2 补</td><td>D2 → 硬错</td><td class="s-ok">✅ 人话错误</td></tr>
+      <tr><td><code>on_give_up="fail"</code></td><td><code>fail_msg</code> 写成了内部术语</td><td class="s-bad">无</td><td>—</td><td class="s-warn">⚠️ 需人工把关文案</td></tr>
+      <tr><td>验收读 <code>data.today</code></td><td><code>list_tasks</code> 那步本身失败,拿不到 today</td><td class="s-ok">T4 补</td><td>需显式处理</td><td>—</td></tr>
+      <tr><td>验收 dump 轨迹</td><td>目录不可写</td><td class="s-bad">无</td><td>需 try/except,<b>绝不能因此吞掉原始失败</b></td><td>—</td></tr>
+    </tbody>
+  </table></div>
+
+  <p><b>0 个 critical gap</b>(没有「无测试 + 无错误处理 + 静默」的组合)。</p>
+
+  <div class="note w"><p>⚠️ 一条要人工把关的:<code>fail_msg</code> 是工友直接看到的字符串,必须是工地师傅的人话,
+  不许出现「Envelope」「tool_call」这类词。<b>这条机器测不出来。</b></p></div>
+</section>
+
+<!-- 08 -->
+<section id="no">
+  <h2>08 / 边界</h2>
+  <div class="h">NOT in scope</div>
+
+  <div class="tw"><table>
+    <thead><tr><th>不做</th><th>理由</th></tr></thead>
+    <tbody>
+      <tr><td>knowledge / cad 接结构件</td><td>无实测证据,演示前加未验证的重试逻辑风险 &gt; 收益(已记 TODO)</td></tr>
+      <tr><td>C3/A2/A7 改成断事实</td><td>要逐条拿捏「该断事实还是该断展示」,不宜与确定性修复混做(已记 TODO)</td></tr>
+      <tr><td>查 A8 的根因</td><td><b>T3 是查它的前提</b> —— 先有轨迹,下次红了才查得动</td></tr>
+      <tr><td>给英雄链加第三种保护(如强制校验 docx 落盘)</td><td>D2 的硬错已经把假编号堵在源头,再加一层是过度设计</td></tr>
+      <tr><td>TODO-9 / TODO-10(错误文案中文化、双层重试)</td><td>在 LLM 路径上,与本轮相邻但不同源</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 09 -->
+<section id="par">
+  <h2>09 / 执行</h2>
+  <div class="h">并行化</div>
+
+  <div class="tw"><table>
+    <thead><tr><th>步骤</th><th>触及模块</th><th>依赖</th></tr></thead>
+    <tbody>
+      <tr><td>T1 结构件下沉</td><td><code>core/</code>、<code>agents/schedule/</code></td><td>—</td></tr>
+      <tr><td>T2 report 接线</td><td><code>agents/report/</code></td><td>T1</td></tr>
+      <tr><td>T3 失败 dump</td><td><code>scripts/</code></td><td>—</td></tr>
+      <tr><td>T4 日期现算</td><td><code>scripts/</code></td><td>—</td></tr>
+      <tr><td>T5 A10 分支</td><td><code>scripts/</code></td><td>T4(同文件同区域)</td></tr>
+      <tr><td>T6 文档</td><td><code>CLAUDE.md</code>、<code>TODOS.md</code></td><td>T1、T2</td></tr>
+    </tbody>
+  </table></div>
+
+<pre>Lane A: T1 → T2 → T6        (顺序:T2 依赖下沉,T6 依赖两者)
+Lane B: T3 → T4 → T5        (顺序:三条都改 live_acceptance.py 同一个文件)
+
+执行:<b>A ∥ B 并行 → 合并 → 十日模拟 + 真机重跑 25 条</b></pre>
+
+  <div class="note w"><p>⚠️ <b>冲突提示</b>:Lane B 三条全在 <code>scripts/live_acceptance.py</code>,<b>必须串行</b>,
+  不要并行派 agent —— 这个文件今天已经被两轮改动碰过,再并行改就是自找合并冲突。</p></div>
+</section>
+
+<!-- 10 -->
+<section id="log">
+  <div class="eyebrow">Execution log</div>
+  <h2>10 / 落地记录</h2>
+  <div class="h">2026-08-10 收工</div>
+
+  <p class="lede">六条全部落地,commit <code>809a890</code>(Lane B)+ 前序 Lane A。<b>但本方案有两条决策被实测推翻,
+  推翻的过程比结论有用,原文一律保留在上面、只在这里记纠正。</b></p>
+
+  <h3><span class="b-bad">被推翻</span>决策一:D2「report 也用首答必须调工具」</h3>
+
+  <div class="rev"><b>方案里写「schedule 的判据下沉给 report 复用,只换文案换失败语义」。</b>对抗复核证明<b>两头都不对</b>。</div>
+
+<pre>英雄链是图边直连(graph.py:185),report 首答前最后一条是 safety 的 AIMessage
+        ↓  既不是用户发言,也不是 transfer_to_* 回执
+   <s>_is_turn_start 恒为 False  →  守卫在生产路径上一次都不触发</s></pre>
+
+  <p>而它一旦真触发,又会打断 <code>report/prompt.md</code> 明文要求的两种合法纯文本回合
+  (多照片时反问「给哪张出记录?」、如实拒答日报)—— <b>反问被吞掉就是对话死锁</b>。</p>
+
+  <div class="note a"><p><b>改成 RequireReceiptSource(编号溯源)</b>:输出里报出的 <code>GYT-…</code> 必须在本回合工具结果里
+  真的出现过。编号是工具生成的(<code>report/tools.py:151</code>),模型没有合法理由自己造;
+  反问和拒答压根不含编号,零误伤。不依赖首答判定,所以英雄链里真会触发。</p></div>
+
+  <h3><span class="b-bad">被推翻</span>决策二:T3 的「30 秒判据 = 本轮业务工具」</h3>
+
+  <div class="rev"><b>初版把「本轮调了哪些业务工具」放在轨迹头部当判据</b>,空的就断言「模型凭记忆编的,先查提示词和 guard」。对抗复核用同版本库起了一张真的 <code>create_supervisor</code> 图(参数与 <code>graph.py</code> 逐字相同),让子 Agent <b>确实调了</b> <code>add_task</code> —— 那条 tool_call 消息在顶层 <code>messages</code> 里依然不见。</div>
+
+  <p>根因:</p>
+
+<pre><i># langgraph_supervisor/supervisor.py  _process_output</i>
+elif output_mode == "last_message":
+    if isinstance(messages[-1], ToolMessage):
+        messages = messages[-2:]
+    else:
+        messages = messages[-1:]      <i># 子 Agent 回合末尾恒是它自己的纯文本 AIMessage</i></pre>
+
+  <p>带 <code>tool_calls</code> 的 AI 消息连同 ToolMessage 一起被砍。<b>那一行在真机上是常量。</b></p>
+
+  <div class="note a"><p><b>改成:</b>删掉假判据 + 把局限当面写清 + 判据换成<b>台账快照</b>(dump 时直查 <code>tasks</code> 表)。
+  「回执说什么不算,库里有没有才算」—— 与 D 组同一条哲学,而且离线可验证。</p>
+  <p>捞子图消息的两条路(<code>runs/stream</code> 带 <code>subgraphs</code> / <code>POST /threads/{id}/history</code>)
+  只在 Pregel 层验过、<b>HTTP 层未实测</b>,记成 TODO-26,不在这一轮赌。</p></div>
+
+  <h3>方案没预见、由变异注入抓出来的四条假绿灯</h3>
+  <p>复核没有停在读代码,写了桩后端把回归<b>注进去</b>看断言抓不抓得住:</p>
+
+  <div class="tw feat"><table>
+    <thead><tr><th>变异</th><th>修前</th><th>修后</th></tr></thead>
+    <tbody>
+      <tr><td>改期根本没发生</td><td class="s-bad">周四 25/25 假绿(A1「明天」与 A3「周五」撞同一天)</td><td class="s-ok">七天全 23/25</td></tr>
+      <tr><td>T2 期限错记</td><td class="s-bad">周三 25/25 假绿(A3==A4)</td><td class="s-ok">抓住</td></tr>
+      <tr><td>整改任务错记</td><td class="s-bad">周六 25/25 假绿(A4==C3)</td><td class="s-ok">抓住</td></tr>
+      <tr><td>同标题重复行</td><td class="s-bad">七天全 25/25 假绿(<code>read_ledger</code> 用标题当 key,库里 6 行报「恰好 3 条」)</td><td class="s-ok">七天全 24/25</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note a"><p>前三条的根治办法不是逐日打补丁,是立一条<b>不变量</b>:A1/A3/A4/C3 四个日期在任何一天
+  两两不等,按日历选短语去满足它,五年全量测试钉死。原先那条
+  <code>test_后天与下周一只在周六撞车</code> 是把撞车<b>固化成了期望</b>,已反转。</p></div>
+
+  <h3>方法论:这一轮的三条错,主 agent 全占</h3>
+  <p>D2 判据错、T3 判据错、A10 撞车没预见 —— 三条都出在<b>规划</b>,不是执行。
+  共同点是「在脑子里推演消息形状」,而三次都被「真起一张图 / 真注一个回归」推翻。
+  下次涉及框架行为的判据,先写一个二十行的探针跑一遍,比推演便宜得多。</p>
+
+  <div class="note w"><p>第三条更值得记:<b>验收脚本自己也会有假绿灯,而且没人验收它。</b><br>
+  这一轮是靠变异注入(故意把功能改坏,看断言红不红)才发现的 —— 这套手法应该
+  固定下来,别等下次演示前才发现验收在陪跑。</p></div>
+</section>
+
+<hr>
+<footer>
+  <p>工友通 · W5 巡检链防假账 + 验收去脆化 · <code>/plan-eng-review</code> 定稿 2026-08-10 · 分支 <code>lawrence/demo-polish</code><br>
+  六条任务全部落地,commit <code>809a890</code>(Lane B)+ 前序 Lane A · 失败模式 <b>0 个 critical gap</b><br>
+  <b>两条决策被实测推翻</b>(D2 判据 · T3 判据),原文保留、纠正记在 §10。</p>
+</footer>
+</main>
+</div>
