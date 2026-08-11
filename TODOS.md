@@ -827,3 +827,44 @@
   上面第 3 点「报错到不到用户眼前」不在它的范围里。
 
 - **Depends:** 无。
+
+## TODO-33 线上 VPS 跑的后端镜像比 main 少一个提交(cad 竞态修复没上线)
+
+- **What:** `4cb2809`(cad 索引临时文件名改唯一,修同回合两个工具并发抢 tmp 的竞态)
+  **已进 main、已推,但 velactora.com 上跑的 `gyt-backend:vps` 里没有它。**
+  线上那份是 `be1016e7aecc`,构建于 2026-08-11 早些时候。
+
+- **为什么没上线(不是忘了,是当时判断不该赌):**
+  重建镜像时两次都撞 `no space left on device`。根因是我自己造成的 ——
+  为了给第一次构建腾地方跑了 `docker builder prune -af`,把**依赖层缓存也一起清了**,
+  于是本该几十秒的增量重建变成全量(155 个包重下 + 2.2GB BGE-M3 权重重下),
+  而 30GB 的盘要同时装下新旧两份 6.37GB 镜像的解开态,不够。
+  当时站点是**已验证可用**的状态,拿它去赌一个非紧急修复不划算,所以停手。
+
+- **⚠️ 停手时留下过一个危险中间态,已经处理掉了,但值得记住:**
+  构建失败在「解开层」这一步,而**镜像名已经打上去了** —— `gyt-backend:vps`
+  当时指向一个**没解开完**的新镜像,跑着的容器用的却是旧的。
+  **机器一重启,compose 就会去用那个坏镜像起后端。**
+  处理:`docker tag gyt-backend:known-good gyt-backend:vps` 指回去 + `docker image prune -f`,
+  然后**真的 `--force-recreate` 了一次 backend 容器**确认它能从当前 `:vps` 起来(healthy)。
+  教训:构建失败之后**必须查一眼 `docker images` 里 tag 指到哪儿了**,
+  「构建失败」不等于「什么都没变」。
+
+- **怎么补上(需要先腾地方):**
+  ```bash
+  # 在 VPS 上。先确认有 ≥15GB 空闲,否则先删旧镜像再建(那样构建期间后端会下线几分钟)
+  df -h /
+  cd /opt/gyt && docker compose -f docker-compose.yml -f docker-compose.vps.yml build backend
+  docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d backend
+  # 建完再打一次回滚标签
+  docker tag gyt-backend:vps gyt-backend:known-good
+  ```
+  **别在重建前跑 `docker builder prune -af`** —— 那正是这次踩的坑:
+  它清掉的依赖层缓存,恰恰是让重建变便宜的东西。要腾地方优先删
+  `gyt-frontend:known-good` 这类**不同摘要的旧镜像**。
+
+- **在此之前线上的实际影响:** cad 场景里如果一个回合触发两个 cad 工具并发,
+  其中一个会抛 `FileNotFoundError` 而失败(另一个成功)。不破坏数据,
+  同样的提问重跑一遍通常就好了 —— 但演示时撞上会很难看。
+
+- **Depends:** 无。
