@@ -14,7 +14,7 @@
 #        │
 #        ▼
 #   ┌──────────┐  这是整份编排里**唯一**有 ports 的服务
-#   │  caddy   │  ① basic_auth 全局口令(给人的门)
+#   │  caddy   │  ① 登录页 + 会话 Cookie(给人的门,forward_auth → login)
 #   └────┬─────┘
 #        │  docker 内网,宿主机上看不到端口
 #        ├── /       ──▶ frontend:3000    ← ports 被 !reset 掉了
@@ -40,7 +40,8 @@
 # 上线前必须先做的事(缺一步就起不来或者裸奔)
 # -----------------------------------------------------------------------------
 #   1. cp .env.vps.example .env      ← **必须叫 .env**,理由见文件末尾「关于 --env-file」
-#   2. 按 .env 里的命令生成 GYT_ACCESS_TOKEN 和 GYT_BASIC_AUTH_HASH,填进去
+#   2. 生成 GYT_ACCESS_TOKEN(见 .env.vps.example)和 GYT_LOGIN_HASH
+#      (`python scripts/make_login_hash.py`),填进去
 #   3. 填两把模型 Key(GYT_DEEPSEEK_API_KEY / GYT_MOONSHOT_API_KEY)
 #   4. mkdir -p data && sudo chown 10001:10001 data   ← Linux 上必做,
 #      容器里跑的是非 root 用户,不改属主写不进这个绑定挂载
@@ -241,7 +242,52 @@ services:
     logging: *default-logging
 
   # ---------------------------------------------------------------------------
-  # Caddy:反向代理 + 全局口令。整份编排里唯一对公网开口的服务
+  # 登录服务:登录页 + 会话 Cookie。替掉浏览器那个原生 basic_auth 弹框
+  # ---------------------------------------------------------------------------
+  # Caddy 用 forward_auth 把每个请求先甩给它验一下会话(见 Caddyfile 的 route 块)。
+  # 为什么不继续用 basic_auth:那个弹框是**浏览器自己画的**,不可美化;
+  # 只要服务端回 `WWW-Authenticate: Basic` 它就一定会弹。完整推理在 serve_login.py 顶部。
+  #
+  # 和 artifacts 服务同一套形态(python:3.12-slim + 标准库 + 只读挂载 + 无 ports),
+  # 理由也一样:不为一个哈希函数多背一个 pip 包和一条构建期网络依赖。
+  login:
+    image: python:3.12-slim
+    container_name: gyt-login
+
+    # 与 backend 同一个非 root uid。它的输入是**公网来的口令和 Cookie**,纵深一点不亏。
+    user: "10001:10001"
+
+    # ⚠️ 一个 ports 都不许有 —— 同 artifacts。
+    # serve_login.py 的 BIND_HOST 在容器里绑 0.0.0.0,**唯一前提就是这个服务不发布端口**。
+    # preflight ⑤ 组数「发布端口总数」(应为 3)就是在守这条。
+    command:
+      - python
+      - /srv/serve_login.py
+      - --port
+      - "8790"
+
+    volumes:
+      # 服务和登录页都只读挂进来:改完 restart 一下就生效,不用重建镜像。
+      # 登录页是纯静态的(错误态靠 URL 上的 ?e=1 在前端切),服务端一个字节的
+      # 用户输入都不回显 —— 连一个反射面都不留。
+      - ./scripts/serve_login.py:/srv/serve_login.py:ro
+      - ./scripts/login-page.html:/srv/login-page.html:ro
+
+    environment:
+      # 口令哈希。**scrypt 不是 bcrypt** —— hashlib.scrypt 在标准库里,bcrypt 不在。
+      # 生成:python scripts/make_login_hash.py(它会把 $ 加倍好,直接粘)。
+      # 用 :? 让它成为硬性前置:不设就在 `up` 那一刻失败,而不是起一个不设防的站点。
+      GYT_LOGIN_HASH: ${GYT_LOGIN_HASH:?没设 GYT_LOGIN_HASH。这是登录页要校验的口令哈希,不设等于整个站点对全网敞开。生成:python scripts/make_login_hash.py}
+      TZ: ${TZ:-Asia/Shanghai}
+      # 理由同 artifacts:输出不是终端时 stdout 变块缓冲,报错永远出不来
+      PYTHONUNBUFFERED: "1"
+
+    restart: unless-stopped
+
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Caddy:反向代理 + 会话门。整份编排里唯一对公网开口的服务
   # ---------------------------------------------------------------------------
   caddy:
     # 官方镜像,不自己构建。
@@ -277,23 +323,14 @@ services:
       # 两种写法的完整说明在 Caddyfile 里那一大段注释。
       GYT_SITE_ADDRESS: ${GYT_SITE_ADDRESS:-:80}
 
-      GYT_BASIC_AUTH_USER: ${GYT_BASIC_AUTH_USER:-gyt}
-
-      # 口令的 bcrypt 哈希。和令牌一样 fail-closed —— 没设就不许起。
+      # ⚠️ 2026-08-11 起,caddy **不再碰口令哈希** —— 校验搬到了 login 服务里
+      # (`forward_auth`,见 Caddyfile 的 route 块)。原来这里有
+      # GYT_BASIC_AUTH_USER / GYT_BASIC_AUTH_HASH 两个变量,现在都不需要了。
       #
-      # ⚠️⚠️ 这里有个**必须知道**的坑,实测确认过:
-      # 哈希串长这样 `$2a$12$xxxx`,里面的 `$` 会被 Compose 当成变量引用吃掉。
-      # 实测(Compose v5.1.3):.env 里原样贴 `$2a$14$V8/gFX...`,
-      # 容器里拿到的是 `$2a$14.ZwGx8MTWE...` —— 中间少了一截。
-      # 而 Caddy 对这种残缺哈希**不报错**,只是口令永远对不上:
-      # 你输对了口令也一直 401,还以为是自己记错了密码。
-      #
-      # 所以 .env 里必须存**把 `$` 全部写成 `$$`** 的形态。
-      # .env.vps.example 给的生成命令已经直接吐出转义好的串,照抄粘贴即可。
-      # (下面这句提示文案本身也会被 Compose 插值一遍,所以里面的 $ 必须写成 $$ 才能
-      #  在终端上真的打出一个 $。实测:写 $$ 打出 $,写 $$$$ 打出 $$。
-      #  没转义的话提示会变成「$ 必须写成 $」这种自相矛盾的废话 —— 别手贱改回去。)
-      GYT_BASIC_AUTH_HASH: ${GYT_BASIC_AUTH_HASH:?没设 GYT_BASIC_AUTH_HASH。这是外部测试的人访问站点要输的那个口令的哈希,不设等于整个站点对全网敞开。生成命令在 .env.vps.example 里,注意生成出来的哈希里每个 $$ 符号都必须写成两个,即 $$$$}
+      # 那个「哈希里的 $ 会被 Compose 吃掉」的坑**没有消失,只是搬了家**:
+      # scrypt 哈希同样用 `$` 分段,所以 .env 里的 GYT_LOGIN_HASH 也必须把 `$` 写成 `$$`。
+      # `scripts/make_login_hash.py` 直接吐出加倍好的串,照抄粘贴即可。
+      # 写坏了的表现依旧是**不报错、口令永远对不上**。
 
       TZ: ${TZ:-Asia/Shanghai}
 
@@ -314,24 +351,30 @@ services:
         # 只等它起来,不等健康 —— 这个服务没有 healthcheck,而且晚几秒无所谓:
         # 它只在用户点开照片 / 巡检记录时才被访问,不在首屏路径上。
         condition: service_started
+      login:
+        # 这个**在首屏路径上**:它没起来的话,forward_auth 拿不到 204,
+        # 整站每个请求都会 502 —— 包括登录页自己。
+        condition: service_started
 
-    # 探活:故意断言「返回 401」,而不是「返回 200」。
+    # 探活:故意断言「返回 302」,而不是「返回 200」。
     #
-    # 这不是绕弯子 —— 401 同时证明了两件事:Caddy 活着、**并且口令这道门是开着的**。
-    # 如果哪天 basic_auth 被误删/写错位置,站点会变成 200 全放行,
+    # 这不是绕弯子 —— 302 同时证明了两件事:Caddy 活着、**并且会话这道门是开着的**
+    # (未登录访问 / 会被 forward_auth 打回登录页)。
+    # 如果哪天那道门被误删/写错位置,站点会变成 200 全放行,
     # 而一个「探 200」的健康检查会高高兴兴地报 healthy,没人发现已经裸奔了。
     # 现在这种写法下,那种情况会让容器直接变 unhealthy。
     #
-    # 用 busybox 的 wget:alpine 镜像自带,不用为了健康检查再装 curl。
-    # -S 把响应头打到 stderr,2>&1 合流后 grep 401。
+    # ⚠️ 2026-08-11 从 401 改成 302:换成登录页之后,未登录访问不再回 401,
+    #    而是 302 跳 /login。**这一条漏改的表现是 caddy 永远 unhealthy**,
+    #    而站点其实好好的 —— 人会去查一个不存在的故障。
     healthcheck:
-      # 这条不只是「进程还活着」,它同时是**一条持续的口令检查**:
-      # 401 = basic_auth 还在岗。哪天有人把它注释掉调试完忘了加回来,这里立刻变红。
+      # 这条不只是「进程还活着」,它同时是**一条持续的门禁检查**:
+      # 302 = 会话门还在岗。哪天有人把它注释掉调试完忘了加回来,这里立刻变红。
       #
       # ⚠️⚠️ 两种模式**必须分开探**,这条 2026-08-11 真机验过三遍才写对:
       #
-      #   裸 IP(GYT_SITE_ADDRESS=":80")  → 探 http://127.0.0.1:80/          → 401
-      #   域名(GYT_SITE_ADDRESS=域名)    → 探 https://<域名>/ 且要走对 SNI  → 401
+      #   裸 IP(GYT_SITE_ADDRESS=":80")  → 探 http://127.0.0.1:80/          → 302
+      #   域名(GYT_SITE_ADDRESS=域名)    → 探 https://<域名>/ 且要走对 SNI  → 302
       #
       # 域名模式下探 :80 **恒定拿到 308**(Caddy 自动 HTTPS 的重定向按主机名挂),
       # 加不加 Host 头都一样 —— 我一开始就是这么写错的,结果是 caddy 永远 unhealthy,
@@ -348,7 +391,7 @@ services:
         - CMD-SHELL
         - 'A="$${GYT_SITE_ADDRESS}"; case "$$A" in :*) U=http://127.0.0.1:80/; R=;;
           *) H="$${A%%:*}"; U=https://$$H/; R="--resolve $$H:443:127.0.0.1";; esac;
-          curl -sk -o /dev/null -w %{http_code} --max-time 5 $$R "$$U" | grep -q 401'
+          curl -sk -o /dev/null -w %{http_code} --max-time 5 $$R "$$U" | grep -q 302'
       interval: 30s
       timeout: 10s
       retries: 3

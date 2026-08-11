@@ -50,7 +50,7 @@ ok ".env 在"
 get() { grep -E "^$1=" .env | tail -1 | cut -d= -f2- ; }
 
 TOKEN=$(get GYT_ACCESS_TOKEN)
-HASH=$(get GYT_BASIC_AUTH_HASH)
+HASH=$(get GYT_LOGIN_HASH)
 SITE=$(get GYT_SITE_ADDRESS)
 ORIGIN=$(get GYT_PUBLIC_ORIGIN)
 DS=$(get GYT_DEEPSEEK_API_KEY)
@@ -68,7 +68,7 @@ looks_fake() {
   return 1
 }
 
-for pair in "GYT_ACCESS_TOKEN:${TOKEN}" "GYT_BASIC_AUTH_HASH:${HASH}" \
+for pair in "GYT_ACCESS_TOKEN:${TOKEN}" "GYT_LOGIN_HASH:${HASH}" \
             "GYT_DEEPSEEK_API_KEY:$DS" "GYT_MOONSHOT_API_KEY:$MS" \
             "GYT_SITE_ADDRESS:${SITE}" "GYT_PUBLIC_ORIGIN:${ORIGIN}"; do
   n=${pair%%:*}; v=${pair#*:}
@@ -82,10 +82,17 @@ if [[ -n "${TOKEN}" && ${#TOKEN} -lt 24 ]]; then
 fi
 
 # 口令哈希里的 $ 必须写成 $$ —— compose 会把单个 $ 当变量插值吃掉,
-# 结果是 Caddy 拿到一个残缺哈希、**照常启动**,然后所有口令都对不上。
+# 结果是 login 服务拿到一个残缺哈希、**照常启动**,然后所有口令都对不上。
+# (2026-08-11 从 bcrypt 换成 scrypt 之后这条依然成立:scrypt 哈希同样用 $ 分段。)
 if [[ -n "${HASH}" && "${HASH}" != *'$$'* ]]; then
-  bad "GYT_BASIC_AUTH_HASH 里的 \$ 没有写成 \$\$。"
-  note "compose 会把单个 \$ 当变量吃掉;Caddy 照常起来但所有口令都对不上,排查方向全错。"
+  bad "GYT_LOGIN_HASH 里的 \$ 没有写成 \$\$。"
+  note "compose 会把单个 \$ 当变量吃掉;login 服务照常起来但所有口令都对不上,排查方向全错。"
+fi
+# 算法前缀写错(比如还留着 bcrypt 的 \$2a\$ 串)同样是「不报错、口令永远不对」
+if [[ -n "${HASH}" && "${HASH}" != scrypt* ]]; then
+  bad "GYT_LOGIN_HASH 不是 scrypt 哈希(应以 scrypt\$ 开头)。"
+  note "2026-08-11 起登录改用 hashlib.scrypt(标准库),旧的 bcrypt 串不再能用。"
+  note "重新生成:python scripts/make_login_hash.py"
 fi
 
 # ---------------------------------------------------------------------------
@@ -229,8 +236,7 @@ elif ! docker info >/dev/null 2>&1; then
   note "起 daemon 之后重跑本脚本,把这两项补上再 up。"
 else
   if docker run --rm -v "${REPO}/Caddyfile:/etc/caddy/Caddyfile:ro" \
-       -e GYT_SITE_ADDRESS="${SITE:-:80}" -e GYT_BASIC_AUTH_USER=gyt \
-       -e GYT_BASIC_AUTH_HASH='$2a$12$x' \
+       -e GYT_SITE_ADDRESS="${SITE:-:80}" \
        caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1; then
     ok "Caddyfile 语法通过"
   else

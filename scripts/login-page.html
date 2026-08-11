@@ -1,0 +1,256 @@
+<!doctype html>
+<!--
+  工友通(GYT)内测登录页 —— 由 scripts/serve_login.py 原样发出。
+
+  ⚠️ 这个文件里**不许出现任何外链**(字体、CSS、JS、图片)。
+     它跑在一个没有外网出口的容器里,而且站点有 CSP —— 外链的表现不是报错,
+     是页面裂开一半,而控制台里那行没人会去看。所有东西必须内联。
+
+  ⚠️ **不许加注册入口。** 这是内测,口令由人手工发放;
+     一个"注册"按钮等于把门直接拆了。
+
+  服务端契约(serve_login.py 的 _read_page 会硬校验这两条,缺了直接拒绝启动):
+    · 表单必须是 action="/login" method="post"
+    · 口令输入框必须 name="pw"
+  错误态**不做服务端模板**,靠 URL 上的 ?e=1 在前端切换 —— 服务端一个字节的
+  用户输入都不回显,连一个反射面都不留。
+
+  视觉方向:安全标识牌。刻意**不做深色** —— 工地师傅是在户外太阳底下看手机的,
+  深色屏在强光下读不了。所以是高对比浅色 + 安全警示黄 + 45° 警示斜纹。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light">
+<title>工友通 · 内测登录</title>
+<style>
+  :root{
+    /* 混凝土色系 —— 刻意带一点暖(色相偏黄),纯灰读起来像没选过 */
+    --concrete:#EBE8E2;
+    --concrete-deep:#DDD8CF;
+    --surface:#FFFFFF;
+    --ink:#17150F;
+    --ink-soft:#5C574B;
+    --ink-faint:#8B8578;
+
+    /* 安全警示黄。这是这一页唯一的高饱和色,只给「下一步」用 */
+    --amber:#F5A200;
+    --amber-deep:#C97F00;
+    --danger:#B3261E;
+
+    --line:#17150F;
+    --shadow:6px 6px 0 var(--ink);
+
+    --tap:56px;              /* 触摸目标下限 —— 戴手套的手 */
+    --gap:clamp(1rem,.6rem+1.6vw,1.5rem);
+  }
+
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    padding:var(--gap);
+    display:grid;
+    place-items:center;
+    background:var(--concrete);
+    /* 极淡的网格,像工程图纸的底纹。用 background-image 不用元素,零 DOM 成本 */
+    background-image:
+      linear-gradient(rgba(23,21,15,.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(23,21,15,.045) 1px, transparent 1px);
+    background-size:28px 28px;
+    color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",
+                "Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",sans-serif;
+    -webkit-text-size-adjust:100%;
+  }
+
+  .card{
+    width:min(26rem,100%);
+    background:var(--surface);
+    border:2px solid var(--line);
+    box-shadow:var(--shadow);
+    /* 硬角。圆角会让它变成一张通用 SaaS 登录卡 */
+    border-radius:2px;
+    overflow:hidden;
+  }
+
+  /* 警示斜纹 —— 这是标识牌的语汇,不是装饰:它在说「这里是受控区域」 */
+  .hazard{
+    height:14px;
+    background:repeating-linear-gradient(
+      45deg, var(--amber) 0 14px, var(--ink) 14px 28px);
+  }
+
+  .body{padding:clamp(1.4rem,1rem+2.4vw,2.2rem);}
+
+  .eyebrow{
+    display:inline-block;
+    font-size:.7rem;
+    letter-spacing:.22em;
+    font-weight:700;
+    text-transform:uppercase;
+    color:var(--ink);
+    background:var(--amber);
+    padding:.28rem .5rem;
+    border:1.5px solid var(--line);
+  }
+
+  h1{
+    margin:.85rem 0 .3rem;
+    font-size:clamp(1.75rem,1.3rem+2.2vw,2.3rem);
+    line-height:1.05;
+    letter-spacing:-.02em;
+    font-weight:800;
+    text-wrap:balance;
+  }
+  .sub{
+    margin:0 0 1.4rem;
+    color:var(--ink-soft);
+    font-size:.95rem;
+    line-height:1.55;
+  }
+
+  label{
+    display:block;
+    font-size:.8rem;
+    font-weight:700;
+    letter-spacing:.06em;
+    margin-bottom:.45rem;
+  }
+
+  .field{position:relative;}
+  input[type=password],input[type=text]{
+    width:100%;
+    height:var(--tap);
+    padding:0 3.6rem 0 .9rem;
+    font-size:1.05rem;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; /* 随机串靠等宽才数得清 */
+    letter-spacing:.02em;
+    color:var(--ink);
+    background:var(--concrete-deep);
+    border:2px solid var(--line);
+    border-radius:2px;
+    outline:none;
+  }
+  input::placeholder{color:var(--ink-faint);font-family:inherit;letter-spacing:0;}
+  input:focus{
+    background:var(--surface);
+    box-shadow:0 0 0 3px var(--amber);
+  }
+
+  /* 显示/隐藏。20 位随机串在手机上手打,没有这个开关会很痛苦 */
+  .peek{
+    position:absolute;right:2px;top:2px;
+    height:calc(var(--tap) - 4px);
+    width:3.4rem;
+    border:0;background:transparent;
+    color:var(--ink-soft);
+    font-size:.78rem;font-weight:700;
+    cursor:pointer;
+  }
+  .peek:hover{color:var(--ink);}
+  .peek:focus-visible{outline:3px solid var(--amber);outline-offset:-3px;}
+
+  button.go{
+    margin-top:1.1rem;
+    width:100%;
+    height:var(--tap);
+    font-size:1.05rem;
+    font-weight:800;
+    letter-spacing:.04em;
+    color:var(--ink);
+    background:var(--amber);
+    border:2px solid var(--line);
+    border-radius:2px;
+    box-shadow:4px 4px 0 var(--ink);
+    cursor:pointer;
+    transition:transform .08s ease, box-shadow .08s ease, background .12s ease;
+  }
+  button.go:hover{background:#FFB01A;}
+  /* 按下去真的「压」下去 —— 物理按钮的语汇,和标识牌是一套 */
+  button.go:active{transform:translate(4px,4px);box-shadow:0 0 0 var(--ink);}
+  button.go:focus-visible{outline:3px solid var(--ink);outline-offset:3px;}
+
+  .err{
+    display:none;
+    margin:0 0 1.1rem;
+    padding:.7rem .85rem;
+    border:2px solid var(--danger);
+    border-left-width:8px;
+    border-radius:2px;
+    background:#FDF0EF;
+    color:var(--danger);
+    font-size:.9rem;
+    font-weight:600;
+    line-height:1.5;
+  }
+  body.has-error .err{display:block;}
+
+  .foot{
+    margin-top:1.3rem;
+    padding-top:1rem;
+    border-top:1.5px dashed var(--concrete-deep);
+    color:var(--ink-faint);
+    font-size:.82rem;
+    line-height:1.6;
+  }
+  .foot b{color:var(--ink-soft);}
+
+  @media (prefers-reduced-motion:reduce){
+    button.go{transition:none;}
+    button.go:active{transform:none;}
+  }
+</style>
+</head>
+<body>
+  <main class="card">
+    <div class="hazard" aria-hidden="true"></div>
+    <div class="body">
+      <span class="eyebrow">内测环境</span>
+      <h1>工友通</h1>
+      <p class="sub">建筑工地多智能体助手。<br>这是内部测试环境,需要口令才能进。</p>
+
+      <p class="err" id="err" role="alert">口令不对,再试一次。<br>注意区分大小写。</p>
+
+      <form action="/login" method="post" novalidate>
+        <label for="pw">访问口令</label>
+        <div class="field">
+          <input id="pw" name="pw" type="password"
+                 autocomplete="current-password"
+                 autocapitalize="off" autocorrect="off" spellcheck="false"
+                 placeholder="粘贴或输入口令" required autofocus>
+          <button type="button" class="peek" id="peek" aria-label="显示口令">显示</button>
+        </div>
+        <button type="submit" class="go">进 入</button>
+      </form>
+
+      <p class="foot">
+        没有口令?<b>找发你这个链接的人要。</b><br>
+        这里不开放注册 —— 口令是人工发放的。
+      </p>
+    </div>
+  </main>
+
+<script>
+  // 错误态由 URL 上的 ?e=1 驱动。服务端一个字节的用户输入都不回显。
+  if (new URLSearchParams(location.search).has('e')) {
+    document.body.classList.add('has-error');
+    // 让屏幕阅读器和键盘用户都落到输入框上,不用自己找
+    document.getElementById('pw').focus();
+  }
+
+  // 显示 / 隐藏口令
+  var pw = document.getElementById('pw');
+  var peek = document.getElementById('peek');
+  peek.addEventListener('click', function () {
+    var showing = pw.type === 'text';
+    pw.type = showing ? 'password' : 'text';
+    peek.textContent = showing ? '显示' : '隐藏';
+    peek.setAttribute('aria-label', showing ? '显示口令' : '隐藏口令');
+    pw.focus();
+  });
+</script>
+</body>
+</html>
