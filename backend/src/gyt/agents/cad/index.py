@@ -26,6 +26,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -46,11 +48,36 @@ def _index_path(drawing_id: str) -> Path:
 
 
 def write(drawing_id: str, data: dict[str, Any]) -> None:
-    """把解析结果原子落盘(先写 .tmp 再 rename,避免读到写一半的文件)。阻塞 IO。"""
+    """把解析结果原子落盘(先写临时文件再 rename,避免读到写一半的文件)。阻塞 IO。
+
+    ⚠️ 临时文件名**必须带唯一后缀**,不能是固定的 ``<id>.json.tmp``。
+    2026-08-11 真机跑演示场景时实测炸过:
+
+        FileNotFoundError: '<id>.json.tmp' -> '<id>.json'
+        (gyt.agents.cad.tools.layer_stats 抛出)
+
+    成因是**同一回合里两个 cad 工具并发**(LangGraph 会并行执行一个回合里的多个
+    tool call):两边都 ``ensure_index`` 未命中 → 都解析 → 都往**同一个**
+    ``<id>.json.tmp`` 写 → 先跑完的 ``replace`` 把它移走 → 后一个 rename 时源已经没了。
+
+    表现是随机某个 cad 工具失败,而另一个成功 —— 同样的提问重跑一遍又好了,
+    最难复现的那一类。用 mkstemp 在**同目录**下开一个唯一文件就没有这个问题
+    (同目录是为了保证 rename 是同一文件系统内的原子操作)。
+    """
     path = _index_path(drawing_id)
-    tmp = path.with_name(path.name + _TMP_SUFFIX)
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=path.name + ".", suffix=_TMP_SUFFIX)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+        tmp.replace(path)
+    except BaseException:
+        # 失败了别把半截临时文件留在索引目录里 —— 那些名字长得像索引,
+        # 下一个人排查时会以为索引写坏了。
+        tmp.unlink(missing_ok=True)
+        raise
     logger.info("已写入 CAD 索引 %s(%d 图层)", drawing_id, len(data.get("layers", [])))
 
 
