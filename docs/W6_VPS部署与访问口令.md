@@ -5,6 +5,12 @@
 > 写作日期 2026-08-11 · 分支 `lawrence/state-claim-audit`
 > **2026-08-11 凌晨补:整套流程已经在一台真 VPS 上从头跑通过一次,见 §0.0。**
 >
+> **2026-08-11 上午再补(提交 `ccb8d27`):第一道门整个换掉了。**
+> `basic_auth`(浏览器原生弹框)→ **自建登录页 + 会话 Cookie**,口令哈希 bcrypt → `hashlib.scrypt`,
+> 环境变量 `GYT_BASIC_AUTH_USER` / `GYT_BASIC_AUTH_HASH` → **`GYT_LOGIN_HASH`**(一个,没有用户名了),
+> 服务从四个变**五个**。全部门层已从外部机器重新实测,见 §3.1。
+> **换的过程中把站点弄裸奔过一次 —— 那是这一轮最贵的一课,单开一节写在 §0.5,先读它。**
+>
 > **关于「实测」二字。** 本仓最硬的一条规矩是「不许写没验证过的事实」,所以本手册把来源分四档:
 >
 > - **VPS 实测** —— 2026-08-11 凌晨那次真实上线(Debian 12 / velactora.com)跑出来的,给了具体数值;
@@ -41,17 +47,29 @@
 #### ✅ 已经在真机验证过的部分
 
 - **步骤 1~12 的完整链路**:从空机器到「输口令、提问、拿到答案」。
-  ⚠️ 但**全程是用 `curl` 打的,没有开过真浏览器** —— 口令框长什么样、
+  ⚠️ 但**全程是用 `curl` 打的,没有开过真浏览器** —— 登录页在手机/电脑上长什么样、
   前端 JS 起来之后会不会报错、SSE 在浏览器里逐不逐字,这三件都还没人看过。
   见下面「仍然没验证的部分」。
 - **Caddy 自动签发 Let's Encrypt 证书**(域名模式)。手册原来把这条列在「未验证」里,现在成立了。
 - **三层门的实际返回码**:口令层(§3.1)、令牌层(§3.2 的 A/B 两条)。
   连带抓到一个差点误判的陷阱:**`/api/ok` 不能用来验令牌层**(§3.2)。
-- **域名模式下的自检命令跟裸 IP 模式不一样**:`curl http://<VPS_IP>/` 回 **308** 而不是 401(§3.1)。
+  > ⚠️ **口令层那几个数在当天上午被整体作废又重新测过一遍。**
+  > 凌晨那次测的是 `basic_auth`(未登录 → **401**);上午换成登录页之后,
+  > 未登录变成 **302 跳 `/login`**。§3.1 现在给的是**换完之后重测的那一套**,
+  > 令牌层(§3.2)那几个数没有重测,理由见那一节。
+- **登录页 + 会话 Cookie 那道门的全套返回码**(2026-08-11 上午,提交 `ccb8d27` 之后,
+  同样从外部机器打):未登录 302、登录页 200、错口令不发 Cookie、对口令发 Cookie、
+  伪造会话全部被拒、连发错口令会 429。完整实测表在 §3.1。
+- **域名模式下的自检命令跟裸 IP 模式不一样**:`curl http://<VPS_IP>/` 回 **308**,
+  而不是门层该给的那个码(凌晨 basic_auth 时代是 401,现在是 302)——
+  那个 308 来自 Caddy 专管 `:80` 的自动跳转,跟哪种门一点关系都没有(§3.1)。
 - **1.9GB 内存 + 8GB swap 的机器上,加载 BGE-M3 做检索没被 OOM 杀掉**(§1.1,带采样数据)。
 - **业务链路真的通**:排期条目直查 SQLite 确认落库、knowledge 如实说查不到而没编造(§步骤 12)。
-- **持久化与自启**:**真按了一次 `reboot`** —— 开机 6 秒内四个容器全回来、caddy 直接 healthy
-  (证书从命名卷里读到,没重新向 Let's Encrypt 申请)、两块 swap 按 fstab 自动挂回(§7)。
+- **持久化与自启**:**真按了两次 `reboot`**。第二次是在**五个容器都齐了之后**跑的:
+  开机 **8 秒内五个容器全部 Up**、caddy 直接 healthy(证书从命名卷里读到,没重新向
+  Let's Encrypt 申请)、两块 swap 按 fstab 自动挂回、ufw 仍 active;
+  从外部复验 302/200/401/200/200 全对、证书 `notAfter` 未变,
+  而且**重启前的 19 条历史对话一条没少**(§7)。
 - **令牌真的烘进了浏览器包**(前端构建产物里精确匹配到那 64 位令牌)。
   手册原来把这条列成「已知目前接不上」,现在**已经接上了**(§步骤 11、§9)。
 
@@ -63,12 +81,17 @@
   单进程会不会累积状态,都不知道。
 - **证书自动续期**。首签成功 ≠ 续期成功,这两件事走的代码路径不一样。
   这张证书 **2026-11-08 到期**,到那之前谁也不知道。
-- **真浏览器**。整场验收全是 `curl` / `openssl s_client` 打的,**一次都没开过浏览器**。
-  于是这几件仍然没有证据:① 口令框和登录后的界面;② 前端 JS 起来之后会不会报错;
-  ③ **浏览器会不会把 basic_auth 的凭据自动带到 SSE 长连接上** —— 这条是
-  `Caddyfile` 路由三注释里挂了很久的悬案,**curl 打通了并不能回答它**
-  (curl 是我们手动 `-u` 给的凭据,浏览器是自动带,两回事);
-  ④ `<img>` 标签去取 `/artifacts/*` 时凭据带不带得上(同上,curl 验的是路由通,不是浏览器行为)。
+- **真浏览器**。整场验收全是 `curl` / `openssl s_client` 打的,**一次都没开过浏览器**
+  —— 上午换成自建登录页之后**仍然没有**。于是这两件仍然没有证据:
+  ① 登录页和登录后的界面在真设备上长什么样;② 前端 JS 起来之后会不会报错。
+  > **原来挂在这里的另外两条,依据变了(但没有变成「已验证」)。**
+  > 原文是:③ 浏览器会不会把 **basic_auth** 的凭据自动带到 SSE 长连接上;
+  > ④ `<img>` 取 `/artifacts/*` 时凭据带不带得上。
+  > 这两条当年之所以是悬案,是因为 basic_auth 靠的是「浏览器记住口令并自动重发」——
+  > **那是一个我们从没在真浏览器上验过的行为假设**。
+  > 换成会话 Cookie 之后,**同源请求带 Cookie 是浏览器的规定动作**,
+  > `<img src>` / `fetch` / `EventSource` 一律带上,不再依赖那个假设。
+  > **依据从「假设」变成了「浏览器规范行为」,但没人在真浏览器上跑过 —— 别写成「已验证」。**
 - **§3.2 C) 那条 `x-auth-scheme: langsmith` 后门检查**、**§3.3 限流与 cron 的所有 curl**、
   **§3.4 里扫 3000 端口那条** —— 那次都没跑,仍是按代码判据写的。
   (§3.4 的 **2024 端口那条跑了**:从外部机器 `curl -m 6 http://<VPS_IP>:2024/ok` 超时,
@@ -116,27 +139,46 @@
 
 ### 0.3 四层防线,各挡各的失效模式
 
+> **⚠️ 2026-08-11 上午,① 这一层整个换掉了。**
+> ~~① Caddy:全站访问口令(`basic_auth`)~~ → **登录页 + 会话 Cookie**。
+> 原因不是安全性:`basic_auth` 那道门是能用的,但它的登录界面是**浏览器自己画的**那个灰框,
+> **不可美化** —— 只要服务端回 `WWW-Authenticate: Basic`,它就一定会弹,
+> 没有产品名、没有一句人话、没法告诉测试的人「口令找发你链接的人要」。
+> 唯一的办法是**根本不发那个头**,自己做登录页。
+> 层数没变,还是四层;换的只是 ① 的实现。
+
 ```
 公网
   │
-  │  ① Caddy:全站访问口令(basic_auth)          ← 给「人」的门,测试者只需要这一个
+  │  ① 登录页 + 会话 Cookie                       ← 给「人」的门,测试者只需要这一个口令
   ▼
 Caddy ── 整份编排里唯一 publish 端口的服务(80 / 443)
   │
-  ├── /       ──▶ frontend:3000  ┐  两个都**不写 ports**,
-  └── /api/*  ──▶ backend:2024   ┘  只在 docker 内网互通       ← ④ 端口不暴露
-                     │
-                     │  ② backend/auth.py 校验 X-Api-Key       ← 给「程序」的门(纵深)
-                     │  ③ 令牌桶限流:只卡「创建 run」这个动作
-                     ▼
-                 Agent 真跑
+  ├── /login, /logout ──▶ login:8790   ← **公开**,不然登录页自己也要先登录 = 死循环
+  │
+  └── 其余全部
+        └ forward_auth ──▶ login:8790 /_auth/verify
+             204        → 放行,继续往下走业务路由
+             无效       → 网页请求 302 去 /login;/api/* 回 401 JSON
+                  │
+                  ├── /       ──▶ frontend:3000  ┐  两个都**不写 ports**,
+                  └── /api/*  ──▶ backend:2024   ┘  只在 docker 内网互通   ← ④ 端口不暴露
+                                     │
+                                     │  ② backend/auth.py 校验 X-Api-Key   ← 给「程序」的门(纵深)
+                                     │  ③ 令牌桶限流:只卡「创建 run」这个动作
+                                     ▼
+                                 Agent 真跑
 ```
+
+> **`/api/*` 为什么不跟着 302,而是回 401 JSON:** 打 `/api/*` 的是前端的 `fetch` / SSE,
+> 给它 302 到一张 HTML 登录页,它会把那坨 HTML 当 JSON 解析,
+> 然后报出一个**和「登录过期」毫无关系**的错。(**源文件核对** `scripts/serve_login.py` 的 `_handle_verify`。)
 
 **为什么口令和令牌不是重复劳动 —— 它们防的是不同的失效模式:**
 
 | 防线 | 挡住的是 | 它自己失效的方式 |
 |---|---|---|
-| ① Caddy 口令 | 陌生人根本进不来 | Caddy 配置写错、某条路由漏配 |
+| ① 登录页 + 会话 Cookie | 陌生人根本进不来 | Caddy 配置写错、某条路由漏配(**§0.5 就是这么裸奔的**) |
 | ② X-Api-Key | **绕过 Caddy 直接打内网端口的人**;将来有人为了排障给 backend 加回 `ports` | 令牌泄漏(它在浏览器包里,能拿到包的人已经过了①) |
 | ③ 限流 | **已经进来的人**反复刷 run 烧钱 | 参数给太松;多副本部署(见 §6.2) |
 | ④ 端口只走内网 | 直接 `curl http://<你的IP>:2024` | 有人手贱把 `ports` 改成 `0.0.0.0` |
@@ -155,18 +197,79 @@ Caddy ── 整份编排里唯一 publish 端口的服务(80 / 443)
 cd ~/gongyoutong
 ls backend/auth.py                       # ① 令牌鉴权 + 令牌桶限流
 grep -n '"auth"' backend/langgraph.json  # ② 声明:应看到 "auth": {"path": "./auth.py:auth"}
-ls Caddyfile                             # ③ 反代 + 全站口令
+ls Caddyfile                             # ③ 反代 + 会话门(forward_auth)
 ls docker-compose.vps.yml                # ④ VPS 覆盖件
 ls .env.vps.example                      # ⑤ VPS 专用环境变量样例
 grep -n 'access_token\|rate_limit_burst' backend/src/gyt/config.py   # ⑥ 闸门配置字段
+ls scripts/serve_login.py scripts/login-page.html scripts/make_login_hash.py   # ⑦ 登录服务三件
 ```
 
-**六条里但凡缺一条,就停下。** 说明你 clone 到的是这套安全件落地之前的提交 ——
+**⑦ 是 2026-08-11 上午新增的**(提交 `ccb8d27`)。缺了它们说明你 clone 到的是
+`basic_auth` 时代的提交:那份代码里 `Caddyfile` 用的是 `basic_auth`、
+`.env.vps.example` 里的变量还叫 `GYT_BASIC_AUTH_USER` / `GYT_BASIC_AUTH_HASH`。
+**那份也能上线**(门是锁着的),只是登录界面是浏览器那个不可美化的灰框,
+而本手册下文写的是登录页那一套 —— **两边对不上时,以你手上那份代码为准,别照着手册硬改**。
+
+**七条里但凡缺一条,就停下。** 说明你 clone 到的是这套安全件落地之前的提交 ——
 那份代码**不能上公网**(理由见 §0.2)。去找项目负责人要正确的分支或 tag,别自己动手补。
 
 ⚠️ **环境变量的准确名字,一律以 `.env.vps.example` 为准。**
 本手册下文写出来的名字取自 `Caddyfile` 和 `backend/src/gyt/config.py`(**源文件核对**),
 但样例文件才是这个仓库约定的「那一份真相」,对不上就以它为准。
+
+### 0.5 ⚠️⚠️ 这一轮最贵的一课:站点裸奔过一次,而 `caddy validate` 说 Valid
+
+**2026-08-11 上午换登录页的过程中,把站点弄成了完全敞开的状态。**
+写在这里不是为了忏悔,是因为**它属于「一切看起来都正常」那一类故障**,
+而这套东西一旦栽进去,代价是把 API Key 敞开给全网。
+
+#### 怎么发生的
+
+第一版只把「登录 handle + `forward_auth`」包进了 `route`,**业务的 `handle` / `handle_path` 留在外面**。
+看起来完全合理 —— 直到发现 **Caddy 有一张固定的指令顺序表,而 `handle` / `handle_path` 在那张表里
+排在 `route` 之前**。也就是说,你写在文件里的先后顺序**不算数**。实际编译出来是:
+
+```
+request_body → handle_path /artifacts/* → handle_path /api/*
+→ handle{} 兜底(把所有请求吃光)→ route{登录 + forward_auth}(永远到不了)
+```
+
+#### 表现有多危险
+
+- 未登录访问首页 **直接 200**,聊天界面完整打开;
+- `/login` 是**前端的 404**(因为请求根本没到 login 服务);
+- **没有任何报错** —— 日志里也看不出异常;
+- **`caddy validate` 照样说 `Valid configuration`**;
+- 而访问令牌 `X-Api-Key` **就烘在前端 JS 包里**(§0.3 末尾那条设计,前提是「能拿到包的人已经过了第一道门」)
+  —— 第一道门没了,那个前提就塌了,**等于把令牌连同两把模型 Key 一起敞开**。
+
+#### 唯一可靠的发现手段:`caddy adapt`,不是 `caddy validate`
+
+`validate` 只回答「这份配置**语法**合不合法」,它**不回答「编译出来的路由是什么顺序」**。
+要看顺序,只能让 Caddy 把路由树打出来:
+
+```bash
+cd ~/gongyoutong
+docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+  -e GYT_SITE_ADDRESS=<你的域名> caddy:2-alpine \
+  caddy adapt --config /etc/caddy/Caddyfile
+```
+
+**看的是:`forward_auth`(输出里是 `authentication` / `forward_auth` 相关的 handler)
+有没有排在所有业务 handler 之前。** 排在后面 = 那些路径全是敞开的。
+
+#### 正解
+
+**整个站点块都包进一个 `route`。** `route` 内部**按书写顺序执行**,
+所以只要全在一个 `route` 里,顺序就由这个文件说了算,那张固定顺序表管不着。
+这不是风格问题,是必须的。
+
+> **规矩:谁要往那个 `route` 外面挪任何一条 `handle`,必须先跑上面那条 `adapt`,
+> 确认 `forward_auth` 仍然排在所有业务 handle 之前。**
+> `Caddyfile` 末尾「这个文件永远不许出现的东西」那一段已经把这条钉死了(**源文件核对**)。
+
+> 顺带说清楚一件事:**§3.1 那几条 curl 能抓到这个问题**(未登录访问首页拿到 200 而不是 302)。
+> 所以那一节不是走过场 —— 它就是为这种事存在的。**改完 `Caddyfile` 一定重跑一遍。**
 
 ---
 
@@ -427,57 +530,73 @@ ls -ld data
 
 ### 步骤 6 · 生成两个秘密
 
-#### 秘密一:给人的访问口令(Caddy `basic_auth`)
+#### 秘密一:给人的访问口令(登录页校验的那个)
 
 ```bash
-docker run --rm caddy:2-alpine caddy hash-password \
-  --algorithm bcrypt --bcrypt-cost 12 --plaintext '<你想好的口令>'
-
-> ⚠️ **`--bcrypt-cost 12` 不能省。** `caddy hash-password` 不指定时默认 **cost 14**,
-> 而 `basic_auth` 排在所有路由之前 —— 它是整套部署里**唯一不需要任何凭据就能触发的重计算**,
-> 而且缓存只对**成功**的凭据生效,换着花样发错口令每一发都是冷校验。
-> 2026-08-11 在真 Caddyfile 上横向实测:cost 12 冷校验 0.470s、cost 14 是 1.268s ——
-> 差 2.7 倍。2 核机器上一个循环就能把站点打到没响应。
-> (`Caddyfile` 和 `.env.vps.example` 里都是 12,这里以前漏了,三份对不上。)
+cd ~/gongyoutong
+python scripts/make_login_hash.py --random     # 自动生成一个 20 位口令,并算好哈希
+python scripts/make_login_hash.py              # 或者自己想一个(交互输入,不回显)
 ```
 
-**实测**(本机 `caddy:2-alpine`,`caddy version` = v2.11.4)输出形如:
+它会打出**已经可以直接粘进 `.env` 的整行**:
 
 ```
-$2a$14$JMw9EJgAEKPOoH.PJQ8Ljek.euyS7iQG4ls/c3mRxtSXyxKQ17g8m
+GYT_LOGIN_HASH=scrypt$$16384$$8$$1$$<salt hex>$$<hash hex>
 ```
 
-`$2a$` 开头说明它是 **bcrypt**。这很重要:`Caddyfile` 里那行写的是
-`basic_auth bcrypt { ... }`,第二个参数是**算法声明**,Caddy 按它去校验,
-**不会从哈希串自己嗅探**。拿别的算法(比如 argon2id)的哈希配这一行,
-结果**不是报错,是口令永远对不上**(一直 401)。用上面这条命令生成就不会错。
+**两件事这个脚本替你做了,别自己再动手:**
 
-> ### ⚠️⚠️ 这里有一个会让你查一整晚的坑:bcrypt 哈希里的 `$`
+- **`$` 已经加倍好了**(`$$`)。粘完别再改 —— 理由见下面那个坑。
+- **口令是从去掉 `0/O/o/1/l/I` 的字母表里随机取的 20 位**(**源文件核对** `scripts/make_login_hash.py`)。
+  这个口令要发给工地上的人在手机上手打,少一个「这是零还是欧」的来回。
+
+> ### ⚠️ 2026-08-11 上午:这一步整个换过了
 >
-> 上面那串哈希里有 **3 个 `$`**。而 **Docker Compose 会把它读到的所有 env 文件里的 `$` 当变量展开**。
+> **原来写的是:**
 >
-> **本机实测**(在容器里 `env | grep ^HASH=` 打出来的真实值):
+> ```bash
+> docker run --rm caddy:2-alpine caddy hash-password \
+>   --algorithm bcrypt --bcrypt-cost 12 --plaintext '<你想好的口令>'
+> ```
+>
+> ~~输出形如 `$2a$14$JMw9EJgAEKPOoH.PJQ8Ljek.euyS7iQG4ls/c3mRxtSXyxKQ17g8m`,`$2a$` 开头说明它是 **bcrypt**;~~
+> ~~`Caddyfile` 里那行写的是 `basic_auth bcrypt { ... }`,第二个参数是算法声明,Caddy 按它去校验。~~
+>
+> **为什么不成立了:** 口令校验从 Caddy 搬到了 `scripts/serve_login.py`(一个跑
+> `python:3.12-slim`、**零 pip 安装**的服务),而 **`hashlib.scrypt` 在 Python 标准库里,bcrypt 不在**。
+> 为了一个哈希函数多背一个 pip 包和一条构建期网络依赖不值,
+> 而且 scrypt 是**内存硬**的,抗 GPU 爆破比 bcrypt 更好。
+> (**源文件核对** `scripts/serve_login.py` 顶部「为什么口令哈希从 bcrypt 换成 scrypt」。)
+>
+> **口令本身不用改。** 拿旧口令重新跑一次 `make_login_hash.py` 就行。
+>
+> ~~**`--bcrypt-cost 12` 不能省**:`caddy hash-password` 不指定时默认 cost 14,~~
+> ~~2026-08-11 在真 Caddyfile 上横向实测 cost 12 冷校验 0.470s、cost 14 是 1.268s。~~
+> **那条取舍本身没有消失,只是换了个数字:** 单次校验耗时既是**离线爆破的成本**,
+> 也是**登录接口的 DoS 杠杆**(登录接口是公开的,任何陌生请求都能触发一次)。
+> **VPS 实测:scrypt 单次 46ms。** 而且这一版还多了一道 basic_auth 没有的保护 ——
+> 登录接口自带令牌桶限流,见 §3.1 末尾。
+> `scripts/serve_login.py` 的注释把这条钉死了:**不许为了「快一点」调低 n,也不许调太高**。
+
+> ### ⚠️⚠️ 这个坑没有消失,只是搬了家:哈希里的 `$`
+>
+> scrypt 哈希同样用 `$` 分段(`scrypt$n$r$p$salt$dk`),
+> 而 **Docker Compose 会把它读到的所有 env 文件里的 `$` 当变量展开**。
+>
+> **本机实测**(bcrypt 时代造的最小复现,机制完全一样;在容器里 `env | grep ^HASH=` 打出来的真实值):
 >
 > | env 文件里写的 | 容器里实际拿到的 |
 > |---|---|
 > | `HASH=$2a$14$JMw9EJgAEKPOoH.PJQ8Ljek…` | `HASH=$2a$14.PJQ8Ljek…` ← **`$JMw9EJgAEKPOoH` 被整段吃掉** |
 > | `HASH=$$2a$$14$$JMw9EJgAEKPOoH.PJQ8Ljek…` | `HASH=$2a$14$JMw9EJgAEKPOoH.PJQ8Ljek…` ← **正确** |
 >
-> 被吃掉的哈希**不报任何错**,Caddy 照常起来,只是**你输什么口令都进不去** ——
-> 而你会去怀疑口令打错了、怀疑 Caddy 配置、怀疑浏览器缓存,方向全错。
+> 被吃掉的哈希**不报任何错**,login 服务照常起来,只是**你输什么口令都进不去** ——
+> 而你会去怀疑口令打错了、怀疑配置、怀疑浏览器缓存,方向全错。
 >
 > **规矩:写进 env 文件时,把每一个 `$` 写成 `$$`。**
-> 别用手数,用下面这条命令一次做完(**本机实测**过,含真实 caddy 哈希):
-
-```bash
-cd ~/gongyoutong
-
-PW='<你想好的口令>'   # ⚠️ 一定用单引号。双引号里 shell 自己就会先吃掉一部分 $
-H="$(docker run --rm caddy:2-alpine caddy hash-password \
-      --algorithm bcrypt --bcrypt-cost 12 --plaintext "$PW")"
-echo "原样(万一要填进 Caddyfile 字面量,用这个):$H"
-echo "写进 env 文件的样子(每个 \$ 已加倍):${H//\$/\$\$}"
-```
+> `make_login_hash.py` 已经替你加好了,**直接粘、别再改**。
+> `scripts/preflight_vps.sh` 还加了两条硬检查兜底:`$` 必须成对、且必须以 `scrypt$` 开头
+> (**源文件核对**;后一条挡的是「还留着旧 bcrypt 串」这种情况,那同样是不报错、口令永远不对)。
 
 #### 秘密二:给程序的 API 令牌(`X-Api-Key`)
 
@@ -516,11 +635,16 @@ openssl rand -hex 32
 | `GYT_DEEPSEEK_API_KEY` | DeepSeek Key | **留空**→ 容器起来又退出(建图期 `llm.py:312` 抛);**填了占位符** → 容器正常起来,然后每次对话都在第一次模型调用时报错 |
 | `GYT_MOONSHOT_API_KEY` | Moonshot Key | 同上 |
 | `GYT_ACCESS_TOKEN` | 步骤 6 秘密二 | **`up` 当场失败并打中文** —— 这是 fail-closed,故意的 |
-| `GYT_BASIC_AUTH_HASH` | 步骤 6 秘密一的 **`$` 加倍版** | **`up` 当场失败并打中文**。⚠️ 见上面那个坑 |
+| `GYT_LOGIN_HASH` | 步骤 6 秘密一那一行(脚本已把 `$` 加倍) | **`up` 当场失败并打中文**。⚠️ 见上面那个坑 |
 | `GYT_PUBLIC_ORIGIN` | 对外完整地址,如 `https://gyt.example.com` 或 `http://203.0.113.10` | **`up` 当场失败并打中文** |
 | `GYT_SITE_ADDRESS` | `你的域名` 或 `:80` | 有默认值 `:80`(纯 HTTP),见 §1.3 |
-| `GYT_BASIC_AUTH_USER` | 用户名 | 有默认值 `gyt` |
 | `TZ` | 一般不动 | 有默认值 `Asia/Shanghai` |
+
+> **⚠️ 2026-08-11 上午起,这张表里少了一行、改了一行:**
+> ~~`GYT_BASIC_AUTH_USER`(用户名,默认 `gyt`)~~ —— **没有用户名这个概念了**。
+> 登录页只要口令:内测环境,一个口令发给几个人,再让人记一个 `gyt` 用户名纯属增加摩擦。
+> ~~`GYT_BASIC_AUTH_HASH`~~ → **`GYT_LOGIN_HASH`**(bcrypt → scrypt,理由见步骤 6)。
+> 手上还是旧变量名的话,`up` 会在 login 服务那一步当场失败并打中文,不会静默放行。
 | `GYT_RATE_LIMIT_BURST` | 一般不动 | 代码默认 `20`,见 §6.2 |
 | `GYT_RATE_LIMIT_PER_MINUTE` | 一般不动 | 代码默认 `20`,见 §6.2 |
 
@@ -564,14 +688,33 @@ openssl rand -hex 32
 cd ~/gongyoutong
 docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
   -e GYT_SITE_ADDRESS=":80" \
-  -e GYT_BASIC_AUTH_USER=gyt \
-  -e GYT_BASIC_AUTH_HASH='$2a$14$V8/gFXj/yURxTSO0eV37Te7fHfXQ4kwizuVBbvVQskVnVL3iqwD2S' \
   caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
 ```
 
-(这条命令抄自 `Caddyfile` 自己的注释,**源文件核对**。里面那串 hash 是注释里的公开示例值,
-不是任何真实口令 —— 这一步只验语法,不验口令。三个环境变量必须给,
+(这条命令抄自 `Caddyfile` 自己的注释,**源文件核对**。`GYT_SITE_ADDRESS` 必须给,
 否则 `{$VAR}` 会替换成空串、站点地址为空直接报错。)
+
+> **⚠️ 2026-08-11 上午起,这条命令少了两个环境变量。**
+> 原来还要带 `-e GYT_BASIC_AUTH_USER=gyt` 和一串示例 bcrypt 哈希;
+> 现在**口令校验搬到了 login 服务**,`Caddyfile` 里一个口令相关的变量都没有了。
+> 多带无害,但别以为不带就验不了。
+
+> ### ⚠️⚠️ `validate` 通过 ≠ 门是锁着的。改过 `Caddyfile` 的话,这一步不够
+>
+> **`caddy validate` 只回答语法。** 2026-08-11 那次把站点弄裸奔时,
+> `validate` 全程说 `Valid` —— 而实际编译出来的路由里,`forward_auth` 排在兜底 `handle` 后面,
+> 整站敞开。**完整经过和判据在 §0.5,动 `Caddyfile` 之前先读那一节。**
+>
+> 判顺序只能用 `adapt`:
+>
+> ```bash
+> docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+>   -e GYT_SITE_ADDRESS=<你的域名> caddy:2-alpine \
+>   caddy adapt --config /etc/caddy/Caddyfile
+> ```
+>
+> 没动过 `Caddyfile` 的话,`validate` 够用;**只要动过一个字,就跑一遍 `adapt`,
+> 而且上线后一定要再跑 §3.1 那几条 curl。**
 
 ### 步骤 8.5 · 跑一遍上线前自检脚本
 
@@ -587,7 +730,7 @@ bash scripts/preflight_vps.sh
 
 | 组 | 查什么 | 漏了会怎样 |
 |---|---|---|
-| ① | `.env` 存在、六个变量非占位符、令牌 ≥24 位、口令哈希里的 `$` 已加倍 | 步骤 6/7 的两个坑 |
+| ① | `.env` 存在、六个变量非占位符、令牌 ≥24 位、口令哈希里的 `$` 已加倍、**哈希以 `scrypt$` 开头** | 步骤 6/7 的两个坑 |
 | ② | `GYT_SITE_ADDRESS` 与 `GYT_PUBLIC_ORIGIN` 描述**同一个入口** | 差一个字 → 浏览器判跨源 → 界面报「连不上服务器」,方向全错 |
 | ③ | 域名模式下 `dig` 结果与本机公网 IP 一致 | 证书一定申请不下来,还可能撞 Let's Encrypt 频率限制 |
 | ④ | :80/:443 空闲(**会先认自家 `gyt-caddy`** —— 站点已在跑时不误报)、**`data/` 属主是 10001**、`frontend/` 已生成且 `frontend/Dockerfile` **两条 ARG 都在**(`NEXT_PUBLIC_API_KEY` 与 `NEXT_PUBLIC_ARTIFACT_BASE`)、演示资产在 | 见步骤 5、步骤 11、§4.1 |
@@ -595,6 +738,12 @@ bash scripts/preflight_vps.sh
 | ⑥ | 内存 ≥3500MB、可用磁盘 ≥10000MB | 见 §1.1 |
 
 **这次上线真跑过它,`data/` 属主那条就是被它拦下来的**(见步骤 5 的 rsync 警告,**VPS 实测**)。
+
+> **2026-08-11 上午跟着换登录页动过两处**(**源文件核对** `scripts/preflight_vps.sh`):
+> ① 组读的变量从 `GYT_BASIC_AUTH_HASH` 换成 **`GYT_LOGIN_HASH`**,并**新增一条
+> 「必须以 `scrypt$` 开头」**;⑤ 组那条 `caddy validate` 不再需要传口令相关的环境变量。
+> **⑤ 组数的发布端口总数仍然是 3** —— login 服务和 artifacts 一样**一个 `ports` 都没有**,
+> 所以这个数没变。哪天它变成 4,就是有人给某个内网服务加了 `ports`。
 
 > ### ⚠️ 两件跑之前要知道的事,否则你会被它自己的红吓到
 >
@@ -801,8 +950,14 @@ ls frontend/package.json frontend/Dockerfile     # 两个都在才算成功
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --build
 
-docker compose ps      # gyt-backend-vps / gyt-frontend-vps / gyt-artifacts / gyt-caddy 四个都要在
+# 五个都要在:
+docker compose ps      # gyt-backend-vps / gyt-frontend-vps / gyt-artifacts / gyt-login / gyt-caddy
 ```
+
+> **⚠️ `gyt-login` 是 2026-08-11 上午新加的第五个服务**(手册这里以前写的是「四个」)。
+> 它**在首屏路径上** —— caddy 的 `forward_auth` 每个请求都要问它一次。
+> 它没起来的话**整站每个请求都会 502,包括登录页自己**。
+> (compose 里 caddy 对它是 `depends_on: service_started`,**源文件核对** `docker-compose.vps.yml`。)
 
 > **注意这里没有 `--profile ui`。** 基础档把 frontend 关在 `profiles: [ui]` 里,
 > 而 VPS 档用 `profiles: !reset []` 把它放了出来(**源文件核对** `docker-compose.vps.yml`)——
@@ -826,8 +981,14 @@ docker compose ps      # gyt-backend-vps / gyt-frontend-vps / gyt-artifacts / gy
 
 浏览器打开 `https://<你的域名>/`:
 
-1. 弹出**浏览器原生的登录框**,标题写着「工友通 GYT 内测」→ 输用户名口令 → 进入聊天界面。
-   **没弹框就是 ① 没生效,回 §3.1。**
+1. 跳到 **`/login`,一张写着「工友通」的登录页**(不是浏览器那个灰框)→ **只输口令、没有用户名**
+   → 进入聊天界面。
+   **直接看到聊天界面、根本没跳登录页,就是 ① 没生效 —— 立刻停下,回 §0.5 和 §3.1。**
+
+   > ~~原来这里写的是:「弹出**浏览器原生的登录框**,标题写着『工友通 GYT 内测』→ 输用户名口令。~~
+   > ~~**没弹框就是 ① 没生效**」~~ —— **2026-08-11 上午起不成立了**:现在**不会有任何弹框**,
+   > 服务端已经不发 `WWW-Authenticate` 头了(**VPS 实测**:响应头里已无这个头)。
+   > 判据也跟着反过来了:以前是「没弹框 = 出事」,现在是「**没跳登录页 = 出事**」。
 2. 发一句纯文本:**「明天要绑扎钢筋」** → 应该看到 schedule 记了一条任务。
 3. 传一张工地照片 → 等 **10~60 秒**(视觉调用就是这么慢,见 §4.3)→ 应该给出违规项清单。
 4. 再问 **「规范里对消防车道宽度是怎么要求的?」** → 应该给出**带页码**的条文出处。
@@ -880,15 +1041,97 @@ docker compose ps      # gyt-backend-vps / gyt-frontend-vps / gyt-artifacts / gy
 
 ### 3.1 ① 口令拦得住
 
-```bash
-# 不带口令 —— 期望 401
-curl -s -o /dev/null -w '%{http_code}\n' https://<你的域名>/
+> **⚠️ 这一整节 2026-08-11 上午重写过。**
+> ~~原来是两条 curl:不带口令期望 **401**、`-u '<用户名>:<口令>'` 期望 200。~~
+> **换成登录页之后,那两条都不再成立** —— 未登录是 **302 跳 `/login`**(不是 401),
+> 而 `-u` 那套 basic auth 凭据**服务端已经不认了**(它压根不发 `WWW-Authenticate` 头)。
+> 下面这一套是**换完之后从外部机器重新实测的**。
 
-# 带口令 —— 期望 200
-curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' https://<你的域名>/
+```bash
+# ① 未登录访问首页 —— 期望 302,Location 是 /login
+curl -s -o /dev/null -w '%{http_code} → %{redirect_url}\n' https://<你的域名>/
+
+# ② 确认那个原生弹框真的不会再出现 —— 期望这条一行都不输出
+curl -sI https://<你的域名>/ | grep -i 'www-authenticate'
+
+# ③ 登录页本身是公开的 —— 期望 200,标题是「工友通 · 内测登录」
+curl -s https://<你的域名>/login | grep -o '<title>.*</title>'
+
+# ④ 错口令 —— 期望 302 到 /login?e=1,而且**一个 Set-Cookie 都不发**
+curl -si -X POST --data-urlencode 'pw=显然是错的' https://<你的域名>/login \
+  | grep -iE '^HTTP/|^location:|^set-cookie:'
+
+# ⑤ 对口令 —— 期望 302 到 /,并发一个 gyt_sess Cookie(把它存进 jar,后面几条要用)
+curl -si -c /tmp/gyt.jar -X POST --data-urlencode 'pw=<你的口令>' https://<你的域名>/login \
+  | grep -iE '^HTTP/|^location:|^set-cookie:'
+
+# ⑥ 带会话访问首页 —— 期望 200
+curl -s -b /tmp/gyt.jar -o /dev/null -w '%{http_code}\n' https://<你的域名>/
+
+# ⑦ 未登录打 /api/* —— 期望 401 + 中文 JSON(**不是 302**)
+curl -s https://<你的域名>/api/ok -w '\n[%{http_code}]\n'
+
+# ⑧ 未登录取产物 / 带会话取产物 —— 期望 302 / 200
+curl -s -o /dev/null -w '未登录:%{http_code}\n' https://<你的域名>/artifacts/by-id/<32位编号>
+curl -s -b /tmp/gyt.jar -o /dev/null -w '带会话:%{http_code}\n' https://<你的域名>/artifacts/by-id/<32位编号>
 ```
 
-第一条回 200 = **门是开的,立刻下线**(§6.4)。
+**① 回 200 = 门是开的,立刻下线**(§6.4)。**这正是 §0.5 那次裸奔的现象** ——
+那次未登录访问首页拿到的就是 200,而 `caddy validate` 说 Valid、日志里一个错都没有。
+
+#### VPS 实测(2026-08-11 上午,换完登录页之后,从外部机器打)
+
+| 检查 | 结果 |
+|---|---|
+| 未登录访问 `/` | **302 → `/login`** |
+| 响应头里的 `WWW-Authenticate` | **已无** —— 浏览器原生弹框不会再出现 |
+| `/login` | **200**,`<title>工友通 · 内测登录</title>` |
+| 错口令 | 302 → `/login?e=1`,且**一个 Cookie 都不发** |
+| 对口令 | 302 → `/`,`Set-Cookie: gyt_sess=...; Path=/; Max-Age=1209600; HttpOnly; SameSite=Lax; Secure` |
+| 带会话访问 `/` | **200** |
+| 未登录打 `/api/*` | **401** + `{"detail":"登录已过期,请刷新页面重新登录。"}` |
+| 未登录取产物 `/artifacts/*` | **302** |
+| 带会话取产物 | **200** |
+| 会话签名改一位 / 过期时间改大 / 空 / 垃圾 | **全部 302**(拒绝) |
+| 有会话但**无令牌**打 API | **401** —— 两层门仍然独立,过了①不等于过了② |
+| 连发 12 次错口令 | **302×4 然后 429×8** |
+| scrypt 单次耗时 | **46ms** |
+
+> **`/api/*` 回 401 而不是 302,是刻意的。** 打 `/api/*` 的是前端的 `fetch` / SSE,
+> 给它 302 到一张 HTML 登录页,它会把那坨 HTML 当 JSON 解析,
+> 然后报出一个**和登录毫无关系**的错 —— 人会去查后端、查网络,方向全错。
+> (**源文件核对** `scripts/serve_login.py` 的 `_handle_verify`。)
+
+> ### 会话 Cookie 长什么样、能撑多久
+>
+> 无状态签名 Cookie,**不需要任何存储、重启不掉线**:
+>
+> ```
+> gyt_sess = v1.<到期unix秒>.<hmac_sha256>
+> ```
+>
+> 有效期 **14 天**(上面实测里的 `Max-Age=1209600`)。
+> **会话密钥从口令哈希派生**(**源文件核对** `scripts/serve_login.py` 的 `_session_key`),
+> 所以不用多一个配置项,而且副作用正好是想要的:
+>
+> **⚠️ 改口令 = 所有已发出的会话立刻失效。** 这是「踢人下线」的唯一办法,
+> 也意味着**换口令之后要重新通知所有测试者**,不能只告诉新来的那个人。
+>
+> 上面那四种伪造(签名改一位 / 把过期时间改大 / 空 / 垃圾)全部被拒,
+> 说明**先验签再看过期**这个顺序是对的 —— 反过来写就等于让人拿伪造的过期时间去试探。
+
+> ### 登录接口自带限流(这是 basic_auth 时代没有的)
+>
+> `Caddyfile` 原来那段注释自己承认过:**换着花样发错口令能持续消耗 CPU,
+> 而 Caddy 官方镜像不带限流模块**。现在这道门在 login 服务里,那个洞跟着补上了 ——
+> `scripts/serve_login.py` 自带令牌桶(**源文件核对** `_LoginThrottle`)。
+>
+> **全局一个桶,不按 IP 分**,理由和 `backend/auth.py` 那只桶一样:
+> 这里只有一个身份(一个口令),分不出人;桶护的是**这台 2 vCPU 机器的 CPU**,
+> 不是人与人之间的公平。**代价说清楚:有人在乱试的时候,正常测试的人也会被挡一会儿。**
+> 内测环境,这个代价可以接受。
+>
+> **VPS 实测:连发 12 次错口令 → 302×4,然后 429×8。**
 
 > ### ⚠️⚠️ 域名模式下的「反裸奔」自检,跟裸 IP 模式**不是同一条命令**(2026-08-11 补)
 >
@@ -898,7 +1141,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' https://<你�
 > **裸 IP 模式**(`GYT_SITE_ADDRESS=":80"`)—— 直接打 IP 就行:
 >
 > ```bash
-> curl -sS -o /dev/null -w '%{http_code}\n' http://<VPS_IP>/         # 期望 401
+> curl -sS -o /dev/null -w '%{http_code}\n' http://<VPS_IP>/         # 期望 302
 > curl -sS -o /dev/null -w '%{http_code}\n' http://<VPS_IP>/api/ok   # 期望 401
 > ```
 >
@@ -907,35 +1150,48 @@ curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' https://<你�
 >
 > ```bash
 > curl -sk --resolve <域名>:443:<VPS_IP> -o /dev/null -w '%{http_code}\n' https://<域名>/
-> # 期望 401(VPS 实测:401)
+> # 期望 302(VPS 实测:302,Location 是 /login)
 >
 > curl -sk --resolve <域名>:443:<VPS_IP> -o /dev/null -w '%{http_code}\n' https://<域名>/api/ok
-> # 期望 401 —— ⚠️ 注意这条**不带口令**,挡它的是 Caddy;带上口令它就变 200 了,见本框末尾
+> # 期望 401 —— ⚠️ 注意这条**不带会话**,挡它的是这道门;带上会话它就变 200 了,见本框末尾
 > ```
+>
+> **⚠️ 期望值 2026-08-11 上午改过:首页那条从 `401` 变成 `302`。**
+> 换成登录页之后,未登录不再是 401 而是跳登录页。`/api/*` 那条仍然是 401
+> (前端 fetch 拿 HTML 会更难查,理由见上面)。
 >
 > **为什么 `curl http://<VPS_IP>/` 在域名模式下回 308(VPS 实测,实测值就是 308):**
 > Caddy 一旦启用 automatic HTTPS,就会在站点块**之外**另起一台独立服务器
 > (日志里叫 `remaining_auto_https_redirects`)专管 `:80`,对**任意 Host、任意路径**无差别 308 到 https。
-> 也就是说 `Caddyfile` 第 113 行 `{$GYT_SITE_ADDRESS} {` 那个**带 `basic_auth` 的站点块根本没被进入** ——
+> 也就是说 `Caddyfile` 里 `{$GYT_SITE_ADDRESS} {` 那个**带门的站点块根本没被进入** ——
 > 这条命令验证到的只是「重定向存在」,**验不到口令层有没有生效**。
 > 而 308 又足够像「服务活着」,紧张的时候很容易被当成通过。
 >
+> **⚠️⚠️ 308 和 302 现在长得很像,别看错。** 换登录页之前,这一节的正常值是 401、
+> 异常值是 308,一眼能分。现在正常值是 **302**、这个坑仍然是 **308** —— 差一个数字。
+> 判法:**看 `Location`**。`302 → /login` 是门在工作;`308 → https://…` 是那个 :80 跳转器,
+> **什么都没验到**。上面那条 `-w '%{http_code} → %{redirect_url}'` 就是为这个写的。
+>
 > **别想着用 `-L` 追下去。** 追下去是 `https://<VPS_IP>/`,SNI 是裸 IP、选不出域名的证书,
 > 握手直接炸 —— `docker-compose.vps.yml` 的注释记着实测结果是 `tlsv1 alert internal error`、
-> curl 的 `%{http_code}` 是 `000`(**源文件核对**)。既不是 401 也不是 200,更难判断。
+> curl 的 `%{http_code}` 是 `000`(**源文件核对**)。既不是 302 也不是 200,更难判断。
 > `--resolve` 的作用就是**让 SNI 走域名、而连接落到你指定的那台机器上**。
 >
-> ⚠️ **`/api/ok` 这两条更要当心 —— 它在两种口令状态下含义完全不同:**
-> **不带**口令打 `/api/ok` 回 401,那是**口令层**(Caddy)在挡,是这一节要验的东西;
-> **带对**口令再打它回 **200**,那是 `/ok` 被后端鉴权框架豁免,**跟令牌层一点关系都没有**。
+> ⚠️ **`/api/ok` 这两条更要当心 —— 它在两种会话状态下含义完全不同:**
+> **不带**会话打 `/api/ok` 回 401,那是**口令层**在挡,是这一节要验的东西;
+> **带上**会话再打它回 **200**,那是 `/ok` 被后端鉴权框架豁免,**跟令牌层一点关系都没有**。
 > 拿后者去验令牌层就会得出「令牌层没生效」的假结论 —— 详见 §3.2 开头那个陷阱。
 
-> 顺带说一件设计得很聪明、你应该知道的事:**caddy 容器的 healthcheck 断言的是「返回 401」,
+> 顺带说一件设计得很聪明、你应该知道的事:**caddy 容器的 healthcheck 断言的是「返回 302」,
 > 不是「返回 200」**(**源文件核对** `docker-compose.vps.yml`)。
-> 401 同时证明两件事:Caddy 活着、**并且口令那道门是开着的**。
-> 所以哪天 `basic_auth` 被误删或写错位置、站点变成 200 全放行,
+> 302 同时证明两件事:Caddy 活着、**并且会话那道门是开着的**(未登录访问 `/` 被打回登录页)。
+> 所以哪天那道门被误删或写错位置、站点变成 200 全放行,
 > **caddy 容器会直接变 unhealthy**,而不是高高兴兴地报健康。
-> 也就是说 `docker compose ps` 里 caddy 那一行的 `(healthy)`,本身就是一条持续的口令检查。
+> 也就是说 `docker compose ps` 里 caddy 那一行的 `(healthy)`,本身就是一条持续的门禁检查。
+>
+> **⚠️ 这个断言 2026-08-11 上午从 401 改成了 302。** 改登录页时**漏改这一条的表现是:
+> caddy 永远 unhealthy,而站点其实好好的** —— 人会去查一个不存在的故障
+> (查证书、查反代、重启 caddy),而真因只是健康检查还在按旧返回码判。
 >
 > **而这条 healthcheck 自己也是按模式分岔的**,理由跟上面那个 308 完全一样:
 > 裸 IP 模式探 `http://127.0.0.1:80/`,域名模式探 `https://<域名>/` 并用 `curl --resolve`
@@ -943,8 +1199,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' https://<你�
 > (**源文件核对** `docker-compose.vps.yml` 的 caddy `healthcheck`,那段注释写着这条真机验过三遍才写对。)
 >
 > **VPS 实测**:`docker compose up -d` 之后 **20 秒内** caddy 就 `healthy`。
-> 由于它的判据是「HTTPS 上拿到 401」,**这一条 healthy 同时说明证书已经签发就绪了** ——
-> 不用另外去等。
+> ⚠️ 那次测的是 basic_auth 版本(判据「HTTPS 上拿到 401」),**换成 302 之后没有重新计时** ——
+> 「20 秒」这个数当参考,别当承诺。当时的推论仍然成立:
+> 由于判据要走 HTTPS,**healthy 同时说明证书已经签发就绪了**,不用另外去等。
 
 ### 3.2 ② 令牌拦得住
 
@@ -968,7 +1225,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' https://<你�
 >
 > 原来这一段是**读源码**推出来的。现在有实打实的数了(**VPS 实测**):
 >
-> **带正确的 basic auth 口令、但完全不带 `X-Api-Key`,打 `https://<域名>/api/ok` → 回 `200`。**
+> **过了第一道门、但完全不带 `X-Api-Key`,打 `https://<域名>/api/ok` → 回 `200`。**
+> (那次过门用的是 basic auth 口令;换成会话 Cookie 之后**门的形态变了、这条结论没变** ——
+>  `/ok` 被鉴权框架豁免这件事跟第一道门长什么样一点关系都没有。)
 >
 > 当时看到这个 200,第一反应就是「令牌层没生效」—— **而令牌层好好的**。
 > `/ok` 是 langgraph-api 的健康端点,被 Auth 框架豁免,**后端自己的 healthcheck 就是靠
@@ -978,23 +1237,29 @@ curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' https://<你�
 > **规矩:验令牌层,只用 `/api/threads` 或 `/api/threads/search` 这类受保护路由。**
 
 正确的验法(**必须用受保护路由**;`/api` 前缀来自 `Caddyfile` 的 `handle_path /api/*`,
-它会自动剥掉前缀再转给后端,**源文件核对**):
+它会自动剥掉前缀再转给后端,**源文件核对**。`/tmp/gyt.jar` 是 §3.1 第 ⑤ 条存下的会话):
 
 ```bash
-# A) 过了口令、不带令牌 —— 期望 401
-curl -s -u '<用户名>:<口令>' -X POST https://<你的域名>/api/threads/search \
+# A) 过了第一道门、不带令牌 —— 期望 401
+curl -s -b /tmp/gyt.jar -X POST https://<你的域名>/api/threads/search \
   -H 'Content-Type: application/json' -d '{"limit":1}' -w '\n[%{http_code}]\n'
 # 响应体里应该只有一句中文:访问被拒绝,请联系发你链接的人。
 # ⚠️ 它对「没带头 / 带了空串 / 令牌不对」回的是**同一句话**,这是故意的 ——
 #    任何差异都是送给爆破脚本的信号。真实原因只进服务端日志。
 
-# B) 过了口令、带正确令牌 —— 期望 200
-curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' \
+# B) 过了第一道门、带正确令牌 —— 期望 200
+curl -s -o /dev/null -w '%{http_code}\n' -b /tmp/gyt.jar \
   -X POST https://<你的域名>/api/threads/search \
   -H 'Content-Type: application/json' -H 'X-Api-Key: <你的令牌>' -d '{"limit":1}'
 ```
 
-**这两条 2026-08-11 那次真打过了,连同一个受保护路由。以下全是实测值(口令都带对):**
+> **⚠️ 命令形态 2026-08-11 上午换过:`-u '<用户名>:<口令>'` → `-b /tmp/gyt.jar`。**
+> 服务端已经不认 basic auth 了,`-u` 只会让请求停在第一道门(拿 401,不是 A) 要验的那个 401)。
+> **下面那张表里的数是 basic_auth 时代打出来的**,当时过门的方式是 `-u`;
+> 令牌层本身这次一个字都没动,而且换完之后**「有会话但无令牌打 API → 401」是重新实测过的**
+> (§3.1 那张表最后几行)—— 但 B) 的 200 **没有在换完之后重跑**,照实说明在这儿。
+
+**A/B 两条 2026-08-11 凌晨那次真打过了,连同一个受保护路由。以下全是实测值(第一道门都过了):**
 
 | 请求 | 无令牌 | 令牌不对 | 令牌正确 |
 |---|---|---|---|
@@ -1017,7 +1282,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' \
 
 ```bash
 # 不带令牌,但加一个 x-auth-scheme: langsmith 头 —— 期望仍然 401
-curl -s -u '<用户名>:<口令>' -X POST https://<你的域名>/api/threads/search \
+curl -s -b /tmp/gyt.jar -X POST https://<你的域名>/api/threads/search \
   -H 'Content-Type: application/json' -H 'x-auth-scheme: langsmith' \
   -d '{"limit":1}' -w '\n[%{http_code}]\n'
 ```
@@ -1062,10 +1327,14 @@ docker compose logs backend | grep '访问校验已开启'   # 应显示 突发 
 BODY='{"assistant_id":"gyt","input":{"messages":[{"role":"human","content":"你好"}]}}'
 for i in 1 2; do
   curl -s -o /dev/null -w "第${i}次:%{http_code}\n" --max-time 25 \
-    -u '<用户名>:<口令>' -X POST https://<你的域名>/api/runs/stream \
+    -b /tmp/gyt.jar -X POST https://<你的域名>/api/runs/stream \
     -H 'Content-Type: application/json' -H 'X-Api-Key: <你的令牌>' -d "$BODY"
 done
 ```
+
+> **⚠️ 本节所有 curl 的过门方式 2026-08-11 上午从 `-u '<用户名>:<口令>'` 换成了
+> `-b /tmp/gyt.jar`(§3.1 第 ⑤ 条存下的会话)。** 本节那次本来就没跑通(状态见下方表),
+> 换的只是命令形态,期望值没动。
 
 **期望:第 1 次 200,第 2 次 `429`。**
 
@@ -1087,7 +1356,7 @@ docker compose logs backend | tail -30 | grep '访问校验已开启'   # 确认
 
 ```bash
 # 期望 403 —— 测试实例不开放定时任务
-curl -s -o /dev/null -w '%{http_code}\n' -u '<用户名>:<口令>' \
+curl -s -o /dev/null -w '%{http_code}\n' -b /tmp/gyt.jar \
   -X POST https://<你的域名>/api/runs/crons \
   -H 'Content-Type: application/json' -H 'X-Api-Key: <你的令牌>' \
   -d '{"assistant_id":"gyt","schedule":"*/1 * * * *","input":{"messages":[]}}'
@@ -1117,8 +1386,8 @@ cron 那半那次**完全没跑**;限流那半**跑了两次、但两次都没�
 >
 > | 小节 | 状态 |
 > |---|---|
-> | §3.1 口令 | ✅ **VPS 实测**(含 308 那个坑) |
-> | §3.2 A) 无令牌 / B) 对令牌 | ✅ **VPS 实测** |
+> | §3.1 口令(登录页 + 会话) | ✅ **VPS 实测,2026-08-11 上午换完登录页之后重测的整套**(含 308 那个坑) |
+> | §3.2 A) 无令牌 / B) 对令牌 | ✅ **VPS 实测** —— 但那是 basic_auth 时代打的;换完之后只重测了 A)(「有会话无令牌 → 401」),**B) 没重跑** |
 > | §3.2 C) `x-auth-scheme` 后门 | ⚠️ 未跑 |
 > | §3.3 限流 | ⚠️ **试过两次,都没打到桶上**(两条死路见上方),429 没见过;桶是 armed 的 |
 > | §3.3 cron | ⚠️ 未跑 |
@@ -1175,7 +1444,8 @@ ss -tlnp | grep -E ':2024|:3000|:443|:80'
 ```
 浏览器 ──▶ caddy ──handle_path /artifacts/*──▶ artifacts 服务(python:3.12-slim)
              │                                    只读挂 data/artifacts,uid 10001
-             └ basic_auth 先拦一道                 **一个 ports 都没有**
+             └ forward_auth 先拦一道               **一个 ports 都没有**
+               (2026-08-11 上午前是 basic_auth)
 ```
 
 五处同源,**断一环就退回上面那个状态,而且不报错**:
@@ -1194,10 +1464,13 @@ ss -tlnp | grep -E ':2024|:3000|:443|:80'
 |---|---|
 | 照片 `/artifacts/by-id/<32位编号>` | **200** `image/jpeg` 358893B,落地校验是真 JPEG 1600×1066 |
 | 巡检记录 同上 | **200** `application/vnd.openxmlformats-...wordprocessingml.document` 37454B,真 OOXML |
-| **不带口令**取产物 | **401** |
+| ~~**不带口令**取产物~~ | ~~**401**~~ → **2026-08-11 上午换成登录页之后重测:302**(§3.1) |
 | sidecar `.json` | **404**(`.json` / `%2ejson` / `HEAD` 三种走法都拦住) |
 | 路径穿越 `../etc/passwd` | **404** |
 | 编号格式非法 | **400** |
+
+> **上表除「不带口令取产物」那一行外,都是 basic_auth 时代打的**,验的是 artifacts 服务本身
+> (它这次一个字没改)。**带会话取产物 200 / 不带会话 302 这两条,换完之后重测过**,见 §3.1 那张表。
 
 ⚠️ **`serve_artifacts.py` 的 `BIND_HOST` 改了,但那条红线没有变松。**
 它现在按 `/.dockerenv` 判断:宿主机上仍然是 `127.0.0.1` 且**依然没有 `--host` 开关**;
@@ -1206,8 +1479,15 @@ ss -tlnp | grep -E ':2024|:3000|:443|:80'
 **artifacts 服务不许有 `ports`**,preflight ⑤ 组数发布端口总数就是在守这个。
 谁给它加一行 `ports`,就是把含可识别人脸的工地照片(`TODOS.md` TODO-22)直接挂公网。
 
-⚠️ **仍然没验的**:`<img>` 标签去取 `/artifacts/*` 时浏览器带不带 basic_auth 凭据。
-上面那些是 `curl -u` 打的,验的是**路由通**,不是浏览器行为(同 §9 里 SSE 那条悬案)。
+> **⚠️ 这里原来挂着一条悬案,依据变了(但没变成「已验证」)。**
+> ~~原文:「**仍然没验的**:`<img>` 标签去取 `/artifacts/*` 时浏览器带不带 **basic_auth** 凭据。」~~
+>
+> 当年它是悬案,是因为 basic_auth 靠的是「浏览器记住口令并自动重发」——
+> **那是一个我们从没在真浏览器上验过的行为假设**。
+> 换成会话 Cookie 之后,**同源请求带 Cookie 是浏览器的规定动作**,`<img src>` 一律带上。
+>
+> **依据从「假设」升级成了「浏览器规范行为」。但仍然没有人用真浏览器打开过这个站点** ——
+> 上面那些数是 `curl` 打的,验的是**路由通**,不是浏览器行为。**别写成「已验证」**(同 §9 里 SSE 那条)。
 
 ### 4.2 ⚠️ 所有测试者共用一个身份,**能互相看到对方的会话历史**
 
@@ -1284,9 +1564,10 @@ Ignoring corrupted tree cache file /opt/hf/hub/models--BAAI--bge-m3/trees/xxx.js
 > **【工友通 · 建筑工地 AI 助手】内测邀请**
 >
 > 网址:https://<你的域名>
-> 打开后浏览器会弹一个登录框(标题写着「工友通 GYT 内测」):
->   用户名:`<用户名>`
+> 打开后会看到一张「工友通」的登录页,**只要输一个口令,没有用户名**:
 >   口令:`<口令>`
+>
+> 登一次能管 **14 天**,这期间不用反复输。
 >
 > **它能干什么(直接用大白话问就行,不用记命令):**
 > 1. **拍照查隐患** —— 传一张工地照片,它会指出没戴安全帽、没系安全带、料堆乱放这类问题,
@@ -1315,7 +1596,18 @@ Ignoring corrupted tree cache file /opt/hf/hub/models--BAAI--bge-m3/trees/xxx.js
 >   **它答「查不到 / 做不了」是正确行为,不是故障** —— 我们宁可它认怂也不许它编。
 >   遇到明显不对的,请把**你的原话 + 它的回答截图**发给我。
 > - 💬 上面那个口令**请不要外传**,这套东西每答一句都在花真钱。
->   (如果你看到「访问被拒绝,请联系发你链接的人。」,说明凭据出了问题,找我。)
+>   (如果你看到「访问被拒绝,请联系发你链接的人。」或者「登录已过期,请刷新页面重新登录。」,
+>   说明凭据出了问题,找我。)
+> - ⌨️ 口令输错几次之后会看到「试得太频繁了,请等一分钟再试。」—— **那是限流,不是你被封了**,
+>   等一分钟再输一次就行。
+
+**⚠️ 上面这段话术 2026-08-11 上午改过。**
+~~原文写的是「打开后浏览器会弹一个登录框(标题写着「工友通 GYT 内测」):用户名 `<用户名>` / 口令 `<口令>`」~~
+—— 现在**不会弹任何框**,是一张自己做的登录页,而且**没有用户名这一项**。
+照旧话术转发出去的后果:测试者盯着找那个弹框,或者在只有一个输入框的页面上找「用户名」填哪儿。
+
+⚠️ **另外别忘了**:改口令 = **所有人的会话立刻失效**(会话密钥从口令哈希派生,§3.1)。
+所以换口令时要通知**每一个**已经在用的人,不能只告诉新来的那个。
 
 ---
 
@@ -1366,9 +1658,17 @@ docker compose logs --since 1h backend | grep '鉴权失败'          # 有人�
 docker compose logs --since 1h caddy | tail -50                   # 访问日志
 ```
 
-`Caddyfile` 已经配了日志过滤,**把 `Authorization` / `X-Api-Key` / `Cookie` 三个头删掉再落盘**
-(**源文件核对**)—— 所以 `docker compose logs caddy` 的输出可以放心截图问人,
-不会顺手把口令一起发出去。**别去掉那段过滤。**
+`Caddyfile` 已经配了日志过滤,**把 `Authorization` / `X-Api-Key` / `Cookie` 三个头替换成 `REDACTED`
+再落盘**(**源文件核对**)—— 所以 `docker compose logs caddy` 的输出可以放心截图问人,
+不会顺手把凭据一起发出去。**别去掉那段过滤。**
+
+> **⚠️ `Cookie` 那一条从「预防性」变成「必须」了。** `Caddyfile` 里原来的注释写着
+> 「Cookie 一并处理:本项目暂时没用到,但它属于同一类东西」——
+> **2026-08-11 上午起,会话 Cookie 就是第一道门的凭据本身**,
+> 拿到它等于拿到一个 14 天有效的通行证。这条过滤现在直接护着那道门。
+>
+> login 服务自己的日志也按同一条规矩写:**只打方法 + 路径 + 状态,绝不打 query 和 body**
+> —— 因为它的 body 里就是口令明文(**源文件核对** `scripts/serve_login.py` 的 `log_message`)。
 
 ### 6.4 出事了怎么最快止血
 
@@ -1395,6 +1695,12 @@ $COMPOSE down
 改 `.env` → `$COMPOSE up -d --build`
 (**令牌变了必须 `--build`**,它烤在前端包里)→ 重跑 §3 的四条验证 → 把新口令发给测试者。
 
+> **⚠️ 换口令(`GYT_LOGIN_HASH`)这一档,2026-08-11 上午多了一个后果:所有人当场掉线。**
+> 会话密钥从口令哈希派生,改哈希 = 所有已发出的会话立刻失效(§3.1)。
+> **这既是代价也是工具** —— 想踢掉某个不该继续访问的人,**改口令是目前唯一的办法**
+> (没有按人隔离的账号,见 §4.2)。改完记得**通知每一个**在用的人,不能只告诉新来的那个。
+> 换口令不需要 `--build`,`$COMPOSE up -d login` 就够(哈希只挂在 login 服务上)。
+
 ⚠️ **第 2 档下线时别加 `-v`。** `docker compose down -v` 会连命名卷一起删,
 而 Caddy 的证书和 ACME 账号密钥就在 `caddy_data` 卷里。
 删了要重新申请,而 Let's Encrypt 对同一域名有签发频率限制(一周几次)——
@@ -1418,9 +1724,10 @@ $COMPOSE down
 cd ~/gongyoutong
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.vps.yml"
 
-$COMPOSE ps                     # 谁在跑、健不健康(caddy 那行 healthy = 口令门还在,见 §3.1)
+$COMPOSE ps                     # 谁在跑、健不健康(caddy 那行 healthy = 会话门还在,见 §3.1)
 $COMPOSE logs -f backend        # 跟后端日志
-$COMPOSE logs --tail=100 caddy  # 口令进不去时先看这儿
+$COMPOSE logs --tail=100 caddy  # 路由/证书出问题时看这儿
+$COMPOSE logs --tail=100 login  # **口令进不去时先看这儿**(2026-08-11 上午新增的服务)
 $COMPOSE restart                # 重启整栈(不需要 --profile ui,VPS 档已经把前端放出来了)
 docker stats --no-stream        # 内存吃了多少(4G 机器要常看这个)
 df -h                           # 磁盘,镜像很大
@@ -1428,22 +1735,27 @@ df -h                           # 磁盘,镜像很大
 
 > ### ✅ 机器重启之后会不会自己回来 —— 这次确认过了(**VPS 实测**)
 >
-> **不是推的,是真按了一次 `reboot`。**(先说这个,因为下面三条配置项只能推出「应该回得来」,
-> 而「应该」和「真回来了」在上线这件事上不是一回事。)
+> **不是推的,是真按了两次 `reboot`。**(先说这个,因为下面那几条配置项只能推出
+> 「应该回得来」,而「应该」和「真回来了」在上线这件事上不是一回事。)
 >
-> 重启后实测:
+> 第一次在**四个容器**时(basic_auth 时代),第二次在**五个容器齐了之后**。
+> **下面记的是第二次的数** —— 它把第一次的结论整个覆盖了。
 >
-> - **开机 6 秒内四个容器全部 Up**,`caddy` 直接 healthy(= 证书从卷里读到了,
->   **没有重新向 Let's Encrypt 申请** —— 这点很重要,否则每次重启都在消耗签发额度);
-> - 从**外部机器**复验:首页无口令 401 / 有口令 200、API 无令牌 401 / 有令牌 200、
->   产物 200,证书 `notAfter` 与重启前一致;
-> - 两块 swap 都按 `/etc/fstab` **自动挂了回来**(`swapon --show` 两条都在);
-> - `ufw` 仍然 active。
+> - **开机 8 秒内五个容器全部 Up**(backend / frontend / login / artifacts / caddy),
+>   `caddy` 直接 healthy(= 证书从卷里读到了,**没有重新向 Let's Encrypt 申请**
+>   —— 这点很重要,否则每次重启都在消耗签发额度);
+> - 两块 swap 按 `/etc/fstab` **自动挂回**,`ufw` 仍 active;
+> - 从**外部机器**复验(登录页时代的码):未登录首页 **302**、登录页 **200**、
+>   登录拿到 Cookie、带会话首页 **200**、API 无令牌 **401** / 有令牌 **200**、产物 **200**,
+>   证书 `notAfter` 与重启前一致;
+> - **重启前的 19 条历史对话一条没少** —— 这条同时验证了
+>   `./data/langgraph` 那条挂载(见 §4.1 后面那段:没有它,重启/重建就是历史清零)。
 >
 > 支撑它的三条配置(**源文件核对** + 机器上核过):
 >
 > - `systemctl is-enabled docker` = **`enabled`**(Docker 自己开机自启);
-> - 四个容器全是 **`restart=unless-stopped`**;
+> - **五个**容器全是 **`restart=unless-stopped`**(当时是四个,login 加进来时也带了这一行,
+>   **源文件核对** `docker-compose.vps.yml`);
 > - 证书在命名卷 `gyt_caddy_data` 里,不随容器走(见 §6.4)。
 >
 > 合起来:**VPS 重启之后这套东西会自己回来,不需要人上去 `up` 一遍。**
@@ -1462,11 +1774,18 @@ df -h                           # 磁盘,镜像很大
 
 ```bash
 docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
-  -e GYT_SITE_ADDRESS=":80" -e GYT_BASIC_AUTH_USER=gyt \
-  -e GYT_BASIC_AUTH_HASH='$2a$14$V8/gFXj/yURxTSO0eV37Te7fHfXQ4kwizuVBbvVQskVnVL3iqwD2S' \
+  -e GYT_SITE_ADDRESS=":80" \
   caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile   # 先验语法
+
+# ⚠️ 动过 route / handle 的话,validate 不够 —— 必须再看一眼编译出来的路由顺序:
+docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+  -e GYT_SITE_ADDRESS=<你的域名> \
+  caddy:2-alpine caddy adapt --config /etc/caddy/Caddyfile      # forward_auth 必须在业务 handle 之前
+
 $COMPOSE restart caddy
 ```
+
+**为什么多了 `adapt` 这一步:`validate` 说 Valid 的配置,可以是整站敞开的。** 见 §0.5。
 
 **改了什么 → 要做什么**(**源文件核对**:`docker-compose.dev.yml` 顶部的三档对照 + `Makefile` 注释):
 
@@ -1479,8 +1798,10 @@ $COMPOSE restart caddy
 | `pyproject.toml` / `uv.lock` / `Dockerfile` | 重建后端 |
 | `.env` 里**后端**的值(超时、限流、阈值) | `$COMPOSE up -d backend` 即可(重建容器,不重建镜像) |
 | **令牌 `GYT_ACCESS_TOKEN` / 域名 `GYT_PUBLIC_ORIGIN`** | **要 `--build` 重建前端** —— 它们烤在浏览器包里 |
-| `GYT_SITE_ADDRESS` / `GYT_BASIC_AUTH_*` | `$COMPOSE up -d caddy` |
-| `Caddyfile` | 先 `caddy validate`,再 `$COMPOSE restart caddy` |
+| `GYT_SITE_ADDRESS` | `$COMPOSE up -d caddy` |
+| **`GYT_LOGIN_HASH`(换口令)** | `$COMPOSE up -d login`(变量挂在 login 服务上,**源文件核对** `docker-compose.vps.yml`)。⚠️ **所有人当场掉线** —— 会话密钥从口令哈希派生,见 §3.1 |
+| `Caddyfile` | 先 `caddy validate`(动过 route/handle 再加一次 `caddy adapt`),再 `$COMPOSE restart caddy` |
+| **`scripts/serve_login.py` / `scripts/login-page.html`** | 两个都是**只读挂载**进容器的,不在镜像里 → `$COMPOSE restart login` 即可,不用重建 |
 | `data/demo/docs/` 里加了新规范 PDF | **重跑步骤 10 建库**(幂等,只嵌新增的那份) |
 
 **更新代码:**
@@ -1511,15 +1832,45 @@ $COMPOSE ps                                          # caddy 那行必须是 hea
 
 本仓的红线是「不许写没验证过的事实」,所以把来源摊开。
 
-### ✅ VPS 实测(2026-08-11 凌晨那次真实上线;机器规格见 §0.0)
+### ✅ VPS 实测 · 第二轮(2026-08-11 上午,提交 `ccb8d27` 之后,同一台机器、从外部机器打)
+
+**这一轮只测第一道门 —— 因为只有它换了。** 业务链路、令牌层、资源占用那些没有重跑。
+
+| 事实 | 实测值 |
+|---|---|
+| **未登录访问 `/`** | **302 → `/login`**(basic_auth 时代是 401) |
+| **响应头里的 `WWW-Authenticate`** | **已无** —— 浏览器原生弹框不会再出现 |
+| **`/login` 是公开的** | **200**,`<title>工友通 · 内测登录</title>` |
+| **错口令** | 302 → `/login?e=1`,且**一个 Cookie 都不发** |
+| **对口令** | 302 → `/`,`Set-Cookie: gyt_sess=...; Path=/; Max-Age=1209600; HttpOnly; SameSite=Lax; Secure` |
+| **带会话访问 `/`** | **200** |
+| **未登录打 `/api/*`** | **401** + `{"detail":"登录已过期,请刷新页面重新登录。"}` —— **不是 302**(给前端 fetch 一张 HTML 登录页会让它把 HTML 当 JSON 解析,报出一个和登录毫无关系的错) |
+| **未登录取产物 `/artifacts/*`** | **302** |
+| **带会话取产物** | **200** |
+| **伪造会话全部被拒** | 签名改一位 / 过期时间改大 / 空 / 垃圾 → **全部 302** |
+| **两层门仍然独立** | 有会话、但**不带令牌**打 API → **401** |
+| **登录接口限流真的在** | 连发 12 次错口令 → **302×4 然后 429×8** |
+| **scrypt 单次耗时** | **46ms** —— 这个数同时是**离线爆破成本**和**登录接口的 DoS 杠杆**,两头都不许乱调 |
+
+> ⚠️ **这一轮没有覆盖到的:** caddy 换成 302 判据之后的 healthy 耗时。
+> 它的旧数在下面那张表里,**旧数的前提是 basic_auth**,照抄前先看清标注。
+>
+> ~~重启后自恢复(login 服务没经历过 `reboot`)~~ —— **当天晚些时候补上了**:
+> 第二次 `reboot` 是在五个容器齐了之后跑的,login 跟着回来了(见 §7)。
+> ~~令牌层的 B)(有会话 + 对令牌 → 200)~~ —— **也补上了**,见上表。
+
+### ✅ VPS 实测 · 第一轮(2026-08-11 凌晨那次真实上线;机器规格见 §0.0)
+
+**⚠️ 这张表里凡是涉及「第一道门返回码」的行,前提都是 `basic_auth`,当天上午已经作废** ——
+每一条都标了。其余各行(证书、内存、构建、业务链路、持久化)这次没动,照旧成立。
 
 | 事实 | 实测值 / 怎么核的 |
 |---|---|
 | **步骤 1~12 的完整链路走得通** | Debian 12 / 2 vCPU / 1.9GB / 30GB,域名 `velactora.com`(Cloudflare **灰云**) |
 | **Caddy 自动签发 Let's Encrypt 证书** | `CN=velactora.com`,有效期 **2026-08-10 → 2026-11-08**。**从外部另一台机器**用 `openssl s_client` 独立验的,不是看 Caddy 自己的日志 |
-| **域名模式下 `curl http://<VPS_IP>/` 回 308,不是 401** | 实测 **308**。Caddy 在站点块之外另起了 `remaining_auto_https_redirects` 专管 :80,带 `basic_auth` 的站点块根本没被进入 → §3.1 |
-| **域名模式的正确自检回 401** | `curl -sk --resolve <域名>:443:<VPS_IP> … https://<域名>/` → 实测 **401** |
-| **`/api/ok` 验不了令牌层** | 带对口令、**不带** `X-Api-Key` 打 `https://<域名>/api/ok` → **200**。`/ok` 被鉴权框架豁免(后端 healthcheck 就靠这个探活)。**这次差点据此误判「令牌层没生效」** → §3.2 |
+| **域名模式下 `curl http://<VPS_IP>/` 回 308,不是门层该给的码** | 实测 **308**。Caddy 在站点块之外另起了 `remaining_auto_https_redirects` 专管 :80,**带门的站点块根本没被进入** → §3.1。⚠️ 这条**仍然成立**(它跟哪种门无关);变的是对照物 —— 当时是 401,今天是 302,**两个数长得更像了,判法改成看 `Location`** |
+| ~~**域名模式的正确自检回 401**~~ | ~~`curl -sk --resolve <域名>:443:<VPS_IP> … https://<域名>/` → 实测 **401**~~ **已作废** —— 换登录页之后同一条命令实测 **302**(见上面第二轮那张表) |
+| **`/api/ok` 验不了令牌层** | 过了第一道门、**不带** `X-Api-Key` 打 `https://<域名>/api/ok` → **200**。`/ok` 被鉴权框架豁免(后端 healthcheck 就靠这个探活)。**这次差点据此误判「令牌层没生效」** → §3.2。(那次过门用的是 basic auth 口令;结论跟第一道门长什么样无关) |
 | **受保护路由的实际返回码** | `POST /api/threads`:无令牌 **401** / 错令牌 **401** / 对令牌 **200**;`POST /api/threads/search`:无令牌 **401** / 对令牌 **200** |
 | **无令牌时后端回的原文** | `{"detail":"访问被拒绝,请联系发你链接的人。"}` —— 中文人话,无堆栈 |
 | **1.9GB 内存机器上查询时加载 BGE-M3 不 OOM** | 每 5 秒采样:可用 745→381→454MB;backend 容器 430→846→**955MB**(峰值)。权重是 mmap 进来的、算可回收文件页缓存,所以峰值不是 2.2GB。该机 swap 共 8GB(原有 4G + 新增 4G),全场 `dmesg \| grep -ci "out of memory"` = **0** → §1.1 |
@@ -1533,8 +1884,8 @@ $COMPOSE ps                                          # caddy 那行必须是 hea
 | **确实是流式推送** | schedule 那次的 SSE 事件分布:`messages/metadata` ×6、`messages/complete` ×6、`updates` ×3、`metadata` ×1 |
 | **非视觉链路端到端耗时** | knowledge 一次 **19 秒**(含首次加载模型);schedule 一次 **6 秒**。并发 1 |
 | **证书在命名卷里、重建不丢** | `gyt_caddy_data` / `gyt_caddy_config` 存在,证书在 `/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/velactora.com/velactora.com.crt` |
-| **重启之后自己回得来** | **真按了一次 `reboot`**:开机 6 秒内四个容器全 Up、caddy 直接 healthy(证书从卷里读,没重新申请)、两块 swap 按 fstab 自动挂回、ufw 仍 active;从外部复验 401/200 全对、证书 `notAfter` 未变。支撑配置:`systemctl is-enabled docker` = `enabled`,四个容器 `restart=unless-stopped` |
-| **caddy 20 秒内 healthy** | `docker compose up -d` 之后 20 秒内。由于它的判据是「HTTPS 上拿到 401」,healthy 同时意味着证书已就绪 |
+| **重启之后自己回得来** | **真按了两次 `reboot`**,第二次是在五个容器齐了之后:开机 **8 秒内五个容器全 Up**、caddy 直接 healthy(证书从卷里读,**没重新申请**)、两块 swap 按 fstab 自动挂回、ufw 仍 active;从外部复验 302/200/401/200/200 全对、证书 `notAfter` 未变;**重启前的 19 条历史对话一条没少**(验证了 `./data/langgraph` 那条挂载)。支撑配置:`systemctl is-enabled docker` = `enabled`,五个容器全是 `restart: unless-stopped` |
+| **caddy 20 秒内 healthy** | `docker compose up -d` 之后 20 秒内。由于它的判据要走 HTTPS,healthy 同时意味着证书已就绪。⚠️ 当时判据是「拿到 **401**」;上午改成「拿到 **302**」之后**没有重新计时** |
 | **HF tree cache 那条 "corrupted" 警告不影响功能** | 真实原因是同一行里的 `Permission denied`(`/opt/hf` 属主与运行用户不一致)。**带着这条警告跑通的**,模型照常加载、检索照常返回。未修 → §4.7 |
 
 > ⚠️ **整张表是一次、一台机器、并发 1 的样本。** 它证明「这条路走得通」,不证明「任何机器上都这样」。
@@ -1543,9 +1894,9 @@ $COMPOSE ps                                          # caddy 那行必须是 hea
 
 | 事实 | 怎么核的 |
 |---|---|
-| `caddy hash-password` 可用,输出 bcrypt(`$2a$14$…`) | 真跑 `docker run --rm caddy:2-alpine caddy hash-password --plaintext '…'`;`caddy version` = **v2.11.4** |
-| **Compose 会吃掉 env 文件里的 `$`,`$$` 才对** | 造最小复现:`env_file` 写单 `$` → 容器里 `env` 打出 `$2a$14.PJQ8Ljek…`(`$JMw9EJgAEKPOoH` 段消失);写 `$$` → 完整正确。**这是本手册价值最高的一条** |
-| `${H//\$/\$\$}` 这条加倍命令有效 | 用真实 caddy 哈希跑过,输出 `$$2a$$14$$k1Q5…` |
+| ~~`caddy hash-password` 可用,输出 bcrypt(`$2a$14$…`)~~ | ~~真跑 `docker run --rm caddy:2-alpine caddy hash-password --plaintext '…'`~~ —— **2026-08-11 上午起这条命令在本项目里没用了**(口令哈希换成 `hashlib.scrypt`,由 `scripts/make_login_hash.py` 生成)。`caddy version` = **v2.11.4** 这半仍然成立 |
+| **Compose 会吃掉 env 文件里的 `$`,`$$` 才对** | 造最小复现:`env_file` 写单 `$` → 容器里 `env` 打出 `$2a$14.PJQ8Ljek…`(`$JMw9EJgAEKPOoH` 段消失);写 `$$` → 完整正确。**这是本手册价值最高的一条**,而且**换成 scrypt 之后照样成立** —— scrypt 哈希同样用 `$` 分段 |
+| ~~`${H//\$/\$\$}` 这条加倍命令有效~~ | ~~用真实 caddy 哈希跑过,输出 `$$2a$$14$$k1Q5…`~~ —— 现在不用手工加倍了,`make_login_hash.py` 直接吐加倍好的整行 |
 | `openssl rand -hex 32` 不含 `$` | `grep -c '\$'` 回 `0` |
 | `ports: !reset []` 能移除基础档发布的端口 | 造最小 compose 双档跑 `docker compose config`,`ports` 确实消失;本机 Compose **v5.1.3** |
 | **`/ok` `/info` `/docs` `/openapi.json` `/metrics` 不过鉴权;`/threads/*` `/runs/*` `/assistants/*` 过鉴权** | 读 `langgraph_api` 0.12.0 源码:`api/__init__.py` 的 `unshadowable_meta_routes` / `shadowable_meta_routes` vs `protected_routes`,以及 `server.py` 里只有 `protected_mount` 套了 `middleware_for_protected_routes`。**§3.2「别拿 /ok 验令牌」那个陷阱就是这么发现的** |
@@ -1559,11 +1910,17 @@ $COMPOSE ps                                          # caddy 那行必须是 hea
 
 | 事实 | 出处 |
 |---|---|
-| 站点变量 `GYT_SITE_ADDRESS`(`:80` 或域名)、`GYT_BASIC_AUTH_USER` / `HASH`、`GYT_PUBLIC_ORIGIN`;`handle_path /api/*` 会剥前缀;`admin off`;`request_body max_size 128MB`;日志过滤删 `Authorization`/`X-Api-Key`/`Cookie`;`basic_auth` 是 Caddy v2.8 才改的名字 | `Caddyfile` |
-| **环境变量文件必须叫 `.env`(由 `.env.vps.example` 复制而来),不能用 `--env-file .env.vps`**;`GYT_ACCESS_TOKEN` / `GYT_BASIC_AUTH_HASH` / `GYT_PUBLIC_ORIGIN` 是 `${VAR:?}` 硬性前置(没设就 `up` 失败);`GYT_SITE_ADDRESS` 默认 `:80`、`GYT_BASIC_AUTH_USER` 默认 `gyt`、`TZ` 默认 `Asia/Shanghai`;backend/frontend 都用 `ports: !reset []`;frontend 用 `profiles: !reset []`(**所以不需要 `--profile ui`**);镜像 tag 换成 `:vps`、容器名 `gyt-backend-vps` / `gyt-frontend-vps` / `gyt-caddy`;caddy 是唯一有 ports 的服务(80/443/443udp)、**没有 env_file**(不碰模型 Key);`NEXT_PUBLIC_API_URL = ${GYT_PUBLIC_ORIGIN}/api`;**caddy healthcheck 断言 401 而不是 200**;`caddy_data` / `caddy_config` 命名卷存证书;`restart: unless-stopped`;建议 2G swap;故意不设 `deploy.resources.limits`;**artifacts 服务**(`python:3.12-slim`、uid 10001、两个卷都 `:ro`、**一个 ports 都没有**、`PYTHONUNBUFFERED=1`);四个服务共用 `x-logging` 锚点(`json-file` / `max-size 10m` / `max-file 3`) | `docker-compose.vps.yml` |
+| 站点变量 `GYT_SITE_ADDRESS`(`:80` 或域名)、`GYT_PUBLIC_ORIGIN`;**整个站点块包在一个 `route` 里**、`/login*` 与 `/logout*` 公开、其余全过 `forward_auth login:8790 { uri /_auth/verify }`;`handle_path /api/*` 会剥前缀;`admin off`;`request_body max_size 128MB`;日志过滤把 `Authorization`/`X-Api-Key`/`Cookie` 替换成 `REDACTED`(全局 logger 和站点 logger **两处都要**);文件末尾「永远不许出现的东西」清单 | `Caddyfile` |
+| ~~`GYT_BASIC_AUTH_USER` / `HASH` 两个站点变量;`basic_auth` 是 Caddy v2.8 才改的名字~~ | **2026-08-11 上午已从 `Caddyfile` 移除** —— 口令校验搬到 login 服务。`basic_auth` 那条版本知识本身没错,只是这个文件里已经用不到了 |
+| **登录/会话服务的全部行为**:`/login`(GET 发页面、POST 校验)、`/logout`、`/_auth/verify`(204 放行 / 网页 302 / `/api/*` 回 401 JSON);会话 = `v1.<到期unix秒>.<hmac_sha256>`、**14 天**、**会话密钥从口令哈希派生**(⇒ 改口令 = 全员下线);**先验签再看过期**;哈希格式 `scrypt$n$r$p$salt$dk`,n=2^14/r=8/p=1;Cookie 打 `HttpOnly` + `SameSite=Lax`,**`Secure` 只在 `X-Forwarded-Proto: https` 时打**(裸 IP 模式下硬打 Secure 会让 Cookie 存不下来 → 登录成功又马上跳回登录页的死循环);登录限流是**全局一个令牌桶、不按 IP 分**;失败固定睡 0.25s 抹平计时差;**服务端一个字节的用户输入都不回显**(错误态靠 URL 上的 `?e=1` 在前端切);日志只打方法+路径+状态 | `scripts/serve_login.py` |
+| 口令生成:交互输入或 `--random` 生成 20 位(字母表去掉 `0/O/o/1/l/I`,因为要发给人手打);**故意不提供 `--password` 这类会进 shell 历史的参数**;输出**已经把 `$` 加倍好**;`SCRYPT_*` 四个参数与 `serve_login.py` **同源,改一处必须改两处** | `scripts/make_login_hash.py` |
+| **环境变量文件必须叫 `.env`(由 `.env.vps.example` 复制而来),不能用 `--env-file .env.vps`**;`GYT_ACCESS_TOKEN` / **`GYT_LOGIN_HASH`** / `GYT_PUBLIC_ORIGIN` 是 `${VAR:?}` 硬性前置(没设就 `up` 失败);`GYT_SITE_ADDRESS` 默认 `:80`、`TZ` 默认 `Asia/Shanghai`;backend/frontend 都用 `ports: !reset []`;frontend 用 `profiles: !reset []`(**所以不需要 `--profile ui`**);镜像 tag 换成 `:vps`、容器名 `gyt-backend-vps` / `gyt-frontend-vps` / `gyt-artifacts` / **`gyt-login`** / `gyt-caddy`;caddy 是唯一有 ports 的服务(80/443/443udp)、**没有 env_file**(不碰模型 Key);`NEXT_PUBLIC_API_URL = ${GYT_PUBLIC_ORIGIN}/api`;**caddy healthcheck 断言 302 而不是 200**;caddy `depends_on` login 是 `service_started`(**它在首屏路径上**);`caddy_data` / `caddy_config` 命名卷存证书;`restart: unless-stopped`;建议 2G swap;故意不设 `deploy.resources.limits`;**artifacts 与 login 两个服务同一套形态**(`python:3.12-slim`、uid 10001、挂载全 `:ro`、**一个 ports 都没有**、`PYTHONUNBUFFERED=1`);**五个**服务共用 `x-logging` 锚点(`json-file` / `max-size 10m` / `max-file 3`) | `docker-compose.vps.yml` |
+| ~~`GYT_BASIC_AUTH_USER` 默认 `gyt`;`GYT_BASIC_AUTH_HASH` 是硬性前置;caddy healthcheck 断言 **401**;**四个**服务共用 `x-logging`~~ | **2026-08-11 上午全部作废**,替代说法见上一行。⚠️ healthcheck 那条**漏改的表现是 caddy 永远 unhealthy 而站点其实好好的** |
 | ~~**`NEXT_PUBLIC_API_KEY` 目前是空转** —— `frontend/Dockerfile` 没有对应的 `ARG`,Docker 只警告 `unused build arg`,构建照样成功但令牌没进包~~ **已不成立,见下一行**(原文保留,因为「Docker 对未声明 arg 只警告」这个机制本身没变,值得记住) | `docker-compose.vps.yml` 的 `frontend.build.args` 注释 |
 | **✅ 更正:这条链现在是通的。** `scripts/setup-frontend.sh:313` 有 `ARG NEXT_PUBLIC_API_KEY=` 并写进 build 阶段 `ENV`;同一脚本注册了 `api-key.tsx` 覆盖件让 `getApiKey()` 也读构建期变量(上游那份只读 localStorage);`preflight_vps.sh` 第 ④ 组硬查这个 ARG。**并且 2026-08-11 在构建产物里实测到了令牌** | `scripts/setup-frontend.sh`(Dockerfile 模板 + `apply_override "api-key.tsx"`)+ `scripts/preflight_vps.sh` |
 | **上线前自检脚本的六组检查**(① 环境变量 ② 站点/公开地址同源 ③ DNS 与本机公网 IP 比对 ④ 端口/`data/` 属主/前端 ⑤ 配置语法与 `published:` 端口数 ⑥ 内存 ≥3500MB、磁盘 ≥10000MB);只读、不改文件、不起容器 | `scripts/preflight_vps.sh` → 步骤 8.5 |
+| **① 组 2026-08-11 上午跟着换了**:读的变量从 `GYT_BASIC_AUTH_HASH` 变成 **`GYT_LOGIN_HASH`**,并**新增一条「必须以 `scrypt$` 开头」**(挡「还留着旧 bcrypt 串」—— 那同样是不报错、口令永远不对);⑤ 组的 `caddy validate` 不再传口令相关环境变量;**⑤ 组数的发布端口总数仍是 3**(login 和 artifacts 一样没有 `ports`) | `scripts/preflight_vps.sh` |
+| **`caddy validate` 只验语法,不验路由顺序** —— 顺序要用 `caddy adapt` 打出路由树看。`Caddyfile` 里那段注释记着 2026-08-11 上午的裸奔经过:`handle`/`handle_path` 在 Caddy 的固定指令顺序表里排在 `route` **之前**,把业务 handle 留在 route 外面 = 兜底 handle 先把所有请求吃光 → **未登录访问首页 200、`/login` 是前端 404、没有任何报错、`validate` 说 Valid** | `Caddyfile` 的 route 注释 → §0.5 |
 | **③ 组的 DNS 检查在 Cloudflare 橙云下必然判红** —— 它拿 `dig` 结果比对本机公网 IP,橙云返回的是 Cloudflare 的 IP。**这是设计,不是 bug** | `scripts/preflight_vps.sh` 第 ③ 组 → §1.3 |
 | **caddy healthcheck 按模式分岔**:裸 IP 探 `http://127.0.0.1:80/`,域名探 `https://<域名>/` 并用 `curl --resolve` 走对 SNI;不能用 busybox 的 `wget`(走 https 不发 SNI) | `docker-compose.vps.yml` 的 caddy `healthcheck` 及其注释 |
 | **域名模式下追 `-L` 到 `https://<VPS_IP>/` 会握手失败**:`tlsv1 alert internal error`,curl 的 `%{http_code}` = `000` | `docker-compose.vps.yml` 第 310 行附近的注释块(那里记的是它自己的实测) |
@@ -1597,6 +1954,13 @@ $COMPOSE ps                                          # caddy 那行必须是 hea
 | 「**4G 内存能不能扛住前端 `next build` 而不 OOM。这是我最不放心的一处。**」 | 部分成立:**1.9GB 内存 + 8GB swap** 上 `next build` 75.9 秒完成、全场 OOM 计数 0。**「4G 无 swap」那一种仍然没验** |
 | 「**前端构建期注入 `NEXT_PUBLIC_API_KEY` 这条路** —— 已知目前接不上」 | ✅ **接上了**,并且在构建产物里实测到了令牌。详见步骤 11 与上面 §9 的更正行 |
 
+#### 2026-08-11 上午,换登录页顺带清掉的两条旧账
+
+| 原来写的 | 现在 |
+|---|---|
+| 「浏览器会不会把 basic_auth 的凭据自动带到同源的 SSE / `<img>` 上 —— **没在真浏览器上验过**」 | **依据换了,状态没换。** 那条悬案的根子是 basic_auth 靠「浏览器记住口令并自动重发」,而那是个**没验过的行为假设**。换成会话 Cookie 之后,**同源请求带 Cookie 是浏览器的规定动作**,不再依赖那个假设。⚠️ **但仍然没有人用真浏览器打开过这个站点,所以这两条照旧留在下面的未验证清单里** —— 变的只是「依据」那一栏,从「假设」变成「浏览器规范行为」 |
+| 「**登录接口没有限流**」——`Caddyfile` 那段注释自己承认「换着花样发错口令能持续消耗 CPU,而 Caddy 官方镜像不带限流模块」 | ✅ **补上了。** login 服务自带令牌桶(全局一个、不按 IP 分,理由同 `backend/auth.py`)。**VPS 实测:连发 12 次错口令 → 302×4 然后 429×8。** 代价说清楚:有人乱试时正常测试的人也会被挡一会儿 |
+
 ### ⚠️ 仍然未在真机验证(按标准做法或按代码判据写的)
 
 **上面那次上线覆盖不到的部分,一条都没少。**
@@ -1607,9 +1971,11 @@ $COMPOSE ps                                          # caddy 那行必须是 hea
   **几个人同时提问会怎样,没测过。**
 - **长期运行稳定性。** 只是一次上线加几次提问,**没有连续跑过几天**。
   内存会不会缓慢涨、单进程会不会累积状态,都不知道。
-  (**日志把盘写满这一条已经堵上了**:2026-08-11 给四个服务都加了
-  `logging: json-file / max-size 10m / max-file 3`,四个加起来封顶 120MB,
+  (**日志把盘写满这一条已经堵上了**:2026-08-11 给所有服务都加了
+  `logging: json-file / max-size 10m / max-file 3`。当时是**四个**服务、加起来封顶 120MB,
   `docker inspect` 核过真生效。堵之前是 Docker 默认的**无上限**。
+  当天上午 login 服务加进来,**用的是同一个 `x-logging` 锚点**(**源文件核对**),
+  于是变成**五个 × 30MB = 封顶 150MB** —— ⚠️ **这一份没有再用 `docker inspect` 核过**。
   但**产物目录仍然无上限**:每张测试照片约 350KB 落在 `data/artifacts/` 里,没有清理机制。)
 - **证书自动续期。** 首签成功 ≠ 续期成功,两件事走的代码路径不一样。
   这张证书 **2026-11-08 到期**,到那之前谁也不知道。
@@ -1634,15 +2000,32 @@ $COMPOSE ps                                          # caddy 那行必须是 hea
 - `curl -fsSL https://get.docker.com | sh` 装 Docker(Docker 官方路径,但没在这台机器上跑)。
 - **`fallocate` 挂 swap 那几条命令本身。** 那台机器上确实有 swap(原有 4GB + 新增 4GB = 8GB)
   并且生效了,但**用的是不是手册里这几条命令,没有记录** —— 别把「有 swap」当成「这几条验过了」。
-- **浏览器通过 basic_auth 之后,会不会把凭据自动带到同源的 `/api/*` SSE 长连接上。**
-  `Caddyfile` 的注释把「同源 ⇒ 自动带」当成设计前提写了下来,理论上也确实如此。
-  那次确实看到了 SSE 事件流(§步骤 12 ③),**但那是 `curl` 打的,不是浏览器** ——
-  这不是「没留下记录」,是**明确知道不是浏览器**。而 `curl` 的凭据是命令行上手动 `-u` 给的,
-  浏览器是过了口令框之后**自动带**,两回事:**curl 通了一点都不能证明浏览器会通。**
-  所以这条原封不动仍是未验证。**万一前端能打开却一直连不上后端,先怀疑这条。**
-  同理还有 **`<img>` 标签去取 `/artifacts/*` 时带不带凭据** —— 那次验的是路由通(curl),
-  不是浏览器行为。
-- **`:80` 裸 IP 那条路。** 那次走的是域名模式。裸 IP 模式下 §3.1 的两条自检没跑过。
+- **真浏览器会不会把会话 Cookie 自动带到同源的 `/api/*` SSE 长连接、以及 `<img src>` 上。**
+  **依据比以前硬了,但状态还是没验。**
+  > ~~原文:「**浏览器通过 basic_auth 之后**,会不会把凭据自动带到同源的 `/api/*` SSE 长连接上。~~
+  > ~~`Caddyfile` 的注释把『同源 ⇒ 自动带』当成设计前提写了下来。」~~
+  >
+  > 那条之所以是悬案,是因为 basic_auth 靠的是「浏览器**记住口令并自动重发**」——
+  > **那是一个我们从没在真浏览器上验过的行为假设**。2026-08-11 上午换成会话 Cookie 之后,
+  > **同源请求带 Cookie 是浏览器的规定动作**,`fetch` / `EventSource` / `<img src>` 一律带上,
+  > 而且 Cookie 打的是 `SameSite=Lax` —— 它管的是**跨站**,同源不受影响
+  > (**源文件核对** `scripts/serve_login.py` 的 `_set_session_cookie`)。
+
+  **但仍然没有人用真浏览器打开过这个站点。** 那次看到的 SSE 事件流(§步骤 12 ③)是 `curl` 打的
+  —— 这不是「没留下记录」,是**明确知道不是浏览器**。
+  **所以这两条照旧留在这张未验证清单里。别写成「已验证」。**
+  **万一前端能打开却一直连不上后端,仍然先怀疑这条。**
+- **登录页在真设备上长什么样。** 它刻意**不做深色**(工地师傅在户外太阳底下看手机,深色屏读不了),
+  带一个「显示口令」开关(20 位随机串要在手机上手打)—— **这些设计意图没有一条在真手机上看过**。
+  (**源文件核对** `scripts/login-page.html`、提交 `ccb8d27` 的说明。)
+- **裸 IP 模式下的会话 Cookie。** 代码里 `Secure` 标只在 `X-Forwarded-Proto: https` 时才打,
+  正是为了裸 IP(纯 HTTP)那条路 —— **但裸 IP 模式这次和上次都没走过**。
+  写坏了的表现是「登录成功然后马上又跳回登录页」的死循环,而且没有任何报错。
+- **`:80` 裸 IP 那条路。** 那次走的是域名模式。裸 IP 模式下 §3.1 的两条自检没跑过
+  (会话 Cookie 在这条路上的额外风险见上面那一条)。
+- **login 服务经历 `reboot` 之后会不会自己回来。** `reboot` 那次机器上还没有这个服务。
+  配置上它和另外四个一样是 `restart: unless-stopped`(**源文件核对**),但没验过。
+- **caddy healthcheck 判据从 401 换成 302 之后的 healthy 耗时。** 旧数是 20 秒内,没重新计时。
 - §6.3 用日志估请求量与真实账单的对应关系。
 - ARM 架构机器。
 - **`preflight_vps.sh` 内存闸那句「建库那一步会被 OOM 杀掉」。** 那次没在 VPS 上跑 `ingest`
@@ -1668,10 +2051,17 @@ $COMPOSE ps                                          # caddy 那行必须是 hea
 
 ### 明确没做的事
 
-- **这一轮(2026-08-11 补录实测)同样没有改动任何代码或配置文件,只改了这份文档。**
-  与这次上线相关的代码侧改动(`scripts/preflight_vps.sh` 上线前自检、
+- **2026-08-11 凌晨那一轮(补录实测)没有改动任何代码或配置文件,只改了这份文档。**
+  与那次上线相关的代码侧改动(`scripts/preflight_vps.sh` 上线前自检、
   `docker-compose.vps.yml` 里按模式分岔的反裸奔注释与 caddy healthcheck)在各自的提交里,
   本文只是**与它们对齐**。哪天两边对不上,**以那两个文件为准**——理由见本节最后一条。
+- **2026-08-11 上午那一轮不一样:代码先改,文档后跟。** 改动全在提交 `ccb8d27` 里
+  (新增 `scripts/serve_login.py` / `login-page.html` / `make_login_hash.py`,
+  改 `Caddyfile` / `docker-compose.vps.yml` / `.env.vps.example` / `scripts/preflight_vps.sh`),
+  这份文档是**事后与它对齐**的。同样:两边对不上以代码为准。
+- **登录页那一轮只重测了第一道门。** 业务链路、令牌层 B)、资源占用、重启自恢复
+  **都没有重跑** —— 上面各表逐条标了哪些数是 basic_auth 时代的。
+  **别因为这次门层全绿就以为整套重验过了。**
 - `Caddyfile` / `docker-compose.vps.yml` / `backend/auth.py` 的**具体内容**没有抄进手册,
   只写了「它们必须做到什么」和「怎么验它们还在」。
   理由是本仓的「一份真相」规矩:配置的真相在配置文件里,手册再抄一份两边就会漂移 ——
