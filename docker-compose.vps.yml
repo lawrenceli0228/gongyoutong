@@ -113,6 +113,23 @@ services:
       # 自带 /usr/share/zoneinfo,所以设了 TZ 就能生效,不用另外装 tzdata。
       TZ: ${TZ:-Asia/Shanghai}
 
+    volumes:
+      # ⚠️ 这一条是 2026-08-11 真机上**丢了一次数据**才加的。
+      #
+      # langgraph dev 把线程 / 检查点(= 用户看到的「历史对话」)存在
+      # `/app/.langgraph_api/.langgraph_ops.pckl`,而那是**容器自己的 overlay 文件系统** ——
+      # 不在 ./data 那条挂载里。后果:`docker compose up -d --force-recreate backend`
+      # 或者任何一次镜像更新,**把所有历史对话清零**。
+      #
+      # 怎么发现的:跑完 14 个演示场景、强制重建了一次 backend 容器之后,
+      # `POST /threads/search` 从 14 条变成 1 条。产物(照片 / docx)还在
+      # ——它们落在 ./data 里——但**对话没了**,而界面上看不出区别,
+      # 只是历史列表突然空了,人会以为是前端出了问题。
+      #
+      # 挂到 ./data 下面而不是另开命名卷:data/ 已经是「这台机器的全部状态」这一个概念,
+      # 备份/迁移只需要拷一个目录。属主必须是 10001(preflight ④ 组在查)。
+      - ./data/langgraph:/app/.langgraph_api
+
     # 基础档是 on-failure:3(本机开发时「起不来就停住,现象一眼可见」)。
     # 公网跑法相反:机器重启、docker 自己升级之后要能自己回来,不然得有人手动上机器。
     # 注意这不会掩盖「缺 Key 起不来」—— 那种情况下容器会反复重启,
