@@ -157,6 +157,31 @@ def test_resolve_by_title不串项目_查无返回None() -> None:
     assert projects.resolve_by_title("gyt-a3", "不存在的图") is None
 
 
+def test_find_drawing_by_title跨项目取最新() -> None:
+    """cad 解析上传图时用户只报图名不报项目 → 跨项目找,同名取最新一张。"""
+    _seed_project()
+    projects.create_project("gyt-b1", "B1栋")
+    projects.add_drawing("gyt-a3", _AID_A, "plan", "平面图")
+    latest = projects.add_drawing("gyt-b1", _AID_B, "elevation", "平面图")  # 跨项目同名
+
+    row = projects.find_drawing_by_title("平面图")
+    assert row is not None
+    assert row.id == latest  # 不限项目,取最新登记的一张
+    assert projects.find_drawing_by_title("查无此图") is None
+
+
+def test_find_drawing_by_artifact反查视图类型() -> None:
+    """cad 拿到 artifact_id 后回头取 view_type / 展示名。"""
+    _seed_project()
+    projects.add_drawing("gyt-a3", _AID_A, "section", "1-1剖面图", floor="1F")
+
+    row = projects.find_drawing_by_artifact(_AID_A)
+    assert row is not None
+    assert row.view_type == "section"
+    assert row.title == "1-1剖面图"
+    assert projects.find_drawing_by_artifact("f" * 32) is None
+
+
 def test_list_drawings按项目与视图筛() -> None:
     """四种筛法各走一条 WHERE 分支:全量 / 限项目 / 限视图 / 两者都限。"""
     _seed_project()

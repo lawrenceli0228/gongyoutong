@@ -97,7 +97,7 @@ def test_default_runtime_knobs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.llm_max_retries == 3
     assert settings.llm_retry_base_delay_s == 1.0
     assert settings.llm_cache_enabled is True
-    assert settings.prompt_version == "v1"
+    assert settings.prompt_version == "v2"
 
 
 def test_default_file_limits_and_thresholds(monkeypatch: pytest.MonkeyPatch) -> None:
