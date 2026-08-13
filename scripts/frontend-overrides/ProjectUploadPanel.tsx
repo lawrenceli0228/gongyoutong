@@ -129,6 +129,12 @@ export function ArchiveProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** 读当前选中的工地项目编号(供聊天提交时经 config.configurable 注入,让规范问答自动限定作用域)。
+ *  必须在 <ArchiveProvider> 之内调用;没选项目时为空串。 */
+export function useCurrentProjectId(): string {
+  return useArchive().projectId;
+}
+
 /** 顶栏归档入口:资料库(浏览全部)+ 当前工地 chip +「📂 资料归档」按钮(方案 B 顶栏右侧)。 */
 export function ArchiveHeaderControls() {
   const { setOpen, currentName } = useArchive();
