@@ -25,7 +25,11 @@ import {
 import { useQueryState, parseAsBoolean } from "nuqs";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import ThreadHistory from "./history";
-import { ArchiveProvider, ArchiveHeaderControls } from "./ProjectUploadPanel";
+import {
+  ArchiveProvider,
+  ArchiveHeaderControls,
+  useCurrentProjectId,
+} from "./ProjectUploadPanel";
 import { GytStatusCards } from "./GytStatusCards";
 import { toast } from "sonner";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
@@ -99,7 +103,17 @@ function GytBrand({ onClick }: { onClick?: () => void }) {
   );
 }
 
+/** 外壳:把整棵 Thread 包进 <ArchiveProvider>,让内部能读到「当前工地」并注入提交配置。 */
 export function Thread() {
+  return (
+    <ArchiveProvider>
+      <ThreadInner />
+    </ArchiveProvider>
+  );
+}
+
+function ThreadInner() {
+  const currentProjectId = useCurrentProjectId();
   const [artifactContext, setArtifactContext] = useArtifactContext();
   const [artifactOpen, closeArtifact] = useArtifactOpen();
 
@@ -208,6 +222,11 @@ export function Thread() {
         streamMode: ["values"],
         streamSubgraphs: true,
         streamResumable: true,
+        // W7 §3:把界面选中的「当前工地」经 config.configurable 带给后端,
+        // 让规范问答自动限定到「全局 + 该项目」——没选项目就不带,后端只查全局。
+        config: currentProjectId
+          ? { configurable: { gyt_project_id: currentProjectId } }
+          : undefined,
         optimisticValues: (prev) => ({
           ...prev,
           context,
@@ -235,6 +254,9 @@ export function Thread() {
       streamMode: ["values"],
       streamSubgraphs: true,
       streamResumable: true,
+      config: currentProjectId
+        ? { configurable: { gyt_project_id: currentProjectId } }
+        : undefined,
     });
   };
 
@@ -244,7 +266,6 @@ export function Thread() {
   );
 
   return (
-    <ArchiveProvider>
     <div className="flex h-screen w-full overflow-hidden bg-[#EEF1F0]">
       {/* W7 CAD/knowledge:归档入口已上移到顶栏(<ArchiveHeaderControls />);抽屉由 <ArchiveProvider> 自挂 */}
       <div className="relative hidden lg:flex">
@@ -546,6 +567,5 @@ export function Thread() {
         </div>
       </div>
     </div>
-    </ArchiveProvider>
   );
 }

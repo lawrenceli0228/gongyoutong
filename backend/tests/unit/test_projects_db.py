@@ -269,3 +269,46 @@ def test_与tasks同库共存不互相建坏() -> None:
 def test_VIEW_TYPES就是平立剖三视图() -> None:
     """对外语义锁死:平立剖 = plan/elevation/section,上层与 DDL 的 CHECK 同取这一份。"""
     assert projects.VIEW_TYPES == ("plan", "elevation", "section")
+
+
+# ---------------------------------------------------------------------------
+# 删除:单图 / 项目全部图 / 项目本身
+# ---------------------------------------------------------------------------
+
+
+def test_delete_drawing删掉返回True再删False() -> None:
+    projects.create_project("gyt-a3", "A3栋", "A3")
+    did = projects.add_drawing("gyt-a3", _AID_A, "plan", "平面图")
+    assert projects.get_drawing_by_id(did) is not None
+
+    assert projects.delete_drawing(did) is True
+    assert projects.get_drawing_by_id(did) is None
+    assert projects.delete_drawing(did) is False
+
+
+def test_delete_project_drawings返回被删行并清空() -> None:
+    projects.create_project("gyt-a3", "A3栋", "A3")
+    d1 = projects.add_drawing("gyt-a3", _AID_A, "plan", "P1")
+    d2 = projects.add_drawing("gyt-a3", _AID_B, "elevation", "E1")
+
+    rows = projects.delete_project_drawings("gyt-a3")
+
+    assert {r.id for r in rows} == {d1, d2}
+    assert projects.list_drawings(project_id="gyt-a3") == []
+
+
+def test_delete_project先清图再删项目() -> None:
+    projects.create_project("gyt-a3", "A3栋", "A3")
+    projects.add_drawing("gyt-a3", _AID_A, "plan", "P1")
+    projects.delete_project_drawings("gyt-a3")
+
+    assert projects.delete_project("gyt-a3") is True
+    assert projects.get_project("gyt-a3") is None
+    assert projects.delete_project("gyt-a3") is False
+
+
+def test_delete_project名下还有图时撞外键() -> None:
+    projects.create_project("gyt-a3", "A3栋", "A3")
+    projects.add_drawing("gyt-a3", _AID_A, "plan", "P1")
+    with pytest.raises(sqlite3.IntegrityError):
+        projects.delete_project("gyt-a3")

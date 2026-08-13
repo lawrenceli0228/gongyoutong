@@ -112,6 +112,7 @@ async def library(request: Request) -> JSONResponse:
         "projects": [{"id": p.id, "name": p.name, "code": p.code} for p in projects],
         "drawings": [
             {
+                "drawing_id": d.id,  # 前端「删这张图」要用它打 DELETE .../drawings/{id}
                 "project_id": d.project_id,
                 "project_name": name_by_id.get(d.project_id),
                 "title": d.title,
@@ -298,6 +299,129 @@ async def upload_project_doc(request: Request) -> JSONResponse:
     return await _handle_doc_upload(request, scope=project_fs.SCOPE_PROJECT, project_id=pid)
 
 
+# --- 删除端点 ----------------------------------------------------------------
+# 删除是不可逆的。四处一致性:库行 / 物理镜像 / 产物注册表 / Chroma 向量。少清一处的后果:
+#   · 漏清 Chroma  → 删了的规范问答里还答得出来(最隐蔽,专门的删向量步在此堵);
+#   · 漏清库行     → 资料库里还列着一条指向已删文件的幽灵;
+#   · 漏清镜像/产物 → 盘上留死文件(不影响正确性,占点空间)。
+
+
+async def _body_dict(request: Request) -> dict[str, Any]:
+    """DELETE 也带一点参数(doc_type/filename)。收 JSON 或 form 都行,统一成 dict。"""
+    if request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 —— 空体/坏 JSON 都按空 dict 处理,交由上层校验缺字段
+            return {}
+        return body if isinstance(body, dict) else {}
+    form = await request.form()
+    return dict(form)
+
+
+async def remove_drawing(request: Request) -> JSONResponse:
+    """DELETE /projects/{project_id}/drawings/{drawing_id} —— 删一张图纸。
+
+    级联清:drawings 库行 + 物理文件 + 产物注册表副本 + CAD 解析索引。
+    """
+    pid = request.path_params["project_id"]
+    try:
+        did = int(request.path_params["drawing_id"])
+    except (TypeError, ValueError):
+        return _fail(400, "图纸编号不对,应是数字。", "INVALID_INPUT")
+
+    def _work() -> dict[str, Any] | None:
+        row = db.get_drawing_by_id(did)
+        if row is None or row.project_id != pid:
+            return None
+        db.delete_drawing(did)
+        project_fs.delete_drawing_file(pid, row.rel_path)
+        artifacts.delete(row.artifact_id)
+        # CAD 解析索引一张图一份 <drawing_id>.json(config.cad_index_dir),有就顺手清掉。
+        (get_settings().cad_index_dir / f"{row.id}.json").unlink(missing_ok=True)
+        return {"drawing_id": did, "title": row.title}
+
+    result = await run_in_threadpool(_work)
+    if result is None:
+        return _fail(404, "没找到这张图纸(可能已删)。", "NOT_FOUND")
+    logger.info("项目 %s 删除图纸 %s(%s)", pid, result["title"], did)
+    return _ok(result, f"图纸「{result['title']}」已删除。")
+
+
+async def _handle_doc_delete(request: Request, *, scope: str, project_id: str) -> JSONResponse:
+    """删规范/任务书的共用编排:删物理镜像 + 清 Chroma 向量块(按 source+scope+project 精确)。"""
+    body = await _body_dict(request)
+    doc_type = str(body.get("doc_type") or "").strip()
+    filename = str(body.get("filename") or "").strip()
+
+    if not filename:
+        return _fail(400, "没说要删哪份资料(缺 filename)。", "INVALID_INPUT")
+    if doc_type not in project_fs.DOC_TYPES:
+        return _fail(400, "要标明这是规范还是任务书(regulation/task_book)。", "INVALID_INPUT")
+    if scope == project_fs.SCOPE_GLOBAL and doc_type != project_fs.DOC_REGULATION:
+        return _fail(400, "全局资料只有规范。", "INVALID_INPUT")
+
+    def _work() -> dict[str, Any] | None:
+        if scope == project_fs.SCOPE_PROJECT and db.get_project(project_id) is None:
+            return None
+        removed = project_fs.delete_doc(scope, doc_type, filename, project_id=project_id)
+        chunks = ingest.delete_document(filename, scope=scope, project_id=project_id)
+        return {"file_removed": removed, "chunks": chunks}
+
+    result = await run_in_threadpool(_work)
+    if result is None:
+        return _fail(404, "没找到这个项目(可能已删)。", "NOT_FOUND")
+    if not result["file_removed"] and result["chunks"] == 0:
+        return _fail(404, f"没找到资料「{filename}」(可能已删)。", "NOT_FOUND")
+    kind_cn = "规范" if doc_type == project_fs.DOC_REGULATION else "任务书"
+    logger.info("删除%s文档 %s(scope=%s project=%s)", kind_cn, filename, scope, project_id or "-")
+    return _ok(
+        {"scope": scope, "project_id": project_id or None, "filename": filename, **result},
+        f"{kind_cn}「{filename}」已删除(清了 {result['chunks']} 段索引)。",
+    )
+
+
+async def remove_global_doc(request: Request) -> JSONResponse:
+    """DELETE /docs —— 删一份全局规范(body: doc_type=regulation, filename)。"""
+    return await _handle_doc_delete(request, scope=project_fs.SCOPE_GLOBAL, project_id="")
+
+
+async def remove_project_doc(request: Request) -> JSONResponse:
+    """DELETE /projects/{project_id}/docs —— 删一份项目规范/任务书(body: doc_type, filename)。"""
+    pid = request.path_params["project_id"]
+    return await _handle_doc_delete(request, scope=project_fs.SCOPE_PROJECT, project_id=pid)
+
+
+async def remove_project(request: Request) -> JSONResponse:
+    """DELETE /projects/{project_id} —— 删整个项目(级联)。
+
+    清:名下图纸行/文件/产物/CAD索引 + 项目作用域向量块 + 项目目录 + 项目行。
+    全局规范(project_id="")不受影响。顺序:先图纸(外键)→ 项目向量 → 目录 → 项目行。
+    """
+    pid = request.path_params["project_id"]
+
+    def _work() -> dict[str, Any] | None:
+        if db.get_project(pid) is None:
+            return None
+        rows = db.delete_project_drawings(pid)
+        for r in rows:
+            project_fs.delete_drawing_file(pid, r.rel_path)
+            artifacts.delete(r.artifact_id)
+            (get_settings().cad_index_dir / f"{r.id}.json").unlink(missing_ok=True)
+        chunks = ingest.delete_project_documents(pid)
+        project_fs.delete_project_tree(pid)
+        db.delete_project(pid)
+        return {"drawings": len(rows), "chunks": chunks}
+
+    result = await run_in_threadpool(_work)
+    if result is None:
+        return _fail(404, "没找到这个项目(可能已删)。", "NOT_FOUND")
+    logger.info("删除项目 %s(图纸 %d 张,向量 %d 段)", pid, result["drawings"], result["chunks"])
+    return _ok(
+        {"project_id": pid, **result},
+        f"项目已删除(含 {result['drawings']} 张图纸、{result['chunks']} 段规范索引)。",
+    )
+
+
 app = Starlette(
     routes=[
         Route("/projects", list_projects, methods=["GET"]),
@@ -306,6 +430,14 @@ app = Starlette(
         Route("/projects/{project_id}/drawings", upload_drawing, methods=["POST"]),
         Route("/docs", upload_global_doc, methods=["POST"]),
         Route("/projects/{project_id}/docs", upload_project_doc, methods=["POST"]),
+        Route("/projects/{project_id}", remove_project, methods=["DELETE"]),
+        Route(
+            "/projects/{project_id}/drawings/{drawing_id}",
+            remove_drawing,
+            methods=["DELETE"],
+        ),
+        Route("/docs", remove_global_doc, methods=["DELETE"]),
+        Route("/projects/{project_id}/docs", remove_project_doc, methods=["DELETE"]),
     ]
 )
 

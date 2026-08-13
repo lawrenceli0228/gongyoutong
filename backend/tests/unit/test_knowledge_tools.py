@@ -132,3 +132,69 @@ async def test_带项目查全局加该项目且标注可溯源(monkeypatch):
     }
     assert result["data"]["passages"][0]["doc_type"] == "task_book"
     assert "任务书·gyt-a3" in result["user_msg"]  # 出处标清来自哪个项目的任务书
+
+
+async def test_前端选中当前工地经config兜底作用域(monkeypatch):
+    """选了当前项目但问句没点名 → config.configurable 里的项目应把检索限到「全局+该项目」。
+
+    修的就是「选了当前项目但问答仍是全局」:project_id 入参为空时,回退到前端注入的当前工地。
+    """
+    captured: dict = {}
+
+    def fake_search(q, k, where):
+        captured["where"] = where
+        return [_hit("项目条文", "本项目规范.pdf", 2, 0.4, scope="project", project_id="gyt-a3")]
+
+    monkeypatch.setattr(tools, "_search", fake_search)
+    result = await tools.search_regulation.ainvoke(
+        {"query": "消防车道要多宽"},
+        config={"configurable": {tools.PROJECT_CONFIG_KEY: "gyt-a3"}},
+    )
+
+    assert result["ok"] is True
+    assert captured["where"] == {
+        "$or": [
+            {"scope": "global"},
+            {"$and": [{"scope": "project"}, {"project_id": "gyt-a3"}]},
+        ]
+    }
+
+
+async def test_入参project_id优先于config当前工地(monkeypatch):
+    """用户在问句里点名了别的项目 → 以入参为准,不被前端选中的当前工地覆盖。"""
+    captured: dict = {}
+
+    def fake_search(q, k, where):
+        captured["where"] = where
+        return [_hit("条文", "x.pdf", 1, 0.4, scope="project", project_id="gyt-b1")]
+
+    monkeypatch.setattr(tools, "_search", fake_search)
+    await tools.search_regulation.ainvoke(
+        {"query": "任务要求", "project_id": "gyt-b1"},
+        config={"configurable": {tools.PROJECT_CONFIG_KEY: "gyt-a3"}},
+    )
+
+    # 入参 gyt-b1 胜出,config 的 gyt-a3 被忽略
+    assert captured["where"] == {
+        "$or": [
+            {"scope": "global"},
+            {"$and": [{"scope": "project"}, {"project_id": "gyt-b1"}]},
+        ]
+    }
+
+
+async def test_config无当前工地时仍只查全局(monkeypatch):
+    """config 里没有项目键(或空)→ 行为与「无项目上下文」一致,只查全局规范。"""
+    captured: dict = {}
+
+    def fake_search(q, k, where):
+        captured["where"] = where
+        return [_hit("全局条文", "GB.pdf", 5, 0.4)]
+
+    monkeypatch.setattr(tools, "_search", fake_search)
+    await tools.search_regulation.ainvoke(
+        {"query": "消防车道要多宽"},
+        config={"configurable": {tools.PROJECT_CONFIG_KEY: ""}},
+    )
+
+    assert captured["where"] == {"scope": "global"}

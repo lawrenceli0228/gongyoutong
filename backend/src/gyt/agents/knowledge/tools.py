@@ -24,6 +24,7 @@ import asyncio
 import logging
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 from gyt.agents.knowledge.store import get_vectorstore
@@ -32,6 +33,21 @@ from gyt.core.errors import Envelope, ErrorCode, fail, ok, tool_guard
 from gyt.core.project_fs import SCOPE_GLOBAL, SCOPE_PROJECT
 
 logger = logging.getLogger(__name__)
+
+# 前端把「当前工地」(用户在界面上选中的项目)放进 run 的 config.configurable[这个键]。
+# LLM 没在问句里点名项目时,检索按它兜底作用域 —— 修的正是「选了当前项目、问答还只查全局」。
+PROJECT_CONFIG_KEY = "gyt_project_id"
+
+
+def _project_from_config(config: RunnableConfig | None) -> str:
+    """从运行配置里取前端选中的「当前工地」项目编号;没有就空串。
+
+    config 由 LangGraph 一路透传到工具(含子图),前端 submit 时经 config.configurable 注入。
+    """
+    if not config:
+        return ""
+    configurable = config.get("configurable") or {}
+    return str(configurable.get(PROJECT_CONFIG_KEY) or "").strip()
 
 _SEARCH_DESCRIPTION = (
     "在规范知识库里检索,回答施工/安全/消防/防火等**规范条文**问题。"
@@ -70,10 +86,14 @@ def _search(query: str, k: int, where: dict[str, Any]) -> list[tuple[Any, float]
 
 @tool("search_regulation", description=_SEARCH_DESCRIPTION)
 @tool_guard
-async def search_regulation(query: str, project_id: str = "") -> Envelope:
+async def search_regulation(
+    query: str, project_id: str = "", *, config: RunnableConfig
+) -> Envelope:
     """检索规范,返回命中原文 + 出处(文件名 + 页码 + 作用域)。查不到 → EMPTY_RESULT(不硬答)。
 
-    project_id 空(默认)= 只查全局规范;给了 = 查「全局 + 该项目」,永不串别的项目(内容级作用域)。
+    作用域优先级:工具入参 project_id(用户在问句里点名了项目)> 前端选中的「当前工地」
+    (config.configurable[PROJECT_CONFIG_KEY])> 两者都空则只查全局规范。给了项目就查
+    「全局 + 该项目」,永不串别的项目(内容级作用域)。config 是 LLM 看不到的注入参数。
     """
     cleaned = (query or "").strip()
     if not cleaned:
@@ -83,7 +103,9 @@ async def search_regulation(query: str, project_id: str = "") -> Envelope:
         )
 
     settings = get_settings()
-    where = _scope_filter(project_id.strip())
+    # 入参优先(用户明确点名的项目),否则回退到前端选中的当前工地。
+    effective_pid = project_id.strip() or _project_from_config(config)
+    where = _scope_filter(effective_pid)
     hits = await asyncio.to_thread(_search, cleaned, settings.knowledge_top_k, where)
 
     max_dist = settings.knowledge_max_distance
@@ -99,7 +121,7 @@ async def search_regulation(query: str, project_id: str = "") -> Envelope:
                 f"知识库里查不到和「{cleaned}」对得上的规范条文。"
                 "我只答规范里写了的,查不到就不编——建议问安全员或直接查原规范。"
             ),
-            detail=f"最近距离 {best} > 阈值 {max_dist};query={cleaned!r};项目={project_id!r}",
+            detail=f"最近距离 {best} > 阈值 {max_dist};query={cleaned!r};项目={effective_pid!r}",
         )
 
     passages = [
@@ -127,4 +149,4 @@ async def search_regulation(query: str, project_id: str = "") -> Envelope:
 KNOWLEDGE_TOOLS: list = [search_regulation]
 """供 gyt.agents.knowledge 组装时使用。拿去用之前先 list(...) 复制一份,别原地 append。"""
 
-__all__ = ["KNOWLEDGE_TOOLS", "search_regulation"]
+__all__ = ["KNOWLEDGE_TOOLS", "PROJECT_CONFIG_KEY", "search_regulation"]

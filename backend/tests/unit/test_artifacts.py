@@ -19,6 +19,7 @@ from gyt.core.artifacts import (
     ARTIFACT_ID_RE,
     ArtifactKind,
     ArtifactNotFound,
+    delete,
     read_meta,
     register,
     resolve,
@@ -256,3 +257,22 @@ def test_产物类型也接受字符串写法():
     artifact_id = register(PAYLOAD, kind="PHOTO", original_name="a.jpg")
 
     assert read_meta(artifact_id)["kind"] == "PHOTO"
+
+
+# --- 删除 --------------------------------------------------------------------
+
+
+def test_delete删掉正文与sidecar且幂等() -> None:
+    artifact_id = register(PAYLOAD, kind=ArtifactKind.DRAWING, original_name="a.dxf")
+    assert resolve(artifact_id).exists()
+
+    assert delete(artifact_id) is True
+    with pytest.raises(ArtifactNotFound):
+        resolve(artifact_id)
+    # 幂等:再删返回 False(已经不在),不抛
+    assert delete(artifact_id) is False
+
+
+def test_delete非法id返回False不抛() -> None:
+    assert delete("不是32位hex") is False
+    assert delete("a" * 32) is False  # 形状对但查无此物

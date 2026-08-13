@@ -339,3 +339,131 @@ def test_library总览_空库三样皆空(client: TestClient) -> None:
     assert data["projects"] == []
     assert data["drawings"] == []
     assert data["docs"] == []
+
+
+# ---------------------------------------------------------------------------
+# 删除:图纸 / 资料 / 项目(不可逆,四处一致性)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_ingest_delete(monkeypatch: pytest.MonkeyPatch) -> list:
+    """挡掉真删向量(会加载 BGE-M3),只记录调用、返回固定块数。"""
+    calls: list = []
+
+    def _fake_doc(source, *, scope, project_id="", vectorstore=None) -> int:
+        calls.append(("doc", source, scope, project_id))
+        return 3
+
+    def _fake_proj(project_id, *, vectorstore=None) -> int:
+        calls.append(("proj", project_id))
+        return 5
+
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.delete_document", _fake_doc)
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.delete_project_documents", _fake_proj)
+    return calls
+
+
+def _upload_drawing(client: TestClient, pid: str, name: str = "平面.dxf") -> dict:
+    resp = client.post(
+        f"/projects/{pid}/drawings",
+        files=_dxf_files(name),
+        data={"view_type": "plan", "title": "平面"},
+    )
+    assert resp.status_code == 201
+    return resp.json()["data"]
+
+
+def test_删图纸_库文件产物一起清(client: TestClient) -> None:
+    pid = _make_project(client)
+    d = _upload_drawing(client, pid)
+    landed = get_settings().projects_dir / pid / "drawings" / "plan" / "平面.dxf"
+    assert landed.exists()
+
+    resp = client.delete(f"/projects/{pid}/drawings/{d['drawing_id']}")
+
+    assert resp.status_code == 200
+    assert db.get_drawing_by_id(d["drawing_id"]) is None  # 库行没了
+    assert not landed.exists()  # 物理文件没了
+    with pytest.raises(artifacts.ArtifactNotFound):  # 产物没了
+        artifacts.resolve(d["artifact_id"])
+
+
+def test_删图纸_别的项目id_404且不误删(client: TestClient) -> None:
+    pid = _make_project(client)
+    d = _upload_drawing(client, pid)
+
+    resp = client.delete(f"/projects/no-such/drawings/{d['drawing_id']}")
+
+    assert resp.status_code == 404
+    assert db.get_drawing_by_id(d["drawing_id"]) is not None  # 没被误删
+
+
+def test_删图纸_编号非数字_400(client: TestClient) -> None:
+    pid = _make_project(client)
+    resp = client.delete(f"/projects/{pid}/drawings/abc")
+    assert resp.status_code == 400
+
+
+def test_删全局规范_清文件与向量(client: TestClient, fake_ingest_delete: list) -> None:
+    project_fs.land_doc("global", "regulation", "GB50016.pdf", b"%PDF")
+
+    resp = client.request(
+        "DELETE", "/docs", json={"doc_type": "regulation", "filename": "GB50016.pdf"}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["chunks"] == 3
+    assert ("doc", "GB50016.pdf", "global", "") in fake_ingest_delete
+    assert not (get_settings().global_dir / "docs" / "regulation" / "GB50016.pdf").exists()
+
+
+def test_删项目规范(client: TestClient, fake_ingest_delete: list) -> None:
+    pid = _make_project(client)
+    project_fs.land_doc("project", "regulation", "本项目规范.pdf", b"%PDF", project_id=pid)
+
+    resp = client.request(
+        "DELETE",
+        f"/projects/{pid}/docs",
+        json={"doc_type": "regulation", "filename": "本项目规范.pdf"},
+    )
+
+    assert resp.status_code == 200
+    assert ("doc", "本项目规范.pdf", "project", pid) in fake_ingest_delete
+
+
+def test_删资料_文件与向量都不在_404(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.delete_document", lambda *a, **k: 0)
+    resp = client.request(
+        "DELETE", "/docs", json={"doc_type": "regulation", "filename": "根本没有.pdf"}
+    )
+    assert resp.status_code == 404
+
+
+def test_删资料_缺filename_400(client: TestClient, fake_ingest_delete: list) -> None:
+    resp = client.request("DELETE", "/docs", json={"doc_type": "regulation"})
+    assert resp.status_code == 400
+
+
+def test_删项目_级联清图纸文档目录(client: TestClient, fake_ingest_delete: list) -> None:
+    pid = _make_project(client)
+    d = _upload_drawing(client, pid)
+    root = get_settings().projects_dir / pid
+    assert root.is_dir()
+
+    resp = client.delete(f"/projects/{pid}")
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["drawings"] == 1
+    assert body["chunks"] == 5  # fake_proj 返回 5
+    assert db.get_project(pid) is None
+    assert not root.exists()  # 整个项目目录没了
+    with pytest.raises(artifacts.ArtifactNotFound):
+        artifacts.resolve(d["artifact_id"])
+    assert ("proj", pid) in fake_ingest_delete
+
+
+def test_删项目_不存在_404(client: TestClient, fake_ingest_delete: list) -> None:
+    resp = client.delete("/projects/no-such")
+    assert resp.status_code == 404

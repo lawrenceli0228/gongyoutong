@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -235,6 +236,61 @@ def list_docs(project_id: str | None = None) -> list[DocEntry]:
     return entries
 
 
+# --- 删除(镜像文件 / 整个项目目录)------------------------------------------
+# 一律用「作用域/类型 + 安全 basename」或「校验后的项目相对路径」重建目标,
+# 绝不拿外部传来的路径直接删 —— 删除比落地更怕路径穿越。
+
+
+def delete_doc(
+    scope: str, doc_type: str, filename: str, project_id: str | None = None
+) -> bool:
+    """删除一份落地文档(规范/任务书镜像)。删掉返回 True;文件本就不在返回 False。
+
+    路径由 scope + doc_type + **安全 basename** 重建(同 land_doc 的落地位),不接受外部路径。
+    """
+    if scope not in SCOPES:
+        raise ValueError(f"scope 不合法(只认 {SCOPES}):{scope!r}")
+    if doc_type not in DOC_TYPES:
+        raise ValueError(f"doc_type 不合法(只认 {DOC_TYPES}):{doc_type!r}")
+    name = _safe_name(filename)
+    if scope == SCOPE_GLOBAL:
+        target = get_settings().global_dir / _DOCS_SUBDIR / doc_type / name
+    else:
+        if not project_id:
+            raise ValueError("项目作用域必须给 project_id")
+        target = _project_root(project_id) / _DOCS_SUBDIR / doc_type / name
+    if not target.is_file():
+        return False
+    target.unlink()
+    return True
+
+
+def delete_drawing_file(project_id: str, rel_path: str | None) -> bool:
+    """按 drawings.rel_path 删除图纸物理文件。删掉 True;rel_path 为空或文件不在返回 False。
+
+    落地断言反过来用:解析后的目标必须仍在项目根**之内**,越界(rel_path 含 ../)直接抛。
+    """
+    if not rel_path:
+        return False
+    root = _project_root(project_id).resolve()
+    target = (root / rel_path).resolve()
+    if root != target and root not in target.parents:
+        raise ValueError(f"图纸路径越界:{rel_path!r}")
+    if not target.is_file():
+        return False
+    target.unlink()
+    return True
+
+
+def delete_project_tree(project_id: str) -> bool:
+    """整个删除 data/projects/<id>/(图纸 + 文档镜像一起没)。删掉 True;目录本就不在 False。"""
+    root = _project_root(project_id)  # id 非法直接抛,别拿脏字符串去 rmtree
+    if not root.is_dir():
+        return False
+    shutil.rmtree(root)
+    return True
+
+
 __all__ = [
     "DOC_REGULATION",
     "DOC_TASK_BOOK",
@@ -243,6 +299,9 @@ __all__ = [
     "SCOPE_PROJECT",
     "SCOPES",
     "DocEntry",
+    "delete_doc",
+    "delete_drawing_file",
+    "delete_project_tree",
     "ensure_project_tree",
     "land_doc",
     "land_drawing",
