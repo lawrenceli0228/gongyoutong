@@ -18,7 +18,7 @@ import webapp
 from starlette.testclient import TestClient
 
 from gyt.config import get_settings
-from gyt.core import artifacts
+from gyt.core import artifacts, project_fs
 from gyt.db import projects as db
 
 _DXF = b"0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nEOF\n"
@@ -293,3 +293,49 @@ def test_传文档_超大_413(
 
     assert resp.status_code == 413
     assert fake_ingest == []
+
+
+# ---------------------------------------------------------------------------
+# 资料库总览 GET /library
+# ---------------------------------------------------------------------------
+
+
+def test_library总览_打平项目图纸与全局项目文档(client: TestClient) -> None:
+    pid = _make_project(client)  # a3
+    client.post(
+        f"/projects/{pid}/drawings",
+        files=_dxf_files("平面.dxf"),
+        data={"view_type": "plan", "title": "平面"},
+    )
+    # 文档直接落地(绕过 Chroma 入库,这里只验总览拼装),模拟已归档的规范/任务书。
+    project_fs.land_doc("global", "regulation", "GB50016.pdf", b"%PDF-1")
+    project_fs.land_doc("project", "regulation", "本项目规范.pdf", b"%PDF-22", project_id=pid)
+
+    resp = client.get("/library")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert [p["id"] for p in data["projects"]] == [pid]
+
+    assert len(data["drawings"]) == 1
+    d = data["drawings"][0]
+    assert d["project_id"] == pid
+    assert d["project_name"] == "测试项目"  # 已按 project_id 补上人类可读名
+    assert d["view_type"] == "plan"
+
+    docs = {x["filename"]: x for x in data["docs"]}
+    assert docs["GB50016.pdf"]["scope"] == "global"
+    assert docs["GB50016.pdf"]["project_name"] is None
+    assert docs["本项目规范.pdf"]["scope"] == "project"
+    assert docs["本项目规范.pdf"]["project_name"] == "测试项目"
+    assert docs["本项目规范.pdf"]["size_bytes"] == len(b"%PDF-22")
+
+
+def test_library总览_空库三样皆空(client: TestClient) -> None:
+    resp = client.get("/library")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["projects"] == []
+    assert data["drawings"] == []
+    assert data["docs"] == []

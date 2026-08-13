@@ -92,6 +92,54 @@ async def list_projects(request: Request) -> JSONResponse:
     return _ok(data, f"共 {len(rows)} 个项目。")
 
 
+async def library(request: Request) -> JSONResponse:
+    """GET /library —— 所有项目的图纸 + 规范/任务书总览(供前端「资料库」浏览入口)。
+
+    一次把三样打平返回:项目清单、跨项目图纸(db.list_drawings)、跨项目 + 全局文档
+    (project_fs.list_docs)。前端按 project_id 分组渲染,全局规范单列一组。只读,不改任何状态。
+    """
+
+    def _work() -> tuple[list[Any], list[Any], list[Any]]:
+        return (
+            db.list_projects(),
+            db.list_drawings(),
+            project_fs.list_docs(),
+        )
+
+    projects, drawings, docs = await run_in_threadpool(_work)
+    name_by_id = {p.id: p.name for p in projects}
+    data = {
+        "projects": [{"id": p.id, "name": p.name, "code": p.code} for p in projects],
+        "drawings": [
+            {
+                "project_id": d.project_id,
+                "project_name": name_by_id.get(d.project_id),
+                "title": d.title,
+                "view_type": d.view_type,
+                "floor": d.floor,
+                "rel_path": d.rel_path,
+                "artifact_id": d.artifact_id,
+                "created_at": d.created_at,
+            }
+            for d in drawings
+        ],
+        "docs": [
+            {
+                "scope": e.scope,
+                "project_id": e.project_id,
+                "project_name": name_by_id.get(e.project_id) if e.project_id else None,
+                "doc_type": e.doc_type,
+                "filename": e.filename,
+                "rel_path": e.rel_path,
+                "size_bytes": e.size_bytes,
+                "modified_at": e.modified_at,
+            }
+            for e in docs
+        ],
+    }
+    return _ok(data, f"共 {len(drawings)} 张图纸、{len(docs)} 份资料。")
+
+
 async def create_project(request: Request) -> JSONResponse:
     """POST /projects —— 建项目(name 必填、code 可选),同时建好项目目录骨架。
 
@@ -254,6 +302,7 @@ app = Starlette(
     routes=[
         Route("/projects", list_projects, methods=["GET"]),
         Route("/projects", create_project, methods=["POST"]),
+        Route("/library", library, methods=["GET"]),
         Route("/projects/{project_id}/drawings", upload_drawing, methods=["POST"]),
         Route("/docs", upload_global_doc, methods=["POST"]),
         Route("/projects/{project_id}/docs", upload_project_doc, methods=["POST"]),
