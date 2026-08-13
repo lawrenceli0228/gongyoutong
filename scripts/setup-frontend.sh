@@ -430,6 +430,7 @@ add_new_file() {
   log_ok "已新增 $2"
 }
 add_new_file "ProjectUploadPanel.tsx" "src/components/thread/ProjectUploadPanel.tsx"
+add_new_file "GytStatusCards.tsx" "src/components/thread/GytStatusCards.tsx"
 
 # -----------------------------------------------------------------------------
 # 步骤 3:收尾提示
