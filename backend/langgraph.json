@@ -3,6 +3,10 @@
   "graphs": {
     "gyt": "./src/gyt/graph.py:graph"
   },
+  "http": {
+    "app": "./webapp.py:app",
+    "enable_custom_route_auth": true
+  },
   "env": "../.env",
   "python_version": "3.11",
   "auth": {
