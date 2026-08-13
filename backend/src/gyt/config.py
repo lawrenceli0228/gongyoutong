@@ -52,6 +52,8 @@ _ARTIFACTS_SUBDIR: Final[str] = "artifacts"
 _CACHE_SUBDIR: Final[str] = "cache"
 _CHROMA_SUBDIR: Final[str] = "chroma"
 _CAD_INDEX_SUBDIR: Final[str] = "cad_index"
+_PROJECTS_SUBDIR: Final[str] = "projects"  # 按项目组织的图纸/资料(人类可读镜像,W7 CAD 泳道)
+_GLOBAL_SUBDIR: Final[str] = "global"  # 全局规范落地(所有项目通用)
 # demo/ 跟上面那几个不是一类东西:上面全是**运行期产生**的可写目录(访问即创建),
 # 它是**随仓库走的只读源资产**(规范 PDF / 演示图纸 / 演示照片,进 git)。
 # 放在 data_dir 底下是为了让本机 <仓库根>/data/demo 与容器 /app/data/demo 自动对齐 ——
@@ -332,6 +334,8 @@ class Settings(BaseSettings):
     #     +-- cache/               <- cache_dir      LLM 响应缓存(core/llm.py)
     #     +-- chroma/              <- chroma_dir     向量库持久化(RAG)
     #     +-- cad_index/           <- cad_index_dir  CAD 图纸解析索引落盘(agents/cad/index.py)
+    #     +-- projects/            <- projects_dir   按项目组织的图纸/资料(人类可读镜像,W7 CAD)
+    #     +-- global/              <- global_dir     全局规范落地(所有项目通用)
     #     +-- gyt.sqlite3          <- sqlite_path    业务库文件
     #     |                           (只保证父目录存在,不预先创建空文件,
     #     |                            留给 sqlite 自己建,免得建出个坏库)
@@ -369,6 +373,16 @@ class Settings(BaseSettings):
     def cad_index_dir(self) -> Path:
         """CAD 图纸解析索引落盘目录(访问即创建),一张图一份 <drawing_id>.json。"""
         return _ensure_dir(self.data_dir / _CAD_INDEX_SUBDIR)
+
+    @property
+    def projects_dir(self) -> Path:
+        """按项目组织的图纸/资料目录(访问即创建),供上传面板落人类可读镜像(W7 CAD 泳道)。"""
+        return _ensure_dir(self.data_dir / _PROJECTS_SUBDIR)
+
+    @property
+    def global_dir(self) -> Path:
+        """全局规范落地目录(访问即创建),存所有项目通用的国标/通用规范。"""
+        return _ensure_dir(self.data_dir / _GLOBAL_SUBDIR)
 
     @property
     def sqlite_path(self) -> Path:
