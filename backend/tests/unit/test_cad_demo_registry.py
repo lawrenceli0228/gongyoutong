@@ -94,4 +94,4 @@ async def test_list_drawings工具返回名字清单(tmp_path, monkeypatch):
 
     envelope = await list_drawings.ainvoke({})
     assert envelope["ok"] is True
-    assert set(envelope["data"]["drawings"]) == set(mapping.keys())
+    assert set(envelope["data"]["demo"]) == set(mapping.keys())

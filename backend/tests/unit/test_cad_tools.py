@@ -14,6 +14,7 @@ import pytest
 from gyt.agents.cad import tools
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind
+from gyt.db import projects as db
 from tests.unit._dxf_fixtures import make_broken_dxf, make_gbk_dxf
 
 
@@ -35,7 +36,8 @@ def cad_env(tmp_path, monkeypatch):
 async def test_list_drawings列出名字(cad_env):
     result = await tools.list_drawings.ainvoke({})
     assert result["ok"] is True
-    assert result["data"]["drawings"] == ["首层平面图"]
+    assert result["data"]["demo"] == ["首层平面图"]
+    assert result["data"]["uploaded"] == []  # 没上传项目图时,这块为空
 
 
 async def test_list_drawings空表时EMPTY_RESULT(monkeypatch):
@@ -198,3 +200,88 @@ async def test_render_preview图元过多时如实拒绝(cad_env, monkeypatch):
     assert "图元太多" in result["user_msg"]
     # 关键:失败信封里没有 png_id,模型无从编造「预览出好了」。
     assert result["data"] is None
+
+
+# --- list_projects / 上传的项目图 / read_view_params(W7 §5)--------------------
+
+
+@pytest.fixture
+def uploaded_env(tmp_path, monkeypatch):
+    """把 GBK 图当作**上传入库的项目图**:注册产物 + 建 drawings 行(view=立面),demo 置空。"""
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)  # demo 空,只留项目图
+    make_gbk_dxf(tmp_path / "gbk.dxf")
+    aid = artifacts.register(
+        tmp_path / "gbk.dxf", kind=ArtifactKind.DRAWING, original_name="ele.dxf"
+    )
+    db.create_project("gyt-a3", "A3栋", "A3")
+    db.add_drawing("gyt-a3", aid, "elevation", "南立面图", floor="1F")
+    return {"aid": aid}
+
+
+async def test_list_projects列出项目(monkeypatch):
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)
+    db.create_project("gyt-a3", "幸福小区A3栋", "A3")
+    result = await tools.list_projects.ainvoke({})
+    assert result["ok"] is True
+    assert result["data"]["projects"] == [{"id": "gyt-a3", "name": "幸福小区A3栋"}]
+
+
+async def test_list_projects没项目时EMPTY(monkeypatch):
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)
+    result = await tools.list_projects.ainvoke({})
+    assert result["ok"] is False
+    assert result["error_code"] == "EMPTY_RESULT"
+
+
+async def test_按展示名解析到上传的项目图(uploaded_env):
+    # 不是 demo、不是 id,而是 drawings 表里的展示名 → 也能查到
+    result = await tools.parse_drawing.ainvoke({"drawing": "南立面图"})
+    assert result["ok"] is True
+    assert result["data"]["encoding"] == "gbk"
+
+
+async def test_list_drawings含上传的项目图(uploaded_env):
+    result = await tools.list_drawings.ainvoke({})
+    assert result["ok"] is True
+    assert {
+        "project_id": "gyt-a3",
+        "title": "南立面图",
+        "view_type": "elevation",
+    } in result["data"]["uploaded"]
+    assert "南立面图" in result["user_msg"]
+    assert "立面" in result["user_msg"]
+
+
+async def test_read_view_params读出视图类型标注与文字(uploaded_env):
+    result = await tools.read_view_params.ainvoke({"drawing": "南立面图"})
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["view_type"] == "elevation"  # 从 drawings 行取
+    ann = [a["text"] for a in data["annotations"]]
+    assert "首层平面图" in ann  # 图上 TEXT 文字被抽出(标高/层高走这条)
+    assert any(d["text"] == "6000" for d in data["dimensions"])  # 标注也在
+    assert "立面图" in result["user_msg"]
+
+
+async def test_read_view_params对demo图无view_type也能读(cad_env):
+    # demo 图不在 drawings 表 → view_type=None,但标注/文字照读
+    result = await tools.read_view_params.ainvoke({"drawing": "首层平面图"})
+    assert result["ok"] is True
+    assert result["data"]["view_type"] is None
+
+
+async def test_read_view_params图上没标没写时EMPTY(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)
+    doc = ezdxf.new("R2010")
+    doc.layers.add("WALL")
+    doc.modelspace().add_line((0, 0), (1, 0), dxfattribs={"layer": "WALL"})
+    doc.saveas(tmp_path / "blank.dxf")
+    aid = artifacts.register(
+        tmp_path / "blank.dxf", kind=ArtifactKind.DRAWING, original_name="blank.dxf"
+    )
+    db.create_project("gyt-a3", "A3栋")
+    db.add_drawing("gyt-a3", aid, "plan", "白图")
+
+    result = await tools.read_view_params.ainvoke({"drawing": "白图"})
+    assert result["ok"] is False
+    assert result["error_code"] == "EMPTY_RESULT"

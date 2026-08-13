@@ -63,3 +63,13 @@ def test_未知单位码给出兜底标签(tmp_path):
     doc.saveas(tmp_path / "weird.dxf")
     result = parse.parse_dxf(tmp_path / "weird.dxf")
     assert result["units_label"] == "单位码99"
+
+
+def test_图上文字TEXT被抽进annotations(tmp_path):
+    # 标高/层高/房间名这类常是 TEXT/MTEXT 而非 DIMENSION,read_view_params 靠 annotations 读它。
+    make_gbk_dxf(tmp_path / "gbk.dxf")
+    result = parse.parse_dxf(tmp_path / "gbk.dxf")
+
+    texts = [a["text"] for a in result["annotations"]]
+    assert "首层平面图" in texts  # gbk 样例里那条 TEXT 被如实抽出
+    assert all("layer" in a for a in result["annotations"])

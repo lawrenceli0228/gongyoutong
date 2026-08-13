@@ -172,6 +172,26 @@ def _dimensions(msp: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _texts(msp: Any, limit: int = 200) -> list[dict[str, Any]]:
+    """图上的 TEXT / MTEXT 文字(read_view_params 的数据源之一)。
+
+    标高「±0.000」「3.600」、层高说明、房间名这些**常是文字而非 DIMENSION**,单靠 _dimensions
+    读不到。这里只如实抽图上写着的字,不解释、不换算 —— 与标注一个性质(read 侧照抄,不自算)。
+    限量(默认 200 条)防真实工程图上千条文字把索引与提示词压垮。
+    """
+    out: list[dict[str, Any]] = []
+    for entity in msp.query("TEXT MTEXT"):
+        if entity.dxftype() == "MTEXT":
+            text = entity.plain_text().strip()  # 去掉 MTEXT 的排版控制码,留纯文字
+        else:
+            text = str(entity.dxf.text).strip()
+        if text:
+            out.append({"text": text, "layer": str(entity.dxf.layer)})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _bounds(msp: Any) -> dict[str, list[float]] | None:
     """整图外接框。空图(无可测图元)返回 None,别硬编个 [0,0]。"""
     extents = bbox.extents(msp, fast=True)
@@ -205,6 +225,7 @@ def parse_dxf(path: Path) -> dict[str, Any]:
         "entities_by_kind": {k: int(v) for k, v in sorted(by_kind.items())},
         "blocks": _blocks(doc, insert_by_block),
         "dimensions": _dimensions(msp),
+        "annotations": _texts(msp),
         "bounds": _bounds(msp),
     }
 

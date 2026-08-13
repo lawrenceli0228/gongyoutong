@@ -108,6 +108,14 @@ _RESOLVE_DRAWING_SQL: Final[str] = (
 )
 _LIST_DRAWINGS_BASE: Final[str] = f"SELECT {_DRAWING_COLUMNS} FROM drawings"
 _LIST_DRAWINGS_ORDER: Final[str] = "ORDER BY project_id, view_type, id"
+# cad 解析上传图时,用户常只报图名不报项目 → 跨项目按名字找,取最新一张。
+_FIND_BY_TITLE_SQL: Final[str] = (
+    f"SELECT {_DRAWING_COLUMNS} FROM drawings WHERE title = ? ORDER BY id DESC LIMIT 1"
+)
+# cad 拿到 artifact_id 后要回头取 view_type / 展示名 → 按 artifact_id 反查。
+_FIND_BY_ARTIFACT_SQL: Final[str] = (
+    f"SELECT {_DRAWING_COLUMNS} FROM drawings WHERE artifact_id = ? ORDER BY id DESC LIMIT 1"
+)
 
 
 def _now_iso() -> str:
@@ -202,6 +210,23 @@ def resolve_by_title(project_id: str, title: str) -> DrawingRow | None:
     return DrawingRow(*raw) if raw is not None else None
 
 
+def find_drawing_by_title(title: str) -> DrawingRow | None:
+    """跨项目按展示名找图,取最新登记的一张;查无返回 None。
+
+    cad 解析上传图时,用户往往只报图名(「南立面图」)不报项目,这里不限项目地找。
+    """
+    with _projects_db() as conn:
+        raw = conn.execute(_FIND_BY_TITLE_SQL, (title,)).fetchone()
+    return DrawingRow(*raw) if raw is not None else None
+
+
+def find_drawing_by_artifact(artifact_id: str) -> DrawingRow | None:
+    """按 artifact_id 反查 drawings 行(cad 拿到 id 后回头取 view_type / 展示名);查无返回 None。"""
+    with _projects_db() as conn:
+        raw = conn.execute(_FIND_BY_ARTIFACT_SQL, (artifact_id,)).fetchone()
+    return DrawingRow(*raw) if raw is not None else None
+
+
 def list_drawings(
     *, project_id: str | None = None, view_type: str | None = None
 ) -> list[DrawingRow]:
@@ -233,6 +258,8 @@ __all__ = [
     "ProjectRow",
     "add_drawing",
     "create_project",
+    "find_drawing_by_artifact",
+    "find_drawing_by_title",
     "get_drawing_by_id",
     "get_project",
     "list_drawings",

@@ -269,7 +269,8 @@ class Settings(BaseSettings):
     llm_cache_enabled: bool = True
     # 提示词版本号,是 LLM 缓存键的组成部分:改了提示词就把它 +1,
     # 老缓存自然失效,不会拿旧提示词的答案糊弄人。
-    prompt_version: str = "v1"
+    # v2:W7 CAD/knowledge 改了 cad prompt 与 knowledge 工具描述,老缓存作废
+    prompt_version: str = "v2"
 
     # --- 对外访问闸门(鉴权 + 限流;消费者是 backend/auth.py)---------------
     #
