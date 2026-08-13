@@ -170,6 +170,54 @@ def test_project_rel_path不在该项目下抛ValueError() -> None:
 
 
 # ---------------------------------------------------------------------------
+# list_docs —— 浏览用的文档镜像扫描
+# ---------------------------------------------------------------------------
+
+
+def test_list_docs列出全局与各项目的文档() -> None:
+    project_fs.land_doc("global", "regulation", "GB50016.pdf", b"%PDF-1")
+    project_fs.land_doc("project", "regulation", "本项目规范.pdf", b"%PDF-2", project_id="gyt-a3")
+    project_fs.land_doc("project", "task_book", "任务书.pdf", b"%PDF-333", project_id="gyt-a3")
+
+    docs = project_fs.list_docs()
+
+    assert len(docs) == 3
+    by_name = {d.filename: d for d in docs}
+    g = by_name["GB50016.pdf"]
+    assert g.scope == "global" and g.project_id is None and g.doc_type == "regulation"
+    assert g.rel_path == "global/docs/regulation/GB50016.pdf"
+    assert g.size_bytes == len(b"%PDF-1")
+    assert by_name["任务书.pdf"].scope == "project"
+    assert by_name["任务书.pdf"].project_id == "gyt-a3"
+    assert by_name["任务书.pdf"].doc_type == "task_book"
+
+
+def test_list_docs按项目筛时不含全局() -> None:
+    project_fs.land_doc("global", "regulation", "GB50016.pdf", b"%PDF-1")
+    project_fs.land_doc("project", "regulation", "本项目规范.pdf", b"%PDF-2", project_id="gyt-a3")
+
+    docs = project_fs.list_docs(project_id="gyt-a3")
+
+    assert [d.filename for d in docs] == ["本项目规范.pdf"]
+    assert all(d.scope == "project" for d in docs)
+
+
+def test_list_docs跳过tmp半成品文件() -> None:
+    project_fs.land_doc("global", "regulation", "好的.pdf", b"%PDF")
+    # 手工塞一个落地中途的 .tmp,不该被列出来
+    tmp = get_settings().global_dir / "docs" / "regulation" / "半截.pdf.tmp"
+    tmp.write_bytes(b"partial")
+
+    names = [d.filename for d in project_fs.list_docs()]
+
+    assert names == ["好的.pdf"]
+
+
+def test_list_docs无任何文档时为空() -> None:
+    assert project_fs.list_docs() == []
+
+
+# ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
 

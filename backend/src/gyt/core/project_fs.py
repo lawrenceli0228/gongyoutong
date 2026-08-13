@@ -19,8 +19,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Final
+from typing import Final, NamedTuple
 
 from gyt.config import get_settings
 from gyt.db.projects import VIEW_TYPES
@@ -154,6 +156,85 @@ def project_rel_path(project_id: str, path: Path) -> str:
     return rel.as_posix()
 
 
+# --- 文档浏览(docs 不进 SQLite,靠扫描目录镜像列出)---------------------------
+
+
+class DocEntry(NamedTuple):
+    """一份落地文档的浏览信息(规范 / 任务书)。
+
+    图纸有 drawings 表可查,文档没有 —— 入的是 Chroma 向量库(供检索),字节镜像落在
+    docs/ 目录下。要"看到所有资料"就直接读这层目录镜像,不再为浏览另立一张索引表。
+    """
+
+    scope: str  # SCOPE_GLOBAL / SCOPE_PROJECT
+    project_id: str | None
+    doc_type: str  # DOC_TYPES 之一
+    filename: str
+    rel_path: str  # 相对 data_dir 的 POSIX 路径,给人浏览
+    size_bytes: int
+    modified_at: str  # 文件 mtime 的本地 ISO 时间戳
+
+
+def _iter_doc_files(dir_path: Path) -> Iterator[Path]:
+    """列一个 doc 目录下的正式文件(跳过落地中途的 .tmp;目录不存在即空)。"""
+    if not dir_path.is_dir():
+        return
+    for f in sorted(dir_path.iterdir()):
+        if f.is_file() and f.suffix != _TMP_SUFFIX:
+            yield f
+
+
+def _doc_entry(f: Path, scope: str, project_id: str | None, doc_type: str) -> DocEntry:
+    stat = f.stat()
+    rel = f.resolve().relative_to(get_settings().data_dir.resolve()).as_posix()
+    modified = datetime.fromtimestamp(stat.st_mtime, UTC).astimezone().isoformat(timespec="seconds")
+    return DocEntry(
+        scope=scope,
+        project_id=project_id,
+        doc_type=doc_type,
+        filename=f.name,
+        rel_path=rel,
+        size_bytes=stat.st_size,
+        modified_at=modified,
+    )
+
+
+def list_docs(project_id: str | None = None) -> list[DocEntry]:
+    """扫描落地的文档镜像,列出规范 / 任务书。
+
+    project_id=None:含全局规范 + 所有项目的文档;给定 project_id:只列该项目的文档
+    (不含全局)。纯读目录,和 db.list_drawings 一起喂给 webapp 的 /library,拼出「所有
+    项目的图纸 + 规范」总览。
+    """
+    settings = get_settings()
+    entries: list[DocEntry] = []
+
+    # 全局规范(只在不限定项目时纳入)
+    if project_id is None:
+        global_docs = settings.global_dir / _DOCS_SUBDIR
+        for doc_type in DOC_TYPES:
+            for f in _iter_doc_files(global_docs / doc_type):
+                entries.append(_doc_entry(f, SCOPE_GLOBAL, None, doc_type))
+
+    # 项目文档
+    if project_id is not None:
+        pids = [project_id] if _project_root(project_id).is_dir() else []
+    else:
+        projects_root = settings.projects_dir
+        pids = (
+            sorted(p.name for p in projects_root.iterdir() if p.is_dir())
+            if projects_root.is_dir()
+            else []
+        )
+    for pid in pids:
+        docs_root = _project_root(pid) / _DOCS_SUBDIR
+        for doc_type in DOC_TYPES:
+            for f in _iter_doc_files(docs_root / doc_type):
+                entries.append(_doc_entry(f, SCOPE_PROJECT, pid, doc_type))
+
+    return entries
+
+
 __all__ = [
     "DOC_REGULATION",
     "DOC_TASK_BOOK",
@@ -161,8 +242,10 @@ __all__ = [
     "SCOPE_GLOBAL",
     "SCOPE_PROJECT",
     "SCOPES",
+    "DocEntry",
     "ensure_project_tree",
     "land_doc",
     "land_drawing",
+    "list_docs",
     "project_rel_path",
 ]

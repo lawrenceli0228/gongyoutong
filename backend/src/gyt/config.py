@@ -235,12 +235,15 @@ class Settings(BaseSettings):
     llm_retry_base_delay_s: float = Field(default=1.0, ge=0)  # 0 = 测试里免等待
 
     # --- 文件大小限制(单位:MB)-----------------------------------------
-    # DXF 图纸:默认 64MB。原来是 20,但真实施工图**一层就 20 多兆**(2026-08-09 实测反馈),
-    # 20 会把正经图纸挡在门外。上限存在的成本是:上传走 base64 进聊天消息(体积 ×约 4/3),
-    # 64MB 图 → 约 85MB 报文,ingest_uploads 解码落盘后**立即**把大块从 state 里剔除(换成图纸编号),
-    # 所以只是一次瞬时内存峰值,不长期占用。还不够就 .env 里调 GYT_DRAWING_MAX_MB,不改代码。
-    drawing_max_mb: float = Field(default=64.0, gt=0)  # DXF 图纸
-    document_max_mb: float = Field(default=10.0, gt=0)  # PDF/DOCX/TXT/MD
+    # DXF 图纸:默认 100MB。原来是 20→64,但真实施工图**一层就 20 多兆**(2026-08-09 实测反馈),
+    # 且整栋合图 / 带光栅底图的 DXF 常破 64MB(2026-08-13 反馈),统一放到 100MB 与规范持平。
+    # 上限存在的成本是:上传走 base64 进聊天消息(体积 ×约 4/3),100MB 图 → 约 133MB 报文,
+    # ingest_uploads 解码落盘后**立即**把大块从 state 里剔除(换成图纸编号),只是一次瞬时内存峰值,
+    # 不长期占用。还嫌小就 .env 里调 GYT_DRAWING_MAX_MB,不改代码。
+    drawing_max_mb: float = Field(default=100.0, gt=0)  # DXF 图纸
+    # 规范/任务书 PDF:默认 100MB(2026-08-13 与图纸拉平)。国标规范扫描件动辄几十兆,
+    # 原来的 10MB 会把整本规范挡在门外;.env 里调 GYT_DOCUMENT_MAX_MB 可覆盖。
+    document_max_mb: float = Field(default=100.0, gt=0)  # PDF/DOCX/TXT/MD
     photo_max_mb: float = Field(default=10.0, gt=0)  # 工地照片原图
     # DXF 预览渲染的图元数上限:超过就**不渲染**、如实告知(改查图层/尺寸/构件)。
     # 真实工程图动辄上千图元,matplotlib 逐个画,实测 2300 图元的图渲染 268 秒 ——
