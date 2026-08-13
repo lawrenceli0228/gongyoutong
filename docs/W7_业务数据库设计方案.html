@@ -1,0 +1,697 @@
+<title>工地业务库设计</title>
+<style>
+  :root {
+    --ink:        #10161f;
+    --ink-soft:   #414d5e;
+    --ink-faint:  #6b7789;
+    --ground:     #f4f6f8;
+    --surface:    #ffffff;
+    --surface-2:  #eaeef2;
+    --line:       #d3dae2;
+    --line-soft:  #e3e8ed;
+    --steel:      #1f5c8b;
+    --steel-soft: #dbe8f2;
+    --amber:      #b5750a;
+    --amber-soft: #f7ecd6;
+    --crit:       #9d3427;
+    --grid:       rgba(31, 92, 139, .07);
+    --shadow:     0 1px 2px rgba(16, 22, 31, .05), 0 8px 20px -12px rgba(16, 22, 31, .18);
+
+    --sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Noto Sans Mono CJK SC", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:        #e4eaf1;
+      --ink-soft:   #a7b4c4;
+      --ink-faint:  #78869a;
+      --ground:     #0e131a;
+      --surface:    #161d26;
+      --surface-2:  #1d2632;
+      --line:       #2c3745;
+      --line-soft:  #232d3a;
+      --steel:      #6fb2e0;
+      --steel-soft: #1a3346;
+      --amber:      #e0a949;
+      --amber-soft: #382c14;
+      --crit:       #e08a7c;
+      --grid:       rgba(111, 178, 224, .07);
+      --shadow:     0 1px 2px rgba(0, 0, 0, .3), 0 8px 20px -12px rgba(0, 0, 0, .6);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ink:        #e4eaf1;
+    --ink-soft:   #a7b4c4;
+    --ink-faint:  #78869a;
+    --ground:     #0e131a;
+    --surface:    #161d26;
+    --surface-2:  #1d2632;
+    --line:       #2c3745;
+    --line-soft:  #232d3a;
+    --steel:      #6fb2e0;
+    --steel-soft: #1a3346;
+    --amber:      #e0a949;
+    --amber-soft: #382c14;
+    --crit:       #e08a7c;
+    --grid:       rgba(111, 178, 224, .07);
+    --shadow:     0 1px 2px rgba(0, 0, 0, .3), 0 8px 20px -12px rgba(0, 0, 0, .6);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background-color: var(--ground);
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 28px 28px;
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.72;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 940px;
+    margin: 0 auto;
+    padding: 0 24px 120px;
+  }
+
+  /* ---------- 页眉 ---------- */
+  header.masthead {
+    padding: 64px 0 36px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 8px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--steel);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-size: clamp(30px, 5.2vw, 46px);
+    line-height: 1.12;
+    letter-spacing: -.022em;
+    font-weight: 660;
+    margin: 0 0 18px;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 18px;
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: 62ch;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 28px;
+    margin-top: 28px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-faint);
+  }
+  .meta b { color: var(--ink-soft); font-weight: 500; }
+
+  /* ---------- 章节 ---------- */
+  section { margin-top: 60px; scroll-margin-top: 20px; }
+
+  h2 {
+    font-size: 25px;
+    letter-spacing: -.015em;
+    font-weight: 640;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  .h2-num {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--steel);
+    letter-spacing: .06em;
+    display: block;
+    margin-bottom: 6px;
+  }
+  .lede {
+    color: var(--ink-soft);
+    margin: 0 0 26px;
+    max-width: 66ch;
+  }
+  p { max-width: 66ch; }
+  h3 {
+    font-size: 16.5px;
+    font-weight: 640;
+    margin: 32px 0 10px;
+    letter-spacing: -.005em;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: .875em;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 3px;
+    padding: .1em .34em;
+    word-break: break-word;
+  }
+  strong { font-weight: 640; }
+  a { color: var(--steel); }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--amber);
+    outline-offset: 3px;
+  }
+
+  /* ---------- 表格 ---------- */
+  .scroll { overflow-x: auto; margin: 22px 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14.5px;
+    min-width: 520px;
+    background: var(--surface);
+  }
+  th, td {
+    text-align: left;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  thead th {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    border-bottom: 1px solid var(--line);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td code { background: transparent; border: none; padding: 0; color: var(--steel); }
+
+  /* ---------- 结论条 ---------- */
+  .verdict {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--steel);
+    padding: 20px 24px;
+    box-shadow: var(--shadow);
+    margin: 24px 0;
+  }
+  .verdict.warn { border-left-color: var(--amber); }
+  .verdict.stop { border-left-color: var(--crit); }
+  .verdict .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+    color: var(--steel);
+    padding-top: 5px;
+    white-space: nowrap;
+  }
+  .verdict.warn .tag { color: var(--amber); }
+  .verdict.stop .tag { color: var(--crit); }
+  .verdict p { margin: 0; }
+  .verdict p + p { margin-top: 10px; }
+
+  /* ---------- project_id 贯穿轴 ---------- */
+  .spine {
+    position: relative;
+    margin: 32px 0 8px;
+    padding-left: 132px;
+  }
+  .spine::before {
+    content: "";
+    position: absolute;
+    left: 47px;
+    top: 6px;
+    bottom: 34px;
+    width: 2px;
+    background: var(--amber);
+  }
+  .spine-root {
+    position: relative;
+    margin-bottom: 18px;
+  }
+  .spine-root .tbl { border-color: var(--amber); border-left-width: 3px; }
+  .axis-label {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 96px;
+    transform: translateY(-50%);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .04em;
+    color: var(--amber);
+    text-align: right;
+    line-height: 1.45;
+  }
+  .tbl {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--steel);
+    padding: 13px 18px;
+    box-shadow: var(--shadow);
+  }
+  .spine > .tbl { margin-bottom: 12px; }
+  .spine > .tbl::before {
+    content: "";
+    position: absolute;
+    left: -85px;
+    top: 22px;
+    width: 85px;
+    height: 2px;
+    background: var(--line);
+  }
+  .tbl-name {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .tbl-new {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--amber);
+    background: var(--amber-soft);
+    border: 1px solid var(--amber);
+    border-radius: 2px;
+    padding: 1px 6px;
+    margin-left: 9px;
+    vertical-align: 1.5px;
+  }
+  .tbl-new.exist { color: var(--steel); background: var(--steel-soft); border-color: var(--steel); }
+  .tbl-cols {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    margin-top: 3px;
+    line-height: 1.6;
+    word-break: break-word;
+  }
+  .tbl-cols em { color: var(--amber); font-style: normal; }
+  .tbl-note { font-size: 13px; color: var(--ink-soft); margin-top: 6px; }
+
+  @media (max-width: 700px) {
+    .spine { padding-left: 0; }
+    .spine::before { display: none; }
+    .spine > .tbl::before { display: none; }
+    .axis-label {
+      position: static;
+      width: auto;
+      transform: none;
+      text-align: left;
+      margin-bottom: 8px;
+    }
+  }
+
+  /* ---------- 代码块 ---------- */
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 20px 22px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.66;
+    color: var(--ink);
+    margin: 18px 0;
+    tab-size: 2;
+  }
+  pre .k { color: var(--steel); font-weight: 600; }
+  pre .c { color: var(--ink-faint); font-style: italic; }
+  pre .s { color: var(--amber); }
+
+  /* ---------- 红线清单 ---------- */
+  ol.rules { counter-reset: r; list-style: none; padding: 0; margin: 22px 0; }
+  ol.rules > li {
+    counter-increment: r;
+    position: relative;
+    padding: 0 0 0 46px;
+    margin-bottom: 20px;
+    max-width: 66ch;
+  }
+  ol.rules > li::before {
+    content: "[" counter(r) "]";
+    position: absolute;
+    left: 0;
+    top: 0;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--crit);
+    font-weight: 600;
+  }
+  ol.rules b { display: block; font-weight: 640; }
+
+  /* ---------- 待决问题 ---------- */
+  .q {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 22px 24px;
+    margin-bottom: 14px;
+    box-shadow: var(--shadow);
+  }
+  .q-head {
+    display: flex;
+    gap: 12px;
+    align-items: baseline;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .q-q { font-weight: 640; font-size: 16.5px; }
+  .q-why { color: var(--ink-soft); font-size: 14.5px; margin: 0; }
+  .q-why b { color: var(--ink); }
+  .badge {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 2px;
+    white-space: nowrap;
+    border: 1px solid var(--line);
+    color: var(--ink-faint);
+    background: var(--surface-2);
+  }
+  .badge.hot { color: var(--crit); border-color: var(--crit); background: transparent; }
+
+  footer {
+    margin-top: 72px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+    font-size: 13.5px;
+    color: var(--ink-faint);
+    max-width: 66ch;
+  }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">W7 · 设计方案</p>
+  <h1>工地业务库:打卡、排班与分项目</h1>
+  <p class="standfirst">
+    把打卡、排班表、任务书、图纸分项目这几件事落进数据库,并回答那个先决问题:
+    功能到底挂在子 Agent 上,还是主 Agent 上。
+  </p>
+  <div class="meta">
+    <span><b>状态</b> 待拍板</span>
+    <span><b>前置</b> W3 Schedule 已落地</span>
+    <span><b>基线</b> <code>db/tasks.py</code></span>
+  </div>
+</header>
+
+<section>
+  <span class="h2-num">01</span>
+  <h2>先回答:挂主 Agent 还是子 Agent</h2>
+  <p class="lede">这个问题本身要拆成三层才答得准。</p>
+
+  <div class="verdict stop">
+    <span class="tag">前提</span>
+    <p><strong>主 Agent 这条路是堵死的。</strong>
+    supervisor 的系统提示词写死了它「自己不干活」:不凭知识回答、不自己判断照片、
+    不自己编清单、不自己算尺寸,只做<strong>判断派给谁</strong>和<strong>把结果转成人话</strong>两件事。
+    一旦破例让它直接读写数据库,整套路由纪律和汇报红线会跟着塌。</p>
+  </div>
+
+  <p>正确的分法是<strong>数据、能力、路由三层各归各位</strong>——数据层根本不属于任何一个 Agent:</p>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>层</th><th>放哪</th><th>归属</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>数据</strong><br>表结构</td>
+          <td><code>backend/src/gyt/db/&lt;域&gt;.py</code></td>
+          <td><strong>共享地基。</strong>不属于任何一个 Agent,多个 Agent 可以读同一张表</td>
+        </tr>
+        <tr>
+          <td><strong>能力</strong><br>工具</td>
+          <td><code>agents/&lt;域&gt;/tools.py</code></td>
+          <td><strong>挂在子 Agent 上。</strong>一个业务域一个 Agent,全部走信封契约</td>
+        </tr>
+        <tr>
+          <td><strong>路由</strong><br>一行登记</td>
+          <td><code>graph.py</code> 的 <code>AGENT_REGISTRY</code></td>
+          <td>主 Agent 只是<strong>多认识一位同事</strong>,它自己不碰库</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>已经有活样板可抄:<code>schedule</code> 子 Agent 记任务,底下压着 <code>db/tasks.py</code>——
+  同步 sqlite3、每个操作一条独立连接、上层用 <code>asyncio.to_thread</code> 包。
+  打卡和排班照这个模子复制即可,不需要发明新架构。</p>
+</section>
+
+<section>
+  <span class="h2-num">02</span>
+  <h2>这些需求分别落在哪</h2>
+  <p class="lede">不是每个需求都要开新 Agent。Agent 开多了路由会打架——
+  <code>graph.py</code> 里那一大段注释就是在跟「空派 / 误派」死磕的记录。</p>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>需求</th><th>处置</th><th>理由</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>打卡<br>排班表</strong></td>
+          <td>合并成 <strong>1 个新子 Agent</strong><br><code>attendance</code></td>
+          <td>两者共用「人员花名册」和「班次」两张表,词汇也自成一域(「谁今天到了」「这周谁上夜班」)。<strong>不要拆成两个 Agent</strong></td>
+        </tr>
+        <tr>
+          <td><strong>任务书</strong></td>
+          <td><strong>不开新 Agent。</strong><br><code>schedule</code> 域加一个出 docx 的工具</td>
+          <td>任务书本质是任务台账的一种打印形态。复用 <code>report</code> 那套产出模式:落盘,只回 <code>artifact_id</code></td>
+        </tr>
+        <tr>
+          <td><strong>规范</strong></td>
+          <td>已有 <code>knowledge</code>,<strong>不动</strong></td>
+          <td>检索地基和双门槛都已达标,没有改动理由</td>
+        </tr>
+        <tr>
+          <td><strong>分项目<br>平立剖<br>3D 化</strong></td>
+          <td>全在现有 <code>cad</code> 域内扩展,<strong>不开新 Agent</strong></td>
+          <td>「分项目」是加 <code>project_id</code> 维度;「平立剖」是图纸的一个视图类型属性;「3D 化」是一个新工具——但先读 04 的警告</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <span class="h2-num">03</span>
+  <h2>库结构:一个库、多张表、一个贯穿维度</h2>
+  <p class="lede">沿用现有的单个 <code>gyt.sqlite3</code>(路径已在 <code>config.sqlite_path</code>)。
+  <strong>不要每个 Agent 一个 db 文件</strong>——那会让「这条任务属于哪个工地」这种跨域问题无法回答。</p>
+
+  <div class="verdict">
+    <span class="tag">已备好</span>
+    <p><code>tasks</code> 表里的 <code>project_id</code> 字段<strong>早就预留好了</strong>:
+    建表即建、写入恒 NULL、不进任何函数签名(W3 定案 #11)。
+    现在做「分项目」,正是把这个预留字段<strong>启用</strong>的时机——
+    补一张 <code>projects</code> 主表,所有业务表挂上去。</p>
+  </div>
+
+  <div class="spine">
+    <div class="spine-root">
+      <div class="axis-label">project_id<br>贯穿全库</div>
+      <div class="tbl">
+        <span class="tbl-name">projects</span><span class="tbl-new">新增</span>
+        <div class="tbl-cols">id · name · code · created_at</div>
+        <div class="tbl-note">「分项目」的根。一个工地一行。</div>
+      </div>
+    </div>
+
+    <div class="tbl">
+      <span class="tbl-name">workers</span><span class="tbl-new">新增</span>
+      <div class="tbl-cols"><em>project_id</em> · name · phone · trade · active</div>
+      <div class="tbl-note">人员花名册。trade = 工种(钢筋工 / 木工 / 电工)。</div>
+    </div>
+
+    <div class="tbl">
+      <span class="tbl-name">shifts</span><span class="tbl-new">新增</span>
+      <div class="tbl-cols"><em>project_id</em> · worker_id · work_date · shift_type</div>
+      <div class="tbl-note">排班表:谁哪天上什么班。一人一天一条,表级唯一约束兜底。</div>
+    </div>
+
+    <div class="tbl">
+      <span class="tbl-name">attendance</span><span class="tbl-new">新增</span>
+      <div class="tbl-cols"><em>project_id</em> · worker_id · work_date · clock_in_at · clock_out_at</div>
+      <div class="tbl-note">打卡流水。上下班两个时间戳,不拆两张表。</div>
+    </div>
+
+    <div class="tbl">
+      <span class="tbl-name">tasks</span><span class="tbl-new exist">已存在</span>
+      <div class="tbl-cols">id · title · due_date · status · <em>project_id</em> · created_at · updated_at</div>
+      <div class="tbl-note">把恒 NULL 的 <code>project_id</code> 启用,其余不动。</div>
+    </div>
+
+    <div class="tbl">
+      <span class="tbl-name">drawings</span><span class="tbl-new">新增</span>
+      <div class="tbl-cols"><em>project_id</em> · artifact_id · view_type · floor · title</div>
+      <div class="tbl-note">图纸索引。<code>view_type</code> ∈ plan / elevation / section,即平立剖。</div>
+    </div>
+  </div>
+
+  <h3>建表语句</h3>
+  <p>照 <code>db/tasks.py</code> 的成规写:幂等 <code>IF NOT EXISTS</code>、
+  <code>NOT NULL</code> / <code>CHECK</code> 约束下沉到表级、时间戳一律 ISO 文本。</p>
+
+<pre><span class="c">-- 项目主表:分项目的根</span>
+<span class="k">CREATE TABLE IF NOT EXISTS</span> projects (
+  id         <span class="k">TEXT PRIMARY KEY</span>,          <span class="c">-- 短码,如 'gyt-a3'</span>
+  name       <span class="k">TEXT NOT NULL</span>,
+  code       <span class="k">TEXT</span>,
+  created_at <span class="k">TEXT NOT NULL</span>
+);
+
+<span class="c">-- 人员花名册</span>
+<span class="k">CREATE TABLE IF NOT EXISTS</span> workers (
+  id         <span class="k">INTEGER PRIMARY KEY AUTOINCREMENT</span>,
+  project_id <span class="k">TEXT NOT NULL REFERENCES</span> projects(id),
+  name       <span class="k">TEXT NOT NULL</span>,
+  phone      <span class="k">TEXT</span>,
+  trade      <span class="k">TEXT</span>,                       <span class="c">-- 工种</span>
+  active     <span class="k">INTEGER NOT NULL DEFAULT</span> 1,
+  created_at <span class="k">TEXT NOT NULL</span>
+);
+
+<span class="c">-- 排班:一人一天一条班次</span>
+<span class="k">CREATE TABLE IF NOT EXISTS</span> shifts (
+  id         <span class="k">INTEGER PRIMARY KEY AUTOINCREMENT</span>,
+  project_id <span class="k">TEXT NOT NULL REFERENCES</span> projects(id),
+  worker_id  <span class="k">INTEGER NOT NULL REFERENCES</span> workers(id),
+  work_date  <span class="k">TEXT NOT NULL</span>,               <span class="c">-- ISO YYYY-MM-DD</span>
+  shift_type <span class="k">TEXT NOT NULL CHECK</span> (shift_type <span class="k">IN</span> (<span class="s">'day'</span>,<span class="s">'night'</span>,<span class="s">'off'</span>)),
+  created_at <span class="k">TEXT NOT NULL</span>,
+  updated_at <span class="k">TEXT NOT NULL</span>,
+  <span class="k">UNIQUE</span> (worker_id, work_date)              <span class="c">-- 同一天不许排两个班</span>
+);
+
+<span class="c">-- 打卡流水:上下班两个时间戳同行</span>
+<span class="k">CREATE TABLE IF NOT EXISTS</span> attendance (
+  id           <span class="k">INTEGER PRIMARY KEY AUTOINCREMENT</span>,
+  project_id   <span class="k">TEXT NOT NULL REFERENCES</span> projects(id),
+  worker_id    <span class="k">INTEGER NOT NULL REFERENCES</span> workers(id),
+  work_date    <span class="k">TEXT NOT NULL</span>,
+  clock_in_at  <span class="k">TEXT</span>,                        <span class="c">-- ISO 时间戳,NULL = 还没上班打卡</span>
+  clock_out_at <span class="k">TEXT</span>,
+  created_at   <span class="k">TEXT NOT NULL</span>,
+  updated_at   <span class="k">TEXT NOT NULL</span>,
+  <span class="k">UNIQUE</span> (worker_id, work_date)              <span class="c">-- 一人一天一条,重复打卡走 UPDATE</span>
+);
+
+<span class="c">-- 图纸索引:平立剖靠 view_type 区分,内容只存 artifact_id</span>
+<span class="k">CREATE TABLE IF NOT EXISTS</span> drawings (
+  id          <span class="k">INTEGER PRIMARY KEY AUTOINCREMENT</span>,
+  project_id  <span class="k">TEXT NOT NULL REFERENCES</span> projects(id),
+  artifact_id <span class="k">TEXT NOT NULL</span>,                <span class="c">-- 32 位 id,文件本身落盘</span>
+  view_type   <span class="k">TEXT NOT NULL CHECK</span> (view_type <span class="k">IN</span> (<span class="s">'plan'</span>,<span class="s">'elevation'</span>,<span class="s">'section'</span>)),
+  floor       <span class="k">TEXT</span>,
+  title       <span class="k">TEXT NOT NULL</span>,
+  created_at  <span class="k">TEXT NOT NULL</span>
+);</pre>
+
+  <h3>设计红线</h3>
+  <p>全部照现有 <code>db/tasks.py</code> 的成规,<strong>别另起炉灶</strong>:</p>
+
+  <ol class="rules">
+    <li>
+      <b>db 层要薄。</b>
+      只管两件事:存取保真、表级约束。业务校验——空值、日期解析、
+      「已下班不许重复打卡」——一律归工具层,因为那里才能说中文人话、才能进信封契约。
+      搅进 db 层会把 SQL 和话术绑死,两头都难测。
+    </li>
+    <li>
+      <b>同步 sqlite3 + asyncio.to_thread。</b>
+      工具跑在 langgraph 事件循环里,同步 sqlite3 属阻塞 IO,
+      blockbuster 会直接抛 BlockingError。丢线程池就地根治,不赖 <code>--allow-blocking</code> 这根拐棍。
+    </li>
+    <li>
+      <b>大文件只走 artifact_id。</b>
+      任务书 docx、图纸 PNG、将来的 3D 模型文件,一律落盘,库里只存 32 位 id。
+      这是项目的硬契约,不是本方案的偏好。
+    </li>
+    <li>
+      <b>值全走 ? 占位。</b>
+      SQL 文本里只许拼模块级常量片段,任何运行期的值(姓名、日期、id)绝不进入 SQL 文本。
+    </li>
+    <li>
+      <b>暂时不上 Postgres。</b>
+      工地就几十上百号人,SQLite 够用。真到「多工地并发写」那天再迁——
+      那是一个明确的阈值,不是现在就要付的复杂度。
+    </li>
+  </ol>
+</section>
+
+<section>
+  <span class="h2-num">04</span>
+  <h2>需要先拍板的三件事</h2>
+  <p class="lede">这三个答案会实质改变上面的方案,不是细节偏好。</p>
+
+  <div class="q">
+    <div class="q-head">
+      <span class="q-q">打卡怎么输入?</span>
+      <span class="badge">影响 attendance 形态</span>
+    </div>
+    <p class="q-why">师傅对 Agent 说「我到了」、拍现场照(可复用 safety 的视觉线)、扫码、还是 GPS 定位?
+    <b>这决定 attendance 是纯文本工具,还是要接多模态。</b>后者的工作量是前者的数倍。</p>
+  </div>
+
+  <div class="q">
+    <div class="q-head">
+      <span class="q-q">「3D 化」要到什么程度?</span>
+      <span class="badge hot">量级不同,须单独立项</span>
+    </div>
+    <p class="q-why">这一个和其他不是一个量级。若是真 BIM / IFC 建模,那是<b>独立的几何引擎工程</b>
+    (ifcopenshell 那一层),不是「cad Agent 加个工具」能收的;
+    若只是「平面图拉伸出示意体块」或「多视图切换看」,那才轻。
+    <b>别把它和打卡排班混在同一个迭代里估工。</b></p>
+  </div>
+
+  <div class="q">
+    <div class="q-head">
+      <span class="q-q">多项目是真并发,还是演示期先单项目?</span>
+      <span class="badge">影响是否现在做隔离</span>
+    </div>
+    <p class="q-why">真多工地并发,现在就得上项目隔离和权限;
+    演示期单项目的话,<code>project_id</code> 填个默认值先跑通即可,
+    表结构照上面建,<b>字段留着但不做隔离逻辑</b>——和 tasks 当初预留 project_id 是同一个策略。</p>
+  </div>
+</section>
+
+<section>
+  <span class="h2-num">05</span>
+  <h2>建议的下一步</h2>
+  <p>先做<strong>打卡 + 排班</strong>这条线:需求最清晰、有 <code>schedule</code> 作为完整样板、
+  不依赖任何未决的技术选型。顺序是 <code>db/attendance.py</code> →
+  <code>agents/attendance/tools.py</code> → <code>AGENT_REGISTRY</code> 加一行 →
+  补路由评测集,守住 0.90 门槛。</p>
+  <p><strong>3D 那条线单独立项细聊</strong>,先把上面第二个问题答了再估工。</p>
+</section>
+
+<footer>
+  本文档只讲数据库与挂载位的取舍。两条硬契约(错误信封、artifact_id)与加 Agent 的具体步骤
+  见 <code>backend/README.md</code> 第三节,本文不重复,避免漂移。
+</footer>
+
+</div>
