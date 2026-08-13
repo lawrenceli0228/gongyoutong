@@ -231,10 +231,33 @@ def read_meta(artifact_id: str) -> dict[str, Any]:
     return _read_sidecar(_sidecar_path(artifact_id))
 
 
+def delete(artifact_id: str) -> bool:
+    """删除一份产物(正文 blob + sidecar)。删除是幂等的:id 不合法 / 找不到都返回 False,不抛。
+
+    删图纸 / 删项目时清理注册表里那份字节副本用。故意不抛异常 —— 删除编排里一步找不到
+    不该拖垮整体(库行已删、文件已删,产物副本残留只是占点盘,不是错误)。
+    """
+    if not isinstance(artifact_id, str) or not ARTIFACT_ID_RE.fullmatch(artifact_id):
+        return False
+    try:
+        sidecar = _sidecar_path(artifact_id)
+    except ArtifactNotFound:
+        return False
+    try:
+        ext = _validate_stored_ext(str(_read_sidecar(sidecar).get("ext", "")))
+    except ArtifactNotFound:
+        ext = ""
+    (sidecar.parent / f"{artifact_id}{ext}").unlink(missing_ok=True)
+    sidecar.unlink(missing_ok=True)
+    logger.info("已删除产物 %s", artifact_id)
+    return True
+
+
 __all__ = [
     "ARTIFACT_ID_RE",
     "ArtifactKind",
     "ArtifactNotFound",
+    "delete",
     "read_meta",
     "register",
     "resolve",

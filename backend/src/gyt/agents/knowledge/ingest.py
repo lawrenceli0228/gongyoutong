@@ -163,12 +163,8 @@ def ingest_document(
 
     vs = vectorstore or get_vectorstore()
     source = pdf_path.name
-    existing = vs.get(
-        where={"$and": [{"source": source}, {"scope": scope}, {"project_id": project_id}]}
-    )
-    stale_ids = (existing or {}).get("ids") or []
-    if stale_ids:
-        vs.delete(ids=stale_ids)
+    # 先删同 source + 同作用域 + 同项目 的旧块(同名文件跨作用域/跨项目互不误删),再加新块。
+    delete_document(source, scope=scope, project_id=project_id, vectorstore=vs)
     docs = pdf_to_documents(pdf_path)
     if not docs:
         logger.warning("文档 %s 一个 chunk 都没抽出来(可能是扫描件?要 OCR)", source)
@@ -187,6 +183,47 @@ def ingest_document(
         len(docs),
     )
     return len(docs)
+
+
+def delete_document(
+    source: str, *, scope: str, project_id: str = "", vectorstore=None
+) -> int:
+    """删除某份文档在向量库里的所有 chunk。返回删除块数。阻塞。
+
+    按 source + scope + project_id 精确匹配。
+    与 ingest_document 的「先删」同一条件,单独拿出来给「删资料」端点复用:
+    删掉一份规范/任务书时,它在 Chroma 里的块必须一起清掉,否则**删了还能被检索到**
+    —— 那正是「删了规范问答里还答得出来」的静默 bug。scope=global 时 project_id 恒 ""。
+    """
+    if scope not in SCOPES:
+        raise ValueError(f"scope 不合法(只认 {SCOPES}):{scope!r}")
+    if scope == SCOPE_GLOBAL:
+        project_id = ""
+    vs = vectorstore or get_vectorstore()
+    existing = vs.get(
+        where={"$and": [{"source": source}, {"scope": scope}, {"project_id": project_id}]}
+    )
+    ids = (existing or {}).get("ids") or []
+    if ids:
+        vs.delete(ids=ids)
+    return len(ids)
+
+
+def delete_project_documents(project_id: str, *, vectorstore=None) -> int:
+    """删除某项目**所有项目作用域**文档(规范 + 任务书)的向量块。返回删除块数。阻塞。
+
+    项目删除时用:全局规范(project_id="")不受影响,只清 scope=project 且属该项目的块。
+    """
+    if not project_id:
+        raise ValueError("项目作用域必须给 project_id")
+    vs = vectorstore or get_vectorstore()
+    existing = vs.get(
+        where={"$and": [{"scope": SCOPE_PROJECT}, {"project_id": project_id}]}
+    )
+    ids = (existing or {}).get("ids") or []
+    if ids:
+        vs.delete(ids=ids)
+    return len(ids)
 
 
 def _manifest_path() -> Path:
@@ -324,6 +361,8 @@ if __name__ == "__main__":
 # 要拿默认目录请调 _default_docs_dir() —— 常量会在 import 时把配置定死,那正是这次的病根。
 __all__ = [
     "build_index",
+    "delete_document",
+    "delete_project_documents",
     "ensure_index_built",
     "ingest_document",
     "pdf_to_documents",

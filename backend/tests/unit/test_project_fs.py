@@ -225,3 +225,53 @@ def test_list_docs无任何文档时为空() -> None:
 def test_作用域与文档类型常量锁死() -> None:
     assert project_fs.SCOPES == ("global", "project")
     assert project_fs.DOC_TYPES == ("regulation", "task_book")
+
+
+# ---------------------------------------------------------------------------
+# 删除:文档镜像 / 图纸文件 / 整个项目目录
+# ---------------------------------------------------------------------------
+
+
+def test_delete_doc删规范返回True再删False() -> None:
+    project_fs.land_doc("global", "regulation", "GB50016.pdf", b"%PDF")
+    assert project_fs.delete_doc("global", "regulation", "GB50016.pdf") is True
+    assert project_fs.delete_doc("global", "regulation", "GB50016.pdf") is False
+
+
+def test_delete_doc项目作用域任务书() -> None:
+    project_fs.land_doc("project", "task_book", "任务书.pdf", b"%PDF", project_id="gyt-a3")
+    assert project_fs.delete_doc("project", "task_book", "任务书.pdf", project_id="gyt-a3") is True
+
+
+def test_delete_doc拒绝非法文件名() -> None:
+    with pytest.raises(ValueError):
+        project_fs.delete_doc("global", "regulation", "..")
+
+
+def test_delete_drawing_file按rel_path删图() -> None:
+    dest = project_fs.land_drawing("gyt-a3", "plan", "平面.dxf", _DXF)
+    rel = project_fs.project_rel_path("gyt-a3", dest)  # drawings/plan/平面.dxf
+
+    assert project_fs.delete_drawing_file("gyt-a3", rel) is True
+    assert not dest.exists()
+    assert project_fs.delete_drawing_file("gyt-a3", rel) is False  # 已不在
+
+
+def test_delete_drawing_file空rel_path返回False() -> None:
+    assert project_fs.delete_drawing_file("gyt-a3", None) is False
+
+
+def test_delete_drawing_file越界rel_path抛() -> None:
+    with pytest.raises(ValueError):
+        project_fs.delete_drawing_file("gyt-a3", "../../../etc/passwd")
+
+
+def test_delete_project_tree整个删掉() -> None:
+    project_fs.ensure_project_tree("gyt-a3")
+    project_fs.land_drawing("gyt-a3", "plan", "平面.dxf", _DXF)
+    root = get_settings().projects_dir / "gyt-a3"
+    assert root.is_dir()
+
+    assert project_fs.delete_project_tree("gyt-a3") is True
+    assert not root.exists()
+    assert project_fs.delete_project_tree("gyt-a3") is False

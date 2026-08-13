@@ -116,6 +116,10 @@ _FIND_BY_TITLE_SQL: Final[str] = (
 _FIND_BY_ARTIFACT_SQL: Final[str] = (
     f"SELECT {_DRAWING_COLUMNS} FROM drawings WHERE artifact_id = ? ORDER BY id DESC LIMIT 1"
 )
+# 删除:单张图 / 某项目全部图 / 项目本身。删项目前必须先删它名下的图(外键)。
+_DELETE_DRAWING_SQL: Final[str] = "DELETE FROM drawings WHERE id = ?"
+_DELETE_PROJECT_DRAWINGS_SQL: Final[str] = "DELETE FROM drawings WHERE project_id = ?"
+_DELETE_PROJECT_SQL: Final[str] = "DELETE FROM projects WHERE id = ?"
 
 
 def _now_iso() -> str:
@@ -250,6 +254,41 @@ def list_drawings(
     return [DrawingRow(*r) for r in rows]
 
 
+def delete_drawing(drawing_id: int) -> bool:
+    """按自增 id 删一张图纸行。返回是否真的删掉(不存在返回 False)。
+
+    只删库行;物理文件 / 产物 / CAD 解析索引由上层(webapp)编排清理 —— 这层不碰文件系统。
+    """
+    with _projects_db() as conn:
+        cur = conn.execute(_DELETE_DRAWING_SQL, (drawing_id,))
+    return cur.rowcount > 0
+
+
+def delete_project_drawings(project_id: str) -> list[DrawingRow]:
+    """删除某项目名下所有图纸行,返回被删的行(供上层按 artifact_id / rel_path 清理文件与产物)。
+
+    项目删除的第一步:drawings 外键指向 projects,不先清空它就删项目会撞外键。
+    """
+    with _projects_db() as conn:
+        rows = conn.execute(
+            f"{_LIST_DRAWINGS_BASE} WHERE project_id = ? {_LIST_DRAWINGS_ORDER}",
+            (project_id,),
+        ).fetchall()
+        conn.execute(_DELETE_PROJECT_DRAWINGS_SQL, (project_id,))
+    return [DrawingRow(*r) for r in rows]
+
+
+def delete_project(project_id: str) -> bool:
+    """删除项目行。返回是否真的删掉(不存在返回 False)。
+
+    ⚠️ 必须**先** delete_project_drawings 清空名下图纸,否则外键(drawings.project_id)会拦。
+    编排顺序归上层;这层只管这一条 DELETE。
+    """
+    with _projects_db() as conn:
+        cur = conn.execute(_DELETE_PROJECT_SQL, (project_id,))
+    return cur.rowcount > 0
+
+
 __all__ = [
     "DRAWINGS_DDL",
     "PROJECTS_DDL",
@@ -258,6 +297,9 @@ __all__ = [
     "ProjectRow",
     "add_drawing",
     "create_project",
+    "delete_drawing",
+    "delete_project",
+    "delete_project_drawings",
     "find_drawing_by_artifact",
     "find_drawing_by_title",
     "get_drawing_by_id",

@@ -242,3 +242,53 @@ def test_CLI在目录里一份PDF都没有时报错并退出码1(tmp_path, monke
     # Assert:在调 build_index(会拉 2.2GB 模型)之前就判掉了
     assert code == 1
     assert "一份 PDF 都没有" in capsys.readouterr().out
+
+
+# --- 删除向量块(删资料 / 删项目端点复用)------------------------------------
+
+
+def test_delete_document按source作用域项目精确删块() -> None:
+    vs = _FakeVectorStore()
+    vs._existing = {"ids": ["project:gyt-a3/任务书.pdf#p1#c0", "project:gyt-a3/任务书.pdf#p1#c1"]}
+
+    n = ingest.delete_document("任务书.pdf", scope="project", project_id="gyt-a3", vectorstore=vs)
+
+    assert n == 2
+    assert vs.deleted == vs._existing["ids"]
+    assert vs.get_where == {
+        "$and": [{"source": "任务书.pdf"}, {"scope": "project"}, {"project_id": "gyt-a3"}]
+    }
+
+
+def test_delete_document全局强制清空project_id() -> None:
+    vs = _FakeVectorStore()
+    vs._existing = {"ids": ["global:/GB.pdf#p1#c0"]}
+
+    ingest.delete_document("GB.pdf", scope="global", project_id="脏值", vectorstore=vs)
+
+    assert vs.get_where == {
+        "$and": [{"source": "GB.pdf"}, {"scope": "global"}, {"project_id": ""}]
+    }
+
+
+def test_delete_document无匹配返回0不调delete() -> None:
+    vs = _FakeVectorStore()  # _existing ids 为空
+    n = ingest.delete_document("没有.pdf", scope="global", vectorstore=vs)
+    assert n == 0
+    assert vs.deleted == []
+
+
+def test_delete_project_documents按项目清所有块() -> None:
+    vs = _FakeVectorStore()
+    vs._existing = {"ids": ["project:gyt-a3/a.pdf#p1#c0", "project:gyt-a3/b.pdf#p1#c0"]}
+
+    n = ingest.delete_project_documents("gyt-a3", vectorstore=vs)
+
+    assert n == 2
+    assert vs.get_where == {"$and": [{"scope": "project"}, {"project_id": "gyt-a3"}]}
+    assert vs.deleted == vs._existing["ids"]
+
+
+def test_delete_project_documents缺project_id抛() -> None:
+    with pytest.raises(ValueError):
+        ingest.delete_project_documents("", vectorstore=_FakeVectorStore())
