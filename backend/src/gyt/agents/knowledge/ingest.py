@@ -33,6 +33,7 @@ from pypdf import PdfReader
 
 from gyt.agents.knowledge.store import get_vectorstore
 from gyt.config import get_settings
+from gyt.core.project_fs import DOC_REGULATION, DOC_TYPES, SCOPE_GLOBAL, SCOPE_PROJECT, SCOPES
 
 logger = logging.getLogger(__name__)
 
@@ -123,27 +124,68 @@ def pdf_to_documents(pdf_path: Path) -> list[Document]:
 
 
 def _chunk_ids(docs: list[Document]) -> list[str]:
-    """确定化的 chunk id:source#p<页>#c<序>。重跑同一文件 → 同 id → upsert 不产重复。"""
-    return [f"{d.metadata['source']}#p{d.metadata['page']}#c{i}" for i, d in enumerate(docs)]
+    """确定化 chunk id:``<scope>:<project_id>/<source>#p<页>#c<序>``。带作用域防跨库/跨项目撞号。
 
-
-def ingest_pdf(pdf_path: Path, vectorstore=None) -> int:
-    """把一部 PDF 入库(先删同 source 旧块,再加新块)。返回入库块数。阻塞。
-
-    先删后加,是为了「同名文件内容变了」也能干净替换,不留旧块。
+    要求 docs 的 metadata 已由 ingest_document 补上 scope/project_id(全局时 project_id="")。
+    重跑同一文件 → 同 id → upsert 不产重复。
     """
+    return [
+        f"{d.metadata['scope']}:{d.metadata['project_id']}/"
+        f"{d.metadata['source']}#p{d.metadata['page']}#c{i}"
+        for i, d in enumerate(docs)
+    ]
+
+
+def ingest_document(
+    pdf_path: Path,
+    *,
+    scope: str,
+    doc_type: str,
+    project_id: str = "",
+    vectorstore=None,
+) -> int:
+    """把一部 PDF 按作用域入库(先删同 source+scope+project 的旧块,再加新块)。返回入库块数。阻塞。
+
+    作用域(与 core/project_fs 同一套取值):
+      · scope=global —— 全局规范,对所有项目通用,project_id 恒 ""(强制清空,别让脏值进 metadata);
+      · scope=project —— 项目规范 / 任务书,必须给 project_id。
+    每个 chunk 的 metadata 带 source/page/scope/project_id/doc_type;chunk id 带作用域前缀。
+    「先删后加」限定在**同 source + 同作用域 + 同项目**内 —— 同名文件跨作用域/跨项目互不误删。
+    """
+    if scope not in SCOPES:
+        raise ValueError(f"scope 不合法(只认 {SCOPES}):{scope!r}")
+    if doc_type not in DOC_TYPES:
+        raise ValueError(f"doc_type 不合法(只认 {DOC_TYPES}):{doc_type!r}")
+    if scope == SCOPE_PROJECT and not project_id:
+        raise ValueError("项目作用域必须给 project_id")
+    if scope == SCOPE_GLOBAL:
+        project_id = ""
+
     vs = vectorstore or get_vectorstore()
     source = pdf_path.name
-    existing = vs.get(where={"source": source})
+    existing = vs.get(
+        where={"$and": [{"source": source}, {"scope": scope}, {"project_id": project_id}]}
+    )
     stale_ids = (existing or {}).get("ids") or []
     if stale_ids:
         vs.delete(ids=stale_ids)
     docs = pdf_to_documents(pdf_path)
     if not docs:
-        logger.warning("规范 %s 一个 chunk 都没抽出来(可能是扫描件?要 OCR)", source)
+        logger.warning("文档 %s 一个 chunk 都没抽出来(可能是扫描件?要 OCR)", source)
         return 0
+    for doc in docs:
+        doc.metadata["scope"] = scope
+        doc.metadata["project_id"] = project_id
+        doc.metadata["doc_type"] = doc_type
     vs.add_documents(docs, ids=_chunk_ids(docs))
-    logger.info("已入库 %s:%d 个 chunk", source, len(docs))
+    logger.info(
+        "已入库 %s(scope=%s project=%s type=%s):%d 个 chunk",
+        source,
+        scope,
+        project_id or "-",
+        doc_type,
+        len(docs),
+    )
     return len(docs)
 
 
@@ -192,7 +234,10 @@ def build_index(docs_dir: Path | None = None, *, rebuild: bool = False) -> dict[
         if not rebuild and manifest.get(pdf.name) == sha:
             logger.info("跳过(已入库、未改动):%s", pdf.name)
             continue
-        result[pdf.name] = ingest_pdf(pdf, vs)
+        # 预置规范一律归**全局**作用域(国标/通用规范,对所有项目通用)。
+        result[pdf.name] = ingest_document(
+            pdf, scope=SCOPE_GLOBAL, doc_type=DOC_REGULATION, vectorstore=vs
+        )
         manifest[pdf.name] = sha
     _save_manifest(manifest)
     logger.info("建库完成:%s", result or "(无新增,全部已入库)")
@@ -280,6 +325,6 @@ if __name__ == "__main__":
 __all__ = [
     "build_index",
     "ensure_index_built",
-    "ingest_pdf",
+    "ingest_document",
     "pdf_to_documents",
 ]

@@ -31,6 +31,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from gyt.agents.knowledge import ingest
 from gyt.config import ALLOWED_CAD_EXT, get_settings
 from gyt.core import artifacts, project_fs
 from gyt.core.artifacts import ArtifactKind
@@ -39,6 +40,7 @@ from gyt.db import projects as db
 logger = logging.getLogger(__name__)
 
 _BYTES_PER_MB = 1024 * 1024
+_PDF_EXT = ".pdf"
 
 
 # --- 信封响应 ----------------------------------------------------------------
@@ -178,11 +180,83 @@ async def upload_drawing(request: Request) -> JSONResponse:
     )
 
 
+async def _handle_doc_upload(request: Request, *, scope: str, project_id: str) -> JSONResponse:
+    """规范/任务书上传的共用编排:校验 → 落地 → 注册产物 → 按作用域入库(Chroma)。
+
+    scope=global(/docs)只收规范;scope=project(/projects/{id}/docs)收规范或任务书。
+    文档目前只收 PDF(docx 记为后续)。入库那步会加载 BGE-M3,首份上传偏慢,属正常。
+    """
+    form = await request.form()
+    upload = form.get("file")
+    doc_type = str(form.get("doc_type") or "").strip()
+
+    if upload is None or not hasattr(upload, "filename"):
+        return _fail(400, "没收到文档文件,请选一个 PDF 再传。", "INVALID_INPUT")
+    filename = upload.filename or ""
+    if doc_type not in project_fs.DOC_TYPES:
+        return _fail(400, "要标明这是规范还是任务书(regulation/task_book)。", "INVALID_INPUT")
+    if scope == project_fs.SCOPE_GLOBAL and doc_type != project_fs.DOC_REGULATION:
+        return _fail(400, "全局资料只收规范;任务书要传到某个具体项目下。", "INVALID_INPUT")
+    if PurePosixPath(filename).suffix.lower() != _PDF_EXT:
+        return _fail(415, "文档目前只收 PDF;Word 请先导出成 PDF 再传。", "FILE_UNSUPPORTED")
+
+    payload = await upload.read()
+    max_bytes = int(get_settings().document_max_mb * _BYTES_PER_MB)
+    if len(payload) > max_bytes:
+        return _fail(
+            413,
+            f"这份文档超过 {get_settings().document_max_mb:.0f}MB 上限,先精简再传。",
+            "FILE_TOO_LARGE",
+        )
+
+    def _work() -> dict[str, Any] | None:
+        if scope == project_fs.SCOPE_PROJECT and db.get_project(project_id) is None:
+            return None
+        landed = project_fs.land_doc(scope, doc_type, filename, payload, project_id=project_id)
+        artifact_id = artifacts.register(
+            landed, kind=ArtifactKind.DOCUMENT, original_name=filename
+        )
+        chunks = ingest.ingest_document(
+            landed, scope=scope, doc_type=doc_type, project_id=project_id
+        )
+        return {"artifact_id": artifact_id, "chunks": chunks}
+
+    result = await run_in_threadpool(_work)
+    if result is None:
+        return _fail(404, "没找到这个项目,先建项目再往里传资料。", "NOT_FOUND")
+    kind_cn = "规范" if doc_type == project_fs.DOC_REGULATION else "任务书"
+    logger.info("收到%s文档 %s(scope=%s project=%s)", kind_cn, filename, scope, project_id or "-")
+    return _ok(
+        {
+            "scope": scope,
+            "project_id": project_id or None,
+            "doc_type": doc_type,
+            "filename": filename,
+            **result,
+        },
+        f"{kind_cn}「{filename}」上传成功,已入库 {result['chunks']} 段。",
+        status=201,
+    )
+
+
+async def upload_global_doc(request: Request) -> JSONResponse:
+    """POST /docs —— 上传全局规范(对所有项目通用),只收规范。"""
+    return await _handle_doc_upload(request, scope=project_fs.SCOPE_GLOBAL, project_id="")
+
+
+async def upload_project_doc(request: Request) -> JSONResponse:
+    """POST /projects/{project_id}/docs —— 上传项目规范或任务书。"""
+    pid = request.path_params["project_id"]
+    return await _handle_doc_upload(request, scope=project_fs.SCOPE_PROJECT, project_id=pid)
+
+
 app = Starlette(
     routes=[
         Route("/projects", list_projects, methods=["GET"]),
         Route("/projects", create_project, methods=["POST"]),
         Route("/projects/{project_id}/drawings", upload_drawing, methods=["POST"]),
+        Route("/docs", upload_global_doc, methods=["POST"]),
+        Route("/projects/{project_id}/docs", upload_project_doc, methods=["POST"]),
     ]
 )
 

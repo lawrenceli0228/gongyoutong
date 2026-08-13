@@ -192,3 +192,104 @@ def test_传图_项目不存在_404(client: TestClient) -> None:
 
     assert resp.status_code == 404
     assert resp.json()["error_code"] == "NOT_FOUND"
+
+
+# ---------------------------------------------------------------------------
+# 传规范 / 任务书(/docs、/projects/{id}/docs)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_ingest(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """挡掉真入库(会加载 2.2GB BGE-M3),只记录调用参数、返回假 chunk 数。"""
+    calls: list[dict] = []
+
+    def _fake(path, *, scope: str, doc_type: str, project_id: str = "") -> int:
+        calls.append({"scope": scope, "doc_type": doc_type, "project_id": project_id})
+        return 7
+
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.ingest_document", _fake)
+    return calls
+
+
+def _pdf_files(name: str = "GB50016.pdf", content: bytes = b"%PDF-1.4 fake"):
+    return {"file": (name, content, "application/pdf")}
+
+
+def test_传全局规范_落地注册入库(client: TestClient, fake_ingest: list[dict]) -> None:
+    resp = client.post("/docs", files=_pdf_files(), data={"doc_type": "regulation"})
+
+    assert resp.status_code == 201
+    data = resp.json()["data"]
+    assert data["scope"] == "global"
+    assert data["chunks"] == 7
+    assert (get_settings().global_dir / "docs" / "regulation" / "GB50016.pdf").exists()
+    assert fake_ingest[0] == {"scope": "global", "doc_type": "regulation", "project_id": ""}
+
+
+def test_全局不收任务书_400(client: TestClient, fake_ingest: list[dict]) -> None:
+    resp = client.post("/docs", files=_pdf_files("任务书.pdf"), data={"doc_type": "task_book"})
+
+    assert resp.status_code == 400
+    assert fake_ingest == []  # 没走到入库
+
+
+def test_传项目任务书_落到项目docs并入库(client: TestClient, fake_ingest: list[dict]) -> None:
+    pid = _make_project(client)
+
+    resp = client.post(
+        f"/projects/{pid}/docs",
+        files=_pdf_files("施工任务书.pdf"),
+        data={"doc_type": "task_book"},
+    )
+
+    assert resp.status_code == 201
+    assert fake_ingest[0] == {"scope": "project", "doc_type": "task_book", "project_id": pid}
+    assert (get_settings().projects_dir / pid / "docs" / "task_book" / "施工任务书.pdf").exists()
+
+
+def test_传文档_非pdf_415(client: TestClient, fake_ingest: list[dict]) -> None:
+    resp = client.post(
+        "/docs",
+        files={"file": ("规范.docx", b"x", "application/octet-stream")},
+        data={"doc_type": "regulation"},
+    )
+
+    assert resp.status_code == 415
+    assert fake_ingest == []
+
+
+def test_传文档_非法doctype_400(client: TestClient, fake_ingest: list[dict]) -> None:
+    resp = client.post("/docs", files=_pdf_files(), data={"doc_type": "manual"})
+
+    assert resp.status_code == 400
+
+
+def test_传项目文档_项目不存在_404(client: TestClient, fake_ingest: list[dict]) -> None:
+    resp = client.post(
+        "/projects/no-such/docs", files=_pdf_files(), data={"doc_type": "regulation"}
+    )
+
+    assert resp.status_code == 404
+    assert fake_ingest == []
+
+
+def test_传文档_缺文件_400(client: TestClient, fake_ingest: list[dict]) -> None:
+    resp = client.post("/docs", data={"doc_type": "regulation"})
+
+    assert resp.status_code == 400
+    assert fake_ingest == []
+
+
+def test_传文档_超大_413(
+    client: TestClient, fake_ingest: list[dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GYT_DOCUMENT_MAX_MB", "0.00005")  # ~52 字节上限
+    get_settings.cache_clear()
+
+    resp = client.post(
+        "/docs", files=_pdf_files(content=b"x" * 200), data={"doc_type": "regulation"}
+    )
+
+    assert resp.status_code == 413
+    assert fake_ingest == []
