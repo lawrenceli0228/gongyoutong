@@ -417,6 +417,20 @@ apply_override "thread-history.tsx" "src/components/thread/history/index.tsx"
 #    「站点打得开、每次提问 401」。
 apply_override "api-key.tsx" "src/lib/api-key.tsx"
 
+# W7 CAD/knowledge:项目 / 图纸 / 资料上传面板。
+# 这是**新增**组件(上游没有),不能走 apply_override —— 那个函数「目标不存在就跳过」
+# 是给"覆盖上游文件"用的,新文件会被它当成"上游重构了"而跳掉。所以直接拷。
+# 它由 thread-index.tsx 覆盖件挂载(import + <ProjectUploadPanel />),两者必须一起在。
+add_new_file() {
+  local src="${OVERRIDES_DIR}/$1"
+  local dst="${FRONTEND_DIR}/$2"
+  [[ -f "${src}" ]] || { log_warn "覆盖件不存在,跳过:$1"; return 0; }
+  mkdir -p -- "$(dirname -- "${dst}")"
+  cp -- "${src}" "${dst}" || die "拷贝新增组件失败:$2"
+  log_ok "已新增 $2"
+}
+add_new_file "ProjectUploadPanel.tsx" "src/components/thread/ProjectUploadPanel.tsx"
+
 # -----------------------------------------------------------------------------
 # 步骤 3:收尾提示
 # -----------------------------------------------------------------------------

@@ -26,6 +26,7 @@ import {
 import { useQueryState, parseAsBoolean } from "nuqs";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import ThreadHistory from "./history";
+import { ProjectUploadPanel } from "./ProjectUploadPanel";
 import { toast } from "sonner";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { Label } from "../ui/label";
@@ -257,6 +258,8 @@ export function Thread() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden">
+      {/* W7 CAD/knowledge:按项目上传图纸/规范/任务书的浮动面板(右下角浮动按钮 + 弹窗) */}
+      <ProjectUploadPanel />
       <div className="relative hidden lg:flex">
         <motion.div
           className="absolute z-20 h-full overflow-hidden border-r bg-white"
