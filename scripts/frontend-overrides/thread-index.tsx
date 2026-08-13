@@ -27,6 +27,7 @@ import { useQueryState, parseAsBoolean } from "nuqs";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import ThreadHistory from "./history";
 import { ProjectUploadPanel } from "./ProjectUploadPanel";
+import { GytStatusCards } from "./GytStatusCards";
 import { toast } from "sonner";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { Label } from "../ui/label";
@@ -392,6 +393,9 @@ export function Thread() {
             </div>
           )}
 
+          {/* W7 首页重设计:4 张能力状态卡片(常驻,派活时对应卡片发亮) */}
+          <GytStatusCards />
+
           <StickToBottom className="relative flex-1 overflow-hidden">
             <StickyToBottomContent
               className={cn(
@@ -438,11 +442,13 @@ export function Thread() {
               footer={
                 <div className="sticky bottom-0 flex flex-col items-center gap-8 bg-white">
                   {!chatStarted && (
-                    <div className="flex items-center gap-3">
-                      <LangGraphLogoSVG className="h-8 flex-shrink-0" />
-                      <h1 className="text-2xl font-semibold tracking-tight">
-                        Agent Chat
+                    <div className="flex flex-col items-center text-center">
+                      <h1 className="text-4xl font-black tracking-tight text-[#1B2420]">
+                        有事就问工友通
                       </h1>
+                      <p className="mt-2.5 text-[16px] text-[#6B7772]">
+                        说一句话、拍张照,或者传个文件,我来帮你派活
+                      </p>
                     </div>
                   )}
 

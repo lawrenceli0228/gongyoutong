@@ -1,24 +1,22 @@
 /**
- * 项目 / 图纸 / 资料上传面板(W7 CAD/knowledge §4)。
+ * 项目 / 图纸 / 资料上传面板(W7 CAD/knowledge §4)—— 视觉按「方案 B · 清爽卡片」重做。
  *
  * 这是本项目**新增**的组件(上游 agent-chat-ui 没有),由 scripts/setup-frontend.sh 直接拷进
  * frontend/src/components/thread/ProjectUploadPanel.tsx,并在 thread-index.tsx 里挂一次
- * <ProjectUploadPanel />。它渲染一个右下角浮动按钮 + 弹窗,和聊天输入框那个上传按钮是两回事:
+ * <ProjectUploadPanel />。它渲染一个浮动触发按钮 + **从右侧滑出的「资料归档」抽屉**,和聊天输入框
+ * 那个上传按钮是两回事:
  *   · 聊天上传按钮:当场传一张图让 agent 看一眼(临时,不归项目);
- *   · 本面板:把图纸/规范/任务书**正式归档到某个项目**(或全局规范),走后端 webapp.py 的端点。
+ *   · 本面板:把图纸/规范/任务书**正式归档到某个项目**(或全局规范)。
+ *
+ * 视觉 = 方案 B(浅灰绿底、纯白卡片、大圆角、单一绿 #0E9F6E),信息架构用 ①存到哪个工地 →
+ * ②传什么 → ③信息 三步铺开,不再挤成一坨。**业务逻辑与端点契约一字未改**,只重排 UI。
  *
  * 打的后端端点(见 backend/webapp.py):
- *   GET  /projects                       列项目
- *   POST /projects                       建项目(JSON)
- *   POST /projects/{id}/drawings         传 DXF 图纸(multipart:file/view_type/floor?/title?)
- *   POST /docs                           传全局规范(multipart:file/doc_type=regulation)
- *   POST /projects/{id}/docs             传项目规范/任务书(multipart:file/doc_type)
+ *   GET  /projects · POST /projects · POST /projects/{id}/drawings
+ *   POST /docs · POST /projects/{id}/docs
+ * 鉴权复用 @/lib/api-key 的 getApiKey();基址走 NEXT_PUBLIC_API_URL。
  *
- * 鉴权:复用 @/lib/api-key 的 getApiKey()(公网部署时令牌构建期注入;本机无令牌则不发头,
- * 与后端 enable_custom_route_auth 的「没配令牌就放行」一致)。基址走 NEXT_PUBLIC_API_URL。
- *
- * ⚠️ 未在无 Node 环境跑过(方案 §4 说明):首次 apply 后请在 WSL2/Node 里 pnpm dev 肉眼过一遍,
- *    尤其是 import 路径与 Tailwind 类;有 TS/样式问题就地调,逻辑与端点契约已对齐后端。
+ * ⚠️ 未在无 Node 环境编译过:首次 apply 后在 WSL2/Node 里 pnpm dev 肉眼过一遍,修 TS/样式。
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -34,9 +32,9 @@ type DocScope = "global" | "project";
 type DocType = "regulation" | "task_book";
 
 const VIEW_OPTIONS: { value: ViewType; label: string }[] = [
-  { value: "plan", label: "平面图" },
-  { value: "elevation", label: "立面图" },
-  { value: "section", label: "剖面图" },
+  { value: "plan", label: "平面" },
+  { value: "elevation", label: "立面" },
+  { value: "section", label: "剖面" },
 ];
 
 function authHeaders(): Record<string, string> {
@@ -68,7 +66,7 @@ export function ProjectUploadPanel() {
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
-
+  const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
   const [newCode, setNewCode] = useState("");
 
@@ -119,6 +117,7 @@ export function ProjectUploadPanel() {
         toast.success(env?.user_msg ?? "项目建好了");
         setNewName("");
         setNewCode("");
+        setShowNew(false);
         await loadProjects();
         if (env?.data?.id) setProjectId(env.data.id);
       } else {
@@ -150,6 +149,7 @@ export function ProjectUploadPanel() {
         setDwgFile(null);
         setTitle("");
         setFloor("");
+        setViewType("");
       } else {
         toast.error(env?.user_msg ?? "图纸上传失败");
       }
@@ -183,186 +183,292 @@ export function ProjectUploadPanel() {
     }
   }
 
-  const inputCls =
-    "w-full rounded border border-gray-300 px-2 py-1 text-sm focus:border-gray-500 focus:outline-none";
-  const btnCls =
-    "rounded bg-black px-3 py-1.5 text-sm text-white hover:bg-gray-800 disabled:opacity-50";
+  function pickDrawing(f: File | null) {
+    setDwgFile(f);
+    if (f) {
+      setViewType(guessViewType(f.name));
+      setTitle((prev) => prev || f.name.replace(/\.dxf$/i, ""));
+    }
+  }
+
+  const currentName = projects.find((p) => p.id === projectId)?.name;
+
+  // --- 样式片段(方案 B 调性)---------------------------------------------------
+  const stepLabel = "mb-2.5 text-[13px] font-bold text-[#0E9F6E]";
+  const fieldCls =
+    "w-full rounded-[14px] border border-[#E4E8E6] bg-white px-4 py-3.5 text-[15px] text-[#33403A] placeholder:text-[#A2ABA6] focus:border-[#0E9F6E] focus:outline-none";
+  const toggle = (active: boolean) =>
+    "rounded-[12px] py-3.5 text-center text-[16px] font-bold transition " +
+    (active
+      ? "bg-[#0E9F6E] text-white"
+      : "border border-[#E4E8E6] bg-white text-[#6B7772] hover:border-[#7FCDAE]");
+  const bigChoice = (active: boolean) =>
+    "rounded-[14px] p-4 text-center transition " +
+    (active
+      ? "border-2 border-[#0E9F6E] bg-[#EEF6F2]"
+      : "border border-[#E4E8E6] bg-white hover:border-[#7FCDAE]");
+  const archiveBtn =
+    "rounded-[14px] bg-[#0E9F6E] py-4 text-[19px] font-black text-white transition hover:bg-[#0b7f58] disabled:opacity-50";
 
   return (
     <>
+      {/* 触发按钮(暂放右下角浮动;等首页那块落地后挪进顶栏) */}
       <button
         onClick={() => setOpen(true)}
-        className="fixed bottom-4 left-4 z-40 rounded-full bg-black px-4 py-2 text-sm text-white shadow-lg hover:bg-gray-800"
-        title="按项目上传图纸 / 规范 / 任务书"
+        className="fixed bottom-5 right-5 z-40 flex items-center gap-2 rounded-full bg-[#1B2420] px-5 py-3 text-[15px] font-bold text-white shadow-lg transition hover:bg-black"
+        title="按项目归档图纸 / 规范 / 任务书"
       >
-        📁 图纸 / 资料
+        📂 资料归档
       </button>
 
       {open && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-50 flex justify-end bg-black/30"
           onClick={() => setOpen(false)}
         >
           <div
-            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-white p-5 text-gray-900 shadow-xl"
             onClick={(e) => e.stopPropagation()}
+            className="flex h-full w-full max-w-[490px] flex-col bg-[#F7F9F8] shadow-2xl"
           >
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-base font-semibold">图纸 / 资料管理</h2>
-              <button onClick={() => setOpen(false)} className="text-gray-400 hover:text-gray-700">
+            {/* 抽屉头 */}
+            <div className="flex items-center gap-3 border-b border-[#EAEDEB] bg-white px-7 py-5">
+              <div className="flex h-[34px] w-[34px] items-center justify-center rounded-[10px] bg-[#EEF6F2] text-lg">
+                📂
+              </div>
+              <div>
+                <div className="text-[19px] font-black text-[#1B2420]">资料归档</div>
+                <div className="text-[13px] text-[#8A948F]">把图纸、规范正式存进项目</div>
+              </div>
+              <button
+                onClick={() => setOpen(false)}
+                className="ml-auto text-[22px] leading-none text-[#B4BDB8] hover:text-[#6B7772]"
+              >
                 ✕
               </button>
             </div>
 
-            {/* 项目下拉 + 新建 */}
-            <div className="mb-4 rounded border border-gray-200 p-3">
-              <label className="mb-1 block text-xs text-gray-500">项目</label>
-              <select
-                value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
-                className={inputCls}
-              >
-                <option value="">（未选 / 全局）</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}（{p.id}）
-                  </option>
-                ))}
-              </select>
-              <div className="mt-2 flex gap-2">
-                <input
-                  className={inputCls}
-                  placeholder="新建项目名，如 幸福小区A3栋"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                />
-                <input
-                  className="w-24 rounded border border-gray-300 px-2 py-1 text-sm"
-                  placeholder="短码"
-                  value={newCode}
-                  onChange={(e) => setNewCode(e.target.value)}
-                />
-                <button className={btnCls} disabled={busy} onClick={createProject}>
-                  新建
-                </button>
-              </div>
-            </div>
-
-            {/* 页签 */}
-            <div className="mb-3 flex gap-2 border-b border-gray-200">
-              {(["drawing", "doc"] as const).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTab(t)}
-                  className={
-                    "px-3 py-1.5 text-sm " +
-                    (tab === t ? "border-b-2 border-black font-medium" : "text-gray-500")
-                  }
-                >
-                  {t === "drawing" ? "图纸（DXF）" : "规范 / 任务书（PDF）"}
-                </button>
-              ))}
-            </div>
-
-            {tab === "drawing" ? (
-              <div className="space-y-2">
-                <input
-                  type="file"
-                  accept=".dxf"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0] ?? null;
-                    setDwgFile(f);
-                    if (f) {
-                      setViewType(guessViewType(f.name));
-                      setTitle((prev) => prev || f.name.replace(/\.dxf$/i, ""));
-                    }
-                  }}
-                  className="text-sm"
-                />
-                <div className="flex gap-2">
-                  {VIEW_OPTIONS.map((o) => (
-                    <label key={o.value} className="flex items-center gap-1 text-sm">
-                      <input
-                        type="radio"
-                        name="view_type"
-                        checked={viewType === o.value}
-                        onChange={() => setViewType(o.value)}
-                      />
-                      {o.label}
-                    </label>
-                  ))}
+            {/* 抽屉正文 */}
+            <div className="flex flex-col gap-6 overflow-y-auto px-7 py-6">
+              {/* ① 存到哪个工地 */}
+              <section>
+                <div className={stepLabel}>① 存到哪个工地</div>
+                <div className="flex gap-2.5">
+                  <select
+                    value={projectId}
+                    onChange={(e) => setProjectId(e.target.value)}
+                    className={fieldCls + " font-bold text-[#1B2420]"}
+                  >
+                    <option value="">（未选 / 全局）</option>
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}（{p.id}）
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => setShowNew((v) => !v)}
+                    className="whitespace-nowrap rounded-[14px] border border-dashed border-[#7FCDAE] bg-[#EEF6F2] px-5 py-3.5 text-[16px] font-bold text-[#0E7A55]"
+                  >
+                    ＋ 新建
+                  </button>
                 </div>
-                <input
-                  className={inputCls}
-                  placeholder="图纸名（留空=文件名）"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                />
-                <input
-                  className={inputCls}
-                  placeholder="楼层（可选，如 1F / 标准层）"
-                  value={floor}
-                  onChange={(e) => setFloor(e.target.value)}
-                />
-                <button className={btnCls} disabled={busy} onClick={uploadDrawing}>
-                  {busy ? "上传中…" : "上传图纸"}
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <div className="flex gap-3 text-sm">
-                  <label className="flex items-center gap-1">
+                {showNew && (
+                  <div className="mt-2.5 flex gap-2">
                     <input
-                      type="radio"
-                      name="scope"
-                      checked={docScope === "global"}
-                      onChange={() => setDocScope("global")}
+                      className={fieldCls}
+                      placeholder="新建项目名，如 幸福小区A3栋"
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
                     />
-                    全局规范（所有项目通用）
-                  </label>
-                  <label className="flex items-center gap-1">
                     <input
-                      type="radio"
-                      name="scope"
-                      checked={docScope === "project"}
-                      onChange={() => setDocScope("project")}
+                      className="w-[90px] rounded-[14px] border border-[#E4E8E6] bg-white px-3 py-3.5 text-[15px]"
+                      placeholder="短码"
+                      value={newCode}
+                      onChange={(e) => setNewCode(e.target.value)}
                     />
-                    本项目
-                  </label>
-                </div>
-                {docScope === "project" && (
-                  <div className="flex gap-3 text-sm">
-                    <label className="flex items-center gap-1">
-                      <input
-                        type="radio"
-                        name="doc_type"
-                        checked={docType === "regulation"}
-                        onChange={() => setDocType("regulation")}
-                      />
-                      规范
-                    </label>
-                    <label className="flex items-center gap-1">
-                      <input
-                        type="radio"
-                        name="doc_type"
-                        checked={docType === "task_book"}
-                        onChange={() => setDocType("task_book")}
-                      />
-                      任务书
-                    </label>
+                    <button
+                      onClick={createProject}
+                      disabled={busy}
+                      className="rounded-[14px] bg-[#0E9F6E] px-4 text-[15px] font-bold text-white disabled:opacity-50"
+                    >
+                      建
+                    </button>
                   </div>
                 )}
-                <input
-                  type="file"
-                  accept=".pdf"
-                  onChange={(e) => setDocFile(e.target.files?.[0] ?? null)}
-                  className="text-sm"
-                />
-                <button className={btnCls} disabled={busy} onClick={uploadDoc}>
-                  {busy ? "上传中…" : "上传资料"}
-                </button>
-              </div>
-            )}
+              </section>
+
+              {/* ② 传什么 */}
+              <section>
+                <div className={stepLabel}>② 传什么</div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button onClick={() => setTab("drawing")} className={bigChoice(tab === "drawing")}>
+                    <div
+                      className={
+                        "text-[18px] font-black " +
+                        (tab === "drawing" ? "text-[#0E7A55]" : "text-[#6B7772]")
+                      }
+                    >
+                      📐 图纸
+                    </div>
+                    <div
+                      className={
+                        "mt-1 text-[13px] font-bold " +
+                        (tab === "drawing" ? "text-[#5FAE8E]" : "text-[#A2ABA6]")
+                      }
+                    >
+                      DXF 文件
+                    </div>
+                  </button>
+                  <button onClick={() => setTab("doc")} className={bigChoice(tab === "doc")}>
+                    <div
+                      className={
+                        "text-[18px] font-black " +
+                        (tab === "doc" ? "text-[#0E7A55]" : "text-[#6B7772]")
+                      }
+                    >
+                      📄 资料
+                    </div>
+                    <div
+                      className={
+                        "mt-1 text-[13px] font-bold " +
+                        (tab === "doc" ? "text-[#5FAE8E]" : "text-[#A2ABA6]")
+                      }
+                    >
+                      PDF 文件
+                    </div>
+                  </button>
+                </div>
+              </section>
+
+              {/* ③ 信息 —— 随②切换 */}
+              {tab === "drawing" ? (
+                <section className="flex flex-col gap-3">
+                  <div className={stepLabel + " mb-0"}>③ 图纸信息</div>
+                  <label
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      pickDrawing(e.dataTransfer.files?.[0] ?? null);
+                    }}
+                    className="block cursor-pointer rounded-[16px] border-2 border-dashed border-[#C6D0CB] bg-white px-6 py-6 text-center text-[16px] text-[#8A948F]"
+                  >
+                    <input
+                      type="file"
+                      accept=".dxf"
+                      className="hidden"
+                      onChange={(e) => pickDrawing(e.target.files?.[0] ?? null)}
+                    />
+                    {dwgFile ? (
+                      <span className="font-bold text-[#1B2420]">{dwgFile.name}</span>
+                    ) : (
+                      <>
+                        拖入 .dxf,或 <span className="font-bold text-[#0E9F6E]">点击选择</span>
+                      </>
+                    )}
+                  </label>
+
+                  <div className="text-[14px] font-semibold text-[#6B7772]">这是哪种图?</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {VIEW_OPTIONS.map((o) => (
+                      <button
+                        key={o.value}
+                        onClick={() => setViewType(o.value)}
+                        className={toggle(viewType === o.value)}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex gap-2.5">
+                    <input
+                      className={fieldCls}
+                      placeholder="图名(留空=文件名)"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                    />
+                    <input
+                      className="w-[130px] rounded-[14px] border border-[#E4E8E6] bg-white px-4 py-3.5 text-[15px] placeholder:text-[#A2ABA6]"
+                      placeholder="楼层·可选"
+                      value={floor}
+                      onChange={(e) => setFloor(e.target.value)}
+                    />
+                  </div>
+
+                  <button onClick={uploadDrawing} disabled={busy} className={archiveBtn}>
+                    {busy ? "上传中…" : `归档到 ${currentName ?? "…先选项目"}`}
+                  </button>
+                </section>
+              ) : (
+                <section className="flex flex-col gap-3">
+                  <div className={stepLabel + " mb-0"}>③ 资料信息</div>
+
+                  <div className="text-[14px] font-semibold text-[#6B7772]">作用域</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setDocScope("global")}
+                      className={bigChoice(docScope === "global")}
+                    >
+                      <div className="text-[16px] font-black text-[#1B2420]">全局规范</div>
+                      <div className="mt-1 text-[12px] font-bold text-[#8A948F]">所有项目通用</div>
+                    </button>
+                    <button
+                      onClick={() => setDocScope("project")}
+                      className={bigChoice(docScope === "project")}
+                    >
+                      <div className="text-[16px] font-black text-[#1B2420]">本项目</div>
+                      <div className="mt-1 text-[12px] font-bold text-[#8A948F]">
+                        {currentName ?? "先选项目"}
+                      </div>
+                    </button>
+                  </div>
+
+                  {docScope === "project" && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => setDocType("regulation")}
+                        className={toggle(docType === "regulation")}
+                      >
+                        规范
+                      </button>
+                      <button
+                        onClick={() => setDocType("task_book")}
+                        className={toggle(docType === "task_book")}
+                      >
+                        任务书
+                      </button>
+                    </div>
+                  )}
+
+                  <label
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDocFile(e.dataTransfer.files?.[0] ?? null);
+                    }}
+                    className="block cursor-pointer rounded-[16px] border-2 border-dashed border-[#C6D0CB] bg-white px-6 py-6 text-center text-[16px] text-[#8A948F]"
+                  >
+                    <input
+                      type="file"
+                      accept=".pdf"
+                      className="hidden"
+                      onChange={(e) => setDocFile(e.target.files?.[0] ?? null)}
+                    />
+                    {docFile ? (
+                      <span className="font-bold text-[#1B2420]">{docFile.name}</span>
+                    ) : (
+                      <>
+                        拖入 .pdf,或 <span className="font-bold text-[#0E9F6E]">点击选择</span>
+                      </>
+                    )}
+                  </label>
+
+                  <button onClick={uploadDoc} disabled={busy} className={archiveBtn}>
+                    {busy ? "上传中…" : docScope === "global" ? "归档到 全局规范" : "归档到本项目"}
+                  </button>
+                </section>
+              )}
+            </div>
           </div>
         </div>
       )}
