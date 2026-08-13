@@ -544,6 +544,7 @@ function ArchiveDrawer() {
 
 // --- 资料库:只读浏览所有项目的图纸 + 规范(GET /library)------------------------
 type LibDrawing = {
+  drawing_id: number;
   project_id: string;
   project_name: string | null;
   title: string;
@@ -576,6 +577,78 @@ function fmtSize(n: number): string {
   if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
   if (n >= 1024) return Math.round(n / 1024) + " KB";
   return n + " B";
+}
+
+/** 统一的 DELETE 调用:成功/失败都弹 toast,返回是否成功(供调用方决定要不要刷新)。 */
+async function apiDelete(path: string, body?: unknown): Promise<boolean> {
+  try {
+    const resp = await fetch(`${API_URL}${path}`, {
+      method: "DELETE",
+      headers: body ? { "Content-Type": "application/json", ...authHeaders() } : authHeaders(),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const env = await readEnvelope(resp);
+    if (resp.ok) {
+      toast.success(env?.user_msg ?? "已删除");
+      return true;
+    }
+    toast.error(env?.user_msg ?? "删除失败");
+    return false;
+  } catch {
+    toast.error("删除失败,后端起了吗?");
+    return false;
+  }
+}
+
+/** 行内两步删除:点「删除」→ 变「确认删除 / 取消」→ 确认后跑 onDelete。不弹浏览器原生框。 */
+function RowDelete({
+  label = "删除",
+  confirmLabel = "确认删除",
+  onDelete,
+}: {
+  label?: string;
+  confirmLabel?: string;
+  onDelete: () => Promise<void>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  if (busy) return <span className="text-[12px] text-[#B4BDB8]">删除中…</span>;
+  if (confirming) {
+    return (
+      <span className="flex items-center gap-2 text-[12px]">
+        <button
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await onDelete();
+            } finally {
+              setBusy(false);
+              setConfirming(false);
+            }
+          }}
+          className="font-bold text-[#C0392B] hover:underline"
+        >
+          {confirmLabel}
+        </button>
+        <button
+          onClick={() => setConfirming(false)}
+          className="text-[#8A948F] hover:underline"
+        >
+          取消
+        </button>
+      </span>
+    );
+  }
+  return (
+    <button
+      onClick={() => setConfirming(true)}
+      className="text-[12px] font-bold text-[#B4BDB8] transition hover:text-[#C0392B]"
+      title={label}
+    >
+      {label}
+    </button>
+  );
 }
 
 /** 顶栏「📚 资料库」入口 + 从右侧滑出的只读浏览抽屉。自带开合与拉取状态,不依赖归档面板。 */
@@ -643,7 +716,7 @@ export function LibraryButton() {
           {loading && (
             <div className="py-10 text-center text-[15px] text-[#8A948F]">加载中…</div>
           )}
-          {!loading && data && <LibraryBody data={data} />}
+          {!loading && data && <LibraryBody data={data} reload={load} />}
         </div>
       </div>
     </div>
@@ -663,7 +736,7 @@ export function LibraryButton() {
   );
 }
 
-function LibraryBody({ data }: { data: LibraryData }) {
+function LibraryBody({ data, reload }: { data: LibraryData; reload: () => Promise<void> }) {
   const globalDocs = data.docs.filter((d) => d.scope === "global");
   const empty = data.drawings.length === 0 && data.docs.length === 0;
 
@@ -682,7 +755,7 @@ function LibraryBody({ data }: { data: LibraryData }) {
       {globalDocs.length > 0 && (
         <LibrarySection title="全局规范" hint="所有项目通用" count={globalDocs.length}>
           {globalDocs.map((d) => (
-            <DocRow key={d.rel_path} doc={d} />
+            <DocRow key={d.rel_path} doc={d} reload={reload} />
           ))}
         </LibrarySection>
       )}
@@ -690,16 +763,30 @@ function LibraryBody({ data }: { data: LibraryData }) {
         const dwgs = data.drawings.filter((x) => x.project_id === p.id);
         const docs = data.docs.filter((x) => x.scope === "project" && x.project_id === p.id);
         return (
-          <LibrarySection key={p.id} title={p.name} hint={`编号 ${p.id}`} count={dwgs.length + docs.length}>
+          <LibrarySection
+            key={p.id}
+            title={p.name}
+            hint={`编号 ${p.id}`}
+            count={dwgs.length + docs.length}
+            action={
+              <RowDelete
+                label="删除项目"
+                confirmLabel="确认删除项目"
+                onDelete={async () => {
+                  if (await apiDelete(`/projects/${encodeURIComponent(p.id)}`)) await reload();
+                }}
+              />
+            }
+          >
             {dwgs.length === 0 && docs.length === 0 ? (
               <div className="px-1 py-1.5 text-[13px] text-[#A2ABA6]">（暂无图纸或资料)</div>
             ) : (
               <>
                 {dwgs.map((d) => (
-                  <DrawingRow key={d.artifact_id} dwg={d} />
+                  <DrawingRow key={d.drawing_id} dwg={d} reload={reload} />
                 ))}
                 {docs.map((d) => (
-                  <DocRow key={d.rel_path} doc={d} />
+                  <DocRow key={d.rel_path} doc={d} reload={reload} />
                 ))}
               </>
             )}
@@ -714,11 +801,13 @@ function LibrarySection({
   title,
   hint,
   count,
+  action,
   children,
 }: {
   title: string;
   hint: string;
   count: number;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -726,8 +815,11 @@ function LibrarySection({
       <div className="mb-2 flex items-baseline gap-2">
         <div className="text-[15px] font-black text-[#1B2420]">{title}</div>
         <div className="text-[12px] text-[#A2ABA6]">{hint}</div>
-        <div className="ml-auto rounded-full bg-[#EEF6F2] px-2.5 py-0.5 text-[12px] font-bold text-[#0E7A55]">
-          {count}
+        <div className="ml-auto flex items-baseline gap-3">
+          {action}
+          <div className="rounded-full bg-[#EEF6F2] px-2.5 py-0.5 text-[12px] font-bold text-[#0E7A55]">
+            {count}
+          </div>
         </div>
       </div>
       <div className="flex flex-col gap-2">{children}</div>
@@ -735,7 +827,7 @@ function LibrarySection({
   );
 }
 
-function DrawingRow({ dwg }: { dwg: LibDrawing }) {
+function DrawingRow({ dwg, reload }: { dwg: LibDrawing; reload: () => Promise<void> }) {
   return (
     <div className="flex items-center gap-3 rounded-[14px] border border-[#EAEDEB] bg-white px-4 py-3">
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[#F1F4F3] text-lg">
@@ -748,11 +840,21 @@ function DrawingRow({ dwg }: { dwg: LibDrawing }) {
       <span className="ml-auto shrink-0 rounded-full bg-[#EEF6F2] px-2.5 py-1 text-[12px] font-bold text-[#0E7A55]">
         {VIEW_LABEL[dwg.view_type] ?? dwg.view_type}
       </span>
+      <RowDelete
+        onDelete={async () => {
+          if (
+            await apiDelete(
+              `/projects/${encodeURIComponent(dwg.project_id)}/drawings/${dwg.drawing_id}`,
+            )
+          )
+            await reload();
+        }}
+      />
     </div>
   );
 }
 
-function DocRow({ doc }: { doc: LibDoc }) {
+function DocRow({ doc, reload }: { doc: LibDoc; reload: () => Promise<void> }) {
   return (
     <div className="flex items-center gap-3 rounded-[14px] border border-[#EAEDEB] bg-white px-4 py-3">
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[#F1F4F3] text-lg">
@@ -764,6 +866,16 @@ function DocRow({ doc }: { doc: LibDoc }) {
           {DOC_LABEL[doc.doc_type] ?? doc.doc_type} · {fmtSize(doc.size_bytes)}
         </div>
       </div>
+      <RowDelete
+        onDelete={async () => {
+          const base =
+            doc.scope === "global"
+              ? "/docs"
+              : `/projects/${encodeURIComponent(doc.project_id ?? "")}/docs`;
+          if (await apiDelete(base, { doc_type: doc.doc_type, filename: doc.filename }))
+            await reload();
+        }}
+      />
     </div>
   );
 }
