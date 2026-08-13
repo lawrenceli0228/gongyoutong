@@ -105,8 +105,8 @@ def test_default_file_limits_and_thresholds(monkeypatch: pytest.MonkeyPatch) -> 
     settings = _pristine_settings(monkeypatch)
 
     # Assert
-    assert settings.drawing_max_mb == 64.0
-    assert settings.document_max_mb == 10.0
+    assert settings.drawing_max_mb == 100.0
+    assert settings.document_max_mb == 100.0
     assert settings.photo_max_mb == 10.0
     assert settings.photo_compress_target_mb == 4.0
     assert settings.photo_compress_max_edge_px == 2048
