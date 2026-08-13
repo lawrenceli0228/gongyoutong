@@ -90,8 +90,9 @@ construction-safety-monitor*/
 .vscode/
 *.swp
 
-# 本机的 Claude Code 项目说明
+# 本机的 Agent 项目说明(各家 CLI 各读一份,内容互为镜像,均按本机路径生成,不进 git)
 /CLAUDE.md
+/AGENTS.md
 .gstack/
 
 # 个人工作区:规划草稿 / 设计文档 / 私人笔记,不进 git。
