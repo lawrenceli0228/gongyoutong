@@ -467,3 +467,38 @@ def test_删项目_级联清图纸文档目录(client: TestClient, fake_ingest_d
 def test_删项目_不存在_404(client: TestClient, fake_ingest_delete: list) -> None:
     resp = client.delete("/projects/no-such")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 入库健壮性:失败 / 抽不出文字都要回滚,不留搜不到的幽灵文件
+# ---------------------------------------------------------------------------
+
+
+def test_传文档_入库抛异常_回滚且500(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*a, **k):
+        raise RuntimeError("embedding 炸了")
+
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.ingest_document", _boom)
+
+    resp = client.post("/docs", files=_pdf_files("坏了.pdf"), data={"doc_type": "regulation"})
+
+    assert resp.status_code == 500
+    assert resp.json()["error_code"] == "INTERNAL"
+    # 回滚:落地文件没留下
+    assert not (get_settings().global_dir / "docs" / "regulation" / "坏了.pdf").exists()
+
+
+def test_传文档_抽不出文字_回滚且422(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 扫描件:ingest 返回 0 段 → 应回滚并明确提示要 OCR,而不是假装成功「已入库 0 段」。
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.ingest_document", lambda *a, **k: 0)
+
+    resp = client.post("/docs", files=_pdf_files("扫描件.pdf"), data={"doc_type": "regulation"})
+
+    assert resp.status_code == 422
+    assert resp.json()["error_code"] == "EMPTY_RESULT"
+    assert "OCR" in resp.json()["user_msg"]
+    assert not (get_settings().global_dir / "docs" / "regulation" / "扫描件.pdf").exists()
