@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -72,4 +73,32 @@ def get_vectorstore() -> Chroma:
     )
 
 
-__all__ = ["COLLECTION_NAME", "get_embeddings", "get_vectorstore"]
+def count_chunks_by_doc() -> dict[tuple[str, str, str], int]:
+    """数每份文档在向量库里的 chunk 数,键 (scope, project_id, source)。供 /library 标入库进度。
+
+    只读 metadata、**绝不加载 embedding 模型** —— 走 chromadb 原生 client(不经 get_vectorstore,
+    否则一开资料库就把 2.2GB BGE-M3 拉进内存)。库还没建 / 并发锁 / 版本差异都回空 dict,绝不抛:
+    浏览端点不该被向量库的临时状态拖垮(数不出就当「暂无 / 入库中」,下次刷新再数)。
+    """
+    import chromadb  # 惰性:见文件顶部说明(chromadb 也不轻,别进 import gyt.graph 的热路径)
+
+    try:
+        client = chromadb.PersistentClient(path=str(get_settings().chroma_dir))
+        col = client.get_collection(COLLECTION_NAME)
+        metas = col.get(include=["metadatas"]).get("metadatas") or []
+    except Exception:  # noqa: BLE001 —— 库缺失 / 并发锁 / 版本差异一律按「暂时数不出」处理
+        logger.debug("数向量块失败,当作暂无", exc_info=True)
+        return {}
+    return dict(
+        Counter(
+            (
+                str(m.get("scope") or ""),
+                str(m.get("project_id") or ""),
+                str(m.get("source") or ""),
+            )
+            for m in metas
+        )
+    )
+
+
+__all__ = ["COLLECTION_NAME", "count_chunks_by_doc", "get_embeddings", "get_vectorstore"]

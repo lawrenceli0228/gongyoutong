@@ -197,16 +197,26 @@ _LIST_DESCRIPTION = (
 
 @tool("list_drawings", description=_LIST_DESCRIPTION)
 @tool_guard
-async def list_drawings() -> Envelope:
-    """返回能看的图纸:演示预注册的 + 上传入库的项目图纸(按项目 + 视图分组)。"""
+async def list_drawings(*, config: RunnableConfig) -> Envelope:
+    """返回能看的图纸:演示预注册的 + 上传入库的项目图纸(按项目 + 视图分组)。
+
+    ⚠️ 选了当前工地时**只列该项目的图纸**(不掺 demo、更不列别的项目)—— 修「问项目2的图层
+    却报出项目1的图」:根源就是这里把所有项目的图都端出来,LLM 顺手挑了别项目的。
+    没选工地才回到「demo + 全部项目」的旧行为。用户直接报图名的仍按名字找(_resolve_drawing)。
+    """
     await _ensure_registered()  # 首次预注册的阻塞 IO 挪进线程池,防 blockbuster
-    demo_names = _available_names()
-    uploaded = await asyncio.to_thread(db.list_drawings)  # 同步 sqlite → to_thread
+    project_id = project_from_config(config)
+    # 选了工地:只查该项目的图;没选:查全部。同步 sqlite → to_thread。
+    uploaded = await asyncio.to_thread(db.list_drawings, project_id=project_id or None)
+    # 选了工地就不掺 demo(那是全局样例,会把 LLM 从「本项目的图」上带偏)。
+    demo_names = [] if project_id else _available_names()
     if not demo_names and not uploaded:
-        return fail(
-            ErrorCode.EMPTY_RESULT,
-            user_msg="现在一张图纸都没有 —— 演示图先重启后端预注册,项目图先在上传面板传进来。",
+        msg = (
+            f"这个工地(项目 {project_id})还没有图纸,先在上传面板把图纸传进来。"
+            if project_id
+            else "现在一张图纸都没有 —— 演示图先重启后端预注册,项目图先在上传面板传进来。"
         )
+        return fail(ErrorCode.EMPTY_RESULT, user_msg=msg)
     parts: list[str] = []
     if demo_names:
         parts.append(f"演示图纸:{'、'.join(demo_names)}")

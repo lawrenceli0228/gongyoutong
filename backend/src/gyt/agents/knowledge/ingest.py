@@ -123,6 +123,19 @@ def pdf_to_documents(pdf_path: Path) -> list[Document]:
     return docs
 
 
+def pdf_has_text(pdf_path: Path) -> bool:
+    """快速判断 PDF 有没有可提取的文字层(**不做 embedding,秒级**;任一页有字即 True,逐页早退)。
+
+    上传时先同步过这一道:一段文字都抽不到(扫描件 / 图片版 PDF)当场拒、给「需要 OCR」的人话,
+    不必等几分钟的 embedding 白跑一场。文件打不开(加密/损坏)让 pypdf 的异常向上抛给调用方处理。
+    """
+    reader = PdfReader(str(pdf_path))
+    for page in reader.pages:
+        if _normalize_cjk_spaces((page.extract_text() or "").strip()):
+            return True
+    return False
+
+
 def _chunk_ids(docs: list[Document]) -> list[str]:
     """确定化 chunk id:``<scope>:<project_id>/<source>#p<页>#c<序>``。带作用域防跨库/跨项目撞号。
 
@@ -365,5 +378,6 @@ __all__ = [
     "delete_project_documents",
     "ensure_index_built",
     "ingest_document",
+    "pdf_has_text",
     "pdf_to_documents",
 ]

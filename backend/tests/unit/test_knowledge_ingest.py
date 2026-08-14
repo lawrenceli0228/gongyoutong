@@ -292,3 +292,20 @@ def test_delete_project_documents按项目清所有块() -> None:
 def test_delete_project_documents缺project_id抛() -> None:
     with pytest.raises(ValueError):
         ingest.delete_project_documents("", vectorstore=_FakeVectorStore())
+
+
+# --- pdf_has_text:上传前的秒级文字预检 ----------------------------------------
+
+
+def test_pdf_has_text有文字层为True(monkeypatch, tmp_path):
+    monkeypatch.setattr(ingest, "PdfReader", _FakeReader)  # 第 1 页有字
+    assert ingest.pdf_has_text(tmp_path / "x.pdf") is True
+
+
+def test_pdf_has_text全空页为False(monkeypatch, tmp_path):
+    class _EmptyReader:
+        def __init__(self, _path: str) -> None:
+            self.pages = [_FakePage(""), _FakePage("   ")]
+
+    monkeypatch.setattr(ingest, "PdfReader", _EmptyReader)
+    assert ingest.pdf_has_text(tmp_path / "scan.pdf") is False
