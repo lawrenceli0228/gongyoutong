@@ -29,6 +29,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -36,6 +37,11 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 
 import { getApiKey } from "@/lib/api-key";
+import { cn } from "@/lib/utils";
+
+// 记住上次选中的工地(localStorage 键)。刻意不自动默认第一个项目 —— 那是「你在项目2、
+// 它却按项目1答」的坑;改成「记住上次选的,没选就问全局」。
+const PROJECT_STORAGE_KEY = "gyt_current_project";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:2024";
 
@@ -95,7 +101,18 @@ function useArchive(): ArchiveContextValue {
 export function ArchiveProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [projectId, setProjectId] = useState("");
+  const [projectId, setProjectIdState] = useState("");
+
+  // 切工地时顺手记进 localStorage;空串 = 未选(问全局)。
+  const setProjectId = useCallback((id: string) => {
+    setProjectIdState(id);
+    try {
+      if (id) localStorage.setItem(PROJECT_STORAGE_KEY, id);
+      else localStorage.removeItem(PROJECT_STORAGE_KEY);
+    } catch {
+      /* localStorage 不可用(隐私模式等)就只留内存态 */
+    }
+  }, []);
 
   const reloadProjects = useCallback(async (silent = false) => {
     try {
@@ -103,7 +120,17 @@ export function ArchiveProvider({ children }: { children: ReactNode }) {
       const env = await readEnvelope(resp);
       const list: Project[] = env?.data?.projects ?? [];
       setProjects(list);
-      setProjectId((prev) => prev || (list[0]?.id ?? ""));
+      // 恢复上次选择(仍在册才用);否则保持「未选」—— **绝不偷偷默认第一个**。
+      setProjectIdState((prev) => {
+        if (prev && list.some((p) => p.id === prev)) return prev;
+        let saved = "";
+        try {
+          saved = localStorage.getItem(PROJECT_STORAGE_KEY) ?? "";
+        } catch {
+          saved = "";
+        }
+        return saved && list.some((p) => p.id === saved) ? saved : "";
+      });
     } catch {
       if (!silent) toast.error("拉取项目列表失败,后端起了吗?");
     }
@@ -135,20 +162,102 @@ export function useCurrentProjectId(): string {
   return useArchive().projectId;
 }
 
-/** 顶栏归档入口:资料库(浏览全部)+ 当前工地 chip +「📂 资料归档」按钮(方案 B 顶栏右侧)。 */
+/** 顶栏醒目的「当前工地」切换条:一眼看清现在针对哪个项目,点开可切换 / 选「全部」/ 去新建。
+ *  这是「你在项目2、它却按项目1答」的正解 —— 把默默默认的小 chip 换成显眼、可切、不偷偷默认。 */
+function ProjectSwitcher() {
+  const { projects, projectId, setProjectId, currentName, setOpen } = useArchive();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [menuOpen]);
+
+  const scoped = !!projectId;
+  const rowCls = (active: boolean) =>
+    cn(
+      "flex w-full items-center gap-2 px-3 py-2 text-left text-[14px] transition hover:bg-[#F7F9F8]",
+      active ? "font-bold text-[#1B2420]" : "text-[#6B7772]",
+    );
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setMenuOpen((v) => !v)}
+        className={cn(
+          "flex items-center gap-2 rounded-full border px-4 py-2 text-[14px] font-bold transition",
+          scoped
+            ? "border-[#0E9F6E] bg-[#EEF6F2] text-[#0E7A55]"
+            : "border-dashed border-[#C6D0CB] bg-white text-[#8A948F] hover:border-[#7FCDAE]",
+        )}
+        title="当前工地 —— 问答 / 看图 / 归档都按它走"
+      >
+        <span className={cn("h-2 w-2 rounded-full", scoped ? "bg-[#0E9F6E]" : "bg-[#C6D0CB]")} />
+        <span className="max-w-[180px] truncate">
+          🏗 {currentName ?? "全部工地(未选)"}
+        </span>
+        <span className="text-[#9AA5A0]">▾</span>
+      </button>
+
+      {menuOpen && (
+        <div className="absolute right-0 z-50 mt-2 w-[248px] overflow-hidden rounded-[14px] border border-[#E4E8E6] bg-white shadow-[0_12px_40px_rgba(27,36,32,0.16)]">
+          <div className="px-3 pt-2.5 pb-1 text-[12px] font-bold text-[#9AA5A0]">切换当前工地</div>
+          <button
+            onClick={() => {
+              setProjectId("");
+              setMenuOpen(false);
+            }}
+            className={rowCls(!scoped)}
+          >
+            <span className="h-2 w-2 shrink-0 rounded-full bg-[#C6D0CB]" />
+            全部工地(不限项目)
+          </button>
+          {projects.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => {
+                setProjectId(p.id);
+                setMenuOpen(false);
+              }}
+              className={rowCls(p.id === projectId)}
+            >
+              <span
+                className={cn(
+                  "h-2 w-2 shrink-0 rounded-full",
+                  p.id === projectId ? "bg-[#0E9F6E]" : "bg-[#D5DBD8]",
+                )}
+              />
+              <span className="truncate">{p.name}</span>
+              <span className="ml-auto shrink-0 text-[12px] text-[#B4BDB8]">{p.id}</span>
+            </button>
+          ))}
+          <button
+            onClick={() => {
+              setMenuOpen(false);
+              setOpen(true);
+            }}
+            className="flex w-full items-center gap-2 border-t border-[#EEF1F0] px-3 py-2.5 text-[14px] font-bold text-[#0E7A55] transition hover:bg-[#F7F9F8]"
+          >
+            ＋ 新建 / 管理工地
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 顶栏一组入口:当前工地切换 + 资料库(浏览全部)+「📂 资料归档」。 */
 export function ArchiveHeaderControls() {
-  const { setOpen, currentName } = useArchive();
+  const { setOpen } = useArchive();
   return (
     <div className="flex items-center gap-2.5">
+      <ProjectSwitcher />
       <LibraryButton />
-      <button
-        onClick={() => setOpen(true)}
-        className="flex items-center gap-2 rounded-full bg-[#EEF6F2] px-4 py-2 text-[14px] font-bold text-[#0E7A55] transition hover:bg-[#E2F0EA]"
-        title="当前工地 · 点开可切换或归档"
-      >
-        <span className="h-2 w-2 rounded-full bg-[#0E9F6E]" />
-        {currentName ?? "未选工地"}
-      </button>
       <button
         onClick={() => setOpen(true)}
         className="flex items-center gap-2 rounded-full bg-[#1B2420] px-4 py-2.5 text-[14px] font-bold text-white transition hover:bg-black"

@@ -206,26 +206,44 @@ async def list_drawings(*, config: RunnableConfig) -> Envelope:
     """
     await _ensure_registered()  # 首次预注册的阻塞 IO 挪进线程池,防 blockbuster
     project_id = project_from_config(config)
+    logger.info("list_drawings 作用域 project_id=%r", project_id)
     # 选了工地:只查该项目的图;没选:查全部。同步 sqlite → to_thread。
     uploaded = await asyncio.to_thread(db.list_drawings, project_id=project_id or None)
     # 选了工地就不掺 demo(那是全局样例,会把 LLM 从「本项目的图」上带偏)。
     demo_names = [] if project_id else _available_names()
+
+    # 选了工地就把工地名报出来 —— 让答复**锚定当前项目**,别再来回串(名字比编号好记)。
+    proj_label = ""
+    if project_id:
+        proj = await asyncio.to_thread(db.get_project, project_id)
+        proj_label = (
+            f"当前工地「{proj.name}」" if proj else f"当前工地(编号 {project_id})"
+        )
+
     if not demo_names and not uploaded:
         msg = (
-            f"这个工地(项目 {project_id})还没有图纸,先在上传面板把图纸传进来。"
+            f"{proj_label}现在还没有图纸,先在上传面板把图纸传到这个工地下。"
             if project_id
             else "现在一张图纸都没有 —— 演示图先重启后端预注册,项目图先在上传面板传进来。"
         )
         return fail(ErrorCode.EMPTY_RESULT, user_msg=msg)
-    parts: list[str] = []
-    if demo_names:
-        parts.append(f"演示图纸:{'、'.join(demo_names)}")
-    by_project: dict[str, list[str]] = {}
-    for row in uploaded:
-        label = _VIEW_CN.get(row.view_type, row.view_type)
-        by_project.setdefault(row.project_id, []).append(f"{row.title}({label})")
-    for pid, titles in by_project.items():
-        parts.append(f"项目 {pid}:{'、'.join(titles)}")
+
+    if project_id:
+        # 作用域只剩当前工地:直接「当前工地『X』的图纸:…」,一句话锚死是谁的图。
+        titles = [f"{r.title}({_VIEW_CN.get(r.view_type, r.view_type)})" for r in uploaded]
+        user_msg = f"{proj_label}的图纸:{'、'.join(titles)}。想看哪张就说名字。"
+    else:
+        parts: list[str] = []
+        if demo_names:
+            parts.append(f"演示图纸:{'、'.join(demo_names)}")
+        by_project: dict[str, list[str]] = {}
+        for row in uploaded:
+            label = _VIEW_CN.get(row.view_type, row.view_type)
+            by_project.setdefault(row.project_id, []).append(f"{row.title}({label})")
+        for pid, titles in by_project.items():
+            parts.append(f"项目 {pid}:{'、'.join(titles)}")
+        user_msg = "；".join(parts) + "。想看哪张就说名字。"
+
     return ok(
         data={
             "demo": demo_names,
@@ -234,7 +252,7 @@ async def list_drawings(*, config: RunnableConfig) -> Envelope:
                 for r in uploaded
             ],
         },
-        user_msg="；".join(parts) + "。想看哪张就说名字。",
+        user_msg=user_msg,
     )
 
 
