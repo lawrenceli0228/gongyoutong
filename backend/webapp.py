@@ -258,21 +258,49 @@ async def _handle_doc_upload(request: Request, *, scope: str, project_id: str) -
             "FILE_TOO_LARGE",
         )
 
-    def _work() -> dict[str, Any] | None:
+    # 上传做成**原子**的:要么「落盘 + 入库成功、可检索」,要么彻底不留 —— 别再出现
+    # 「文件躺在资料库里、问答却搜不到」的幽灵(GB-50016 那次:入库跑了几分钟被容器重建掐断,
+    # 文件已落地、chroma 却是空的)。入库任何环节失败或一段都没抽到,都回滚落地文件 + 产物。
+    def _work() -> dict[str, Any]:
         if scope == project_fs.SCOPE_PROJECT and db.get_project(project_id) is None:
-            return None
+            return {"status": "no_project"}
         landed = project_fs.land_doc(scope, doc_type, filename, payload, project_id=project_id)
         artifact_id = artifacts.register(
             landed, kind=ArtifactKind.DOCUMENT, original_name=filename
         )
-        chunks = ingest.ingest_document(
-            landed, scope=scope, doc_type=doc_type, project_id=project_id
-        )
-        return {"artifact_id": artifact_id, "chunks": chunks}
+        try:
+            chunks = ingest.ingest_document(
+                landed, scope=scope, doc_type=doc_type, project_id=project_id
+            )
+        except Exception:  # noqa: BLE001 —— 入库任何环节炸了都要回滚,不留搜不到的幽灵文件
+            landed.unlink(missing_ok=True)
+            artifacts.delete(artifact_id)
+            logger.exception("文档 %s 入库失败,已回滚落地文件与产物", filename)
+            return {"status": "ingest_error"}
+        if chunks == 0:
+            # 一段文字都抽不到(多半是扫描件/图片版 PDF):同样回滚,并如实告诉用户要先 OCR。
+            landed.unlink(missing_ok=True)
+            artifacts.delete(artifact_id)
+            return {"status": "empty"}
+        return {"status": "ok", "artifact_id": artifact_id, "chunks": chunks}
 
     result = await run_in_threadpool(_work)
-    if result is None:
+    status = result["status"]
+    if status == "no_project":
         return _fail(404, "没找到这个项目,先建项目再往里传资料。", "NOT_FOUND")
+    if status == "ingest_error":
+        return _fail(
+            500,
+            f"「{filename}」入库失败,已自动清掉没占地方,请稍后重试或换一份文件。",
+            "INTERNAL",
+        )
+    if status == "empty":
+        return _fail(
+            422,
+            f"「{filename}」没读到可检索的文字(多半是扫描件/图片版 PDF),"
+            "需要先做 OCR 转成文字版再传。已自动清掉,没留在项目里。",
+            "EMPTY_RESULT",
+        )
     kind_cn = "规范" if doc_type == project_fs.DOC_REGULATION else "任务书"
     logger.info("收到%s文档 %s(scope=%s project=%s)", kind_cn, filename, scope, project_id or "-")
     return _ok(
@@ -281,7 +309,8 @@ async def _handle_doc_upload(request: Request, *, scope: str, project_id: str) -
             "project_id": project_id or None,
             "doc_type": doc_type,
             "filename": filename,
-            **result,
+            "artifact_id": result["artifact_id"],
+            "chunks": result["chunks"],
         },
         f"{kind_cn}「{filename}」上传成功,已入库 {result['chunks']} 段。",
         status=201,

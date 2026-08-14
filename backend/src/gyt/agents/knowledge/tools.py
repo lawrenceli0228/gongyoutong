@@ -32,22 +32,12 @@ from gyt.config import get_settings
 from gyt.core.errors import Envelope, ErrorCode, fail, ok, tool_guard
 from gyt.core.project_fs import SCOPE_GLOBAL, SCOPE_PROJECT
 
+# 「当前工地」的键与取值收在 core.run_context,knowledge / cad 共用(见该模块说明)。
+# 保留同名导入,search_regulation 与既有单测仍用 tools.PROJECT_CONFIG_KEY / _project_from_config。
+from gyt.core.run_context import PROJECT_CONFIG_KEY
+from gyt.core.run_context import project_from_config as _project_from_config
+
 logger = logging.getLogger(__name__)
-
-# 前端把「当前工地」(用户在界面上选中的项目)放进 run 的 config.configurable[这个键]。
-# LLM 没在问句里点名项目时,检索按它兜底作用域 —— 修的正是「选了当前项目、问答还只查全局」。
-PROJECT_CONFIG_KEY = "gyt_project_id"
-
-
-def _project_from_config(config: RunnableConfig | None) -> str:
-    """从运行配置里取前端选中的「当前工地」项目编号;没有就空串。
-
-    config 由 LangGraph 一路透传到工具(含子图),前端 submit 时经 config.configurable 注入。
-    """
-    if not config:
-        return ""
-    configurable = config.get("configurable") or {}
-    return str(configurable.get(PROJECT_CONFIG_KEY) or "").strip()
 
 _SEARCH_DESCRIPTION = (
     "在规范知识库里检索,回答施工/安全/消防/防火等**规范条文**问题。"

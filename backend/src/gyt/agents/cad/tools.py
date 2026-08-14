@@ -25,6 +25,7 @@ import logging
 from typing import Any, Final
 
 import ezdxf
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 from gyt.agents.cad import index, render
@@ -33,6 +34,7 @@ from gyt.config import ALLOWED_CAD_EXT, get_settings
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind, ArtifactNotFound
 from gyt.core.errors import Envelope, ErrorCode, fail, ok, tool_guard
+from gyt.core.run_context import project_from_config
 from gyt.db import projects as db
 
 logger = logging.getLogger(__name__)
@@ -94,17 +96,27 @@ def _display_name(drawing_id: str) -> str:
     return "这张图纸"
 
 
-async def _load_index(drawing: str) -> tuple[dict[str, Any] | None, str, Envelope | None]:
+async def _load_index(
+    drawing: str, project_id: str = ""
+) -> tuple[dict[str, Any] | None, str, Envelope | None]:
     """所有查询工具的第一步:名字→id→(格式/大小闸)→ensure_index。
 
     返回 (索引, drawing_id, 失败信封)。成功时失败信封为 None;失败时索引为 None。
+
+    作用域(与 knowledge 同一套「当前工地」):demo 图纸视同全局、任何时候都认;按**图名**找
+    上传入库的项目图时,给了 project_id 就**只在该项目内**找(选了工地就不串到别的项目),
+    没给才跨项目找(旧行为)。用户直接给 id 的一律照认,不受作用域限制。
     """
     await _ensure_registered()  # 首次预注册的阻塞 IO 挪进线程池,防 blockbuster
     resolved = _resolve_drawing(drawing)
     if isinstance(resolved, dict):
-        # id / demo 名都没命中 → 再查上传入库的项目图纸(按展示名,跨项目)。
-        # 同步 sqlite 属阻塞 IO,必须 to_thread,否则 blockbuster 抛 BlockingError。
-        row = await asyncio.to_thread(db.find_drawing_by_title, (drawing or "").strip())
+        # id / demo 名都没命中 → 再查上传入库的项目图纸(按展示名)。选了工地就限定在该项目内,
+        # 否则跨项目。同步 sqlite 属阻塞 IO,必须 to_thread,否则 blockbuster 抛 BlockingError。
+        title = (drawing or "").strip()
+        if project_id:
+            row = await asyncio.to_thread(db.resolve_by_title, project_id, title)
+        else:
+            row = await asyncio.to_thread(db.find_drawing_by_title, title)
         if row is None:
             return None, "", resolved  # demo/id/项目图都没有 → 原样返回 NOT_FOUND
         drawing_id = row.artifact_id
@@ -225,9 +237,9 @@ _PARSE_DESCRIPTION = (
 
 @tool("parse_drawing", description=_PARSE_DESCRIPTION)
 @tool_guard
-async def parse_drawing(drawing: str) -> Envelope:
-    """整体概览一张图纸。"""
-    idx, drawing_id, error = await _load_index(drawing)
+async def parse_drawing(drawing: str, *, config: RunnableConfig) -> Envelope:
+    """整体概览一张图纸。选中工地时按当前项目找图(见 _load_index)。"""
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
     assert idx is not None
@@ -261,9 +273,11 @@ _DIM_DESCRIPTION = (
 
 @tool("query_dimension", description=_DIM_DESCRIPTION)
 @tool_guard
-async def query_dimension(drawing: str, target: str = "") -> Envelope:
+async def query_dimension(
+    drawing: str, target: str = "", *, config: RunnableConfig
+) -> Envelope:
     """读图纸已有的 DIMENSION 标注(落地文档 6.2:只读标注,不算轴网间距)。"""
-    idx, drawing_id, error = await _load_index(drawing)
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
     assert idx is not None
@@ -316,9 +330,11 @@ _COMPONENTS_DESCRIPTION = (
 
 @tool("list_components", description=_COMPONENTS_DESCRIPTION)
 @tool_guard
-async def list_components(drawing: str, kind: str = "", layer: str = "") -> Envelope:
+async def list_components(
+    drawing: str, kind: str = "", layer: str = "", *, config: RunnableConfig
+) -> Envelope:
     """数构件/图元,可按图层或类型/块名筛(落地文档 6.3)。"""
-    idx, drawing_id, error = await _load_index(drawing)
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
     assert idx is not None
@@ -388,9 +404,9 @@ _LAYERS_DESCRIPTION = (
 
 @tool("layer_stats", description=_LAYERS_DESCRIPTION)
 @tool_guard
-async def layer_stats(drawing: str) -> Envelope:
+async def layer_stats(drawing: str, *, config: RunnableConfig) -> Envelope:
     """图层清单与各层图元数(落地文档 6.4)。"""
-    idx, drawing_id, error = await _load_index(drawing)
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
     assert idx is not None
@@ -415,9 +431,9 @@ _PREVIEW_DESCRIPTION = (
 
 @tool("render_preview", description=_PREVIEW_DESCRIPTION)
 @tool_guard
-async def render_preview(drawing: str) -> Envelope:
+async def render_preview(drawing: str, *, config: RunnableConfig) -> Envelope:
     """渲染整图 PNG,落盘为产物,返回 png_id(落地文档 6.5;MVP 只出图不接视觉问答)。"""
-    idx, drawing_id, error = await _load_index(drawing)
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
     assert idx is not None
@@ -492,9 +508,9 @@ _VIEW_PARAMS_DESCRIPTION = (
 
 @tool("read_view_params", description=_VIEW_PARAMS_DESCRIPTION)
 @tool_guard
-async def read_view_params(drawing: str) -> Envelope:
+async def read_view_params(drawing: str, *, config: RunnableConfig) -> Envelope:
     """读平立剖参数:复用索引的 dimensions(标注)+ annotations(图上文字),带上视图类型。"""
-    idx, drawing_id, error = await _load_index(drawing)
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
     assert idx is not None
