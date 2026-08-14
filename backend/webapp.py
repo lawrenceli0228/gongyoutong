@@ -21,17 +21,18 @@ from __future__ import annotations
 
 import logging
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from gyt.agents.knowledge import ingest
+from gyt.agents.knowledge import ingest, store
 from gyt.config import ALLOWED_CAD_EXT, get_settings
 from gyt.core import artifacts, project_fs
 from gyt.core.artifacts import ArtifactKind
@@ -99,14 +100,15 @@ async def library(request: Request) -> JSONResponse:
     (project_fs.list_docs)。前端按 project_id 分组渲染,全局规范单列一组。只读,不改任何状态。
     """
 
-    def _work() -> tuple[list[Any], list[Any], list[Any]]:
+    def _work() -> tuple[list[Any], list[Any], list[Any], dict[tuple[str, str, str], int]]:
         return (
             db.list_projects(),
             db.list_drawings(),
             project_fs.list_docs(),
+            store.count_chunks_by_doc(),  # 每份文档的向量块数,标「入库中 / 已入库 N 段」
         )
 
-    projects, drawings, docs = await run_in_threadpool(_work)
+    projects, drawings, docs, chunk_counts = await run_in_threadpool(_work)
     name_by_id = {p.id: p.name for p in projects}
     data = {
         "projects": [{"id": p.id, "name": p.name, "code": p.code} for p in projects],
@@ -134,6 +136,8 @@ async def library(request: Request) -> JSONResponse:
                 "rel_path": e.rel_path,
                 "size_bytes": e.size_bytes,
                 "modified_at": e.modified_at,
+                # 向量块数:0 = 还在入库(embedding 未完),>0 = 已入库、可检索。
+                "chunks": chunk_counts.get((e.scope, e.project_id or "", e.filename), 0),
             }
             for e in docs
         ],
@@ -258,10 +262,10 @@ async def _handle_doc_upload(request: Request, *, scope: str, project_id: str) -
             "FILE_TOO_LARGE",
         )
 
-    # 上传做成**原子**的:要么「落盘 + 入库成功、可检索」,要么彻底不留 —— 别再出现
-    # 「文件躺在资料库里、问答却搜不到」的幽灵(GB-50016 那次:入库跑了几分钟被容器重建掐断,
-    # 文件已落地、chroma 却是空的)。入库任何环节失败或一段都没抽到,都回滚落地文件 + 产物。
-    def _work() -> dict[str, Any]:
+    # 入库分两段:轻活(落地 + 文字预检)同步做、秒级返回;重活(embedding,大文件几分钟)丢后台,
+    # 让「传了像卡住 / 被容器重建掐断」成为历史。资料库按向量块数显示「入库中 / 已入库 N 段」。
+    # 仍是原子的:预检不过、或后台入库失败/抽不出 chunk,都回滚落地文件 + 产物,不留搜不到的幽灵。
+    def _prepare() -> dict[str, Any]:
         if scope == project_fs.SCOPE_PROJECT and db.get_project(project_id) is None:
             return {"status": "no_project"}
         landed = project_fs.land_doc(scope, doc_type, filename, payload, project_id=project_id)
@@ -269,51 +273,78 @@ async def _handle_doc_upload(request: Request, *, scope: str, project_id: str) -
             landed, kind=ArtifactKind.DOCUMENT, original_name=filename
         )
         try:
-            chunks = ingest.ingest_document(
-                landed, scope=scope, doc_type=doc_type, project_id=project_id
-            )
-        except Exception:  # noqa: BLE001 —— 入库任何环节炸了都要回滚,不留搜不到的幽灵文件
+            has_text = ingest.pdf_has_text(landed)
+        except Exception:  # noqa: BLE001 —— PDF 打不开(加密/损坏)当没文字层处理,回滚
             landed.unlink(missing_ok=True)
             artifacts.delete(artifact_id)
-            logger.exception("文档 %s 入库失败,已回滚落地文件与产物", filename)
-            return {"status": "ingest_error"}
-        if chunks == 0:
-            # 一段文字都抽不到(多半是扫描件/图片版 PDF):同样回滚,并如实告诉用户要先 OCR。
+            logger.exception("文档 %s 预检打不开", filename)
+            return {"status": "bad_pdf"}
+        if not has_text:
             landed.unlink(missing_ok=True)
             artifacts.delete(artifact_id)
             return {"status": "empty"}
-        return {"status": "ok", "artifact_id": artifact_id, "chunks": chunks}
+        return {"status": "ok", "landed": str(landed), "artifact_id": artifact_id}
 
-    result = await run_in_threadpool(_work)
-    status = result["status"]
-    if status == "no_project":
+    prep = await run_in_threadpool(_prepare)
+    prep_status = prep["status"]
+    if prep_status == "no_project":
         return _fail(404, "没找到这个项目,先建项目再往里传资料。", "NOT_FOUND")
-    if status == "ingest_error":
+    if prep_status == "bad_pdf":
         return _fail(
-            500,
-            f"「{filename}」入库失败,已自动清掉没占地方,请稍后重试或换一份文件。",
-            "INTERNAL",
+            422, f"「{filename}」打不开(可能加密或损坏),没存进去,换一份 PDF 再传。", "FILE_CORRUPT"
         )
-    if status == "empty":
+    if prep_status == "empty":
         return _fail(
             422,
             f"「{filename}」没读到可检索的文字(多半是扫描件/图片版 PDF),"
             "需要先做 OCR 转成文字版再传。已自动清掉,没留在项目里。",
             "EMPTY_RESULT",
         )
+
+    # 文件已落地、有文字层 —— embedding 丢后台,立刻回 202「正在入库」。
+    landed_path = Path(prep["landed"])
+    artifact_id = str(prep["artifact_id"])
+
+    def _ingest_bg() -> None:
+        try:
+            n = ingest.ingest_document(
+                landed_path, scope=scope, doc_type=doc_type, project_id=project_id
+            )
+            if n == 0:  # 预检说有字却抽不出 chunk,防御性回滚
+                landed_path.unlink(missing_ok=True)
+                artifacts.delete(artifact_id)
+                logger.warning("后台入库 %s 抽出 0 段,已回滚", filename)
+            else:
+                logger.info("后台入库完成 %s:%d 段", filename, n)
+        except Exception:  # noqa: BLE001 —— 后台入库炸了也要回滚,不留搜不到的幽灵
+            landed_path.unlink(missing_ok=True)
+            artifacts.delete(artifact_id)
+            logger.exception("后台入库失败,已回滚 %s", filename)
+
+    async def _run_bg() -> None:
+        await run_in_threadpool(_ingest_bg)  # 阻塞入库挪进线程池,别卡事件循环
+
     kind_cn = "规范" if doc_type == project_fs.DOC_REGULATION else "任务书"
-    logger.info("收到%s文档 %s(scope=%s project=%s)", kind_cn, filename, scope, project_id or "-")
-    return _ok(
-        {
-            "scope": scope,
-            "project_id": project_id or None,
-            "doc_type": doc_type,
-            "filename": filename,
-            "artifact_id": result["artifact_id"],
-            "chunks": result["chunks"],
-        },
-        f"{kind_cn}「{filename}」上传成功,已入库 {result['chunks']} 段。",
-        status=201,
+    logger.info(
+        "收到%s文档 %s(scope=%s project=%s),转后台入库", kind_cn, filename, scope, project_id or "-"
+    )
+    return JSONResponse(
+        _envelope(
+            True,
+            {
+                "scope": scope,
+                "project_id": project_id or None,
+                "doc_type": doc_type,
+                "filename": filename,
+                "artifact_id": artifact_id,
+                "status": "ingesting",
+            },
+            f"{kind_cn}「{filename}」已收到,正在入库(大文件要几分钟),完成前还搜不到。"
+            "可在「资料库」点刷新看进度。",
+            None,
+        ),
+        status_code=202,
+        background=BackgroundTask(_run_bg),
     )
 
 

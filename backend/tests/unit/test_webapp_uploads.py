@@ -201,13 +201,18 @@ def test_传图_项目不存在_404(client: TestClient) -> None:
 
 @pytest.fixture
 def fake_ingest(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
-    """挡掉真入库(会加载 2.2GB BGE-M3),只记录调用参数、返回假 chunk 数。"""
+    """挡掉真入库(会加载 2.2GB BGE-M3),只记录调用参数、返回假 chunk 数。
+
+    上传改成异步后:同步预检 pdf_has_text(假 PDF 会让 pypdf 报错)也要一并打桩成「有文字」,
+    否则走不到后台入库那步。ingest_document 由后台任务调用(TestClient 会跑完 background)。
+    """
     calls: list[dict] = []
 
     def _fake(path, *, scope: str, doc_type: str, project_id: str = "") -> int:
         calls.append({"scope": scope, "doc_type": doc_type, "project_id": project_id})
         return 7
 
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.pdf_has_text", lambda _p: True)
     monkeypatch.setattr("gyt.agents.knowledge.ingest.ingest_document", _fake)
     return calls
 
@@ -216,13 +221,14 @@ def _pdf_files(name: str = "GB50016.pdf", content: bytes = b"%PDF-1.4 fake"):
     return {"file": (name, content, "application/pdf")}
 
 
-def test_传全局规范_落地注册入库(client: TestClient, fake_ingest: list[dict]) -> None:
+def test_传全局规范_落地并转后台入库(client: TestClient, fake_ingest: list[dict]) -> None:
     resp = client.post("/docs", files=_pdf_files(), data={"doc_type": "regulation"})
 
-    assert resp.status_code == 201
+    # 异步:立刻回 202「正在入库」,文件已落地;embedding 在后台跑(TestClient 会跑完 background)。
+    assert resp.status_code == 202
     data = resp.json()["data"]
     assert data["scope"] == "global"
-    assert data["chunks"] == 7
+    assert data["status"] == "ingesting"
     assert (get_settings().global_dir / "docs" / "regulation" / "GB50016.pdf").exists()
     assert fake_ingest[0] == {"scope": "global", "doc_type": "regulation", "project_id": ""}
 
@@ -243,7 +249,7 @@ def test_传项目任务书_落到项目docs并入库(client: TestClient, fake_i
         data={"doc_type": "task_book"},
     )
 
-    assert resp.status_code == 201
+    assert resp.status_code == 202
     assert fake_ingest[0] == {"scope": "project", "doc_type": "task_book", "project_id": pid}
     assert (get_settings().projects_dir / pid / "docs" / "task_book" / "施工任务书.pdf").exists()
 
@@ -474,9 +480,13 @@ def test_删项目_不存在_404(client: TestClient, fake_ingest_delete: list) -
 # ---------------------------------------------------------------------------
 
 
-def test_传文档_入库抛异常_回滚且500(
+def test_传文档_后台入库失败_回滚(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # 异步:预检过(有文字),但后台 embedding 炸了 → 客户端先拿 202,后台回滚落地文件。
+    # TestClient 会跑完 background,所以回滚在断言时已完成。
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.pdf_has_text", lambda _p: True)
+
     def _boom(*a, **k):
         raise RuntimeError("embedding 炸了")
 
@@ -484,17 +494,16 @@ def test_传文档_入库抛异常_回滚且500(
 
     resp = client.post("/docs", files=_pdf_files("坏了.pdf"), data={"doc_type": "regulation"})
 
-    assert resp.status_code == 500
-    assert resp.json()["error_code"] == "INTERNAL"
-    # 回滚:落地文件没留下
+    assert resp.status_code == 202  # 先收下
+    # 后台入库失败 → 回滚:落地文件没留下(不留搜不到的幽灵)
     assert not (get_settings().global_dir / "docs" / "regulation" / "坏了.pdf").exists()
 
 
-def test_传文档_抽不出文字_回滚且422(
+def test_传文档_抽不出文字_同步拒且422(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # 扫描件:ingest 返回 0 段 → 应回滚并明确提示要 OCR,而不是假装成功「已入库 0 段」。
-    monkeypatch.setattr("gyt.agents.knowledge.ingest.ingest_document", lambda *a, **k: 0)
+    # 扫描件:同步预检 pdf_has_text 就发现没文字层 → 当场 422 拒 + 回滚,不必等几分钟白跑 embedding。
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.pdf_has_text", lambda _p: False)
 
     resp = client.post("/docs", files=_pdf_files("扫描件.pdf"), data={"doc_type": "regulation"})
 

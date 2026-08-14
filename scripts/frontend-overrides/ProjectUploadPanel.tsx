@@ -569,6 +569,7 @@ type LibDoc = {
   rel_path: string;
   size_bytes: number;
   modified_at: string;
+  chunks: number; // 向量块数:0 = 入库中(embedding 未完),>0 = 已入库、可检索
 };
 type LibraryData = {
   projects: { id: string; name: string; code: string | null }[];
@@ -668,23 +669,31 @@ export function LibraryButton() {
   // fixed 定位会被 transform 祖先"锚住"而错位/被 overflow-hidden 裁掉,portal 出去才铺满视口。
   useEffect(() => setMounted(true), []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const resp = await fetch(`${API_URL}/library`, { headers: authHeaders() });
       const env = await readEnvelope(resp);
       if (resp.ok && env?.data) setData(env.data as LibraryData);
-      else toast.error(env?.user_msg ?? "拉取资料库失败");
+      else if (!silent) toast.error(env?.user_msg ?? "拉取资料库失败");
     } catch {
-      toast.error("拉取资料库失败,后端起了吗?");
+      if (!silent) toast.error("拉取资料库失败,后端起了吗?");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     if (open) void load();
   }, [open, load]);
+
+  // 有文档还在入库(chunks===0)时,每 4s 静默刷一次,直到都入完 —— 这就是那条「进度」。
+  const anyIngesting = !!data?.docs.some((d) => d.chunks === 0);
+  useEffect(() => {
+    if (!open || !anyIngesting) return;
+    const timer = setInterval(() => void load(true), 4000);
+    return () => clearInterval(timer);
+  }, [open, anyIngesting, load]);
 
   const drawer = (
     <div
@@ -869,7 +878,12 @@ function DocRow({ doc, reload }: { doc: LibDoc; reload: () => Promise<void> }) {
       <div className="min-w-0">
         <div className="truncate text-[15px] font-bold text-[#1B2420]">{doc.filename}</div>
         <div className="text-[12px] text-[#8A948F]">
-          {DOC_LABEL[doc.doc_type] ?? doc.doc_type} · {fmtSize(doc.size_bytes)}
+          {DOC_LABEL[doc.doc_type] ?? doc.doc_type} · {fmtSize(doc.size_bytes)} ·{" "}
+          {doc.chunks > 0 ? (
+            <span className="text-[#5FAE8E]">已入库 {doc.chunks} 段</span>
+          ) : (
+            <span className="animate-pulse font-bold text-[#C2892B]">入库中…</span>
+          )}
         </div>
       </div>
       <RowDelete
