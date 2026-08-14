@@ -285,3 +285,33 @@ async def test_read_view_params图上没标没写时EMPTY(tmp_path, monkeypatch)
     result = await tools.read_view_params.ainvoke({"drawing": "白图"})
     assert result["ok"] is False
     assert result["error_code"] == "EMPTY_RESULT"
+
+
+# --- 当前工地作用域(选了项目就只在该项目内按图名找图)-------------------------
+
+
+async def test_图纸解析按当前工地作用域(tmp_path, monkeypatch):
+    """选了工地:按图名找图只在该项目内;别的项目的同名请求不串过来;不选则跨项目(旧行为)。"""
+    make_gbk_dxf(tmp_path / "a.dxf")
+    aid = artifacts.register(tmp_path / "a.dxf", kind=ArtifactKind.DRAWING, original_name="a.dxf")
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)  # 没有 demo,强制走 db 标题解析
+    db.create_project("pa", "项目A", "A")
+    db.create_project("pb", "项目B", "B")
+    db.add_drawing("pa", aid, "plan", "现场图")  # 只有 pa 有「现场图」
+
+    # 选中 pa → 在本项目内找到,解析成功
+    r = await tools.parse_drawing.ainvoke(
+        {"drawing": "现场图"}, config={"configurable": {"gyt_project_id": "pa"}}
+    )
+    assert r["ok"] is True
+
+    # 选中 pb → pb 没有「现场图」,不串到 pa → NOT_FOUND
+    r2 = await tools.parse_drawing.ainvoke(
+        {"drawing": "现场图"}, config={"configurable": {"gyt_project_id": "pb"}}
+    )
+    assert r2["ok"] is False
+    assert r2["error_code"] == "NOT_FOUND"
+
+    # 不选工地 → 跨项目仍找得到(旧行为不变)
+    r3 = await tools.parse_drawing.ainvoke({"drawing": "现场图"})
+    assert r3["ok"] is True
