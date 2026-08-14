@@ -315,3 +315,27 @@ async def test_图纸解析按当前工地作用域(tmp_path, monkeypatch):
     # 不选工地 → 跨项目仍找得到(旧行为不变)
     r3 = await tools.parse_drawing.ainvoke({"drawing": "现场图"})
     assert r3["ok"] is True
+
+
+async def test_list_drawings选了工地只列本项目图(tmp_path, monkeypatch):
+    """选了工地:list_drawings 只列该项目的图,不掺 demo、不列别的项目。断「问项目2报项目1的图」。"""
+    make_gbk_dxf(tmp_path / "a.dxf")
+    a = artifacts.register(tmp_path / "a.dxf", kind=ArtifactKind.DRAWING, original_name="a.dxf")
+    make_gbk_dxf(tmp_path / "b.dxf")
+    b = artifacts.register(tmp_path / "b.dxf", kind=ArtifactKind.DRAWING, original_name="b.dxf")
+    monkeypatch.setattr(tools, "get_demo_drawings", lambda: {"演示图": "0" * 32})
+    db.create_project("pa", "A", "A")
+    db.create_project("pb", "B", "B")
+    db.add_drawing("pa", a, "plan", "甲图")
+    db.add_drawing("pb", b, "plan", "乙图")
+
+    # 选 pa → 只有甲图,没有 demo、没有乙图
+    r = await tools.list_drawings.ainvoke({}, config={"configurable": {"gyt_project_id": "pa"}})
+    assert r["ok"] is True
+    assert [u["title"] for u in r["data"]["uploaded"]] == ["甲图"]
+    assert r["data"]["demo"] == []
+
+    # 不选工地 → demo + 全部项目(旧行为)
+    r2 = await tools.list_drawings.ainvoke({})
+    assert {u["title"] for u in r2["data"]["uploaded"]} == {"甲图", "乙图"}
+    assert r2["data"]["demo"] == ["演示图"]
