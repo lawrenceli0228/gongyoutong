@@ -1111,7 +1111,20 @@
      现在是靠人工腾挪硬撑。
 - **Depends:** 无。下一次改后端代码就会再撞上。
 
-## TODO-41 巡检记录编号用的是**宿主时区**,不是业务时区权威
+## ~~TODO-41 巡检记录编号用的是**宿主时区**,不是业务时区权威~~ ✅ 已收口(2026-08-16,W9 S2)
+- **怎么收的:** 生成端从 `agents/report/tools.py` 里裸拼 `strftime` 搬进了
+  `core/doc_no.py` 的 `new_report_no()`,时间快照走 `attendance/receipt.py` 的
+  `make_snapshot()`(Asia/Hong_Kong 权威)。**编号格式一个字节没动**
+  (`GYT-%Y%m%d-%H%M%S`),`REPORT_RECEIPT_PATTERN` 仍匹配得上 —— 实跑验证过,
+  且六种新监理文书编号一条都不被它误匹配。
+- **测试怎么钉的:** `test_doc_no.py` 里 monkeypatch 掉 `doc_no.make_snapshot` 后
+  编号必须跟着变。只断「日期是今天」的话,在 UTC+8 的本机永远绿 —— 那正是这条
+  TODO 当初能藏住的原因。
+- **顺带修的两处失效指针:** `core/require_tool.py` 与 `agents/report/__init__.py`
+  都写着「`tools.py:151` 的 strftime」,生成端搬走后这两行就指错了。
+- 以下为原始记录,留档不改:
+
+## TODO-41(原始记录)巡检记录编号用的是**宿主时区**,不是业务时区权威
 - **What:** `agents/report/tools.py:151` 生成记录编号、`:85` 填「生成时间」,两处都是
   `datetime.now(UTC).astimezone()` —— 不带参数的 `.astimezone()` 取的是**宿主时区**。
   而 CLAUDE.md 的同源清单里写得很清楚:业务时区 `Asia/Hong_Kong`,
