@@ -497,7 +497,9 @@ app = Starlette(
         ),
         Route("/docs", remove_global_doc, methods=["DELETE"]),
         Route("/projects/{project_id}/docs", remove_project_doc, methods=["DELETE"]),
-        # 打卡两条(W7,gyt/checkin_api.py 的 CHECKIN_ROUTES)。
+        # 打卡链(gyt/checkin_api.py 的 CHECKIN_ROUTES)—— W7 两条(打卡、最近打卡)
+        # + W8 两条(扫码配对的上报与轮询)。**别在这儿数条数**:以那个列表为准,
+        # 加路由只改那边,这行注释写死数字就一定会过期(它已经过期过一次)。
         #
         # 为什么铺在这儿而不是它自己挂:``langgraph.json`` 的 ``http.app``
         # **只能有一个**,而本项目现在有两拨自定义路由 —— 本文件的项目/图纸/资料

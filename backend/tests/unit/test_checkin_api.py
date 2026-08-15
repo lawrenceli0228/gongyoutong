@@ -17,6 +17,7 @@ T1 只冻结契约,handler 归 T2。这里锁的是**三类会静默出错的东
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import os
 import re
 import time
@@ -31,7 +32,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from gyt import checkin_api
-from gyt.attendance import messages, receipt
+from gyt.attendance import messages, pairing, receipt
 from gyt.attendance.watermark import FontUnavailableError, MissingGlyphsError
 from gyt.checkin_api import (
     DIGEST_HEX_LEN,
@@ -346,6 +347,19 @@ def _干净的打卡限流器() -> Iterator[None]:
     checkin_api.reset_limiters()
 
 
+@pytest.fixture(autouse=True)
+def _干净的配对表() -> Iterator[None]:
+    """每个用例前后丢掉配对状态表(W8)。
+
+    与上面那条**刻意分成两个夹具**:限流桶和配对状态是两件东西,
+    把清状态藏进「重置限流」那个名字底下,下一个人一定会被坑
+    (checkin_api.reset_limiters 的头注写了同一句话)。
+    """
+    pairing.reset_store()
+    yield
+    pairing.reset_store()
+
+
 @pytest.fixture
 def 假水印() -> Iterator[mock.MagicMock]:
     """把真渲染换成固定字节。
@@ -375,6 +389,7 @@ def _headers(
     photo: bytes = FAKE_JPEG,
     digest: str | None = None,
     api_key: str | None = None,
+    pair: str | None = None,
 ) -> dict[str, str]:
     """按模块头注的请求契约拼一套合法 header,单项可覆盖(None = 不发这个头)。"""
     headers = {
@@ -389,6 +404,8 @@ def _headers(
         headers["x-gyt-geo"] = geo
     if api_key is not None:
         headers["x-api-key"] = api_key
+    if pair is not None:  # W8 扫码配对:可选头,缺省不发
+        headers[checkin_api.HEADER_PAIR] = pair
     return headers
 
 
@@ -939,6 +956,415 @@ class Test最近凭证:
         record = client.get("/checkin/recent").json()["data"]["records"][0]
         assert record["artifact_id"] is None
         assert record["photo_purged_at"] == "2026-08-15T09:00:00+08:00"
+
+
+# ===========================================================================
+# 以下:扫码配对(W8)的 **HTTP 层**。存储层自己的不变量(单向前进、租期、
+# 容量上限、未知≡过期)在 tests/unit/test_attendance_pairing.py,那边不起服务。
+# 这里只测隔着 HTTP 才看得见的东西:鉴权、限流、指纹不受影响、三条 200 路径都置 done。
+# ===========================================================================
+
+PAIR_ID = "0123456789abcdef" * 2
+"""一个合法的配对串(32 位小写十六进制)。"""
+
+PAIR_OTHER = "f" * 32
+"""另一个,用来验「两台电脑互不干扰」与「换个 pair 不影响指纹」。"""
+
+
+def _pair_state(client: TestClient, pair_id: str | None = PAIR_ID) -> dict[str, Any]:
+    """问一次配对状态,返回 data(``{"state":…, "receipt":…}``)。"""
+    url = "/checkin/pair" if pair_id is None else f"/checkin/pair?id={pair_id}"
+    resp = client.get(url)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+def _report_scanned(client: TestClient, pair_id: str = PAIR_ID, **headers: str) -> httpx.Response:
+    """手机侧那一次「已扫码」上报。"""
+    return client.post("/checkin/pair/scanned", headers={"x-gyt-pair": pair_id, **headers})
+
+
+class Test配对鉴权:
+    """与打卡同一把锁。POST 锁了配对不锁,等于给了一个不用登录也能问
+    「有没有人正在打卡」的接口 —— 纵深防御那条(上线闸①)对这两个端点一样成立。"""
+
+    def test_设了令牌后无钥匙一律拒(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GYT_ACCESS_TOKEN", REAL_TOKEN)
+        get_settings.cache_clear()
+        上报 = _report_scanned(client)
+        assert 上报.status_code == 401
+        assert 上报.json()["error_code"] == "UNAUTHORIZED"
+        assert client.get(f"/checkin/pair?id={PAIR_ID}").status_code == 401
+        # 被拒的请求一步业务都不许走:表里不许留下这个 pair。
+        assert pairing.get_store().get(PAIR_ID).state == "waiting"
+
+    def test_带对令牌则放行(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GYT_ACCESS_TOKEN", REAL_TOKEN)
+        get_settings.cache_clear()
+        assert _report_scanned(client, **{"x-api-key": REAL_TOKEN}).status_code == 200
+        resp = client.get(f"/checkin/pair?id={PAIR_ID}", headers={"x-api-key": REAL_TOKEN})
+        assert resp.status_code == 200
+        assert resp.json()["data"]["state"] == "scanned"
+
+    def test_未配置令牌时放行(self, client: TestClient) -> None:
+        """conftest 清干净了 GYT_*,这就是「没配」的真实状态 —— make dev 与真机
+        验收不发令牌头,未配置必须放行(判定与 auth.py 完全同源)。"""
+        assert _report_scanned(client).status_code == 200
+
+
+class Test配对限流:
+    """契约第六条:**新开一只桶,不与打卡共用**。轮询天然比打卡频繁得多
+    (2 秒一次),共用会让正常轮询把打卡的额度吃光。"""
+
+    def test_超发429并带RetryAfter(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """参数是模块常量(不走 settings,理由见 PAIR_RATE_BURST 头注),
+        所以这里 monkeypatch 常量本身 + 重置桶 —— 顺带验证「桶确实是按常量建的」。"""
+        monkeypatch.setattr(checkin_api, "PAIR_RATE_BURST", 2)
+        monkeypatch.setattr(checkin_api, "PAIR_RATE_PER_MINUTE", 1.0)
+        checkin_api.reset_limiters()
+        assert client.get(f"/checkin/pair?id={PAIR_ID}").status_code == 200
+        assert client.get(f"/checkin/pair?id={PAIR_ID}").status_code == 200
+        第三次 = client.get(f"/checkin/pair?id={PAIR_ID}")
+        assert 第三次.status_code == 429
+        assert 第三次.json()["error_code"] == "RATE_LIMITED"
+        assert int(第三次.headers["Retry-After"]) >= 1
+
+    def test_两个配对端点共用同一只桶(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """一只桶护住整条配对链。文档里点名了这个取舍:一次性的
+        ``POST /pair/scanned`` 与轮询共用额度,所以余量给得比契约建议的更宽。"""
+        monkeypatch.setattr(checkin_api, "PAIR_RATE_BURST", 1)
+        monkeypatch.setattr(checkin_api, "PAIR_RATE_PER_MINUTE", 1.0)
+        checkin_api.reset_limiters()
+        assert _report_scanned(client).status_code == 200
+        assert client.get(f"/checkin/pair?id={PAIR_ID}").status_code == 429
+        # 上报端点自己也走同一只桶 —— 它被限住 = 那次配对彻底失联
+        # (手机只报一次、不重试),所以线上的余量给得比契约建议的更宽。
+        再上报 = _report_scanned(client)
+        assert 再上报.status_code == 429
+        assert int(再上报.headers["Retry-After"]) >= 1
+
+    def test_轮询吃不到打卡的额度(
+        self, client: TestClient, 假水印: mock.MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """配对桶打空之后,打卡必须照常 —— 这是「新开一只桶」的全部意义。"""
+        monkeypatch.setattr(checkin_api, "PAIR_RATE_BURST", 1)
+        monkeypatch.setattr(checkin_api, "PAIR_RATE_PER_MINUTE", 1.0)
+        checkin_api.reset_limiters()
+        assert client.get(f"/checkin/pair?id={PAIR_ID}").status_code == 200
+        assert client.get(f"/checkin/pair?id={PAIR_ID}").status_code == 429
+        assert _post(client, event_id="evt-pair-rl-1").status_code == 200
+
+    def test_打卡被限住时轮询照常(
+        self, client: TestClient, 假水印: mock.MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """反向:打卡桶空了,电脑那边的轮询不该跟着挂 ——
+        挂了的表现是界面卡在「等扫码」,而人只会去查配对,方向全错。"""
+        monkeypatch.setenv("GYT_ATTENDANCE_RATE_BURST", "1")
+        monkeypatch.setenv("GYT_ATTENDANCE_RATE_PER_MINUTE", "1")
+        get_settings.cache_clear()
+        checkin_api.reset_limiters()
+        assert _post(client, event_id="evt-pair-rl-2").status_code == 200
+        assert _post(client, event_id="evt-pair-rl-3").status_code == 429
+        assert client.get(f"/checkin/pair?id={PAIR_ID}").status_code == 200
+
+
+class Test配对不进指纹:
+    """🔴 **本次改动最容易犯的错。** 带不带 ``X-GYT-Pair``,同一次打卡必须算出
+    同一个指纹 —— 否则手机重发时带上(或漏掉)pair,幂等层①当场对不上,
+    整个幂等失效:工友点两次,库里两条。"""
+
+    def test_build_digest的入参里没有pair(self) -> None:
+        """结构面的钉子:谁往指纹函数上加一个 pair 参数,这条当场翻红。
+        行为面的证据在下面两条 —— 两种都要,行为证明「今天没错」,
+        结构证明「明天也改不错」。"""
+        assert set(inspect.signature(build_digest).parameters) == {
+            "worker_name",
+            "site_name",
+            "geo_raw",
+            "photo_hash",
+        }
+
+    def test_带pair与不带pair的重发仍然命中幂等(
+        self, client: TestClient, 假水印: mock.MagicMock
+    ) -> None:
+        """守门断言。若 pair 进了指纹,第二发会被判成「同键异指纹」而 409,
+        工友看到的是「信息和之前那次对不上」—— 而他什么都没改,只是网卡了一下。"""
+        第一发 = _post(client, event_id="evt-pair-digest-1", pair=PAIR_ID)
+        assert 第一发.status_code == 200
+        第二发 = _post(client, event_id="evt-pair-digest-1")  # 同一次打卡,这次没带 pair
+        assert 第二发.status_code == 200
+        assert 第二发.json()["data"]["receipt_no"] == 第一发.json()["data"]["receipt_no"]
+        assert 假水印.call_count == 1  # 真的是重发命中,不是又打了一次
+
+    def test_换一个pair也还是同一次打卡(self, client: TestClient, 假水印: mock.MagicMock) -> None:
+        """手机刷新页面会拿到新的 pair(URL 变了),但那仍然是同一次打卡。"""
+        assert _post(client, event_id="evt-pair-digest-2", pair=PAIR_ID).status_code == 200
+        重发 = _post(client, event_id="evt-pair-digest-2", pair=PAIR_OTHER)
+        assert 重发.status_code == 200
+        assert 假水印.call_count == 1
+
+    def test_落库的指纹与不带pair时逐字相同(
+        self, client: TestClient, 假水印: mock.MagicMock
+    ) -> None:
+        """不信回执,直接查库:两次独立打卡(不同 event_id、同样的人同样的照片),
+        一次带 pair 一次不带,``req_digest`` 必须一模一样。"""
+        assert _post(client, event_id="evt-pair-digest-3", pair=PAIR_ID).status_code == 200
+        assert _post(client, event_id="evt-pair-digest-4").status_code == 200
+        带的 = att_db.find_by_event_id("evt-pair-digest-3")
+        没带的 = att_db.find_by_event_id("evt-pair-digest-4")
+        assert 带的 is not None and 没带的 is not None
+        assert 带的.req_digest == 没带的.req_digest
+
+
+class Test配对状态查询:
+    def test_未知id回waiting(self, client: TestClient) -> None:
+        assert _pair_state(client) == {"state": "waiting", "receipt": None}
+
+    @pytest.mark.parametrize(
+        ("说明", "id值"),
+        [
+            ("压根没带 id 参数", None),
+            ("空 id", ""),
+            ("短一位", "a" * 31),
+            ("非十六进制", "z" * 32),
+            ("超长垃圾", "a" * 5000),
+        ],
+    )
+    def test_坏id也回waiting而不是400(
+        self, client: TestClient, 说明: str, id值: str | None
+    ) -> None:
+        """🔴 未知 / 过期 / 格式不对 / 没带,**四者不可区分**。
+        任何一种回 400,这就成了探测接口:拿 id 试一遍就能数出现场开着几台面板。"""
+        assert _pair_state(client, id值)["state"] == "waiting", 说明
+
+    def test_上报之后变scanned(self, client: TestClient) -> None:
+        上报 = _report_scanned(client)
+        assert 上报.status_code == 200
+        assert 上报.json() == {
+            "ok": True,
+            "data": {"state": "scanned"},
+            "user_msg": "",
+            "error_code": None,
+        }
+        assert _pair_state(client)["state"] == "scanned"
+
+    def test_两台电脑互不干扰(self, client: TestClient) -> None:
+        _report_scanned(client, PAIR_ID)
+        assert _pair_state(client, PAIR_ID)["state"] == "scanned"
+        assert _pair_state(client, PAIR_OTHER)["state"] == "waiting"
+
+    @pytest.mark.parametrize(
+        ("说明", "头"),
+        [
+            ("没带 X-GYT-Pair", {}),
+            ("空值", {"x-gyt-pair": ""}),
+            ("不是 32 位十六进制", {"x-gyt-pair": "not-a-pair"}),
+        ],
+    )
+    def test_上报时pair违约400(self, client: TestClient, 说明: str, 头: dict[str, str]) -> None:
+        """这个端点上 pair 就是请求本身,静默当成功会让电脑永远等下去
+        而没人知道为什么 —— 与 POST /checkin 上那个「可选头坏了就当没带」不冲突。"""
+        resp = client.post("/checkin/pair/scanned", headers=头)
+        assert resp.status_code == 400, 说明
+        assert resp.json()["error_code"] == "INVALID_INPUT"
+        assert resp.json()["user_msg"] == messages.BAD_REQUEST  # 具体字段只进日志
+
+    def test_已经done的不被scanned顶回去(self, client: TestClient, 假水印: mock.MagicMock) -> None:
+        """手机重发一次「已扫码」,电脑不该从「✅ 已打卡成功」退回「请拍照」。
+        端点如实回 done(不是恒回 scanned)—— 少说这句会让排错的人以为状态机退回去了。"""
+        assert _post(client, event_id="evt-pair-noback", pair=PAIR_ID).status_code == 200
+        重报 = _report_scanned(client)
+        assert 重报.status_code == 200
+        assert 重报.json()["data"]["state"] == "done"
+        assert _pair_state(client)["state"] == "done"
+
+
+class Test打卡置done:
+    def test_全程走完拿到done和凭证(self, client: TestClient, 假水印: mock.MagicMock) -> None:
+        """整条链的快乐路径:扫码 → 打卡 → 电脑那边拿到 done + 凭证。
+        凭证对象与 ``POST /checkin`` 回的那个**逐字相同** —— 前端复用同一个
+        ``ReceiptCard``,形状漂了就是「电脑上那张卡片缺字段」。"""
+        _report_scanned(client)
+        assert _pair_state(client)["state"] == "scanned"
+        打卡 = _post(client, event_id="evt-pair-done-1", pair=PAIR_ID)
+        assert 打卡.status_code == 200
+        状态 = _pair_state(client)
+        assert 状态["state"] == "done"
+        assert 状态["receipt"] == 打卡.json()["data"]
+
+    def test_没带pair时谁的状态都不动(self, client: TestClient, 假水印: mock.MagicMock) -> None:
+        """契约:省略 X-GYT-Pair 时行为与今天一字不差。"""
+        _report_scanned(client)
+        assert _post(client, event_id="evt-pair-none-1").status_code == 200
+        assert _pair_state(client)["state"] == "scanned"
+
+    def test_幂等重放也置done(self, client: TestClient, 假水印: mock.MagicMock) -> None:
+        """幂等层①的命中路径。手机断网重发一次,电脑不该卡在 scanned ——
+        第一发**没带** pair(比如手机是从没有 pair 的入口进来的),重发才带上。"""
+        _report_scanned(client)
+        assert _post(client, event_id="evt-pair-replay-1").status_code == 200
+        assert _pair_state(client)["state"] == "scanned"  # 第一发没带 pair,还没动
+        重发 = _post(client, event_id="evt-pair-replay-1", pair=PAIR_ID)
+        assert 重发.status_code == 200
+        assert 假水印.call_count == 1  # 确实是重放,没有第二次落账
+        状态 = _pair_state(client)
+        assert 状态["state"] == "done"
+        assert 状态["receipt"] == 重发.json()["data"]
+
+    def test_并发回查赢家那条路径也置done(
+        self, client: TestClient, 假水印: mock.MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """幂等层③:层①没查到、真 INSERT 时才撞 UNIQUE。复刻手法与
+        ``Test并发同键`` 那两条一致(层①装作没查到,而行其实已在)。
+        三条 200 路径都经过 ``_receipt_response``,这是第三条。"""
+        expected_digest = build_digest(
+            worker_name="张三",
+            site_name="A栋地盤",
+            geo_raw="ok;22.302711;114.177216;12.5",
+            photo_hash=photo_sha256(FAKE_JPEG),
+        )
+        snap = receipt.snapshot_at(UTC_0030)
+        att_db.insert_checkin(
+            att_db.CheckinDraft(
+                event_id="evt-pair-race-1",
+                req_digest=expected_digest,
+                worker_name="张三",
+                site_name="A栋地盤",
+                checked_at=snap.checked_at,
+                work_date=snap.work_date,
+                lat=22.302711,
+                lon=114.177216,
+                accuracy_m=12.5,
+                geo_status="ok",
+                source="camera",
+                receipt_no="GYT-A-20260815-083000-abcd",
+                artifact_id=None,
+                created_at=snap.checked_at,
+            )
+        )
+        real_find = att_db.find_by_event_id
+        calls = {"n": 0}
+
+        def 第一次装没有(event_id: str) -> att_db.AttendanceRow | None:
+            calls["n"] += 1
+            return None if calls["n"] == 1 else real_find(event_id)
+
+        monkeypatch.setattr(att_db, "find_by_event_id", 第一次装没有)
+        _report_scanned(client)
+        resp = _post(client, event_id="evt-pair-race-1", pair=PAIR_ID)
+        assert resp.status_code == 200
+        状态 = _pair_state(client)
+        assert 状态["state"] == "done"
+        assert 状态["receipt"]["receipt_no"] == "GYT-A-20260815-083000-abcd"
+
+    def test_409不置done(self, client: TestClient, 假水印: mock.MagicMock) -> None:
+        """这次打卡并没有按工友说的记上 —— 电脑该继续等,而不是显示「已成功」。
+        置了 done 的表现最坏:电脑打绿勾,库里其实是别人那条记录。"""
+        assert _post(client, event_id="evt-pair-409").status_code == 200
+        _report_scanned(client)
+        冲突 = _post(client, event_id="evt-pair-409", pair=PAIR_ID, digest="0" * DIGEST_HEX_LEN)
+        assert 冲突.status_code == 409
+        assert _pair_state(client)["state"] == "scanned"
+
+    def test_被限流的打卡不置done(
+        self, client: TestClient, 假水印: mock.MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """429 的请求一步业务都不走,配对状态自然也不许动。"""
+        monkeypatch.setenv("GYT_ATTENDANCE_RATE_BURST", "1")
+        monkeypatch.setenv("GYT_ATTENDANCE_RATE_PER_MINUTE", "1")
+        get_settings.cache_clear()
+        checkin_api.reset_limiters()
+        _report_scanned(client)
+        assert _post(client, event_id="evt-pair-rl-4", pair=PAIR_ID).status_code == 200
+        assert _post(client, event_id="evt-pair-rl-5", pair=PAIR_OTHER).status_code == 429
+        assert _pair_state(client, PAIR_OTHER)["state"] == "waiting"
+
+
+class Test配对失灵不拖累打卡:
+    """配对是锦上添花。整条链上任何一处出岔子,打卡本身都必须照常走完 ——
+    工友看到失败会再打一次,而库里其实已经有了。"""
+
+    @pytest.mark.parametrize(
+        ("说明", "坏pair"),
+        [
+            ("不是十六进制", "not-a-valid-pair-value-at-all-x"),
+            ("短一位", "a" * 31),
+            ("空值", ""),
+            ("超长", "a" * 5000),
+        ],
+    )
+    def test_畸形pair不让打卡失败(
+        self, client: TestClient, 假水印: mock.MagicMock, 说明: str, 坏pair: str
+    ) -> None:
+        """判据同 ``_clamp_recent_limit``:为一个装饰性的头把已经拍好的照片
+        打回去,是本末倒置。畸形值记 warning、当没带,业务照常。
+        (header 值必须是 ASCII,所以坏例子都用 ASCII 造 —— 非 ASCII 在
+        HTTP 客户端那一层就发不出去,轮不到后端。)"""
+        event_id = f"evt-pair-bad-{len(坏pair)}"
+        resp = _post(client, event_id=event_id, pair=坏pair)
+        assert resp.status_code == 200, 说明
+        assert att_db.find_by_event_id(event_id) is not None
+
+    def test_配对表炸了打卡照样成功(
+        self, client: TestClient, 假水印: mock.MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """走到置 done 那一步时台账**已经写成了** —— 配对再出岔子也不许把它
+        变成 500。这不是静默吞错误(logger.exception 记了全栈),
+        是明确的取舍:锦上添花的东西绝不许拖累主路径。"""
+
+        def 炸() -> pairing.PairStore:
+            raise RuntimeError("配对表故意炸给测试看")
+
+        monkeypatch.setattr(pairing, "get_store", 炸)
+        resp = _post(client, event_id="evt-pair-boom-1", pair=PAIR_ID)
+        assert resp.status_code == 200
+        assert resp.json()["data"]["receipt_no"].startswith("GYT-A-")
+        assert att_db.find_by_event_id("evt-pair-boom-1") is not None
+
+    @pytest.mark.parametrize(
+        ("说明", "发请求"),
+        [
+            ("上报", lambda c: c.post("/checkin/pair/scanned", headers={"x-gyt-pair": PAIR_ID})),
+            ("轮询", lambda c: c.get(f"/checkin/pair?id={PAIR_ID}")),
+        ],
+    )
+    def test_配对端点自己炸了回500信封而不是裸堆栈(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+        说明: str,
+        发请求: Any,
+    ) -> None:
+        """**与上一条刻意相反**:在配对**自己**的端点上,表炸了就该如实 500 ——
+        那里没有「已经落库的打卡」要保护,吞掉只会让电脑永远等下去而没人知道。
+        出口仍然是四键信封,堆栈只进日志(响应契约)。"""
+
+        def 炸() -> pairing.PairStore:
+            raise RuntimeError("配对表故意炸给测试看")
+
+        monkeypatch.setattr(pairing, "get_store", 炸)
+        resp = 发请求(client)
+        assert resp.status_code == 500, 说明
+        body = resp.json()
+        assert set(body) == {"ok", "data", "user_msg", "error_code"}
+        assert body["error_code"] == "INTERNAL"
+        assert "RuntimeError" not in body["user_msg"]  # 类名不许露给工友
+
+
+class Test路由已挂进对外列表:
+    def test_四条路由都在CHECKIN_ROUTES里(self) -> None:
+        """``webapp.py`` 是把 ``*CHECKIN_ROUTES`` 整体铺进去的 ——
+        新端点只要不在这个列表里,表现就是 404,**不是启动报错**
+        (CHECKIN_ROUTES 的头注写明了这条)。"""
+        挂上的 = {(r.path, tuple(sorted(r.methods or ()))) for r in checkin_api.CHECKIN_ROUTES}
+        assert ("/checkin/pair/scanned", ("POST",)) in 挂上的
+        assert ("/checkin/pair", ("GET", "HEAD")) in 挂上的
 
 
 class Test文案与词表同源:

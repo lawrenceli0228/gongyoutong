@@ -28,6 +28,16 @@ export const HEADER_GEO = "x-gyt-geo";
 export const HEADER_SOURCE = "x-gyt-source";
 export const HEADER_DIGEST = "x-gyt-digest";
 
+/**
+ * 扫码配对(W8)用的第七个头,**可省** —— 省略时打卡行为与今天完全一致。
+ *
+ * 两条不许犯的规矩(契约「三、后端新增」那节):
+ *  · 它**不进指纹**:同一次打卡带不带 pair 必须算出同一个 digest,
+ *    否则「手机重发一次」会被当成新的一次打卡,幂等层当场失效;
+ *  · 它**不是凭据**、不授予任何权限,所有配对端点照样在登录闸和 X-Api-Key 后面。
+ */
+export const HEADER_PAIR = "x-gyt-pair";
+
 /** 镜像 GEO_SEPARATOR。分号而不是逗号:逗号在 HTTP header 里有「同名 header 合并」
  * 的既有语义,代理把两个同名头合成 `a, b` 之后用逗号切就切错了。 */
 export const GEO_SEPARATOR = ";";
@@ -366,6 +376,8 @@ export interface CheckinHeaderInput {
   geo: GeoResult;
   source: CheckinSource;
   digestHex: string;
+  /** 扫码配对串(W8),可省。**格式不对当没有,绝不抛** —— 理由见函数体里那段。 */
+  pairId?: string | null;
 }
 
 /**
@@ -399,12 +411,19 @@ export function buildCheckinHeaders(
     throw new CheckinContractError("拍照来源不对 —— 这是程序错误");
   }
   const site = (input.site ?? "").trim();
+  // 配对头:可省,**而且格式不对就当没有,这里一个错都不抛**。
+  // 上面每一条校验抛错的后果是「打不了卡」,对指纹/姓名/编号那是对的 ——
+  // 它们错了这次打卡本来就记不成账。配对不一样:它只决定「电脑那边跟不跟着变」,
+  // 为它挡下一次打卡是把主次颠倒了(W8 契约第五节:配对是锦上添花,
+  // 断了只是电脑不联动,手机照样得能把卡打出去)。
+  const pairId = normalizePairId(input.pairId);
   const base: Record<string, string> = {
     [HEADER_EVENT_ID]: eventId,
     [HEADER_WORKER]: encodeNameForHeader(worker),
     [HEADER_GEO]: buildGeoHeader(input.geo),
     [HEADER_SOURCE]: input.source,
     [HEADER_DIGEST]: digest,
+    ...(pairId ? { [HEADER_PAIR]: pairId } : {}),
   };
   // 空地盤省略 header 而不是发空串:后端指纹里两者等价
   // (test_checkin_api.py 的 test_地盤名为_None_与空串等价),少发一条是一条。
@@ -727,4 +746,169 @@ export function parseRecentEnvelope(bodyText: string): Receipt[] {
 export function formatCheckedAt(checkedAt: string): string {
   const match = checkedAt.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/);
   return match ? `${match[1]} ${match[2]}` : checkedAt;
+}
+
+// ---------------------------------------------------------------------------
+// 扫码配对(W8)—— 电脑显码 → 手机打卡 → 电脑跟着变
+// ---------------------------------------------------------------------------
+//
+// 要治的病:电脑上打开打卡面板会显示二维码,人扫走之后,**这台电脑什么都不知道**
+// —— 摄像头还开着取景(投影时全场看的是主讲人的脸),界面还停在「请拍照」。
+//
+// 为什么是轮询不是 SSE(契约开头那节,别再翻案):Caddyfile 里只有
+// `handle_path /api/*` 那条带 `flush_interval -1`,`@checkin` 那条专用路由没有 ——
+// SSE 会被 Caddy 缓冲住,表现是「事件全都晚到或不到」,且不报错。
+// 人拍一张照要十几秒,2 秒一轮绰绰有余,而且穿得过任何代理。
+
+/** 配对串长度:32 位十六进制 = 128 bit。 */
+export const PAIR_HEX_LEN = 32;
+
+/** 轮询间隔(契约第五节钉死 2 秒)。后端的配对桶按 60/分钟配,2 秒一次 = 30/分钟。 */
+export const PAIR_POLL_INTERVAL_MS = 2_000;
+
+/** 二维码 URL 上那两个 query 键。**缺一不可**:
+ * checkin 负责开面板、pair 负责联动,只带后者 = 手机落在首页、电脑永远等 waiting。
+ * 常量而不是字面量,是因为读的人(checkin.tsx 的 useQueryState)和
+ * 写的人(下面 buildCheckinPageUrl)是两处,拼错任何一处都没有报错。 */
+export const CHECKIN_QUERY_KEY = "checkin";
+export const CHECKIN_QUERY_OPEN_VALUE = "1";
+export const PAIR_QUERY_KEY = "pair";
+
+const PAIR_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+/**
+ * 归一化并校验配对串:合法返回小写形式,**任何不合法一律返回 null**(不抛)。
+ *
+ * 归一化的用处:这串是从 URL query 里读回来的,中间经过二维码、扫码 App、
+ * 登录跳转好几手,顺手把空白和大小写吃掉,比在每个调用点各写一遍稳。
+ */
+export function normalizePairId(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().toLowerCase();
+  return PAIR_ID_PATTERN.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * 生成一个新的配对串(32 位小写十六进制)。
+ *
+ * **必须 crypto.getRandomValues,不许 Math.random。** 理由不是「防猜」——
+ * 它不是凭据、猜中也进不去(所有配对端点照样在登录闸和 X-Api-Key 后面);
+ * 理由是**撞号**:两台电脑同时开面板要是撞上同一个串,A 的屏幕会显示 B 的打卡凭证,
+ * 而凭证上有姓名、时间和那张自拍。Math.random 在同一毫秒开两个标签页并非撞不上,
+ * getRandomValues 是 CSPRNG、128 bit,撞号这件事可以不用再想。
+ *
+ * getRandomValues 到处都有(不像 crypto.subtle / randomUUID 只在安全上下文),
+ * 所以这里不做二级兜底:真没有就是浏览器太老,如实抛。
+ */
+export function newPairId(): string {
+  if (!globalThis.crypto?.getRandomValues) {
+    throw new CheckinContractError("这台浏览器生成不了配对码,换个浏览器再试");
+  }
+  // 存下来再调会丢 this(浏览器里是 "Illegal invocation"),所以照原样从 crypto 上调
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(PAIR_HEX_LEN / 2));
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** 配对状态机,**只有这三个、且只能单向前进**(契约第三节)。 */
+export const PAIR_STATES = ["waiting", "scanned", "done"] as const;
+export type PairState = (typeof PAIR_STATES)[number];
+
+const PAIR_STATE_RANK: Readonly<Record<PairState, number>> = Object.freeze({
+  waiting: 0,
+  scanned: 1,
+  done: 2,
+});
+
+/**
+ * 合并一次轮询结果:**只前进,不后退**。
+ *
+ * 两个来源都会「倒着说话」,而且都不报错:
+ *  · 轮询两秒一发,网络一抖就会**后发先回** —— done 已经收到了,上一轮的
+ *    waiting 才姗姗来迟;
+ *  · 后端对**未知/过期**的 id 一律回 waiting(契约刻意不区分,免得变成探测接口),
+ *    所以面板开着超过 TTL(10 分钟)之后,每一轮都回 waiting。
+ *
+ * 两者都会把屏幕上的「✅ 已打卡成功」打回「用手机扫这个码」—— 而人已经收工走了,
+ * 留在屏幕上的是一句错话。只前进不后退之后,这两种情况都只是「不再更新」。
+ */
+export function advancePairState(current: PairState, incoming: PairState): PairState {
+  return PAIR_STATE_RANK[incoming] > PAIR_STATE_RANK[current] ? incoming : current;
+}
+
+/**
+ * 配对面板上给人看的三句话(契约第五节那张表,**一字不差**)。
+ *
+ * 第四种情形「轮询失败」在这里**故意没有对应文案**:配对断了不显示任何错误,
+ * 静默重试就是了 —— 电脑那边不联动不影响任何人打卡,给工友看一行红字
+ * 只会让他以为卡没打成。
+ */
+export const PAIR_MESSAGES: Readonly<Record<PairState, string>> = Object.freeze({
+  waiting: "用手机扫这个码,在手机上拍照打卡",
+  scanned: "手机已经扫上了 —— 请在手机上拍一张自拍",
+  done: "✅ 已打卡成功",
+});
+
+/**
+ * 二维码里编的地址:`<origin>/?checkin=1&pair=<32位hex>`(契约第二节)。
+ *
+ * D7 仍然成立 —— 码里**没有 token、没有姓名**,pair 只是「哪台电脑在等哪次打卡」
+ * 的关联号。变的只是「能不能带 query」:以前带了也活不过登录跳转
+ * (serve_login 写死重定向 `/`),W8 把登录页改成带 `next` 回原地址,query 才活了。
+ *
+ * **配对串不合法时退化成只带 checkin=1,绝不抛**:这个返回值是在渲染期用的,
+ * 抛出去就是整个打卡面板白屏 = 连卡都打不了。退化之后手机照样能扫开面板打卡,
+ * 只是电脑那边不跟着变 —— 这正是「配对失败不影响打卡」该有的样子。
+ */
+export function buildCheckinPageUrl(origin: string, pairId: string | null): string {
+  const base = `${stripTrailingSlash(origin)}/?${CHECKIN_QUERY_KEY}=${CHECKIN_QUERY_OPEN_VALUE}`;
+  const pair = normalizePairId(pairId);
+  return pair ? `${base}&${PAIR_QUERY_KEY}=${pair}` : base;
+}
+
+/** GET /checkin/pair?id=… 的地址。id 是校验过的 32 位十六进制,不需要转义。 */
+export function pairStatusUrl(apiBase: string, pairId: string): string {
+  return `${stripTrailingSlash(apiBase)}/checkin/pair?id=${pairId}`;
+}
+
+/** POST /checkin/pair/scanned 的地址(pair 走 X-GYT-Pair 头,不进 query)。 */
+export function pairScannedUrl(apiBase: string): string {
+  return `${stripTrailingSlash(apiBase)}/checkin/pair/scanned`;
+}
+
+export interface PairSnapshot {
+  state: PairState;
+  /** 只有 done 才可能非空;形状与 POST /checkin 成功时那个 receipt 完全一致。 */
+  receipt: Receipt | null;
+}
+
+/**
+ * 解析 GET /checkin/pair 的响应。**看不懂就返回 null,一个错都不抛。**
+ *
+ * 为什么不抛:轮询的失败一律静默(契约第五节)。抛的话组件里每一处都要
+ * try/catch 才不会把红叉甩到打卡界面上,少写一处就是一次「卡明明打成了,
+ * 电脑上却弹个错」。null 的语义是「这一轮没有可信的新消息」——
+ * 调用方原地不动、两秒后再说,状态机的单向前进保证了原地不动永远是安全的。
+ *
+ * done 但凭证形状不对时**保留 done、凭证给 null**:电脑这边最要紧的是
+ * 「别再让人对着自己的摄像头等」,凭证渲染不出来是次要的 ——
+ * 那份凭证本来就在手机上,库里也记着。
+ */
+export function parsePairEnvelope(bodyText: string): PairSnapshot | null {
+  const parsed = tryParseJsonObject(bodyText);
+  if (!parsed || parsed.ok !== true) return null;
+  const data = parsed.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const state = (data as Record<string, unknown>).state;
+  if (typeof state !== "string") return null;
+  if (!(PAIR_STATES as readonly string[]).includes(state)) return null;
+  const rawReceipt = (data as Record<string, unknown>).receipt;
+  let receipt: Receipt | null = null;
+  if (state === "done" && rawReceipt) {
+    try {
+      receipt = toReceipt(rawReceipt);
+    } catch {
+      receipt = null;
+    }
+  }
+  return { state: state as PairState, receipt };
 }

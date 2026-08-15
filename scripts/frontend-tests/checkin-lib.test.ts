@@ -10,9 +10,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  advancePairState,
   buildCheckinHeaders,
+  buildCheckinPageUrl,
   buildGeoHeader,
   CHECKIN_MESSAGES,
+  CHECKIN_QUERY_KEY,
+  CHECKIN_QUERY_OPEN_VALUE,
   CheckinContractError,
   checkinUrl,
   clearEventId,
@@ -33,9 +37,20 @@ import {
   MAX_NAME_BYTES,
   NETWORK_ERROR_STATUS,
   newEventId,
+  newPairId,
   normalizeError,
+  normalizePairId,
+  PAIR_HEX_LEN,
+  PAIR_MESSAGES,
+  PAIR_POLL_INTERVAL_MS,
+  PAIR_QUERY_KEY,
+  PAIR_STATES,
+  PairState,
+  parsePairEnvelope,
   parseRecentEnvelope,
   parseReceiptEnvelope,
+  pairScannedUrl,
+  pairStatusUrl,
   Receipt,
   receiptImageUrl,
   recentUrl,
@@ -550,5 +565,232 @@ describe("凭证与地址", () => {
   it("formatCheckedAt:香港钟表时间原样展示,不过 Date() 本地化;认不出的原样返回", () => {
     expect(formatCheckedAt("2026-08-15T08:30:00+08:00")).toBe("2026-08-15 08:30:00");
     expect(formatCheckedAt("看不懂的时间")).toBe("看不懂的时间");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 扫码配对(W8)
+// ---------------------------------------------------------------------------
+// 锁的还是**静默出错**那一类:配对串换个随机源 → 撞号之后 A 的屏幕显示 B 的凭证;
+// 状态机能后退 → 打完卡的屏幕自己变回「请扫码」;URL 少一个 query 键 →
+// 手机落在首页、电脑永远等 waiting。三件在界面上都不会报错。
+
+describe("配对串 newPairId / normalizePairId", () => {
+  it("newPairId:32 位小写十六进制,两次不重样", () => {
+    const a = newPairId();
+    expect(a).toMatch(/^[0-9a-f]{32}$/);
+    expect(a.length).toBe(PAIR_HEX_LEN);
+    expect(newPairId()).not.toBe(a);
+  });
+
+  it("随机源必须是 crypto.getRandomValues,不是 Math.random", () => {
+    // 把 getRandomValues 换成「全填 0xab」:输出若真来自它,就必然是一串 ab。
+    // 这条断言就是「别改回 Math.random」的钉子 —— 撞号的后果是
+    // A 的电脑显示 B 的姓名和自拍(见 newPairId 头注)。
+    vi.stubGlobal("crypto", {
+      getRandomValues: (arr: Uint8Array) => {
+        arr.fill(0xab);
+        return arr;
+      },
+    });
+    expect(newPairId()).toBe("ab".repeat(PAIR_HEX_LEN / 2));
+  });
+
+  it("没有 getRandomValues 的老浏览器:抛中文错误", () => {
+    vi.stubGlobal("crypto", undefined);
+    expect(() => newPairId()).toThrow(CheckinContractError);
+  });
+
+  it("normalizePairId:合法通过、大小写与空白归一", () => {
+    const id = "0123456789abcdef0123456789abcdef";
+    expect(normalizePairId(id)).toBe(id);
+    expect(normalizePairId(id.toUpperCase())).toBe(id);
+    expect(normalizePairId(`  ${id}  `)).toBe(id);
+  });
+
+  it("normalizePairId:任何不合法一律 null,绝不抛", () => {
+    expect(normalizePairId(null)).toBe(null);
+    expect(normalizePairId(undefined)).toBe(null);
+    expect(normalizePairId("")).toBe(null);
+    expect(normalizePairId("a".repeat(PAIR_HEX_LEN - 1))).toBe(null); // 短一位
+    expect(normalizePairId("a".repeat(PAIR_HEX_LEN + 1))).toBe(null); // 长一位
+    expect(normalizePairId("g".repeat(PAIR_HEX_LEN))).toBe(null); // 非十六进制
+    expect(normalizePairId("../../etc/passwd")).toBe(null);
+    expect(normalizePairId(123 as unknown as string)).toBe(null);
+  });
+
+  it("newPairId 的产物必然过得了 normalizePairId(两头同一套判据)", () => {
+    for (let i = 0; i < 20; i += 1) {
+      const id = newPairId();
+      expect(normalizePairId(id)).toBe(id);
+    }
+  });
+});
+
+describe("配对状态机 advancePairState(只前进,不后退)", () => {
+  const rank: Record<PairState, number> = { waiting: 0, scanned: 1, done: 2 };
+
+  it.each(PAIR_STATES.flatMap((a) => PAIR_STATES.map((b) => [a, b] as const)))(
+    "%s + %s → 取靠后的那个",
+    (current, incoming) => {
+      const expected = rank[incoming] > rank[current] ? incoming : current;
+      expect(advancePairState(current, incoming)).toBe(expected);
+    },
+  );
+
+  it("后端对过期 id 回的 waiting 不会把 done 打回去(TTL 到点那一刻的真实情形)", () => {
+    expect(advancePairState("done", "waiting")).toBe("done");
+    expect(advancePairState("scanned", "waiting")).toBe("scanned");
+  });
+
+  it("乱序到达的旧响应吃不掉新状态(两秒一轮,网络一抖就会后发先回)", () => {
+    // done 先到、scanned 后到 —— 屏幕必须留在 done
+    expect(advancePairState(advancePairState("waiting", "done"), "scanned")).toBe("done");
+  });
+});
+
+describe("二维码 URL 与配对端点地址", () => {
+  const id = "0123456789abcdef0123456789abcdef";
+
+  it("两个 query 键缺一不可(契约第二节钉死的形状)", () => {
+    expect(buildCheckinPageUrl("https://velactora.com", id)).toBe(
+      `https://velactora.com/?${CHECKIN_QUERY_KEY}=${CHECKIN_QUERY_OPEN_VALUE}&${PAIR_QUERY_KEY}=${id}`,
+    );
+    // 写死一份长相,防有人「顺手」改成 #hash 或改键名 —— 手机侧读的是 query
+    expect(buildCheckinPageUrl("https://velactora.com", id)).toBe(
+      "https://velactora.com/?checkin=1&pair=0123456789abcdef0123456789abcdef",
+    );
+  });
+
+  it("配对串缺失/不合法 → 退化成只带 checkin=1,**不抛**(渲染期抛 = 面板白屏)", () => {
+    expect(buildCheckinPageUrl("https://velactora.com", null)).toBe(
+      "https://velactora.com/?checkin=1",
+    );
+    expect(buildCheckinPageUrl("https://velactora.com", "不是十六进制")).toBe(
+      "https://velactora.com/?checkin=1",
+    );
+    // 退化之后手机照样开得了面板、打得了卡,只是电脑那边不跟着变
+    expect(buildCheckinPageUrl("https://velactora.com", "")).toContain("checkin=1");
+  });
+
+  it("origin 末尾的斜杠不会拼出双斜杠", () => {
+    expect(buildCheckinPageUrl("https://velactora.com/", id)).toBe(
+      `https://velactora.com/?checkin=1&pair=${id}`,
+    );
+  });
+
+  it("大写配对串在 URL 里被归一成小写(扫码 App 有可能改大小写)", () => {
+    expect(buildCheckinPageUrl("https://velactora.com", id.toUpperCase())).toBe(
+      `https://velactora.com/?checkin=1&pair=${id}`,
+    );
+  });
+
+  it("两个配对端点的地址(apiBase 末尾斜杠同样归一)", () => {
+    expect(pairStatusUrl("http://localhost:2024", id)).toBe(
+      `http://localhost:2024/checkin/pair?id=${id}`,
+    );
+    expect(pairStatusUrl("https://velactora.com/api/", id)).toBe(
+      `https://velactora.com/api/checkin/pair?id=${id}`,
+    );
+    expect(pairScannedUrl("http://localhost:2024")).toBe(
+      "http://localhost:2024/checkin/pair/scanned",
+    );
+    expect(pairScannedUrl("https://velactora.com/api/")).toBe(
+      "https://velactora.com/api/checkin/pair/scanned",
+    );
+  });
+});
+
+describe("parsePairEnvelope(轮询解析:看不懂就 null,一个错都不抛)", () => {
+  const envelope = (data: unknown) =>
+    JSON.stringify({ ok: true, data, user_msg: "", error_code: null });
+
+  it("三个状态各解得出来", () => {
+    expect(parsePairEnvelope(envelope({ state: "waiting", receipt: null }))).toEqual({
+      state: "waiting",
+      receipt: null,
+    });
+    expect(parsePairEnvelope(envelope({ state: "scanned", receipt: null }))).toEqual({
+      state: "scanned",
+      receipt: null,
+    });
+  });
+
+  it("done 带凭证:形状与 POST /checkin 那个 receipt 完全一致", () => {
+    const receipt = receiptFixture();
+    expect(parsePairEnvelope(envelope({ state: "done", receipt }))).toEqual({
+      state: "done",
+      receipt,
+    });
+  });
+
+  it("done 但凭证形状不对:**保留 done**、凭证给 null(先把摄像头停掉最要紧)", () => {
+    const snapshot = parsePairEnvelope(envelope({ state: "done", receipt: { 乱: 1 } }));
+    expect(snapshot).toEqual({ state: "done", receipt: null });
+  });
+
+  it("waiting/scanned 时即使带了 receipt 也不认(凭证只属于 done)", () => {
+    expect(
+      parsePairEnvelope(envelope({ state: "scanned", receipt: receiptFixture() })),
+    ).toEqual({ state: "scanned", receipt: null });
+  });
+
+  it("认不出的输入一律 null:非 JSON / ok:false / 缺 state / 没见过的 state", () => {
+    expect(parsePairEnvelope("<html>登录页</html>")).toBe(null);
+    expect(parsePairEnvelope(JSON.stringify({ ok: false, data: null }))).toBe(null);
+    expect(parsePairEnvelope(envelope({ receipt: null }))).toBe(null);
+    expect(parsePairEnvelope(envelope({ state: "expired" }))).toBe(null);
+    expect(parsePairEnvelope(envelope(null))).toBe(null);
+    expect(parsePairEnvelope("")).toBe(null);
+  });
+});
+
+describe("配对文案与节拍(契约第五节那张表)", () => {
+  it("三句话一字不差", () => {
+    expect(PAIR_MESSAGES.waiting).toBe("用手机扫这个码,在手机上拍照打卡");
+    expect(PAIR_MESSAGES.scanned).toBe("手机已经扫上了 —— 请在手机上拍一张自拍");
+    expect(PAIR_MESSAGES.done).toBe("✅ 已打卡成功");
+  });
+
+  it("每个状态都有文案(加了第四个状态就必须补一句,不许出现空白面板)", () => {
+    for (const state of PAIR_STATES) {
+      expect(PAIR_MESSAGES[state].trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it("轮询间隔 2 秒(后端配对桶按 60/分钟配,2 秒一次 = 30/分钟,留了一倍余量)", () => {
+    expect(PAIR_POLL_INTERVAL_MS).toBe(2000);
+  });
+});
+
+describe("buildCheckinHeaders 的配对头(可省,坏了也不许挡住打卡)", () => {
+  const okInput = {
+    eventId: "11111111-2222-4333-8444-555555555555",
+    worker: "张三",
+    geo: { status: "ok", lat: 22.302711, lon: 114.177216, accuracyM: 12.5 } as const,
+    source: "camera" as const,
+    digestHex: "a".repeat(DIGEST_HEX_LEN),
+  };
+  const id = "0123456789abcdef0123456789abcdef";
+
+  it("给了合法配对串就带上 x-gyt-pair(大写照样归一)", () => {
+    expect(buildCheckinHeaders({ ...okInput, pairId: id })["x-gyt-pair"]).toBe(id);
+    expect(buildCheckinHeaders({ ...okInput, pairId: id.toUpperCase() })["x-gyt-pair"]).toBe(
+      id,
+    );
+  });
+
+  it("不给就不带 —— 行为与配对上线之前一模一样", () => {
+    expect(buildCheckinHeaders(okInput)).not.toHaveProperty("x-gyt-pair");
+    expect(buildCheckinHeaders({ ...okInput, pairId: null })).not.toHaveProperty(
+      "x-gyt-pair",
+    );
+  });
+
+  it("配对串是坏的:**不抛、只是不带这个头**,其余五个头一字不改", () => {
+    const broken = buildCheckinHeaders({ ...okInput, pairId: "扫码扫出来的乱码" });
+    expect(broken).not.toHaveProperty("x-gyt-pair");
+    // 打卡本身照发 —— 这就是「配对失败绝不影响打卡」在代码里的样子
+    expect(broken).toEqual(buildCheckinHeaders(okInput));
   });
 });
