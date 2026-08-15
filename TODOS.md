@@ -1071,3 +1071,42 @@
 
 - **Depends on:** `projects` 表加坐标(队友那侧)。与 TODO-36(权限模型)有关联但
   不互为前提 —— 那条管「谁能查」,这条管「查哪个工地」。
+
+---
+
+## TODO-40 30GB 盘装不下一次后端重建 —— 且失败会把镜像记录 GC 掉,容器从此停不得
+
+- **What:** 这台 VPS 30GB 盘,后端镜像 6.37GB。**一次全量重建的峰值约 13.2GB**
+  (BuildKit 缓存 6.8GB + 解包进 containerd 6.37GB),而扣掉运行中容器占的层之后,
+  可用只有 11GB 左右。**结论:这台机器上,后端镜像的全量重建从来就不成立** ——
+  以前能成,全靠增量缓存;缓存一没,必炸。
+- **2026-08-16 实测的完整事故链**(比 TODO-33 记的严重,那条只到「半截镜像」):
+  1. `Build Cache 0B`(TODO-33 那次 `docker builder prune -af` 的后遗症)→ 全量重建;
+  2. 走到 `#27 unpacking` 时 `no space left on device`,构建失败;
+  3. **`gyt-backend:vps` 这个 tag 已经被打到那个 1.95GB 的半截镜像上**;
+  4. 🔴 **Docker 29 用 containerd 存储:tag 一移走,没有名字引用的旧镜像记录会被 GC。**
+     等我去 `docker tag <旧ID> gyt-backend:vps` 时报 `No such image`;
+     `docker commit <运行中的容器>` 报 `content digest not found`(config blob 也没了)。
+  5. 于是进入最坏状态:**容器靠自己的快照健康运行,但既不能打 tag、不能固化、也不能重启。**
+     停一下就再也起不来,而 `docker ps` 一切正常、站点一切正常,**外部完全看不出来**。
+- **⚠️ 附带的连锁:`docker compose up -d <任一服务>` 会顺手重建 backend**(它发现镜像没了),
+  报 `No such image` 后**整条命令中止**,连你本来要动的那个服务也没动成。
+  必须加 `--no-deps` 才能隔离开。这一条在镜像缺失期间是**每一条 compose 命令的地雷**。
+- **⚠️ `docker buildx prune -f` 清的是全部缓存,不是 `docker system df` 报的那个
+  「可回收」数。** 我按「可回收 1.633GB」去理解,实际清掉 7.833GB —— 那里面 6.2GB
+  正是刚建好、能让重跑秒过的层。
+- **⚠️ `DOCKER_BUILDKIT=0` 这条省磁盘的路走不通:** 经典构建器不支持
+  `RUN --mount=type=cache`,而 `backend/Dockerfile` 用了它。
+- **当时怎么脱的困:** 唯一能腾出空间的办法是**释放运行中容器占的层** ——
+  `docker rmi -f` 只去掉 tag、一个字节都不释放,必须**删掉容器本身**。
+  最后是删掉前端容器(3.1GB)换到 14.2GB 才建成,代价是界面停了约 25 分钟。
+- **下次要怎么做(按优先级):**
+  1. **别让缓存断。** 缓存在,重建是增量的、几十秒、几百 MB;缓存一没就是这条事故链的起点。
+     `docker builder prune -af` / `buildx prune -af` 在这台机器上等于「预约一次事故」。
+  2. **重建前先量峰值**:`可用空间 ≥ 镜像大小 × 2 + 1G`。不够就别开始,先删容器腾层。
+  3. **构建前先把当前镜像存一份**:`docker save gyt-backend:vps | gzip > /root/backend-known-good.tgz`
+     (约 3-4GB,盘紧时可存到别处)。有它就不会出现「唯一的好镜像被 GC 掉」这一幕。
+     ⚠️ **`docker tag <旧ID>` 不算备份** —— 旧 ID 在 tag 移走后可能已经不存在了。
+  4. **根治是扩盘。** 30GB 对「6.37GB 镜像 + 需要双份空间的构建」本来就不够,
+     现在是靠人工腾挪硬撑。
+- **Depends:** 无。下一次改后端代码就会再撞上。
