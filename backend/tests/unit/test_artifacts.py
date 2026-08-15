@@ -19,6 +19,7 @@ from gyt.core.artifacts import (
     ARTIFACT_ID_RE,
     ArtifactKind,
     ArtifactNotFound,
+    delete,
     read_meta,
     register,
     resolve,
@@ -256,3 +257,76 @@ def test_产物类型也接受字符串写法():
     artifact_id = register(PAYLOAD, kind="PHOTO", original_name="a.jpg")
 
     assert read_meta(artifact_id)["kind"] == "PHOTO"
+
+
+# --- 删除 API(W7 清理器的前提;除清理器外没有第二个调用方)---------------------
+
+
+def test_delete_正常删掉正文与sidecar():
+    artifact_id = register(PAYLOAD, kind=ArtifactKind.ATTENDANCE, original_name="打卡.jpg")
+    body = resolve(artifact_id)
+
+    delete(artifact_id)
+
+    assert not body.exists()
+    assert list(get_settings().artifacts_dir.glob(f"*/{artifact_id}*")) == [], "sidecar 也要没"
+    with pytest.raises(ArtifactNotFound):
+        resolve(artifact_id)
+    with pytest.raises(ArtifactNotFound):
+        read_meta(artifact_id)
+
+
+def test_delete_无扩展名的正文也能删干净():
+    # 原名不带白名单扩展名 → 正文落盘无后缀,删除按 id 前缀找,不靠 ext
+    artifact_id = register(PAYLOAD, kind=ArtifactKind.ATTENDANCE, original_name="没有扩展名")
+
+    delete(artifact_id)
+
+    assert list(get_settings().artifacts_dir.glob(f"*/{artifact_id}*")) == []
+
+
+def test_delete_不存在时默认抛_missing_ok放过():
+    ghost = "0" * 32  # 格式合法但从未登记
+
+    with pytest.raises(ArtifactNotFound):
+        delete(ghost)
+    delete(ghost, missing_ok=True)  # 不抛 —— 清理器重跑的幂等靠它
+
+
+def test_delete_重复删时missing_ok幂等():
+    artifact_id = register(PAYLOAD, kind=ArtifactKind.ATTENDANCE, original_name="a.jpg")
+
+    delete(artifact_id)
+    delete(artifact_id, missing_ok=True)  # 第二次不抛
+
+    with pytest.raises(ArtifactNotFound):
+        delete(artifact_id)  # 不带 missing_ok 的第二次照样抛
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../../evil",  # 路径穿越
+        "/etc/passwd",  # 绝对路径
+        "*" * 32,  # glob 通配符
+        "0" * 31,  # 太短
+        None,  # 非字符串
+    ],
+)
+def test_delete_恶意id不越界_missing_ok也不放过格式非法(bad_id):
+    """missing_ok 放过的是「已经删过了」,不是「垃圾输入」——
+    静默吞掉会把调用方把文件名当 id 传进来这类 bug 藏死。"""
+    with pytest.raises(ArtifactNotFound):
+        delete(bad_id)
+    with pytest.raises(ArtifactNotFound):
+        delete(bad_id, missing_ok=True)
+
+
+def test_delete_只删自己的_不碰同目录的其它产物():
+    victim = register(PAYLOAD, kind=ArtifactKind.PHOTO, original_name="别人的.jpg")
+    doomed = register(PAYLOAD, kind=ArtifactKind.ATTENDANCE, original_name="自己的.jpg")
+
+    delete(doomed)
+
+    assert resolve(victim).read_bytes() == PAYLOAD
+    assert read_meta(victim)["kind"] == "PHOTO"

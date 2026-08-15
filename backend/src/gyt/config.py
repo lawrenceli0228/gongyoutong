@@ -248,6 +248,40 @@ class Settings(BaseSettings):
     photo_compress_target_mb: float = Field(default=4.0, gt=0)  # 压到多大再喂视觉模型
     photo_compress_max_edge_px: int = Field(default=2048, ge=1)  # 长边像素上限
 
+    # --- 打卡(W7)---------------------------------------------------------
+    # 打卡是直连接口(不走 LLM),但常量入口不破例:全部从这里取,理由同全局。
+    # 水印字体:空 = 由 attendance/watermark.py 按候选表探测(Debian 的 WQY、macOS 的
+    # PingFang 等)。这里只留"显式覆盖"一个口子,候选表不进配置 —— 那是代码携带的
+    # 平台知识,放 .env 里没人会改,反而多一处会漂的拷贝。
+    attendance_watermark_font: str = Field(default="")
+    # 凭证图长边上限。**这不是画质旋钮,是 1.9GB VPS 上的内存闸**(W7 §3.4):
+    # 4000×3000 解开约 36MB,突发 10 人同时打卡会 OOM 掉整个 backend 容器。
+    # 缩到 1600 后单张位图约 7MB,同时水印字号才能相对图尺寸固定。
+    # ⚠️ 与上面 photo_compress_max_edge_px(喂视觉模型用)是两个旋钮,别合并:
+    # 一个管"识图够不够看",一个管"凭证内存与观感",调整动机完全不同。
+    attendance_max_edge_px: int = Field(default=1600, ge=320)
+    # 解码像素上限(解压炸弹闸)。设得宽:1 亿像素的手机全景图是真实输入,
+    # 挡的是"几 KB 的字节声称自己是 30 亿像素"这种恶意构造;
+    # 正常大图的内存问题由上面的缩图 + watermark.py 的 draft() 解决,不靠这条。
+    attendance_decode_max_pixels: int = Field(default=200_000_000, ge=1_000_000)
+    # 凭证图留存天数,到期由清理器删图(行保留,artifact_id 置 NULL)。
+    # 90 是工程缺省,不是合规结论 —— PDPO 的留存政策仍欠(TODOS.md 的 TODO-37)。
+    attendance_retention_days: int = Field(default=90, ge=1)
+    # 限流两层(W7 §3.6)。全局桶是**唯一的真闸**(一个班组的量级);
+    # worker 桶只防手抖连点 —— worker_name 由客户端提供,**不是安全控制**。
+    attendance_rate_per_minute: float = Field(default=30.0, gt=0)
+    attendance_rate_burst: int = Field(default=10, ge=1)
+    attendance_worker_rate_per_minute: float = Field(default=6.0, gt=0)
+    attendance_worker_rate_burst: int = Field(default=3, ge=1)
+    # GET /checkin/recent 的返回条数上限(缺省与 clamp 都用它):凭证列表是给
+    # "刚打完卡看一眼"用的,不是报表 —— 翻旧账走查询 Agent。
+    attendance_recent_limit: int = Field(default=20, ge=1)
+    # 查询侧"某天明细"最多返回多少个工人(D10 允许无限打卡,不设上限就可能几百行)。
+    attendance_query_max_workers: int = Field(default=50, ge=1)
+    # 清理器老化窗口(小时):register 成功但 INSERT 还没落库的图,在这个窗口内
+    # **不许删**(W7 §3.9)。1 小时远大于任何一次请求的寿命,又远小于留存天数。
+    attendance_cleanup_min_age_h: float = Field(default=1.0, gt=0)
+
     # --- 知识库(RAG)-----------------------------------------------------
     # 方案 B 启动预置:开则起服务时若规范索引缺失/有改动,自动建库(agents/knowledge/ingest)。
     # **默认 False**——两个原因:① 保护测试(测试 chroma_dir 是 tmp,一开必触发 2.2GB 建库);

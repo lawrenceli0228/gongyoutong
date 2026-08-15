@@ -50,6 +50,12 @@ dependencies = [
     #    而月之暗面可能把它当视频解码计费,账单是静态图的几十倍且完全静默);
     # ③ 验真伪(在此之前只看扩展名 —— 一个改名成 .jpg 的文本文件照样会被 base64 发出去)。
     "pillow>=11.0,<13",
+    # fontTools:打卡水印的缺字检测唯一可靠判据是查字体 cmap(W7 §1.7:getbbox 对
+    # .notdef 方块也返回非空像素框,零区分度)。它此前只是 ezdxf/matplotlib 的**传递**
+    # 依赖 —— 传递依赖断的方式是静默的:哪天上游换了字体后端,attendance/watermark.py
+    # 直接 ImportError,而没有任何一行配置记录过我们依赖它。提成显式;uv.lock 里
+    # 已是 4.63.0,提升零安装成本。区间照本文件惯例:下界=已核实版本,上界=下一大版本。
+    "fonttools>=4.63.0,<5",
     # python-docx:Report Agent 渲染巡检记录/日报落盘(方案 D 决策里定的产物形态)。
     # 主依赖而非 dev:容器里 `uv sync --no-dev` 也要能渲染。
     "python-docx>=1.1,<2",
