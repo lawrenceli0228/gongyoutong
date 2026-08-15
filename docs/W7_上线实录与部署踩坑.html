@@ -1,0 +1,553 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>上线实录与部署踩坑 · 工友通 W7</title>
+<style>
+:root{
+  --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5;
+  --accent:#c2410c; --accent-soft:#fff1e8;
+  --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec;
+  --warn:#b45309; --warn-soft:#fdf3e2;
+  --bad:#a52a2a; --bad-soft:#fbeceb;
+  --sans:"PingFang SC","Hiragino Sans GB","Noto Sans SC",system-ui,-apple-system,sans-serif;
+  --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme:dark){
+  :root{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+    --line:#37332c; --line-soft:#2a2620; --accent:#f97b3d; --accent-soft:#2e1c10;
+    --blue:#6aa5d8; --blue-soft:#152433; --ok:#6fbf8f; --ok-soft:#12271a;
+    --warn:#e0a34e; --warn-soft:#2b2010; --bad:#e97a70; --bad-soft:#2c1614; }
+}
+:root[data-theme="light"]{ --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5; --accent:#c2410c; --accent-soft:#fff1e8; --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec; --warn:#b45309; --warn-soft:#fdf3e2; --bad:#a52a2a; --bad-soft:#fbeceb; }
+:root[data-theme="dark"]{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+  --line:#37332c; --line-soft:#2a2620; --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+  --ok:#6fbf8f; --ok-soft:#12271a; --warn:#e0a34e; --warn-soft:#2b2010; --bad:#e97a70; --bad-soft:#2c1614; }
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;font-feature-settings:"tnum"}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px 96px;display:grid;grid-template-columns:1fr;gap:0}
+@media(min-width:1060px){ .wrap{grid-template-columns:172px minmax(0,1fr);gap:50px;padding-right:34px} }
+nav{display:none}
+@media(min-width:1060px){
+  nav{display:block;position:sticky;top:0;align-self:start;padding-top:124px;height:100vh;overflow-y:auto}
+  nav a{display:block;font-size:12.5px;color:var(--ink-faint);text-decoration:none;
+    padding:5px 0 5px 11px;border-left:2px solid var(--line-soft);transition:.15s}
+  nav a:hover{color:var(--accent);border-left-color:var(--accent)}
+  nav a b{font-family:var(--mono);font-size:10.5px;margin-right:6px;opacity:.6}
+}
+main{min-width:0}
+header{padding:70px 0 0}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--accent);margin-bottom:16px}
+h1{font-size:clamp(29px,4.2vw,46px);line-height:1.15;letter-spacing:-.022em;font-weight:680;
+  margin:0 0 16px;text-wrap:balance;max-width:17em}
+.lede{font-size:clamp(15.5px,1.5vw,18px);color:var(--ink-soft);max-width:45em;margin:0 0 28px;line-height:1.72}
+.lede b{color:var(--ink);font-weight:600}
+.meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);padding-bottom:8px}
+.verdict{border:1.5px solid var(--bad);background:var(--bad-soft);border-radius:var(--r);
+  padding:20px 24px;margin-bottom:14px}
+.verdict .t{font-size:19px;font-weight:650;margin-bottom:8px;letter-spacing:-.01em}
+.verdict p{margin:0 0 10px;color:var(--ink-soft);font-size:15px;max-width:none}
+.verdict p:last-child{margin:0}
+section{padding-top:58px;scroll-margin-top:24px}
+h2{font-size:12px;font-family:var(--mono);letter-spacing:.15em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 8px;font-weight:600}
+h2 + .h{font-size:clamp(21px,2.3vw,26px);font-weight:640;letter-spacing:-.016em;margin:0 0 8px;line-height:1.3;text-wrap:balance}
+.sub{color:var(--ink-soft);max-width:44em;margin:0 0 24px;font-size:15.5px}
+h3{font-size:17px;font-weight:640;margin:34px 0 10px;letter-spacing:-.01em}
+p{max-width:46em;margin:0 0 14px}
+ul,ol{max-width:46em;padding-left:22px;margin:0 0 16px}
+li{margin-bottom:7px}
+code{font-family:var(--mono);font-size:.875em;background:var(--line-soft);
+  padding:1.5px 5px;border-radius:4px;color:var(--ink)}
+pre{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;
+  line-height:1.62;margin:0 0 20px;color:var(--ink-soft)}
+pre b{color:var(--accent);font-weight:600}
+pre i{color:var(--bad);font-style:normal;font-weight:600}
+table{width:100%;border-collapse:collapse;margin:0 0 22px;font-size:14px;display:block;overflow-x:auto}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+th{font-size:11.5px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:600;border-bottom:1.5px solid var(--line);white-space:nowrap}
+tr:last-child td{border-bottom:none}
+.box{border-radius:var(--r);padding:15px 18px;margin:0 0 20px;font-size:14.5px;border-left:3px solid}
+.box p{margin:0 0 9px;max-width:none;font-size:14.5px}
+.box p:last-child{margin:0}
+.box .hd{display:block;font-weight:650;font-size:15px;margin-bottom:7px;color:var(--ink)}
+.box ul,.box ol{margin:8px 0;max-width:none}
+.box li{font-size:14.5px}
+.b-bad{border-color:var(--bad);background:var(--bad-soft);color:var(--ink-soft)}
+.b-warn{border-color:var(--warn);background:var(--warn-soft);color:var(--ink-soft)}
+.b-ok{border-color:var(--ok);background:var(--ok-soft);color:var(--ink-soft)}
+.b-info{border-color:var(--blue);background:var(--blue-soft);color:var(--ink-soft)}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}
+a:hover{border-bottom-color:var(--accent)}
+footer{margin-top:76px;padding-top:26px;border-top:1px solid var(--line);
+  font-size:13px;color:var(--ink-faint);font-family:var(--mono)}
+.toggle{position:fixed;top:16px;right:16px;z-index:9;background:var(--card);border:1px solid var(--line);
+  color:var(--ink-soft);border-radius:20px;padding:6px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer}
+</style>
+
+<button class="toggle" onclick="(function(){var r=document.documentElement;var d=r.getAttribute('data-theme');
+  var isDark=d?d==='dark':matchMedia('(prefers-color-scheme:dark)').matches;
+  r.setAttribute('data-theme',isDark?'light':'dark')})()">明 / 暗</button>
+
+<div class="wrap">
+<nav>
+  <a href="#s0"><b>0</b>这次部署了什么</a>
+  <a href="#s1"><b>1</b>修正后的部署流程</a>
+  <a href="#s2"><b>2</b>十二个坑</a>
+  <a href="#s3"><b>3</b>磁盘账</a>
+  <a href="#s4"><b>4</b>与既有文档的关系</a>
+  <a href="#s5"><b>5</b>还没做的</a>
+</nav>
+
+
+<main>
+<header>
+  <div class="meta">2026-08-15 · velactora.com · docs/W7_上线实录与部署踩坑.md</div>
+  <div class="eyebrow">工友通 W7 · 线上部署</div>
+  <h1>上线实录与部署踩坑</h1>
+  <p class="lede">把 W7 打卡功能部署到 velactora.com 的<b>全过程实录</b>。
+    <b>这篇的用途不是留念,是让下一次部署少花几小时</b> —— §1 是修正后的流程,可直接照做;
+    §2 是每个坑的现象/根因/判据/修法;§3 是 30GB 磁盘怎么走完全程的账。</p>
+
+  <div class="verdict">
+    <div class="t">结论:上线成功、零停机、12 个坑其中 4 个是当天现造的</div>
+    <p>线上真打卡跑通,含<b>繁体姓名水印与坐标</b>。后端构建期间旧容器一直在跑,
+      站点<b>全程没有一秒不可用</b>;失败的只是构建。</p>
+    <p>12 个坑里有 <b>4 个是当天现造的</b>(§2.1 方向性错误、§2.4 <code>--build</code> 重构、
+      §2.5 脚本顺序、§2.12 <code>source .env</code>),其余是既有文档与设计里早就埋着、
+      这次第一次被真流程踩出来的。</p>
+    <p>代价:约 3 小时,其中<b>约 1 小时纯浪费</b>在 §2.1 那个被带宽实测直接否掉的方向上。</p>
+  </div>
+
+  <div class="box b-warn">
+    <span class="hd">⚠️ 本文所有数字都是当天实测的,不是估算</span>
+    <p>凡是没量过的一律写明「没量过」。这一条是这篇文档能不能被下一个人信任的全部理由 ——
+      带宽、磁盘曲线、回收量、文件数,都是当场跑出来的,不是从别处抄来的经验值。</p>
+  </div>
+</header>
+
+<section id="s0">
+  <h2>0 / Scope</h2>
+  <div class="h">这次部署了什么</div>
+  <p class="sub">一次上两个人的活:W7 打卡功能 + 队友的项目作用域。起点还欠着 TODO-33 那个落后一个提交的线上镜像。</p>
+  <table>
+    <tr><td><b>内容</b></td>
+        <td>W7 打卡功能(PR #23,5 个功能提交)+ 队友的项目作用域(#19–#22)—— <b>一次上两个人的活</b></td></tr>
+    <tr><td><b>起点</b></td><td>线上镜像落后 main 一个提交(TODO-33),盘 30GB / 可用 11GB</td></tr>
+    <tr><td><b>终点</b></td><td>五个容器全 healthy,发布端口仍是 3,可用 9.0GB</td></tr>
+    <tr><td><b>停机</b></td><td><b>零</b> —— 后端构建期间旧容器一直在跑</td></tr>
+    <tr><td><b>耗时</b></td><td>约 3 小时(其中约 1 小时浪费在下面 §2.1 那个方向性错误上)</td></tr>
+  </table>
+
+  <h3>线上验证结果</h3>
+  <p>全部经 Caddy 全链路,<b>不是容器内直打</b>:</p>
+<pre>未登录访问首页            → 302 /login
+未登录打 /api/*           → 401
+<i>🔴 有会话、无令牌打 /checkin → 401「访问被拒绝」  ← 关键,见 §2.11</i>
+有会话 + 令牌 + 真 JPEG    → 200,出凭证 <b>GYT-A-20260815-165026-ecac</b>
+同 event_id 同 digest 重发 → 200,<b>同一个编号</b>(幂等生效)
+同 event_id 假 digest      → <b>409 CONFLICT</b>
+GET /checkin/recent        → 1 条,geo_status=ok
+凭证图 /artifacts/by-id/…  → 200,<b>98966 字节</b>;肉眼确认繁体「陳大文」「尖沙咀地盤」渲染正常
+库里                       → <b>lat=22.297511 lon=114.1722 acc=18.5 source=camera</b>
+发布端口                   → 恰好 <b>3</b>(80 / 443tcp / 443udp)</pre>
+  <p>(测试数据事后已从生产库删除,凭证图一并清掉。)</p>
+</section>
+
+<section id="s1">
+  <h2>1 / Runbook</h2>
+  <div class="h">修正后的部署流程</div>
+  <p class="sub"><b>每一步都标了它防的是哪个坑。</b> 按顺序做,别跳。</p>
+
+  <h3>1.0 前置:备份 + 摸底(只读,不改任何东西)</h3>
+<pre># 数据是唯一不可再生的东西(实测只有 <b>181MB</b>,备份很便宜)
+mkdir -p ~/gyt-backups
+rsync -az -e ssh animego-old:/opt/gyt/data/ ~/gyt-backups/data-$(date +%Y%m%d-%H%M%S)/
+
+# 摸底:磁盘、镜像、容器
+ssh animego-old 'df -h /; docker system df; docker images; docker ps'</pre>
+  <div class="box b-warn">
+    <p>⚠️ <b>注意 <code>Build Cache</code> 那一行。</b> 它是 0B 就意味着<b>下一次构建是全量的</b>
+      (含 2.2GB 权重重下),峰值需求会高出一个量级 —— §3 的账全看这个数。</p>
+  </div>
+
+  <h3>1.1 腾空间(§3 会给出这一步能不能省)</h3>
+<pre>ssh animego-old 'journalctl --vacuum-size=50M; apt-get clean'</pre>
+  <p><code>/opt/animego-mongo-final-*.tar.gz</code>(214MB)可以挪到开发机再删 ——
+    <b>先 scp 下来、比对 sha256 再删源</b>。实测这一轮共回收 <b>597MB</b>(11G → 12G)。</p>
+
+  <h3>1.2 同步代码 —— ⚠️ 别用旧文档里那条命令</h3>
+<pre># 演练:先看清楚要删什么(<b>必做</b>)
+rsync -azn --delete -i --no-o --no-g --filter=':- .gitignore' --exclude '.git' \
+  ./ animego-old:/opt/gyt/
+
+# 确认无误再真跑
+rsync -az --delete <b>--no-o --no-g --filter=':- .gitignore' --exclude '.git'</b> \
+  ./ animego-old:/opt/gyt/</pre>
+  <p>三个开关缺一不可,理由分别见 §2.2(<code>--filter</code>)、§2.3(<code>--no-o --no-g</code>)、
+    §2.2(<code>--exclude '.git'</code>)。</p>
+
+  <h3>1.3 构建后端 —— <b>在 VPS 上构,不要在开发机构了传</b></h3>
+<pre>ssh animego-old 'cd /opt/gyt &amp;&amp; DOCKER_BUILDKIT=1 \
+  docker compose -f docker-compose.yml -f docker-compose.vps.yml build backend'</pre>
+  <p>⚠️ <b>构建期间另开一个窗口盯磁盘</b>(实测 <b>6 分钟内从 13G 掉到 1.6G</b>):</p>
+<pre>ssh animego-old 'while true; do df -h / | tail -1 | awk "{print \$4}"; sleep 30; done'</pre>
+  <p>⚠️ <b>构完立刻回收缓存</b>,别等:</p>
+<pre>ssh animego-old 'docker builder prune -af'   # 实测回收 <b>7.89GB</b></pre>
+
+  <h3>1.4 起后端 —— ⚠️ <b>不带 <code>--build</code></b></h3>
+<pre>ssh animego-old 'cd /opt/gyt &amp;&amp; \
+  docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d <b>--no-build</b> backend'</pre>
+  <p>带 <code>--build</code> 会把刚构好的镜像<b>再构一遍</b>,理由见 §2.4。</p>
+
+  <h3>1.5 前端:先重新生成 <code>frontend/</code>,再构</h3>
+  <p><code>frontend/</code> 不进 git、也被 rsync 排除,VPS 上那份是旧的(§2.6):</p>
+<pre>ssh animego-old 'cd /opt/gyt &amp;&amp; COREPACK_ENABLE_DOWNLOAD_PROMPT=0 bash scripts/setup-frontend.sh'</pre>
+  <p>⚠️ VPS 上<b>没有 pnpm</b>,脚本装 <code>qrcode.react</code> 那一步会 <code>die</code>。用容器补(§2.7):</p>
+<pre>ssh animego-old 'cd /opt/gyt/frontend &amp;&amp; docker run --rm -v "$PWD":/app -w /app \
+  -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 node:22-slim \
+  sh -c "corepack enable &amp;&amp; pnpm add --save-exact qrcode.react@4.2.0"'</pre>
+  <p>然后构建 + 起:</p>
+<pre>ssh animego-old 'cd /opt/gyt &amp;&amp; DOCKER_BUILDKIT=1 \
+  docker compose -f docker-compose.yml -f docker-compose.vps.yml build frontend'
+ssh animego-old 'cd /opt/gyt &amp;&amp; \
+  docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --no-build'</pre>
+
+  <h3>1.6 Caddyfile 改了就必须 <b>重建 caddy 容器</b>,不是 reload</h3>
+<pre>ssh animego-old 'cd /opt/gyt &amp;&amp; \
+  docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --no-build <b>--force-recreate caddy</b>'</pre>
+  <p><code>caddy reload</code> 在这套部署里<b>用不了</b>(admin API 没开),
+    而绑定挂载的 inode 问题让容器看不到新文件 —— 见 §2.8。</p>
+  <p>核对路由顺序(<b>这是唯一可靠的判据,<code>caddy validate</code> 说 Valid 不算数</b>):</p>
+<pre>ssh animego-old 'docker exec gyt-caddy caddy adapt --config /etc/caddy/Caddyfile' \
+  | python3 -c "import json,sys;..."   # 完整脚本见 §2.8</pre>
+  <p><code>/api/checkin*</code> 必须排在 <code>/api/*</code> <b>之前</b>。</p>
+
+  <h3>1.7 验证</h3>
+  <p>见 §0 那张表,或跑 <code>scripts/postdeploy_checks.sh</code>。</p>
+  <div class="box b-bad">
+    <p>⚠️ <b>必须带登录会话去验</b>,否则闸① 是假绿灯 —— 见 §2.11。</p>
+  </div>
+</section>
+
+<section id="s2">
+  <h2>2 / Pitfalls</h2>
+  <div class="h">十二个坑</div>
+  <p class="sub">每个坑:现象 / 根因 / 判据 / 修法。标 🔴 的是会造成数据损失、站点故障或「假绿灯」的那几条。</p>
+
+  <h3>2.1 🔴 在开发机构建再传镜像 —— 被上行带宽否决(白花约 1 小时)</h3>
+  <p><b>当时的想法</b>:30GB 盘装不下构建缓存(历史实测 <b>9.34GB</b>)+ 新镜像(<b>6.4GB</b>),
+    那就把构建搬到开发机,VPS 只负责装镜像 —— 镜像只要 6.4GB,11GB 够。</p>
+  <p><b>实测数据把这个方向直接否了</b>:</p>
+  <table>
+    <tr><th></th><th>实测</th></tr>
+    <tr><td>开发机<b>上行</b></td><td><b>0.27 MB/s</b>(50MB 用 181 秒)</td></tr>
+    <tr><td>VPS <b>下行</b></td><td><b>20 MB/s</b>(200MB 用 10 秒)</td></tr>
+    <tr><td>传 6.38GB 镜像(gzip 后约 5GB)</td><td><b>约 5.3 小时</b></td></tr>
+    <tr><td>VPS 自己下 4.4GB 权重</td><td><b>约 3 分钟</b></td></tr>
+  </table>
+  <div class="box b-bad">
+    <span class="hd">教训:「把重活搬到本机」这个直觉,在「家庭宽带 → 机房」这个方向上是反的</span>
+    <p>家用上行通常只有下行的十分之一,而机房两个方向都快。
+      <b>要搬之前先量两个方向的带宽</b>,两条命令的事。</p>
+  </div>
+<pre># 开发机上行
+dd if=/dev/zero bs=1m count=50 | ssh animego-old 'cat &gt; /dev/null'
+# VPS 下行
+ssh animego-old 'curl -sL -o /dev/null -r 0-209715200 &lt;某个大文件 URL&gt;'</pre>
+  <div class="box b-ok">
+    <p><b>中止是安全的</b>:<code>docker save | ssh | docker load</code> 被 kill 之后,VPS 上
+      <code>docker images</code> 里没有任何新镜像、tag 没动 —— <code>docker load</code>
+      要么成功要么不打标签,不会留下 §2.9 那种半截状态。</p>
+  </div>
+
+  <h3>2.2 🔴 文档里那条 rsync 会删掉生产的对话历史</h3>
+  <p><b>旧命令</b>(<code>W6_VPS_队友接入.md</code> 记的):</p>
+<pre>rsync -az --delete --exclude '.venv' --exclude '__pycache__' --exclude 'node_modules' \
+  --exclude '.next' --exclude 'frontend/' --exclude 'data/artifacts' --exclude 'data/uploads' \
+  --exclude 'data/gyt.sqlite3' --exclude '.env' --exclude '.env.vps' ./ gyt:/opt/gyt/</pre>
+  <div class="box b-bad">
+    <span class="hd">演练(<code>-n</code>)实测:会删掉生产 306 个文件</span>
+    <ul>
+      <li><code>data/langgraph/</code> <b>整个目录</b> —— 那是<b>全部对话历史</b>(线上 <b>88MB</b>)。
+        而 commit <code>08f606d</code>(「容器一重建,所有历史对话清零」)修的正是这个,
+        这条命令会把那次修复的成果抹掉;</li>
+      <li><code>data/cache/</code> 约 <b>290 个</b> LLM 磁盘缓存文件(删了下次提问全部真花钱);</li>
+      <li><code>data/chroma</code>(向量库)、<code>data/demo</code>、<code>data/cad_index</code> 同样不在清单里。</li>
+    </ul>
+  </div>
+  <p><b>根因</b>:线上 <code>data/</code> 下有 <b>8 样</b>,而那份 exclude 清单只排了 <b>3 样</b>。
+    这是「维护一份平行清单」必然的漂移 —— <b>补四行不解决问题,下次加第九样还会漏</b>。</p>
+  <p><b>修法:让 rsync 直接读 <code>.gitignore</code></b>,单一真相:</p>
+<pre>rsync -az --delete <b>--no-o --no-g --filter=':- .gitignore' --exclude '.git'</b> ./ animego-old:/opt/gyt/</pre>
+  <p>实测效果:</p>
+  <table>
+    <tr><th></th><th>旧命令</th><th>新命令</th></tr>
+    <tr><td>传输</td><td>922MB / 11388 文件</td><td><b>2.8MB / 84 文件</b></td></tr>
+    <tr><td>删除</td><td><b>306 个</b>(含对话历史)</td><td><b>3–8 个</b>(全是 VPS 侧的构建日志)</td></tr>
+    <tr><td><code>data/</code> 与 <code>.env</code></td><td>会动</td><td><b>零涉及</b></td></tr>
+  </table>
+  <div class="box b-ok">
+    <p>两道保护:① <code>.gitignore</code> 里有 <code>/data/*</code>、<code>.env.*</code>,filter 会排除它们;
+      ② rsync 的 <code>--delete</code> <b>默认不删被排除的文件</b>。</p>
+  </div>
+  <p><code>--exclude '.git'</code> 单列是因为 <code>.gitignore</code> 不会忽略 <code>.git</code> 自己 ——
+    不排的话会连带删掉 VPS 上那份 <code>.git</code>(见 §2.10),也会白传几十 MB。</p>
+  <p>顺带:922MB 里有 <b>870MB 是仓库根那个 gitignore 掉的 YOLO 训练素材</b>
+    (<code>construction-safety-monitor.v1i.yolov8*</code>),旧清单同样没排。</p>
+
+  <h3>2.3 🔴 <code>rsync -a</code> 会把 <code>data/</code> 的属主改掉,容器从此写不进库</h3>
+  <p><code>-a</code> 含 <code>-o</code>(属主)与 <code>-g</code>(属组)。线上 <code>/opt/gyt/data</code>
+    是 <b><code>10001:996</code></b>(容器里的 gyt 用户),而开发机是 <code>501:staff</code>,
+    rsync 在对端以 root 跑 —— <b><code>data/</code> 会被 chown 成 501</b>。</p>
+  <div class="box b-bad">
+    <span class="hd">后果不是立刻报错</span>
+    <p>容器照样 healthy、页面照样打得开,但 uid <b>10001</b> 没法在 <code>data/</code> 下<b>新建</b>条目
+      —— SQLite 的 <code>-wal</code> / <code>-journal</code> 首当其冲。
+      这是 <code>W6_VPS部署与访问口令.md:509-529</code> 记过的老坑。</p>
+  </div>
+  <p><b>修法</b>:加 <code>--no-o --no-g</code>。验证靠 itemize 输出那一列标志位:</p>
+<pre><i>.d..t.og. data/</i>     ← 危险:o(属主)g(属组)都要改
+<b>.d..t.... data/</b>     ← 加了 --no-o --no-g 之后,只剩 mtime</pre>
+  <p>同步后顺手核一次:<code>ssh animego-old 'stat -c "%u:%g" /opt/gyt/data'</code>
+    必须仍是 <b><code>10001:996</code></b>。</p>
+
+  <h3>2.4 🔴 <code>up -d --build</code> 把已经构好的镜像又构一遍,直接撞盘</h3>
+  <p>后端镜像在 §1.3 已经构好了(<code>BUILD_EXIT=0</code>),然后我跑了
+    <code>docker compose ... up -d --build</code> 想一次把前后端都起来 ——</p>
+  <div class="box b-bad">
+    <p><b><code>--build</code> 是无条件重构,不看镜像在不在。</b> 而我刚
+      <code>builder prune -af</code> 清空了缓存,于是全量重来,在下载权重那步撞
+      <code>No space left on device</code>。</p>
+  </div>
+  <p><b>修法</b>:镜像已就绪时用 <code>--no-build</code>。要构就单独 <code>build &lt;service&gt;</code>,
+    构完再 <code>up -d --no-build</code>。</p>
+  <div class="box b-ok">
+    <p><b>站点全程没受影响</b> —— 旧容器还跑着,失败的只是构建。</p>
+  </div>
+
+  <h3>2.5 🔴 <code>setup-frontend.sh</code> 里 <code>install_new_file</code> 排在会 <code>die</code> 的步骤之后</h3>
+  <p><b>现象</b>:前端构建报 <code>Module not found: Can't resolve './GytStatusCards'</code>。</p>
+  <p><b>根因</b>:两条分支合流时,我把队友那两个组件的 <code>install_new_file</code> 放在了
+    「装 qrcode.react」<b>之后</b>,而那一步在没有 pnpm 的机器上 <code>die</code> —— <b>整个脚本终止</b>,
+    后面的拷贝一行都不执行。VPS 恰好没装 pnpm(§2.7)。</p>
+  <div class="box b-bad">
+    <span class="hd">这个错的隐蔽处</span>
+    <p>报错指向「组件缺失」,而真因是「脚本提前退出」,中间隔着好几层。
+      脚本的输出里甚至能看到<b>前三件装成功了</b> —— 更像是覆盖件坏了。</p>
+  </div>
+  <p><b>修法</b>:<b>所有 <code>install_new_file</code> / <code>apply_override</code>
+    必须排在任何可能 <code>die</code> 的步骤之前。</b> 已在脚本里那一步前面加了警告注释。
+    判据很简单:拷文件不依赖任何外部工具,就该排在最前。</p>
+
+  <h3>2.6 <code>frontend/</code> 不进 git 也不进 rsync,VPS 上那份是旧的</h3>
+  <p><code>frontend/</code> 在 <code>.gitignore</code> 里,所以 rsync 的 filter 会排除它 ——
+    <b>代码同步不会更新前端</b>。实测 VPS 上那份<b>停在 8-11</b>,打卡三件全缺。</p>
+  <p><b>修法</b>:同步完代码后,在 VPS 上重跑 <code>scripts/setup-frontend.sh</code> 再构镜像。</p>
+  <div class="box b-warn">
+    <p>这不是缺陷,是 <code>frontend/</code> 由脚本生成这个设计的必然结果 —— 但<b>很容易忘</b>,
+      忘了的表现是「后端更新了、前端没有」,<b>而两者都不报错</b>。</p>
+  </div>
+
+  <h3>2.7 VPS 上没有 pnpm</h3>
+  <p>VPS 平时不装前端依赖(构建在 Docker 里做),所以宿主没有 node/pnpm。
+    而 <code>setup-frontend.sh</code> 装 <code>qrcode.react</code> 需要它。</p>
+  <p><b>修法</b>:用一次性容器补(<b>不给 VPS 装任何东西</b>):</p>
+<pre>cd /opt/gyt/frontend &amp;&amp; docker run --rm -v "$PWD":/app -w /app \
+  -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 node:22-slim \
+  sh -c 'corepack enable &amp;&amp; pnpm add --save-exact qrcode.react@4.2.0'</pre>
+  <div class="box b-warn">
+    <p>⚠️ 必须写进 <code>package.json</code> <b>和</b> <code>pnpm-lock.yaml</code> 两处 ——
+      前端 Dockerfile 用的是 <code>pnpm install --frozen-lockfile</code>,
+      <b>lockfile 没更新会直接失败</b>。</p>
+  </div>
+
+  <h3>2.8 🔴 Caddyfile 改了,<code>reload</code> 用不了、容器也看不见新文件</h3>
+  <div class="box b-bad">
+    <span class="hd">两个问题叠在一起</span>
+    <ol>
+      <li><code>docker exec gyt-caddy caddy reload</code> 报
+        <code>dial tcp [::1]:2019: connect: connection refused</code> —— <b>admin API 没开</b>
+        (这是刻意的,admin 端点能改整个配置)。所以 reload 这条路在这套部署里<b>不存在</b>。</li>
+      <li>更隐蔽的:<code>Caddyfile</code> 是<b>绑定挂载</b>
+        (<code>/opt/gyt/Caddyfile → /etc/caddy/Caddyfile</code>),而 rsync 是
+        <b>新建文件再 rename 替换</b> —— 容器里那个挂载点仍指向<b>旧 inode</b>。
+        实测:宿主那份有 <b>3 处</b> <code>api/checkin</code>,容器里 <code>grep -c</code> 是 <b>0</b>。</li>
+    </ol>
+  </div>
+  <p><b>修法</b>:<code>--force-recreate caddy</code>。</p>
+  <p><b>判据</b>:<code>caddy validate</code> 说 <code>Valid configuration</code> <b>不算数</b> ——
+    这个文件自己的注释就记着「裸奔那次 validate 也说 Valid」。唯一可靠的是打路由树:</p>
+<pre>docker exec gyt-caddy caddy adapt --config /etc/caddy/Caddyfile 2&gt;/dev/null | python3 -c "
+import json,sys
+cfg=json.load(sys.stdin)
+def walk(rs,d=0):
+    for r in rs:
+        p=[x for m in (r.get('match') or []) for x in m.get('path',[])]
+        if p: print('  '*d+str(p))
+        for x in (r.get('handle') or []):
+            if 'routes' in x: walk(x['routes'],d+1)
+for s in cfg['apps']['http']['servers'].values(): walk(s.get('routes',[]))
+"</pre>
+  <p>正确输出(<code>/api/checkin*</code> 必须在 <code>/api/*</code> <b>之前</b>):</p>
+<pre>['/login*']
+['/logout*']
+<b>['/api/checkin', '/api/checkin/*']</b>
+['/api/*']
+['/artifacts/*']</pre>
+
+  <h3>2.9 🔴 TODO-33 那个陷阱当场复现了一次</h3>
+  <p>前端构建在最后一步失败:</p>
+<pre>#17 naming to docker.io/library/gyt-frontend:vps done      <b>← tag 已经打上去了</b>
+#17 unpacking to docker.io/library/gyt-frontend:vps
+#17 <i>ERROR: failed to extract layer …: no space left on device</i></pre>
+  <div class="box b-bad">
+    <p><b><code>docker images</code> 里 <code>gyt-frontend:vps</code> 指向一个 591MB 的半截镜像</b>
+      (正常的是 <b>1.93GB</b>)。<b>机器一重启,compose 就会拿它起前端。</b></p>
+    <p><b>铁律(TODO-33 记过,这次证明它是对的)</b>:
+      <b>构建失败之后,第一件事是 <code>docker images</code> 看 tag 指到哪儿了</b>,不是看日志找原因。</p>
+  </div>
+  <p><b>修法</b>:<code>docker rmi</code> 掉那个半截镜像,腾够空间再重构。</p>
+
+  <h3>2.10 <code>/opt/gyt</code> 里其实<b>有</b> <code>.git</code>,但连不上 GitHub</h3>
+  <p>文档写「是 rsync 上去的工作副本,<b>不是 git clone</b>」—— 意思对,字面不准。
+    实测那儿有一份<b>真的 <code>.git</code></b>(<b>32MB</b>,rsync 顺带拷上去的旧快照,
+    HEAD 停在 <code>a304109</code>),<code>git status</code> 会报 <code>dubious ownership</code>,
+    <code>git fetch</code> 报 <code>Host key verification failed</code>
+    (服务器上没有 GitHub 凭据,这是刻意的)。</p>
+  <div class="box b-info">
+    <p><b>结论不变:别在服务器上 <code>git pull</code>,那儿 pull 不了。</b>
+      但知道那儿有个 <code>.git</code> 有两个用处:① rsync 要 <code>--exclude '.git'</code>,否则会删它;
+      ② 有人可能会被 <code>git log</code> 显示的旧 commit 误导。</p>
+  </div>
+
+  <h3>2.11 🔴 验证鉴权时,<b>不带登录会话等于没验</b></h3>
+  <p>站点每条 <code>/api/*</code> 都先过 Caddy 的 <code>forward_auth</code>。
+    <b>没有会话时它自己就回 401</b> —— 于是「不带令牌 → 401 → 通过」这个判断在没会话时是
+    <b>必然的假绿灯</b>。</p>
+  <div class="box b-bad">
+    <span class="hd">🔴 打卡端点完全裸奔也会绿</span>
+    <p>实测两种 401 长得不一样,<b>这是唯一的分辨方法</b>:</p>
+<pre style="background:transparent;border:none;padding:0;margin:8px 0 0">{"detail":"登录已过期,请刷新页面重新登录。"}   <i>← Caddy 门禁拦的,这条不构成验证</i>
+{"detail":"访问被拒绝,请联系发你链接的人。"}   <b>← 打卡端点的鉴权拦的,这才算数</b></pre>
+  </div>
+  <p><b>正确的验法</b>:先登录拿会话,再<b>带着会话、不带令牌</b>打过去,必须仍是「访问被拒绝」。</p>
+<pre>PW=$(cat /root/.gyt-basic-auth-plaintext)
+curl -sk -c /tmp/cj.txt -X POST "$ORIGIN/login" --data-urlencode "<b>pw</b>=$PW"   # 字段名是 pw
+curl -sk -b /tmp/cj.txt -X POST "$ORIGIN/api/checkin" …                     # 期望「访问被拒绝」</pre>
+  <div class="box b-warn">
+    <p>⚠️ 登录表单字段名是 <b><code>pw</code></b>,不是 <code>password</code>
+      (<code>serve_login.py:429</code> 有断言守着)。</p>
+  </div>
+
+  <h3>2.12 🔴 <code>set -a; . ./.env</code> 会毁掉登录口令哈希</h3>
+  <p><b>现象</b>:<code>gyt-login</code> 容器无限重启,日志刷
+    <code>[错误] GYT_LOGIN_HASH 格式不对,应形如 scrypt$16384$8$1$&lt;salt&gt;$&lt;hash&gt;</code>。</p>
+  <div class="box b-bad">
+    <span class="hd">根因:bash 把 <code>$$</code> 展开成了自己的进程 PID</span>
+    <p><code>.env</code> 里存的是 <code>scrypt$$16384$$8$$1$$…</code> ——
+      <b>双 <code>$</code> 是给 docker compose 转义用的</b>(compose 把 <code>$$</code> 解析成一个字面 <code>$</code>)。
+      而我在命令里 <code>set -a; . ./.env; set +a</code>,bash 把 <code>$$</code> 展开成 PID,
+      导出成 <code>scrypt7587701…</code>;compose 又<b>优先使用环境变量</b>而不是 <code>.env</code> 文件,
+      于是容器收到了这个坏值。</p>
+  </div>
+  <p><b>修法:别 source <code>.env</code>。</b> compose 自己会读它,并正确处理 <code>$$</code>。
+    所有 build args(<code>GYT_PUBLIC_ORIGIN</code>、<code>GYT_ACCESS_TOKEN</code> 等)compose
+    都会自动从 <code>.env</code> 拿,根本不需要先 source。</p>
+  <div class="box b-warn">
+    <p><b>这个坑的普遍形态</b>:任何在 <code>.env</code> 里为 compose 转义过的值(含 <code>$$</code> 的),
+      都不能用 shell 的 <code>source</code> 读。要在 shell 里用,得自己反转义。</p>
+  </div>
+</section>
+
+<section id="s3">
+  <h2>3 / Disk</h2>
+  <div class="h">30GB 磁盘怎么走完全程</div>
+  <p class="sub">历史记录说峰值几乎贴着 30GB,而这次的起点是<b>已经占了 20GB</b>。这一节是那笔账。</p>
+
+  <p>历史记录(<code>W6_VPS部署与访问口令.md:283</code>)说:一块 30GB 的盘走完整流程,
+    最终占用约 <b>20GB</b>,<b>中途靠 <code>docker builder prune -af</code> 回收了 9.34GB</b>。
+    也就是说峰值几乎贴着 30GB。而这次的起点是<b>已经占了 20GB</b>。</p>
+
+  <h3>实测的磁盘曲线(全程 30G 盘)</h3>
+<pre>起点                                          <b>11.0G</b> 可用
+├ 清理(journal + apt + 挪走 214MB 冷备)  →   <b>12.0G</b>   实测回收 <b>597MB</b>
+├ 删前端镜像(反正要重建)                 →   <b>13.0G</b>
+├ 后端全量构建(6 分钟)                   →    <i>1.6G</i>   <i>← 最紧的一刻</i>
+├ builder prune -af                        →    <b>7.1G</b>   实测回收 <b>7.89GB</b>
+├ 删旧后端镜像(新的已验证 healthy)       →   <b>12.0G</b>   释放 <b>6.28GB</b>
+├ 前端构建(8 分钟)                       →    <b>5.6G</b>
+├ builder prune -af                        →    <b>8.9G</b>
+└ 终点                                     →    <b>9.0G</b>   已用 <b>22G/30G</b></pre>
+
+  <h3>结论:30GB 走得完,但有三条硬要求</h3>
+  <ol>
+    <li><b>构建缓存必须构完就清</b>,不能攒着。两次 prune 分别回收了 <b>7.89GB</b> 与 <b>5.21GB</b>;</li>
+    <li><b>前后端必须分开构</b>,中间插一次 prune。一起构(<code>up -d --build</code>)<b>必撞盘</b>;</li>
+    <li><b>旧后端镜像要在新的验证通过后尽快删</b>。它占 <b>6.28GB</b>,是最大的一块可回收空间。
+      删之前先确认新容器 healthy 且端点探针通过 —— 删了就没有本机回滚绳了
+      (但代码在 git 里,重建即可,只是要花构建的时间)。</li>
+  </ol>
+  <div class="box b-warn">
+    <p><b>如果盘更紧(比如已用 25GB)</b>:先删旧后端镜像再构建,代价是
+      <b>构建期间站点后端不可用</b>(约 6–10 分钟)。这次没走到这一步。</p>
+  </div>
+</section>
+
+<section id="s4">
+  <h2>4 / Docs</h2>
+  <div class="h">与既有文档的关系</div>
+  <p class="sub">本次实测发现既有文档有几处与现实不符。改了一处,另外三处留档给下一轮统一。</p>
+
+  <h3>已改的</h3>
+  <ul>
+    <li><code>W6_VPS_队友接入.md</code> §2 的 rsync 命令 —— 已换成 <code>.gitignore</code> 驱动的版本(§2.2)。</li>
+  </ul>
+
+  <h3>没改、但下次值得统一的</h3>
+  <table>
+    <tr><th>位置</th><th>问题</th></tr>
+    <tr><td><code>W6_VPS_队友接入.md:106</code> 与 <code>:197</code></td>
+        <td>「不是 git clone」「那里不是 git 工作树」—— 意思对,但那儿确实有 <code>.git</code>(§2.10)</td></tr>
+    <tr><td><code>W6_VPS部署与访问口令.md:1807</code></td>
+        <td>「更新代码」写的是 <code>cd ~/gongyoutong &amp;&amp; git pull</code> —— 那是另一条部署路径,
+          与线上真实的 <code>/opt/gyt</code> + rsync 不是一回事。<b>两份手册对着读会得到互相矛盾的图</b></td></tr>
+    <tr><td><code>W7_打卡Agent_技术方案.md</code> §6</td>
+        <td>写「Caddy 全局 <b>128MB</b>」,而 <code>Caddyfile</code> 实际是 <b>192MB</b> ——
+          队友在 <b>2026-08-13</b> 把 <code>GYT_DRAWING_MAX_MB</code> 从 <b>64</b> 提到 <b>100</b> 后重算过。
+          <b>打卡那条 12MB 的闸不受影响</b>(它由 <code>GYT_PHOTO_MAX_MB=10</code> 推出,那个值没变)</td></tr>
+  </table>
+</section>
+
+<section id="s5">
+  <h2>5 / Open</h2>
+  <div class="h">还没做的</div>
+  <p class="sub">§0 那些验证走的是 curl,证明的是<b>后端与链路</b> —— 前端可用性还没有任何证据。</p>
+  <ol>
+    <li><b>真人手机端到端</b> —— 打卡、自拍取景、定位、水印。这是唯一能证明前端可用的方式,
+      §0 那些验证走的是 curl,证明的是<b>后端与链路</b>。</li>
+    <li><b>四种浏览器组合</b>:iOS Safari / 安卓 Chrome / iOS WhatsApp / 安卓 WhatsApp。</li>
+    <li><b><code>scripts/postdeploy_checks.sh</code></b> 这次没跑(它是并行写出来的,写完时部署已手工验完)——
+      下次部署应该用它,它把 §0 那些检查连同 §2.11 的假绿灯识别都做进去了。</li>
+  </ol>
+  <div class="box b-bad">
+    <p>⚠️ 特别要看 <b>W7 §12.4</b> 那条:<b>首次打卡的定位</b> ——
+      冷启动 <b>5.3 秒</b>,<b>1107 个单测全绿都没抓到</b>。
+      自动化测试天然看不见「跑通了但值是空的」这类问题,只有真机点一次才看得见。</p>
+  </div>
+</section>
+
+<footer>
+  docs/W7_上线实录与部署踩坑.md · 2026-08-15 · velactora.com<br>
+  上线成功 · 零停机 · 12 个坑其中 4 个当天现造 · 全文数字均为当天实测
+</footer>
+</main>
+</div>
