@@ -17,6 +17,7 @@
  */
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQueryState } from "nuqs";
 import { Camera, ImageOff, LoaderCircle, RefreshCcw, X } from "lucide-react";
 import { Button } from "../ui/button";
@@ -527,7 +528,24 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
 
   const showCameraView = hasCamera && cameraState !== "failed";
 
-  return (
+  // ⚠️ 必须 portal 到 body,**不能就地渲染**。就地渲染时这个对话框的祖先链是:
+  //   弹窗(fixed z-50) → 动作条 → <form> → 输入框外壳(relative z-10) → …
+  //     → 聊天滚动区(absolute inset-0) → 内容区(relative,z:auto)
+  //   输入框外壳那层 `relative z-10` **建立了层叠上下文**,把弹窗关在里面 ——
+  //   `z-50` 是它在那个盒子内部的名次,出不了盒子。而 thread-index.tsx 那条聊天
+  //   顶栏(`absolute top-0 left-0 z-10`)挂在更外面一层,跟整棵 z:auto 的子树比,
+  //   **顶栏赢**。于是顶栏那 62px 高的条子盖在弹窗上面。
+  //
+  //   症状很阴:窗口够高时卡片被居中推低、关闭按钮落在 62px 以下,看着一切正常;
+  //   窗口一矮(实测 ≤700px)卡片上移,X 的中心到了 y=58,**正好钻进顶栏底下,
+  //   点不动也没有任何视觉提示**(顶栏是半透明 backdrop-blur,X 还看得见)。
+  //   加大 z-index 没用 —— 嵌套层叠上下文里再大的数也出不去。
+  //   portal 到 body 让它跟顶栏同台竞争,z-50 才真的是 50。
+  //   顺带治好一个隐患:姓名/地盤输入框本来在聊天 <form> 里,按回车会触发聊天发送;
+  //   portal 之后它们不在那个 form 的 DOM 子树里了,回车不再误发。
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       role="dialog"
@@ -540,16 +558,30 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
         className="absolute inset-0 bg-black/40"
         onClick={onClose}
       />
-      <div className="relative z-10 flex max-h-[92vh] w-full max-w-md flex-col gap-4 overflow-y-auto rounded-2xl bg-white p-4 shadow-xl lg:max-w-3xl">
+      {/* 高度上限取 min(两者):
+          · 92dvh —— 正常屏上留一圈透气的边,和以前一样;用 dvh 不用 vh,是因为手机
+            浏览器的地址栏会伸缩,vh 量的是「地址栏收起时」的最大高度,地址栏露着的
+            时候卡片就比可见区域高;
+          · calc(100dvh-2rem) —— 减掉外层那圈 p-4(上下各 16px)。少了这一项,
+            视口矮到 400px 以下时(手机横过来就是 390px)92dvh+32px 会超出视口,
+            外层 items-center 居中把超出的部分**上下均分**,顶部连同关闭按钮被推到
+            视口外面,而外层不滚动 —— 又是一次「看得见点不着」。 */}
+      <div className="relative z-10 flex max-h-[min(92dvh,calc(100dvh-2rem))] w-full max-w-md flex-col gap-4 overflow-y-auto rounded-2xl bg-white p-4 shadow-xl lg:max-w-3xl">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-base font-semibold tracking-tight">
             <Camera className="size-5 text-gray-700" />
             工地打卡
           </div>
+          {/* 触摸设备 44×44:原来是 p-1 撑出来的 28×28,约 4.8mm,比 login-page.html
+              自己定的 --tap 触摸地板(56px,注释写明是按「戴手套的手」定的)矮一半。
+              图标尺寸不变,只把可点区域撑开。
+              判据用 `pointer-coarse`(Tailwind v4 的 `(pointer: coarse)`)而不是 `sm:`:
+              按宽度猜触摸设备是错的 —— 手机横过来有 844px 宽,会命中 sm: 退回 28×28,
+              而那时手指并没有变细。鼠标设备保持原来的紧凑观感。 */}
           <button
             type="button"
             onClick={onClose}
-            className="cursor-pointer rounded p-1 text-gray-500 hover:bg-gray-100"
+            className="flex size-7 cursor-pointer items-center justify-center rounded text-gray-500 hover:bg-gray-100 pointer-coarse:size-11"
             aria-label="关闭"
           >
             <X className="size-5" />
@@ -718,7 +750,8 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
