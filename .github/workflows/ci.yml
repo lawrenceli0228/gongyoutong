@@ -103,6 +103,39 @@ jobs:
           echo "共检查 ${found} 个脚本,语法均正常"
 
   # ===========================================================================
+  # job: test-frontend —— 打卡链前端纯函数(W7)
+  #
+  # 独立成 job 而不塞进 test 矩阵:它不要 uv、不要 Python,塞进去只会让
+  # 双版本矩阵把同一份 vitest 白跑两遍。真正的被测物是
+  # scripts/frontend-overrides/checkin-lib.ts —— 七条 Base64URL 编码向量与
+  # backend/tests/unit/test_checkin_api.py 的 ROUNDTRIP_VECTORS 同源,
+  # 后端改编码这里会先红(这是它守门的全部意义)。
+  # ===========================================================================
+  test-frontend:
+    name: 前端纯函数测试 (vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: 启用 corepack 并钉住 pnpm
+        # 钉 10.5.1 与本机开发、frontend/package.json 的 packageManager 字段同一版本。
+        # 不钉的话 corepack 取 latest —— 哪天 pnpm 大版本变更 lockfile 行为,
+        # CI 与本机装出来的就不是同一套,而 --frozen-lockfile 的报错会指向锁文件。
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.5.1 --activate
+
+      - name: 跑 vitest(经 make,与本机同一入口)
+        run: make test-frontend
+
+  # ===========================================================================
   # job: test —— 主关卡(静态检查 + 单元/集成测试 + 覆盖率门槛)
   #
   # 双 Python 版本矩阵的理由:
@@ -180,6 +213,16 @@ jobs:
         # 24 个文件全部格式化到位,ruff check 与 pytest 同时保持全绿,
         # 因此删掉了原来的 continue-on-error。格式从此和 lint 一样拦门。
         run: uv run ruff format --check .
+
+      - name: 装水印中文字体(与线上镜像同一包,W7 §3.4)
+        # 不装的话,test_attendance_watermark.py 里钉死 WQY 的缺字用例在 CI 上
+        # 会 skip —— 而 macOS 本机它也 skip(PingFang 自带「𠮶」),两头都跳
+        # 等于那条用例从未真跑过;Ubuntu runner 又没有任何 CJK 字体,连候选探测
+        # 都会落空,水印测试整批起不来。装的必须是 fonts-wqy-microhei ——
+        # 与 backend/Dockerfile app 阶段同一个包,CI 和线上测的才是同一份字体。
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-wqy-microhei
 
       - name: 单元与集成测试 + 覆盖率门槛
         env:

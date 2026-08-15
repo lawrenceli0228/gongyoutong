@@ -122,7 +122,7 @@ TEST_IN_CONTAINER = sh -c 'cmp -s $(IMAGE_LOCK_PATH) $(HOST_LOCK_PATH) || { echo
 # make 会认为"文件已存在且是最新的"而直接跳过,现象是命令看着跑了其实什么都没干。
 # (build-knowledge 就漏过一次 —— 合并 knowledge agent 时忘了加。)
 .PHONY: help setup dev dev-docker test test-docker cov build-knowledge eval eval-smoke \
-        lint lint-ci fmt up down e2e frontend serve-artifacts
+        lint lint-ci fmt up down e2e frontend serve-artifacts attendance-clean test-frontend
 
 help: ## 打印所有可用目标
 	@# 宽度按最长的目标名留(serve-artifacts 15 字),窄了会把说明挤得参差不齐。
@@ -317,3 +317,21 @@ serve-artifacts: ## 起只读静态服务,让聊天界面里的巡检记录能�
 	@# mkdir 和启动横幅都由脚本自己做了,这里不再重复打印。
 	@# 仍然用裸 python3(不走 uv / venv):脚本纯 stdlib,Intel Mac 装不上 torch 也不影响。
 	python3 scripts/serve_artifacts.py --port $(ARTIFACTS_PORT) --directory $(ARTIFACTS_DIR)
+
+attendance-clean: ## 清理到期考勤凭证图与孤儿(默认演练;真删 make attendance-clean APPLY=1)
+	@# 两段活:①留存到期(GYT_ATTENDANCE_RETENTION_DAYS,默认 90 天)删图、行置 NULL;
+	@# ②孤儿清扫(register 成功但没写进台账的图),带 1 小时老化窗口防误删在途请求。
+	@# 只碰 kind=ATTENDANCE 的产物,巡检链照片(PHOTO)永不涉及 —— 细节见
+	@# backend/src/gyt/attendance/cleanup.py 头注。退出码:0=干净,1=有该删没删掉的(接告警用)。
+	@# ⚠️ Intel Mac 本机 uv run 会因 torch 装不上而失败(见 CLAUDE.md),
+	@#    本机想跑用:cd backend && .venv/bin/python -m gyt.attendance.cleanup
+	cd backend && uv run --env-file ../.env python -m gyt.attendance.cleanup $(if $(APPLY),--apply,)
+
+test-frontend: ## 跑前端纯函数测试(vitest,scripts/frontend-tests,不碰 frontend/)
+	@# 测的是 scripts/frontend-overrides/checkin-lib.ts —— 打卡链前端的全部可测逻辑
+	@# (Base64URL 编码、geo header、错误归一化、eventId 存取)都下沉在这个零依赖纯 TS 里。
+	@# 七条编码测试向量与 backend/tests/unit/test_checkin_api.py 的 ROUNDTRIP_VECTORS
+	@# 同源(两边注释互指):后端改了编码,这里会先红。
+	@# --frozen-lockfile:锁文件就是契约,CI 与本机装的必须一字不差。
+	cd scripts/frontend-tests && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm install --frozen-lockfile \
+		&& COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm vitest run
