@@ -19,14 +19,19 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQueryState } from "nuqs";
-import { Camera, ImageOff, LoaderCircle, RefreshCcw, X } from "lucide-react";
+import { Camera, ImageOff, LoaderCircle, RefreshCcw, Smartphone, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { getApiKey } from "@/lib/api-key";
 import {
+  advancePairState,
   buildCheckinHeaders,
+  buildCheckinPageUrl,
   CHECKIN_MESSAGES,
+  CHECKIN_QUERY_KEY,
+  CHECKIN_QUERY_OPEN_VALUE,
+  CheckinContractError,
   CheckinSource,
   checkinUrl,
   clearEventId,
@@ -36,13 +41,22 @@ import {
   GeoResult,
   geoResultFromPosition,
   geoStatusFromPositionError,
+  HEADER_PAIR,
   loadOrCreateEventId,
   loadSavedIdentity,
   NETWORK_ERROR_STATUS,
+  newPairId,
   normalizeError,
+  normalizePairId,
   NormalizedError,
+  PAIR_POLL_INTERVAL_MS,
+  PAIR_QUERY_KEY,
+  PairState,
+  parsePairEnvelope,
   parseRecentEnvelope,
   parseReceiptEnvelope,
+  pairScannedUrl,
+  pairStatusUrl,
   Receipt,
   receiptImageUrl,
   recentUrl,
@@ -112,6 +126,21 @@ function acquireGeo(): Promise<GeoResult> {
   });
 }
 
+/**
+ * 生成本次面板的配对串;**失败返回 null,绝不往外抛**(W8)。
+ *
+ * 浏览器太老拿不到 crypto.getRandomValues 时,代价只是「电脑那边不联动」——
+ * 而这行代码跑在渲染路径上,抛出去就是整个打卡面板白屏 = 连卡都打不了。
+ * 配对是锦上添花,不许升级成打卡的前置条件。
+ */
+function tryNewPairId(): string | null {
+  try {
+    return newPairId();
+  } catch {
+    return null;
+  }
+}
+
 type PhotoDraft = {
   blob: Blob;
   /** camera=现场取景截帧;fallback=<input> 选的(可能是相册旧图 = 弱凭证)。 */
@@ -139,6 +168,8 @@ async function postCheckin(args: {
   site: string;
   geo: GeoResult;
   eventId: string;
+  /** 扫码配对串(W8),没扫码进来就是 null —— 那时行为与配对上线前完全一致。 */
+  pairId: string | null;
 }): Promise<{ kind: "ok"; receipt: Receipt } | { kind: "fail"; failure: NormalizedError }> {
   const bytes = await args.blob.arrayBuffer();
   // 客户端只算照片 sha256(完整指纹由服务端拼,见 checkin_api.py「X-GYT-Digest
@@ -153,6 +184,10 @@ async function postCheckin(args: {
       geo: args.geo,
       source: args.source,
       digestHex,
+      // 配对头由 buildCheckinHeaders 决定带不带(坏了就当没有,不抛)。
+      // ⚠️ 它**不进指纹**:后端 build_digest 的输入一个字节都不动 ——
+      // 否则同一次打卡带不带 pair 会算出两个 digest,幂等层当场失效。
+      pairId: args.pairId,
     }),
     "content-type": "image/jpeg",
     // 鉴权头与 Stream.tsx(:57)同一来源:getApiKey() 读 localStorage,
@@ -273,14 +308,85 @@ function RecentRow({ receipt }: { receipt: Receipt }) {
   );
 }
 
+/**
+ * 手机接管之后,电脑这半边(原来放取景框的位置)显示什么(W8)。
+ *
+ * 存在的理由是「别让人以为坏了」:取景框是被**主动**关掉的(见下面那个
+ * getUserMedia effect 的 pairTookOver 分支),不说一句的话,屏幕上就只是
+ * 突然空了一块。
+ *
+ * ⚠️ 这里**刻意不重复** PAIR_MESSAGES 那句话 —— 那句的归属地是右边的二维码面板
+ * (契约第五节那张表说的就是那儿)。两块同时在屏幕上(本组件只在
+ * pairTookOver 时出现,而 pairTookOver 蕴含二维码面板也在),两处说同一句话
+ * 看着就像界面出了 bug。分工:右边说**手机上该干什么**,这边说**这台电脑怎么了**。
+ * (2026-08-15 playwright 实测第一版就是原样抄了一遍,截出来两句话叠在一起。)
+ */
+function PairTakeoverNotice({ state }: { state: PairState }) {
+  return (
+    <div
+      className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-10 text-center"
+      aria-live="polite"
+    >
+      <Smartphone className="size-6 text-gray-400" />
+      <div className="text-sm text-gray-700">
+        {state === "done" ? "这次打卡在手机上完成了。" : "这台电脑的取景已经关了。"}
+      </div>
+      <div className="text-[11px] text-gray-400">
+        {state === "done"
+          ? "凭证在手机上;这台电脑没取到凭证图。"
+          : "手机那边拍完,这里会自动出凭证。"}
+      </div>
+    </div>
+  );
+}
+
 function CheckinDialog({ onClose }: { onClose: () => void }) {
   const apiBase = useApiBase();
   const isLargeScreen = useMediaQuery("(min-width: 1024px)");
 
-  // ⚠️ 本组件**只在点击入口后挂载**(CheckinEntry 的 open && …),永远不进
-  // SSR/hydration —— 所以下面敢在首次渲染就直接读浏览器状态(localStorage /
-  // navigator / location)。换成「挂载后 useEffect 再 set」反而会先闪一帧降级
-  // 界面;typeof 守卫仍留着,纯防有人日后把它挪进服务端渲染树。
+  // ── 扫码配对(W8)────────────────────────────────────────────────────
+  // 一台设备只可能是两个角色之一,判据就是**地址栏里有没有 pair**:
+  //   有  = 是被扫的那台(手机):落地上报一次「已扫码」,提交时带 X-GYT-Pair;
+  //   没有 = 是显码的那台(电脑):自己生成 pair、轮询、按状态收摄像头。
+  // 用 nuqs 读 query(与上面 useApiBase 的 apiUrl 同一套):Next 的客户端路由
+  // 跳转不重挂组件,自己读 location.search 会读到过期值。
+  const [pairParam] = useQueryState(PAIR_QUERY_KEY);
+  const scannedPairId = normalizePairId(pairParam);
+
+  // 电脑侧自己的配对串。放 state 而不是 ref/常量:「再打一次」要换一个新的
+  // (旧串已经是 done,不换的话新一轮打卡在电脑上永远不显示)。
+  const [hostPairId, setHostPairId] = useState<string | null>(() => tryNewPairId());
+  const [pairState, setPairState] = useState<PairState>("waiting");
+
+  // 二维码只在宽屏给:窄屏 = 多半已经在手机上,再给码是让人拿手机扫手机。
+  // 被扫的那台不给码 —— 它自己就是「手机」,再显一个码只会让人对着自己扫。
+  const showQrPanel = isLargeScreen && !scannedPairId;
+  /** 轮询的开关:显着码才值得问。没显码的那台问的是一个没人会扫的串,纯浪费
+   * ——而且配对桶是**全站共用一只**(后端 PAIR_BUCKET_IDENTITY 是固定串)。 */
+  const isPairHost = showQrPanel && hostPairId !== null;
+  /**
+   * 手机已经接手:停本机取景,界面换成等待/完成。
+   *
+   * ⚠️ **判据里不许再 AND 上 isPairHost(或任何含 isLargeScreen 的东西)。**
+   * useMediaQuery 是**活订阅**、可来回翻,而 pairState 是单调的 —— 两者一 AND,
+   * 就出现这条路径:手机扫上了(取景已关)→ 有人拖窄窗口 / 拔掉投影 →
+   * isLargeScreen 变 false → 取景**自己又亮起来**、拍照表单也回来了,
+   * 于是同一个人可以在电脑上再打一次(新的 event_id,幂等层拦不住,库里两条)。
+   * 而这恰恰就是这个功能瞄准的场景:讲台上一边投影一边掏手机。
+   * pairState 只可能被本机的轮询推进(轮询只在显码那台跑),所以单看它足够安全:
+   * 手机侧、以及从没显过码的机器,它恒为 waiting。
+   */
+  const pairTookOver = pairState !== "waiting";
+
+  // ⚠️ 本组件永远不进 SSR/hydration —— 所以下面敢在首次渲染就直接读浏览器状态
+  // (localStorage / navigator / location)。换成「挂载后 useEffect 再 set」
+  // 反而会先闪一帧降级界面;typeof 守卫仍留着,纯防有人日后把它挪进服务端渲染树。
+  //
+  // W8 之后它多了一个挂载入口(地址栏 ?checkin=1,见 CheckinEntry),前提靠
+  // 那边的 mounted 开关继续成立 —— **别把那道开关当多余的样板删掉**:
+  // 服务端同样看得见 ?checkin=1,删了它这个组件就会在服务端渲染一遍,
+  // 而它在那边只会返回 null(没有 document),客户端却渲染出 portal 弹窗,
+  // 结果是控制台一条 hydration 报错(2026-08-15 实测过,原文抄在那边)。
 
   // ── 身份:localStorage 记住上次(键名 gyt 前缀)。这就是 TODO-35 说的
   // 「身份只是个字符串」:没有实名、没有账号,记住只是省打字,不是登录态。
@@ -330,8 +436,13 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
 
   // 起前置摄像头。photo 进依赖是刻意的:重拍(photo 清空)时自动重启取景;
   // 拍完即停流(下面 capture 里),预览期间摄像头灯灭 —— 别让人觉得一直被拍。
+  //
+  // pairTookOver 也进依赖(W8):手机一扫上,这台电脑的取景**必须立刻停** ——
+  // 演示时投影上一直挂着主讲人的脸,而他正低头看手机。停的方式是让本 effect
+  // 提前 return,**由 cleanup 里那句 stopStream 去关**,不另写一处关流逻辑:
+  // 多一个入口就多一次「关了流但 mediaStreamRef 没清」的机会。
   useEffect(() => {
-    if (!hasCamera || photo || receipt) return;
+    if (!hasCamera || photo || receipt || pairTookOver) return;
     let cancelled = false;
     navigator.mediaDevices
       .getUserMedia({ video: { facingMode: "user" }, audio: false })
@@ -353,7 +464,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
       cancelled = true;
       stopStream();
     };
-  }, [hasCamera, photo, receipt, stopStream]);
+  }, [hasCamera, photo, receipt, pairTookOver, stopStream]);
 
   // 预览 URL 是 createObjectURL 出来的,换图/关面板都要 revoke,不然内存里堆图
   useEffect(() => {
@@ -440,14 +551,106 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
       setRecent(parseRecentEnvelope(bodyText));
       setRecentError(null);
     } catch (err) {
+      // ⚠️ 只有**我们自己抛的**中文契约错误才照原样上屏。
+      // 原来这里是 `err instanceof Error ? err.message : …`,而 fetch 连不上时抛的是
+      // TypeError("Failed to fetch") —— 于是后端一没起,工地师傅的手机上就明晃晃
+      // 一行英文(2026-08-15 W8 做浏览器验证时当场截到,面板底下写着「最近打卡
+      // Failed to fetch」)。本仓的规矩是面向用户的字符串一律说人话,
+      // 浏览器/运行时抛的原文一个字都不许上屏。
       setRecentError(
-        err instanceof Error && err.message ? err.message : CHECKIN_MESSAGES.network,
+        err instanceof CheckinContractError && err.message
+          ? err.message
+          : CHECKIN_MESSAGES.network,
       );
     }
   }, [apiBase]);
   useEffect(() => {
     void refreshRecent();
   }, [refreshRecent]);
+
+  // ── 配对①(手机侧):面板一打开就上报一次「已扫码」──────────────────
+  const scanReportedRef = useRef(false);
+  useEffect(() => {
+    if (!scannedPairId || scanReportedRef.current) return;
+    // **先置位再发**。用 ref 不用 state:StrictMode 下 effect 会连着跑两次,
+    // 而 setState 式的守卫要等下一次 render 才生效,拦不住紧挨着的第二次 ——
+    // 表现是每次开面板都上报两遍(后端幂等,但那是拿别人的幂等擦自己的屁股)。
+    scanReportedRef.current = true;
+    const apiKey = getApiKey();
+    // **失败一律静默,而且不重试**:上报不成只是电脑那边不联动,手机照样拍照打卡。
+    // 这时候在手机上弹一句红字,工友只会以为卡打不了(W8 契约第五节那张表:
+    // 「轮询失败 → 不显示任何错误」,上报同理)。
+    // 不接 AbortController:这是个没有响应体、不写任何 state 的一次性 POST,
+    // 面板关了它跑完就完,没有「组件卸载后 setState」那类隐患。
+    void fetch(pairScannedUrl(apiBase), {
+      method: "POST",
+      headers: {
+        ...(apiKey ? { "x-api-key": apiKey } : {}),
+        [HEADER_PAIR]: scannedPairId,
+      },
+    }).catch(() => {
+      // 连不上/后端还没上这个接口 —— 都不关工友的事
+    });
+  }, [apiBase, scannedPairId]);
+
+  // ── 配对②(电脑侧):每 2 秒问一次「有人扫了吗、打完了吗」─────────────
+  //
+  // 为什么是轮询不是 SSE:Caddyfile 只给 handle_path /api/* 配了 flush_interval -1,
+  // @checkin 那条专用路由没有 —— SSE 会被缓冲住,表现是「事件全都晚到或不到」
+  // 且不报错(W8 契约开头)。人拍一张照十几秒,2 秒一轮绰绰有余。
+  //
+  // pairState 进依赖是刻意的:状态一变就重建这个循环 —— done 之后
+  // 上面那个 early return 会**彻底停掉轮询**,不留一个空转的 setInterval。
+  useEffect(() => {
+    if (!isPairHost || !hostPairId || pairState === "done") return;
+    const controller = new AbortController();
+    let stopped = false;
+    let inFlight = false;
+    const poll = async () => {
+      // 上一发还没回来就跳过这一拍。信号一差(工地常态),没有这道闸请求会**叠**着发:
+      // 后端那只配对桶是全站共用的固定串、每分钟 60,而 2 秒一发本来就只留了一倍余量
+      // —— 叠起来先把自己挤成 429,换来的还只是同一个问题问两遍。
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const apiKey = getApiKey();
+        const res = await fetch(pairStatusUrl(apiBase, hostPairId), {
+          headers: apiKey ? { "x-api-key": apiKey } : undefined,
+          signal: controller.signal,
+        });
+        // 非 200 一律当「这一轮没消息」:404(后端还没上这条路由)、401、
+        // 429 全都不上屏 —— 屏幕上那句「用手机扫这个码」本身没有错,
+        // 在它旁边挂一行红字只会让人不敢扫。
+        if (!res.ok) return;
+        const snapshot = parsePairEnvelope(await res.text());
+        if (!snapshot || stopped) return;
+        // 只前进不后退:乱序到达的旧响应、以及 TTL 过期后后端回的 waiting,
+        // 都不许把「✅ 已打卡成功」打回「请扫码」(advancePairState 头注)。
+        setPairState((prev) => advancePairState(prev, snapshot.state));
+        if (snapshot.state === "done" && snapshot.receipt) {
+          // 直接喂给本组件既有的 receipt 状态 —— 凭证卡片、「再打一次」那一套
+          // 原样复用,不为配对另写一份凭证渲染。
+          setReceipt(snapshot.receipt);
+          void refreshRecent();
+        }
+      } catch {
+        // 网络异常、后端没起、面板关闭时的 abort —— 全部静默,下一轮再说
+      } finally {
+        // 必须放 finally:早退(!res.ok)和异常都得把闸放开,否则一次失败之后
+        // 这个循环再也不发第二发,而界面上一点征兆都没有
+        inFlight = false;
+      }
+    };
+    void poll(); // 先来一次,别让人对着二维码干等两秒
+    const timer = setInterval(() => void poll(), PAIR_POLL_INTERVAL_MS);
+    // **面板一关就把两样都收掉**:定时器不清 = 关了面板还在打接口;
+    // 请求不 abort = 关掉的瞬间那一发还在路上,回来时组件已经没了。
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      controller.abort();
+    };
+  }, [apiBase, hostPairId, isPairHost, pairState, refreshRecent]);
 
   const submit = useCallback(async () => {
     if (!photo) {
@@ -476,6 +679,8 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
         site: siteName,
         geo,
         eventId,
+        // 扫码进来的才有;没有就是普通打卡,与配对上线前一模一样
+        pairId: scannedPairId,
       });
       if (outcome.kind === "fail") {
         setProblem({
@@ -499,7 +704,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
     } finally {
       setSubmitting(false);
     }
-  }, [apiBase, photo, refreshRecent, siteName, workerName]);
+  }, [apiBase, photo, refreshRecent, scannedPairId, siteName, workerName]);
 
   /** 409 之后的出路:同 event_id 配上了不同内容(换了照片/改了名字再交),
    * 这是幂等层①在正确工作。换新 event_id = 当成新的一次打卡重新记账。 */
@@ -511,12 +716,26 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
   const startAnother = useCallback(() => {
     setReceipt(null);
     setProblem(null);
+    // 配对也要一并重来:旧串已经是 done(后端不许回退),留着它下一次打卡
+    // 在电脑上永远不显示 —— 换一个新串 = 换一张新码 = 干净的一轮。
+    setPairState("waiting");
+    setHostPairId(tryNewPairId());
+    // 取景刚才被配对停掉了,cameraState 还停在 "live"。不退回 idle 的话,
+    // 新流还没起来的那零点几秒里按钮已经写着「拍照」——点下去只会撞上
+    // capture() 里那句「摄像头还没就绪」。在这里退(用户点击的路径上),
+    // 而不是另开一个 effect 盯着 pairTookOver:effect 里同步 setState 会多一轮
+    // 级联渲染,而这件事本来就只在「再打一次」这一个出口上发生。
+    setCameraState("idle");
   }, []);
 
-  // 二维码只在宽屏给:窄屏 = 多半已经在手机上,再给码是让人拿手机扫手机。
-  // D7:本站地址,不带 token、不带 query(带 query 也活不过 serve_login 的
-  // 登录跳转,它写死重定向 /)。
-  const siteUrl = typeof window === "undefined" ? "" : window.location.origin;
+  // 二维码里编的地址(W8 契约第二节):`<origin>/?checkin=1&pair=<32位hex>`。
+  // checkin=1 负责开面板、pair 负责联动,**缺一不可** —— 只带 pair 的话手机
+  // 落在首页,电脑永远停在 waiting,而且一声不吭。
+  // 码里为什么可以带 query、又为什么仍然不带 token:见 qrcode.tsx 头注的 D7。
+  const qrUrl =
+    typeof window === "undefined"
+      ? ""
+      : buildCheckinPageUrl(window.location.origin, hostPairId);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -526,7 +745,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  const showCameraView = hasCamera && cameraState !== "failed";
+  const showCameraView = hasCamera && cameraState !== "failed" && !pairTookOver;
 
   // ⚠️ 必须 portal 到 body,**不能就地渲染**。就地渲染时这个对话框的祖先链是:
   //   弹窗(fixed z-50) → 动作条 → <form> → 输入框外壳(relative z-10) → …
@@ -600,6 +819,10 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
                   再打一次
                 </Button>
               </>
+            ) : pairTookOver ? (
+              // 手机接手之后,这半边不再收任何输入:姓名/地盤是手机上填的,
+              // 取景已经关了。留一块说明,而不是留一片空白或一个点不动的按钮。
+              <PairTakeoverNotice state={pairState} />
             ) : (
               <>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -723,9 +946,12 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
             )}
           </div>
 
-          {isLargeScreen && (
+          {showQrPanel && (
             <div className="shrink-0 lg:w-60">
-              <CheckinQrPanel url={siteUrl} />
+              <CheckinQrPanel
+                url={qrUrl}
+                state={pairState}
+              />
             </div>
           )}
         </div>
@@ -761,7 +987,42 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
  * 里,裸 button 默认 type=submit,点一下会把聊天输入一起发出去。
  */
 export function CheckinEntry() {
-  const [open, setOpen] = useState(false);
+  // ── 面板的开关有两个来源(W8)────────────────────────────────────────
+  //   ① 手点这颗按钮;
+  //   ② 地址栏里的 ?checkin=1 —— 手机扫码落地(经登录页带 next 跳回来)之后
+  //      面板**自动打开**。少了这一条,扫码的人落在首页,还得自己在动作条里
+  //      找那颗「打卡」按钮:工地上找不着就等于没有。
+  // 用 nuqs 而不是自己读 location.search:Next 的客户端路由跳转不重挂组件,
+  // 手读 search 会读到过期值(与本文件 useApiBase 读 apiUrl 同一套)。
+  const [checkinParam, setCheckinParam] = useQueryState(CHECKIN_QUERY_KEY);
+  const [manualOpen, setManualOpen] = useState(false);
+
+  // ⚠️ URL 那条路**必须等挂载之后**才算数,少了 mounted 这一道就是 hydration 报错。
+  // 2026-08-15 用 playwright 实测到的原话:
+  //   "Hydration failed because the server rendered HTML didn't match the client"
+  //   diff 显示服务端那一格是发送按钮、客户端多出了 role="dialog" 那个 div。
+  // 成因:带 ?checkin=1 直接进站时,服务端也看得见这个 query,于是 CheckinDialog
+  // 在服务端就渲染了一遍 —— 它里头 `typeof document === "undefined"` 时返回 null,
+  // 而客户端返回的是 createPortal 出来的弹窗,两边对不上。
+  // (React 会自己重建这棵子树,界面看着正常,只有控制台里那一条 —— 典型的
+  //  「能用但一直在报错」,下一个人查别的问题时会被它带偏。)
+  // 顺带:mounted 也守住了 CheckinDialog 头注那条前提「本组件永远不进
+  // SSR/hydration」—— 它敢在首次渲染直接读 localStorage/navigator,靠的就是这条。
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const open = manualOpen || (mounted && checkinParam === CHECKIN_QUERY_OPEN_VALUE);
+
+  const close = useCallback(() => {
+    setManualOpen(false);
+    // URL 上那个 checkin=1 必须一起擦掉,否则「关」只活到下一次 render ——
+    // open 是「手点开 || URL 说开」,URL 还说开就永远关不掉,点 X 没反应。
+    // nuqs 默认走 replace,不往后退栈里塞记录(否则退一步又把面板退开了)。
+    void setCheckinParam(null);
+  }, [setCheckinParam]);
+
   return (
     <>
       {/* ⚠️ 打卡是给工地上拿手机的人用的,这颗按钮在手机上必须点得中。
@@ -773,13 +1034,13 @@ export function CheckinEntry() {
             sm: 之后归零,桌面端保持今天这颗「无边框图标+字」的观感不变。 */}
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => setManualOpen(true)}
         className="flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap sm:min-h-0 sm:min-w-0"
       >
         <Camera className="size-5 text-gray-600" />
         <span className="text-sm text-gray-600">打卡</span>
       </button>
-      {open && <CheckinDialog onClose={() => setOpen(false)} />}
+      {open && <CheckinDialog onClose={close} />}
     </>
   );
 }
