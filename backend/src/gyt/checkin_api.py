@@ -161,6 +161,70 @@
 漏配时整条裸奔(§「鉴权」)—— 那种失配**没有任何报错**,只有这道自查能兜住,
 也只有这道自查能被单元测试钉死(上线闸①)。判定逻辑必须与 ``auth.py``
 完全同源(同一个"有效令牌"函数:空 / 占位符 / 过短 = 未配置 = 放行)。
+
+---------------------------------------------------------------------------
+扫码配对(W8):电脑显示二维码 → 手机扫码打卡 → 电脑跟着走
+---------------------------------------------------------------------------
+电脑端打开打卡面板时用 ``crypto.getRandomValues`` 生成一个 32 位小写十六进制的
+**配对串**(``pair``),拼进二维码的 URL::
+
+    <origin>/?checkin=1&pair=<32位hex>
+
+``checkin=1`` 与 ``pair`` **缺一不可**:前者负责在手机上把面板打开,后者负责联动。
+只带 pair 不带 ``checkin=1`` = 手机落在首页,配对永远停在 waiting。
+
+**``pair`` 不是凭据,不授予任何权限。** 下面两个端点与 ``POST /checkin`` 同一把锁
+(登录闸 + ``X-Api-Key``),所以二维码里依旧没有令牌、没有姓名 —— D7 仍然成立。
+D7 原文禁 query 的第二条理由(「带 query 也活不过登录跳转」)已被登录页的
+``?next=`` 改动消除,那条注释同步作废。
+
+状态机只有三个状态,**只能单向前进**::
+
+    POST /checkin/pair/scanned          手机落地即上报一次(只报一次,失败不重试)
+      X-Api-Key:  <同 /checkin>
+      X-GYT-Pair: <32位hex>
+      body:       无
+      → 200  { ok:true, data:{state:"scanned"}, user_msg:"", error_code:null }
+      → 400  INVALID_INPUT —— X-GYT-Pair 缺失或不是 32 位十六进制
+      幂等:重复上报同一个 pair 不报错;**已经 done 的不回退**,此时如实回
+           ``data:{state:"done"}``(比「恒回 scanned」多说一句实话;前端只报一次
+           且不读这个 body,多说无害,而少说会让排错的人以为状态机退回去了)。
+
+    GET /checkin/pair?id=<32位hex>      电脑每 2 秒轮询一次,拿到 done 或关面板即停
+      X-Api-Key: <同 /checkin>
+      → 200  { ok:true, data:{state:"waiting"|"scanned"|"done",
+                              receipt:<凭证对象|null>}, user_msg:"", error_code:null }
+      receipt 只在 done 时非空,形状与 POST /checkin 成功时那个**完全一致**。
+      🔴 **未知 / 过期 / 格式不对 / 没带 id,四者一律回 waiting,不可区分** ——
+         区分开就是把它变成探测接口(外人拿 id 试一遍就能数出现场开着几台面板)。
+         这条不靠 handler 记得回同一个值,靠的是存储层「waiting = 不在表里」这个
+         结构保证(``attendance/pairing.py`` 头注)。
+
+    POST /checkin                       已有端点,新增一个**可选** header
+      X-GYT-Pair: <32位hex>  —— 可省略;省略时行为与今天一字不差。
+      打卡落账后把这个 pair 置为 done 并挂上凭证。
+      畸形的 pair **不会**让打卡失败:记一条 warning 然后当没带
+      (判据同 ``_clamp_recent_limit`` —— 配对是锦上添花,为一个装饰性的头
+      把工友已经拍好的照片打回去,是本末倒置)。
+
+🔴 **``X-GYT-Pair`` 一个字节都不进 ``build_digest``。**
+带不带这个头,同一次打卡必须算出**同一个**指纹。否则手机重发时带上(或漏掉)
+pair,幂等层①的比对当场对不上,整个幂等失效 —— 工友点两次,库里两条。
+结构上的保证是它压根不进 ``_CheckinMeta``(``_parse_meta`` 不读它);
+``test_checkin_api.py`` 另有守门断言钉死「带 pair 与不带 pair 的重发仍然命中幂等」。
+**这是本次改动最容易犯的错,别把它塞进任何指纹输入。**
+
+⚠️ **幂等重放时也要置 done。** 手机断网重发一次,电脑不该卡在 scanned。
+三条「200 + 凭证」的路径(层①命中、层③并发回查、正常落账)全都经过
+``_receipt_response`` 这**一个**出口,置 done 就写在那里面,加第四条路径也漏不掉。
+409 **不**置 done —— 那次打卡并没有按工友说的记上,电脑该继续等。
+
+存储与限流:
+
+  · 状态存在**内存**(``attendance/pairing.py``),照 ``_global_limiter`` 的先例。
+    10 分钟租期、256 条上限、进程重启即清空,取舍与理由见那个文件的头注。
+  · 配对两个端点走**自己的限流桶**,不与打卡共用:轮询天然比打卡频繁得多
+    (2 秒一次),共用会让正常轮询把打卡的额度吃光。
 """
 
 from __future__ import annotations
@@ -178,7 +242,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from gyt.attendance import messages, receipt, watermark
+from gyt.attendance import messages, pairing, receipt, watermark
 from gyt.config import get_settings
 from gyt.core import artifacts
 from gyt.core.access import TokenBucket, _api_key_from_headers, effective_access_token
@@ -201,6 +265,12 @@ HEADER_SITE: Final[str] = "x-gyt-site"
 HEADER_GEO: Final[str] = "x-gyt-geo"
 HEADER_SOURCE: Final[str] = "x-gyt-source"
 HEADER_DIGEST: Final[str] = "x-gyt-digest"
+HEADER_PAIR: Final[str] = "x-gyt-pair"
+"""扫码配对串(W8)。``POST /checkin`` 上**可选**,``POST /checkin/pair/scanned`` 上必填。
+
+🔴 **它不进 ``build_digest``,也不进 ``_CheckinMeta``。** 带不带它,同一次打卡
+必须算出同一个指纹 —— 详见模块头注「扫码配对」一节最后那段红字。
+"""
 
 GEO_SEPARATOR: Final[str] = ";"
 """``X-GYT-Geo`` 的分隔符。
@@ -339,6 +409,31 @@ GLOBAL_BUCKET_IDENTITY: Final[str] = "gyt-checkin-global"
 这只桶护的是 1.9GB VPS 上的水印渲染内存与磁盘写入,不是人与人之间的公平。
 """
 
+PAIR_BUCKET_IDENTITY: Final[str] = "gyt-checkin-pair"
+"""配对端点的桶键。**同样是固定串,不拿 pair 当桶键** ——
+``TokenBucket._state`` 是一个**永不淘汰**的 dict,拿客户端能随便造的值当键,
+换一个 id 就是一条新记录,刷一百万次就是一百万条(现有 worker 桶的同款弱点,
+它靠前面的全局桶把增长速率压住)。配对这边前面没有别的桶,所以直接不给这个口子。
+"""
+
+PAIR_RATE_BURST: Final[int] = 120
+PAIR_RATE_PER_MINUTE: Final[float] = 120.0
+"""配对端点的限流参数。**新开一只桶,不与打卡共用** ——
+轮询天然比打卡频繁得多(2 秒一次 = 30/分钟/台),共用会让正常轮询把打卡的额度吃光。
+
+为什么是 120 而不是冻结契约里建议的 60:那笔账(「一台 30/分钟,留一倍余量」)
+按的是**每台电脑各有一只桶**,而上面刚说了桶键只能是固定串 —— 于是额度是**全场共用**的,
+60 就成了「全场只准两台电脑轮询」。120 ≈ 四台同时轮询,仍然把脚本长跑
+(每秒几十次)压得死死的。
+
+⚠️ 一次性的、只报一次不重试的 ``POST /checkin/pair/scanned`` 与轮询共用这只桶:
+它被限住 = 那次配对彻底失联(电脑停在「等扫码」,手机照常打卡)。
+所以余量宁可宽一点;真嫌不够,**拆成两只桶**比把这个数字往上抬更对。
+
+刻意不进 config.py:它是由「前端 2 秒轮询」这个协议常数推导出来的,不是部署旋钮
+(同型先例:RECEIPT_RETRY_MAX、core/access._MIN_TOKEN_LEN)。
+"""
+
 # ---------------------------------------------------------------------------
 # 限流:两只桶,全部在读 body 之前结算(W7 §3.6)
 #
@@ -355,6 +450,7 @@ GLOBAL_BUCKET_IDENTITY: Final[str] = "gyt-checkin-global"
 
 _global_limiter: TokenBucket | None = None
 _worker_limiter: TokenBucket | None = None
+_pair_limiter: TokenBucket | None = None
 
 
 def get_global_limiter() -> TokenBucket:
@@ -389,13 +485,30 @@ def get_worker_limiter() -> TokenBucket:
     return _worker_limiter
 
 
+def get_pair_limiter() -> TokenBucket:
+    """配对端点的限流桶。参数是模块常量(不走 settings,理由见 PAIR_RATE_BURST 头注),
+    所以这里没有「参数变了就重建」那个分支 —— 只有第一次调用会建。"""
+    global _pair_limiter
+    if _pair_limiter is None:
+        _pair_limiter = TokenBucket(
+            capacity=PAIR_RATE_BURST,
+            refill_per_minute=PAIR_RATE_PER_MINUTE,
+        )
+    return _pair_limiter
+
+
 def reset_limiters() -> None:
-    """丢掉两只桶(下次取用时重建成满桶)。给测试隔离用 ——
+    """丢掉三只桶(下次取用时重建成满桶)。给测试隔离用 ——
     桶是模块级全局,conftest 的 Settings 隔离管不到它,上一条用例烧掉的令牌
-    会漏给下一条(test_auth.py 的同名坑)。"""
-    global _global_limiter, _worker_limiter
+    会漏给下一条(test_auth.py 的同名坑)。
+
+    ⚠️ 配对**状态表**不在这里清(它不是桶),测试要连状态一起隔离得再调
+    ``pairing.reset_store()`` —— 两件东西两个开关,别偷偷合并:
+    「重置限流」这个名字底下藏着清业务状态,下一个人会被坑。"""
+    global _global_limiter, _worker_limiter, _pair_limiter
     _global_limiter = None
     _worker_limiter = None
+    _pair_limiter = None
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +714,61 @@ def _receipt_payload(row: att_db.AttendanceRow) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 扫码配对(W8):pair 的取值与「置 done」的唯一出口
+# ---------------------------------------------------------------------------
+
+
+def _pair_from_request(request: Request) -> str | None:
+    """取 ``X-GYT-Pair``;没带或不像样都返回 ``None``。**绝不为它让打卡失败。**
+
+    判据与 ``_clamp_recent_limit`` 同一条:这个头是锦上添花(它只决定电脑那边
+    的界面跟不跟着走),把工友已经拍好的照片打回去换一个 400,是本末倒置。
+    畸形值多半是前端拼串的 bug —— 记一条 warning 引人去查,业务照常走完。
+
+    ⚠️ 只截前 8 位进日志:整串没有敏感信息(它不是凭据),但日志里留全串会让人
+    误以为它是个能用来「冒充某台电脑」的东西,反而诱导出错误的排错方向。
+    """
+    raw = request.headers.get(HEADER_PAIR)
+    if raw is None:
+        return None
+    pair_id = pairing.normalize_pair_id(raw)
+    if pair_id is None:
+        logger.warning("X-GYT-Pair 不是 32 位十六进制,已按没带处理:%r…", raw[:8])
+    return pair_id
+
+
+def _pair_mark_done(pair_id: str | None, payload: dict[str, Any]) -> None:
+    """把配对推到 done 并挂上凭证。没带 pair 就什么都不做。
+
+    🔴 **整段包在 try 里,而且吞掉一切异常。** 走到这里时台账**已经写成了** ——
+    配对表出任何岔子都不许把一次成功的打卡变成 500:工友看到失败会再打一次,
+    而库里其实已经有了。这不是「静默吞错误」(``logger.exception`` 记了全栈),
+    是明确的取舍:锦上添花的东西绝不许拖累主路径。
+    """
+    if pair_id is None:
+        return
+    try:
+        pairing.get_store().mark_done(pair_id, payload)
+    except Exception:  # noqa: BLE001 —— 理由见上,配对失败不许影响打卡结果
+        logger.exception("配对置 done 失败(打卡本身已成功,不影响台账)")
+
+
+def _receipt_response(
+    row: att_db.AttendanceRow, user_msg: str, pair_id: str | None
+) -> JSONResponse:
+    """**所有「200 + 凭证」的唯一出口**:置 done,然后回信封。
+
+    三条路径共用它 —— 幂等层①命中、层③并发回查赢家、正常落账。
+    收在一个出口是为了兑现契约里那条「幂等重放时也要置 done」:手机断网重发一次,
+    电脑不该卡在 scanned。散在三处 = 下一个人加第四条成功路径时必漏一处,
+    而漏了的表现是「偶尔电脑不跳到成功」,查起来要命。
+    """
+    payload = _receipt_payload(row)
+    _pair_mark_done(pair_id, payload)
+    return _respond(ok(payload, user_msg), 200)
+
+
+# ---------------------------------------------------------------------------
 # body 收取与落账(③–⑦)
 # ---------------------------------------------------------------------------
 
@@ -705,7 +873,7 @@ def _make_draft(
     )
 
 
-def _resolve_event_race(event_id: str, req_digest: str) -> JSONResponse:
+def _resolve_event_race(event_id: str, req_digest: str, pair_id: str | None) -> JSONResponse:
     """幂等层③:INSERT 撞了 event_id 唯一约束 —— 并发同键,本请求是输家。
 
     回查赢家那条:指纹相同就把它当成自己的结果返回(工友看不出输赢,也不该
@@ -718,11 +886,14 @@ def _resolve_event_race(event_id: str, req_digest: str) -> JSONResponse:
         # 撞了唯一约束却查不回来:台账状态异常,交给兜底 500(logger.exception 记全)。
         raise RuntimeError("event_id 撞唯一约束但回查不到,台账状态异常")
     if winner.req_digest == req_digest:
-        return _respond(ok(_receipt_payload(winner), messages.CHECKIN_REPLAYED), 200)
+        return _receipt_response(winner, messages.CHECKIN_REPLAYED, pair_id)
+    # 409 刻意**不**置 done:这次打卡并没有按工友说的记上,电脑那边该继续等。
     return _respond(fail(ErrorCode.CONFLICT, messages.CHECKIN_CONFLICT), 409)
 
 
-def _persist_checkin(meta: _CheckinMeta, photo: bytes, req_digest: str) -> JSONResponse:
+def _persist_checkin(
+    meta: _CheckinMeta, photo: bytes, req_digest: str, pair_id: str | None
+) -> JSONResponse:
     """⑤⑥⑦:时间快照 → 画水印 → register → 写台账。
 
     顺序不许颠倒(先落图后写库,W7 §3.3):图成功库失败 = 孤儿文件(无害,
@@ -747,10 +918,10 @@ def _persist_checkin(meta: _CheckinMeta, photo: bytes, req_digest: str) -> JSONR
         try:
             row = att_db.insert_checkin(draft)
         except att_db.DuplicateEventError:
-            return _resolve_event_race(meta.event_id, req_digest)
+            return _resolve_event_race(meta.event_id, req_digest, pair_id)
         except att_db.DuplicateReceiptError:
             continue
-        return _respond(ok(_receipt_payload(row), messages.CHECKIN_OK), 200)
+        return _receipt_response(row, messages.CHECKIN_OK, pair_id)
     return _respond(
         fail(
             ErrorCode.INTERNAL,
@@ -794,12 +965,17 @@ async def post_checkin(request: Request) -> JSONResponse:
         if wait_s is not None:
             return _rate_limited(wait_s)
 
+        # 扫码配对(W8):可选,取不到就是 None。**它到此为止,一步都不往指纹里走** ——
+        # 刻意不放进 _CheckinMeta,就是为了让「带不带 pair 算出同一个指纹」成为结构事实
+        # 而不是靠人记得(模块头注「扫码配对」最后那段红字)。
+        pair_id = _pair_from_request(request)
+
         # ② 幂等层①:读 body 之前短路。比对用的是**客户端报的** hash ——
         # 谎报的后果只是它自己拿到 409/对不上,伪造不出任何服务端状态(模块头注)。
         existing = att_db.find_by_event_id(meta.event_id)
         if existing is not None:
             if _meta_digest(meta, meta.client_digest) == existing.req_digest:
-                return _respond(ok(_receipt_payload(existing), messages.CHECKIN_REPLAYED), 200)
+                return _receipt_response(existing, messages.CHECKIN_REPLAYED, pair_id)
             return _respond(fail(ErrorCode.CONFLICT, messages.CHECKIN_CONFLICT), 409)
 
         photo = await _read_photo(request)  # ③ 流式收 body
@@ -808,7 +984,7 @@ async def post_checkin(request: Request) -> JSONResponse:
 
         # ④ 落库指纹用**服务端自己算的** hash —— header 那个到此为止,绝不落库。
         req_digest = _meta_digest(meta, photo_sha256(photo))
-        return _persist_checkin(meta, photo, req_digest)  # ⑤⑥⑦
+        return _persist_checkin(meta, photo, req_digest, pair_id)  # ⑤⑥⑦
     except Exception:
         # 兜底:任何没料到的炸都收敛成 500 信封。堆栈只进日志;user_msg 走
         # DEFAULT_USER_MSG[INTERNAL](已是人话),不在这里另造第二句。
@@ -845,6 +1021,64 @@ async def get_checkin_recent(request: Request) -> JSONResponse:
         return _respond(fail(ErrorCode.INTERNAL), 500)
 
 
+async def post_pair_scanned(request: Request) -> JSONResponse:
+    """POST /checkin/pair/scanned —— 手机落地即上报一次「已扫码」(契约见模块头注)。
+
+    与打卡同一把锁(令牌自查),但走**自己的**限流桶。
+    这里的 pair 是整个请求的全部内容,所以畸形值如实 400 ——
+    与 ``POST /checkin`` 上那个可选头的宽容处理不冲突:那边 pair 只是装饰,
+    这边它是请求本身,静默当成功会让电脑永远等下去而没人知道为什么。
+    """
+    try:
+        denied = _deny_if_token_bad(request)
+        if denied is not None:
+            return denied
+        wait_s = get_pair_limiter().take(PAIR_BUCKET_IDENTITY)
+        if wait_s is not None:
+            return _rate_limited(wait_s)
+        pair_id = pairing.normalize_pair_id(request.headers.get(HEADER_PAIR))
+        if pair_id is None:
+            return _respond(
+                fail(
+                    ErrorCode.INVALID_INPUT,
+                    messages.BAD_REQUEST,
+                    detail="X-GYT-Pair 缺失或格式不对",
+                ),
+                400,
+            )
+        # 返回的是**结果**状态,不是恒定的 "scanned":已经 done 的不回退(模块头注)。
+        state = pairing.get_store().mark_scanned(pair_id)
+        return _respond(ok({"state": state}), 200)
+    except Exception:
+        logger.exception("上报扫码状态失败")
+        return _respond(fail(ErrorCode.INTERNAL), 500)
+
+
+async def get_pair_state(request: Request) -> JSONResponse:
+    """GET /checkin/pair?id=… —— 电脑每 2 秒问一次「手机走到哪了」(契约见模块头注)。
+
+    🔴 未知 / 过期 / 格式不对 / 压根没带 id,**四者一律回 waiting**。
+    区分开就是把它变成探测接口(拿 id 试一遍就能数出现场开着几台面板)。
+    这里没有一处 if 在「翻译」这四种情况:格式不对与没带在下面归一成 None,
+    未知与过期由存储层归一成同一个 ``WAITING_RECORD``(pairing.py 头注)。
+    """
+    try:
+        denied = _deny_if_token_bad(request)
+        if denied is not None:
+            return denied
+        wait_s = get_pair_limiter().take(PAIR_BUCKET_IDENTITY)
+        if wait_s is not None:
+            return _rate_limited(wait_s)
+        pair_id = pairing.normalize_pair_id(request.query_params.get("id"))
+        record = pairing.WAITING_RECORD if pair_id is None else pairing.get_store().get(pair_id)
+        # user_msg 留空:配对状态对应的界面文案在前端(冻结契约第五节那张表),
+        # 后端多塞一句只会出现两份会漂的文案。
+        return _respond(ok({"state": record.state, "receipt": record.receipt}), 200)
+    except Exception:
+        logger.exception("查询配对状态失败")
+        return _respond(fail(ErrorCode.INTERNAL), 500)
+
+
 # ---------------------------------------------------------------------------
 # app —— langgraph.json 的 ``http.app`` 指到这里(``./src/gyt/checkin_api.py:app``)。
 # 必须是货真价实的模块级变量:langgraph-api 按文件路径加载后直接从模块字典取,
@@ -855,8 +1089,12 @@ async def get_checkin_recent(request: Request) -> JSONResponse:
 CHECKIN_ROUTES: Final[list[Route]] = [
     Route("/checkin", post_checkin, methods=["POST"]),
     Route("/checkin/recent", get_checkin_recent, methods=["GET"]),
+    # 扫码配对两条(W8)。路径都是静态的,与上面两条不会互相遮挡;
+    # 往这个列表里追加就够了 —— webapp.py 是 ``*CHECKIN_ROUTES`` 整体铺进去的。
+    Route("/checkin/pair/scanned", post_pair_scanned, methods=["POST"]),
+    Route("/checkin/pair", get_pair_state, methods=["GET"]),
 ]
-"""打卡这两条路由。**真正挂上去的入口是 backend/webapp.py**,不是下面那个 app。
+"""打卡链这四条路由。**真正挂上去的入口是 backend/webapp.py**,不是下面那个 app。
 
 为什么要把路由单拎出来:``langgraph.json`` 的 ``http.app`` **只能有一个**,
 而这个项目现在有两拨自定义路由 —— 队友的项目/图纸/资料管理(webapp.py)与
@@ -879,6 +1117,7 @@ __all__ = [
     "HEADER_DIGEST",
     "HEADER_EVENT_ID",
     "HEADER_GEO",
+    "HEADER_PAIR",
     "HEADER_SITE",
     "HEADER_SOURCE",
     "HEADER_WORKER",
