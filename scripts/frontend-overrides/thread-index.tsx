@@ -86,18 +86,47 @@ function ScrollToBottom(props: { className?: string }) {
   );
 }
 
-/** 工友通品牌标识:绿色圆角「工」+ 名称(方案 B「清爽卡片」顶栏)。 */
-function GytBrand({ onClick }: { onClick?: () => void }) {
+/**
+ * 工友通品牌标识:绿色圆角「工」+ 名称(方案 B「清爽卡片」顶栏)。
+ *
+ * ⚠️ 手机上这里栽过一次(2026-08-15 用无头浏览器在 390×844 iPhone 视口实测):
+ * 顶栏是一条 flex 行,而这颗按钮当时既没有 `shrink-0` 也没有 `whitespace-nowrap`,
+ * 右边的「当前工地 / 资料库 / 资料归档」一挤,「工友通」就被压到 **34px 宽 × 84px 高**
+ * —— 三个字竖排成一列。注意页面**没有**横向滚动(scrollWidth == innerWidth),
+ * 所以不是溢出,是 flex 挤压:查的人若去找 overflow 会找不到东西。
+ * 两件缺一不可:`shrink-0` 让它不被压,`whitespace-nowrap` 让它就算被压也不折行。
+ */
+function GytBrand({
+  onClick,
+  hideTextOnMobile = false,
+}: {
+  onClick?: () => void;
+  /** 窄屏只留绿色「工」徽标、藏掉「工友通」三个字。
+   *  进入对话后的顶栏比首页多一颗「新对话」按钮,390px 下放不下整个字号 ——
+   *  藏掉不丢任何功能:徽标本身 onClick 就是「回到新对话」。 */
+  hideTextOnMobile?: boolean;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex cursor-pointer items-center gap-2.5"
+      className="flex shrink-0 cursor-pointer items-center gap-2 sm:gap-2.5"
     >
-      <span className="flex h-9 w-9 items-center justify-center rounded-[11px] bg-[#0E9F6E] text-lg font-black text-white">
+      {/* 窄屏把徽标与字号各降一档,给右侧那组顶栏入口腾出约 20px;≥640px 原样恢复。 */}
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[11px] bg-[#0E9F6E] text-base font-black text-white sm:h-9 sm:w-9 sm:text-lg">
         工
       </span>
-      <span className="text-xl font-black tracking-tight text-[#1B2420]">
+      {/* 360px 以下(iPhone SE 一代那种老屏)连字都放不下:顶栏可用 298px,
+          而侧栏开关 40 + 品牌 93 + 当前工地 123 + 资料库 40 + 资料归档 38 = 358,
+          实测「📂 资料归档」被顶到 right=374、整个掉出屏幕(而且没有横向滚动条,
+          屏幕上一点线索都没有)。这一档只留绿色「工」徽标 —— 它本来就是 logo,
+          底下那句大标题「有事就问工友通」也还在,认得出是谁家的产品。 */}
+      <span
+        className={cn(
+          "text-lg font-black tracking-tight whitespace-nowrap text-[#1B2420] sm:text-xl",
+          hideTextOnMobile ? "hidden sm:inline" : "max-[359px]:hidden",
+        )}
+      >
         工友通
       </span>
     </button>
@@ -321,10 +350,12 @@ function ThreadInner() {
           }
         >
           {!chatStarted && (
-            <div className="absolute top-0 left-0 z-10 flex w-full items-center gap-2 border-b border-[#EAEDEB] bg-white/80 p-2.5 pl-3 backdrop-blur">
+            <div className="absolute top-0 left-0 z-10 flex w-full items-center gap-1.5 border-b border-[#EAEDEB] bg-white/80 p-2.5 pl-3 backdrop-blur sm:gap-2">
               {(!chatHistoryOpen || !isLargeScreen) && (
                 <Button
-                  className="hover:bg-black/5"
+                  // 窄屏把左右内边距从 px-4 收到 px-2:这一颗省下的 16px,
+                  // 正好是「当前工地」按钮在 390px 下还能显出项目名的余量。
+                  className="shrink-0 px-2 hover:bg-black/5 sm:px-4"
                   variant="ghost"
                   onClick={() => setChatHistoryOpen((p) => !p)}
                 >
@@ -336,18 +367,25 @@ function ThreadInner() {
                 </Button>
               )}
               <GytBrand onClick={() => setThreadId(null)} />
-              <div className="ml-auto">
+              {/* shrink-0 与 ArchiveHeaderControls 内部一致(理由见那边的注释):
+                  这一组里能让步的只有「当前工地」的项目名,它自己 truncate,
+                  不需要、也不能靠压缩容器来腾地方。 */}
+              <div className="ml-auto shrink-0">
                 <ArchiveHeaderControls />
               </div>
             </div>
           )}
           {chatStarted && (
-            <div className="relative z-10 flex items-center justify-between gap-3 p-2">
-              <div className="relative flex items-center justify-start gap-2">
+            // 进入对话后的顶栏:比首页多一颗「新对话」,窄屏预算更紧。
+            // max-[359px]:flex-wrap —— 360px 以下允许折成两行(这条顶栏在正常流里,
+            // 不像首页那条是 absolute 覆盖、折行会顶穿下面靠 pt-16 留的白)。
+            <div className="relative z-10 flex items-center justify-between gap-1.5 p-2 max-[359px]:flex-wrap sm:gap-3">
+              <div className="relative flex shrink-0 items-center justify-start gap-2">
                 <div className="absolute left-0 z-10">
                   {(!chatHistoryOpen || !isLargeScreen) && (
                     <Button
-                      className="hover:bg-gray-100"
+                      // 与首页顶栏同样的窄屏收窄(见上方那颗的注释)。
+                      className="px-2 hover:bg-gray-100 sm:px-4"
                       variant="ghost"
                       onClick={() => setChatHistoryOpen((p) => !p)}
                     >
@@ -369,15 +407,19 @@ function ThreadInner() {
                     damping: 30,
                   }}
                 >
-                  <GytBrand onClick={() => setThreadId(null)} />
+                  <GytBrand
+                    hideTextOnMobile
+                    onClick={() => setThreadId(null)}
+                  />
                 </motion.div>
               </div>
 
-              <div className="flex items-center gap-3">
+              {/* shrink-0 同首页顶栏(理由见 ArchiveHeaderControls 里的注释)。 */}
+              <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
                 <ArchiveHeaderControls />
                 <TooltipIconButton
                   size="lg"
-                  className="p-4"
+                  className="shrink-0 p-2 sm:p-4"
                   tooltip="新对话"
                   variant="ghost"
                   onClick={() => setThreadId(null)}
@@ -400,7 +442,13 @@ function ThreadInner() {
             <StickyToBottomContent
               className={cn(
                 "absolute inset-0 overflow-y-scroll px-4 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:bg-transparent",
-                !chatStarted && "mt-[25vh] flex flex-col items-stretch",
+                // mt-[25vh] 是首页把大标题往下压到视觉中心用的,桌面上好看,
+                // 手机上是纯亏损:390×844 实测,顶栏 + 2×2 卡片已吃掉 ~330px,
+                // 再扣 25vh(211px)后滚动视口只剩 303px,而底部那坨(大标题 + 输入框 +
+                // 动作条)要 312px —— sticky bottom-0 塞不下,动作条被顶到 y=873,
+                // **整条动作条连同「打卡」按钮落在 844 的屏幕之外**,不滚动根本看不见。
+                // 窄屏收到 mt-4,≥640px 原样恢复 25vh。
+                !chatStarted && "mt-4 flex flex-col items-stretch sm:mt-[25vh]",
                 chatStarted && "grid grid-rows-[1fr_auto]",
               )}
               contentClassName="pt-8 pb-16 max-w-3xl mx-auto flex flex-col gap-4 w-full"
@@ -440,13 +488,17 @@ function ThreadInner() {
                 </>
               }
               footer={
-                <div className="sticky bottom-0 flex flex-col items-center gap-8 bg-[#EEF1F0]">
+                // 窄屏把纵向留白与标题字号各收一档 —— 这一坨是 sticky bottom-0,
+                // 它有多高,动作条就被顶多高;省下的每一像素都是「打卡按钮在不在屏幕里」。
+                // ⚠️ 这里只能用 `//`:footer={…} 是 JSX 属性表达式,里头塞 {/* */} 会被
+                // 解析成第二个表达式,直接 Syntax Error(2026-08-15 踩过)。
+                <div className="sticky bottom-0 flex flex-col items-center gap-4 bg-[#EEF1F0] sm:gap-8">
                   {!chatStarted && (
                     <div className="flex flex-col items-center text-center">
-                      <h1 className="text-[44px] leading-tight font-black tracking-tight text-[#1B2420]">
+                      <h1 className="text-[30px] leading-tight font-black tracking-tight text-[#1B2420] sm:text-[44px]">
                         有事就问工友通
                       </h1>
-                      <p className="mt-3 text-[18px] text-[#6B7772]">
+                      <p className="mt-2 text-[15px] text-[#6B7772] sm:mt-3 sm:text-[18px]">
                         说一句话、拍张照,或者传个文件,我来帮你派活
                       </p>
                     </div>
@@ -457,7 +509,7 @@ function ThreadInner() {
                   <div
                     ref={dropRef}
                     className={cn(
-                      "relative z-10 mx-auto mb-8 w-full max-w-3xl overflow-hidden rounded-[22px] bg-white shadow-[0_12px_40px_rgba(27,36,32,0.10)] transition-all",
+                      "relative z-10 mx-auto mb-4 w-full max-w-3xl overflow-hidden rounded-[22px] bg-white shadow-[0_12px_40px_rgba(27,36,32,0.10)] transition-all sm:mb-8",
                       dragOver
                         ? "border-2 border-dotted border-[#0E9F6E]"
                         : "border border-solid border-[#E4E8E6]",
@@ -492,8 +544,18 @@ function ThreadInner() {
                         className="field-sizing-content resize-none border-none bg-transparent p-5 pb-2 text-[17px] text-[#33403A] shadow-none ring-0 outline-none placeholder:text-[#A2ABA6] focus:ring-0 focus:outline-none"
                       />
 
-                      <div className="flex items-center gap-6 border-t border-[#EEF1F0] bg-[#FAFBFB] p-3 px-4">
-                        <div>
+                      {/* 底部动作条 —— 手机上这里是**打卡功能的唯一入口**,挤爆等于打卡不可用。
+                          2026-08-15 在 390×844 实测的病状:gap-6(24px×3=72px)+ 四项内容
+                          intrinsic 宽约 400px,远超可用的 358px(390 − px-4),于是每一项都被
+                          flex 压到文字竖排 —— 「打卡」按钮只剩 **42px 宽**,手指几乎点不中。
+
+                          解法是**换行而不是隐藏**(窄屏也一件功能都不少):
+                          · flex-wrap + order-last —— 只把「隐藏中间步骤」这个纯观感开关挤到第二行,
+                            第一行留给 上传 / 打卡 / 发送 三个真动作;
+                          · ≥640px 用 sm:flex-nowrap + sm:gap-6 原样退回今天的单行布局,
+                            所以 768 / 1280 一个像素都不动。 */}
+                      <div className="flex flex-wrap items-center gap-2 border-t border-[#EEF1F0] bg-[#FAFBFB] p-3 px-4 sm:flex-nowrap sm:gap-6">
+                        <div className="order-last shrink-0 sm:order-none">
                           <div className="flex items-center space-x-2">
                             <Switch
                               id="render-tool-calls"
@@ -502,15 +564,16 @@ function ThreadInner() {
                             />
                             <Label
                               htmlFor="render-tool-calls"
-                              className="text-sm text-[#6B7772]"
+                              className="text-sm whitespace-nowrap text-[#6B7772]"
                             >
                               隐藏中间步骤
                             </Label>
                           </div>
                         </div>
+                        {/* min-h-11 = 44px,触摸目标的通用下限;≥640px 退回原来的高度(sm:min-h-0)。 */}
                         <Label
                           htmlFor="file-input"
-                          className="flex cursor-pointer items-center gap-1.5 rounded-[12px] border border-[#E4E8E6] bg-white px-3 py-2 text-sm font-bold text-[#33403A] transition hover:border-[#7FCDAE]"
+                          className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-[12px] border border-[#E4E8E6] bg-white px-3 py-2 text-sm font-bold whitespace-nowrap text-[#33403A] transition hover:border-[#7FCDAE] sm:min-h-0"
                         >
                           <Plus className="size-4 text-[#0E9F6E]" />
                           <span>上传图纸·资料</span>
@@ -532,7 +595,7 @@ function ThreadInner() {
                           <Button
                             key="stop"
                             onClick={() => stream.stop()}
-                            className="ml-auto rounded-[14px]"
+                            className="ml-auto min-h-11 shrink-0 rounded-[14px] whitespace-nowrap sm:min-h-0"
                           >
                             <LoaderCircle className="h-4 w-4 animate-spin" />
                             停止
@@ -540,7 +603,7 @@ function ThreadInner() {
                         ) : (
                           <Button
                             type="submit"
-                            className="ml-auto rounded-[14px] bg-[#0E9F6E] px-7 text-[16px] font-black text-white shadow-md transition-all hover:bg-[#0b7f58]"
+                            className="ml-auto min-h-11 shrink-0 rounded-[14px] bg-[#0E9F6E] px-7 text-[16px] font-black whitespace-nowrap text-white shadow-md transition-all hover:bg-[#0b7f58] sm:min-h-0"
                             disabled={
                               isLoading ||
                               (!input.trim() && contentBlocks.length === 0)

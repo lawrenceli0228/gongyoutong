@@ -110,18 +110,89 @@ ssh gyt
 | `/opt/animego-mongo-final-20260811.tar.gz` | 老 animego 站的 mongo 冷备(214MB)。跟本项目无关,别删,那是拆老栈前留的 |
 
 **代码怎么更新到线上:** 从开发机 rsync 上去(不是在服务器上 `git pull`)。
+**排除规则直接让 rsync 读 `.gitignore`,不要手写 `--exclude` 清单** —— 理由是下面那张表。
 
 ```bash
-# 在开发机的仓库根执行
-rsync -az --delete \
-  --exclude '.venv' --exclude '__pycache__' --exclude 'node_modules' --exclude '.next' \
-  --exclude 'frontend/' --exclude 'data/artifacts' --exclude 'data/uploads' \
-  --exclude 'data/gyt.sqlite3' --exclude '.env' --exclude '.env.vps' \
-  ./ gyt:/opt/gyt/
+# 在开发机的仓库根执行。先带 -n 演练一遍,看清楚要删什么
+rsync -azn --delete -i --filter=':- .gitignore' --exclude '.git' ./ gyt:/opt/gyt/
+
+# 确认删除清单里没有 data/ 下的东西,再去掉 -n 真跑
+rsync -az --delete --filter=':- .gitignore' --exclude '.git' ./ gyt:/opt/gyt/
 ```
 
-⚠️ **`--exclude '.env'` 不能去掉。** 去掉就会用开发机的 `.env` 覆盖服务器上那份,
-而那份里是真的线上 Key 和口令哈希 —— 覆盖之后站点当场登不进去。
+> **`gyt` 是 §1 第 3 步那段 `~/.ssh/config` 里的别名。** 你机器上要是配成了别的名字
+> (Lawrence 这台是 `animego-old`),换成你实际配的那个 —— 同一台机,别照抄。
+
+⚠️ **别把 `--filter` 换回手写的 `--exclude` 清单。** 这不是风格偏好,是 2026-08-15
+拿 `rsync -n` 对着**线上机**演练出来的**生产数据丢失**。
+
+这儿以前写的就是一串手写 `--exclude`,`data/` 下只排了 `artifacts`、`uploads`、
+`gyt.sqlite3` **三样** —— 而线上 `data/` 下有**八样**
+(`artifacts` / `cache` / `cad_index` / `chroma` / `demo` / `gyt.sqlite3` / `langgraph` / `uploads`)。
+两版演练对比:
+
+| | 手写清单版(旧) | `.gitignore` 驱动版(现) |
+|---|---|---|
+| 会删掉的东西 | **605 项** | **3 项** |
+| ↳ `data/langgraph/` | **整个目录**,7 个文件 | 0 |
+| ↳ `data/cache/` | 288 个 | 0 |
+| ↳ `data/cad_index/` | 10 个 | 0 |
+| ↳ `.git/objects/` | 296 个 | 0 |
+| ↳ `/opt/gyt` 根下的散落文件 | 3 个 | 同样这 3 个 |
+| 传输量 | **968MB** / 11388 个文件 | **2.8MB** / 84 个文件 |
+
+新版删的那几项全是 **VPS 侧自己产生的**临时文件,直接躺在 `/opt/gyt` 根下:
+`scenario_results.json`、`run_scenarios.py`,以及 `preflight_vps.sh`(根目录下的散落副本,
+正主在 `scripts/` 里)。删了不心疼 —— 但反过来说:**别在 VPS 上把有用的东西直接放在
+`/opt/gyt` 根下**,下次同步就没了。
+
+> **右列那个数是会飘的**,别当成验收标准。它取决于当时 VPS 上堆了多少临时文件 ——
+> 同一天早上量到的是 **8 项**(那会儿还躺着五个 `build-*.log` / `rebuild.log` /
+> `redeploy.log` / `scenarios.log`,下午再量就没了)。
+> **真正的规矩是「先 `-n` 演练、亲眼看一遍删除清单」,不是「数字对得上就放心」。**
+> 左列那 605 项则是结构性的,只要还用手写清单就一直在。
+
+**最要命的是 `data/langgraph/` —— 那是全部对话历史**(线上 88MB:`store.pckl`、
+`store.vectors.pckl` 加三个 checkpoint)。commit `08f606d`
+(`fix(deploy): 把 langgraph 的线程存储挂出来 —— 容器一重建,所有历史对话清零`)
+修的正是这个东西,而旧命令会把那次修复的成果**一次抹干净**,
+连带 §7 说的「线上历史记录里留着那 14 个场景的完整问答」也一起没。
+`data/cache/` 是 LLM 磁盘缓存(5.4MB),删了下次提问全部真花钱。
+`data/chroma`(向量库 12MB)和 `data/demo`(26MB)不在**删除**列里,但别高兴太早 ——
+开发机上也有同名目录,所以它们的下场是**被开发机那份盖过去**
+(演练里 `chroma.sqlite3` 和几个 HNSW 索引 `.bin` 都标着 `<f`,是真要传的),
+外加把 macOS 的 `.DS_Store` 一路推上生产。同样不是你想要的。
+
+**为什么不是「往清单里补五行」:** 补完下次还会漏。手写清单是 `.gitignore` 之外的**第二份平行真相**,
+每多一个运行期目录就得记得回来补一次,而漏掉是**静默**的 —— 这次就这么漏了五个
+(`cache`、`cad_index`、`chroma`、`demo`、`langgraph`)。`--filter=':- .gitignore'` 让 rsync
+直接把 `.gitignore` 当排除规则读,「什么不该上服务器」从此只有一份定义,
+以后往 `.gitignore` 里加一行就自动生效。968MB 那个数也是顺带治好的:
+仓库根有 870MB 被 gitignore 掉的 YOLO 训练素材(`construction-safety-monitor.v1i.yolov8`
+和同名 zip),手写清单里没有它,于是每次同步都往那台小机器上推一遍。
+
+**`--delete` 默认不删被排除的文件**(真要删得显式写 `--delete-excluded`)。
+所以 `data/` 和 `.env` 是双保险:先被 filter 挡在传输之外,再被 `--delete` 放过。
+
+⚠️ **`.env` 仍然一步都碰不得** —— 只是现在不用手写 `--exclude '.env'` 了:
+`.gitignore` 第 2 行的 `.env` 和第 65 行的 `.env.*` 已经把它和 `.env.vps` 一起罩住。
+**但别为了「看着显式」把 filter 换回手写清单**,那等于把上面那张表重新踩一遍。
+`.env` 真要是被开发机那份盖掉,里面是线上 Key 和口令哈希,站点当场登不进去。
+
+⚠️ **`--exclude '.git'` 也别去掉。** `/opt/gyt` 底下确实有一份 `.git`(早年 rsync 顺带拷上去的旧快照,
+停在 `a304109`,那台机没有 GitHub 凭据、拉不动),没这条就是 296 个 object 被删。
+它没用,但删它没有任何好处,排除掉最省事。
+
+⚠️ **跑完顺手查一次 `data/` 的属主。** 内容是安全的,但 `data/` **目录本身**在传输列表里
+(演练输出是 `.d..t.og. data/`,要改 mtime + 属主 + 属组),而 `rsync -a` 会把源端 uid 带过去 ——
+macOS 上是 `501:staff`,线上容器跑的是 **uid 10001**。改坏了的表现是老一套:
+容器 healthy、页面能开,但台账写不进去。复原一条命令:
+
+```bash
+ssh gyt "chown 10001:996 /opt/gyt/data"      # 996 是那台机的 docker 组
+```
+
+`scripts/preflight_vps.sh` 第 ④ 组有一条「`data/` 属主是 10001」的硬检查,会替你拦。
 
 ---
 

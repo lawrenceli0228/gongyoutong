@@ -190,18 +190,33 @@ function ProjectSwitcher() {
       <button
         onClick={() => setMenuOpen((v) => !v)}
         className={cn(
-          "flex items-center gap-2 rounded-full border px-4 py-2 text-[14px] font-bold transition",
+          // 窄屏收内边距 + 不许换行。这颗是顶栏里唯一宽度会随内容变的元素,
+          // 也是唯一一个「让步点」—— 但让步靠的是下面那个 span 的 max-w + truncate
+          // (给出确定的上限),**不是**靠 flex 压缩:整组按钮都是 shrink-0,
+          // 谁都压不动(理由见 ArchiveHeaderControls 的注释)。
+          "flex items-center gap-1.5 rounded-full border px-2.5 py-2 text-[14px] font-bold whitespace-nowrap transition sm:gap-2 sm:px-4",
           scoped
             ? "border-[#0E9F6E] bg-[#EEF6F2] text-[#0E7A55]"
             : "border-dashed border-[#C6D0CB] bg-white text-[#8A948F] hover:border-[#7FCDAE]",
         )}
         title="当前工地 —— 问答 / 看图 / 归档都按它走"
       >
-        <span className={cn("h-2 w-2 rounded-full", scoped ? "bg-[#0E9F6E]" : "bg-[#C6D0CB]")} />
-        <span className="max-w-[180px] truncate">
+        <span
+          className={cn(
+            "h-2 w-2 shrink-0 rounded-full",
+            scoped ? "bg-[#0E9F6E]" : "bg-[#C6D0CB]",
+          )}
+        />
+        {/* 窄屏把项目名的上限从 180px 压到 72px、360px 以下再压到 52px(超出照旧 truncate 出「…」)。
+            72 不是随手写的:390px 顶栏的可用内容宽是 368px(390 − pl-3 − p-2.5),
+            侧栏开关 40 + 品牌 93 + 本颗 123 + 资料库 40 + 资料归档 38 + 四道 gap-1.5 = 358,
+            余 10px。上限再放宽到 88 就会顶到 380、把「资料归档」挤出屏幕右缘(实测过)。
+            「在哪个工地」比完整名字更要紧 —— 点开下拉能看到全名,hover 还有 title。
+            ≥640px 恢复 180px。 */}
+        <span className="max-w-[72px] truncate max-[359px]:max-w-[52px] sm:max-w-[180px]">
           🏗 {currentName ?? "全部工地(未选)"}
         </span>
-        <span className="text-[#9AA5A0]">▾</span>
+        <span className="shrink-0 text-[#9AA5A0]">▾</span>
       </button>
 
       {menuOpen && (
@@ -255,15 +270,33 @@ function ProjectSwitcher() {
 export function ArchiveHeaderControls() {
   const { setOpen } = useArchive();
   return (
-    <div className="flex items-center gap-2.5">
+    // 为什么加这些断点:2026-08-15 在 390×844(iPhone)视口实测,这一组三颗按钮
+    // 的 intrinsic 宽度远超顶栏剩余空间,于是被 flex 压成竖排 ——「资料库」52×102、
+    // 「资料归档」50×125(文字一列一个字)。页面并没有横向滚动,所以不是溢出是挤压。
+    // gap 与内边距窄屏收一档,≥640px(sm)全部原样恢复。
+    //
+    // ⚠️ shrink-0 不能少,而且**不能换成 min-w-0**:这一组的三颗子按钮自己都是
+    // shrink-0(不然就竖排),所以本容器一旦被允许压到比内容窄,子按钮会溢出到
+    // 容器外,而外面的兄弟(「新对话」那颗)是按**容器的盒子**排的 —— 结果两颗
+    // 按钮直接叠在一起。改造过程中就这么错过一次:进入对话后的顶栏里,
+    // 「新对话」[349→381] 压在「资料归档」[330→368] 上,重叠 19px。
+    <div className="flex shrink-0 items-center gap-1.5 sm:gap-2.5">
       <ProjectSwitcher />
       <LibraryButton />
       <button
         onClick={() => setOpen(true)}
-        className="flex items-center gap-2 rounded-full bg-[#1B2420] px-4 py-2.5 text-[14px] font-bold text-white transition hover:bg-black"
+        className="flex shrink-0 items-center gap-2 rounded-full bg-[#1B2420] px-2.5 py-2.5 text-[14px] font-bold whitespace-nowrap text-white transition hover:bg-black sm:px-4"
         title="按项目归档图纸 / 规范 / 任务书"
       >
-        📂 资料归档
+        {/* 窄屏只留 📂 图标(顶栏放不下三颗带字的按钮),≥640px 恢复「📂 资料归档」。
+            功能一件不少:图标本身就是按钮,点开的还是同一个归档抽屉。
+            ⚠️ 为什么是「两个 span 各写一份」而不是「📂 + <span>资料归档</span>」:
+            本 button 是 flex 且带 gap-2,后者会把图标和文字变成**两个 flex item**,
+            桌面端凭空多出 8px、整组按钮左移 —— 2026-08-15 像素比对抓到过(1280 视口
+            有 0.487% 像素变化,全在这一片)。display:none 的那份不参与 flex 布局,
+            所以这种写法在任何断点下都只有一个 flex item,桌面端与改造前逐像素一致。 */}
+        <span className="sm:hidden">📂</span>
+        <span className="hidden sm:inline">📂 资料归档</span>
       </button>
     </div>
   );
@@ -850,10 +883,14 @@ export function LibraryButton() {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="flex items-center gap-2 rounded-full border border-[#E4E8E6] bg-white px-4 py-2 text-[14px] font-bold text-[#33403A] transition hover:border-[#7FCDAE]"
+        className="flex shrink-0 items-center gap-2 rounded-full border border-[#E4E8E6] bg-white px-2.5 py-2 text-[14px] font-bold whitespace-nowrap text-[#33403A] transition hover:border-[#7FCDAE] sm:px-4"
         title="查看所有项目的图纸与规范"
       >
-        📚 资料库
+        {/* 与「资料归档」同一处理(含那条 flex gap 的坑,见那边的注释):
+            窄屏只留 📚 图标,≥640px 恢复带字的原样。
+            实测(2026-08-15,390×844)不这么做时这颗是 52×102 ——「资料库」三字竖排两行。 */}
+        <span className="sm:hidden">📚</span>
+        <span className="hidden sm:inline">📚 资料库</span>
       </button>
       {open && mounted && createPortal(drawer, document.body)}
     </>

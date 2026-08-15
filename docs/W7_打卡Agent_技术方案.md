@@ -212,7 +212,7 @@ Pillow 原生无替代 —— 实测 `FreeTypeFont` 不暴露任何 glyph/char �
 |---|---|---|
 | `<img>` 只送 Cookie,送不了 `X-Api-Key` | `human.tsx:213` + Caddyfile 注释 + `auth.py:105` | **`/checkin/photo` 必裂图** → §1.3 |
 | `TokenBucket.take(identity)` 收任意字符串当桶键 | `auth.py:262` | 三种限流维度实现成本一样,差的是**桶键谁说了算** → §3.6 |
-| Caddy `request_body max_size 128MB` 在 **`:182`**(v3 写的 `:170` 是错的),且 **128 是算出来的**:DXF 64MB × base64 4/3 ≈ 85.3MB + 余量 | `Caddyfile:170-184` | **v3 的「收到照片同量级」会打死图纸上传** → §3.6 |
+| Caddy `request_body max_size` 在 **`:183`**(v3 写的 `:170` 是错的),且那个数**是算出来的**:DXF × base64 4/3 + 余量。⚠️ **写这份方案时是 128MB(DXF 64MB);2026-08-13 队友把 `GYT_DRAWING_MAX_MB` 提到 100 后重算成 192MB** —— 见 §12.5 | `Caddyfile:170-184` | **v3 的「收到照片同量级」会打死图纸上传** → §3.6 |
 | VPS **1.9GB 内存**,检索时 BGE-M3 峰值 **955MB**;`docker-compose.vps.yml:449` **故意不写 `deploy.resources.limits`** | `docs/W6_VPS_队友接入.md:203` | 水印解位图会 OOM 整个容器 → §3.4 |
 | `safety/tools.py:315` **已经在缩图**:`image.thumbnail((max_edge, max_edge), LANCZOS)` | 同左 | 水印抄这个写法,**顺带把水印字号固定下来** |
 | `setup-frontend.sh` 现有 **11 处** `apply_override`(`:386`–`:418`) | 同左 | `install_new_file` 装的三件**不计入这个数** → §6 |
@@ -473,10 +473,10 @@ NOW = datetime.now(ZoneInfo("Asia/Hong_Kong"))   # ⚠️ 不许 astimezone() �
 **Caddy 请求体上限:给打卡路径单设,全局那条一个字不动。**
 
 ```
-Caddyfile:170-184 的注释已经把 128MB 算给你看了:
-  最大单件是 DXF 图纸(GYT_DRAWING_MAX_MB=64)
-  → 前端转 base64 塞进 JSON,体积撑到 4/3 → 约 85.3MB
-  → 加 JSON 转义与多文件同发的余量 → 取 128MB
+Caddyfile:170-184 的注释已经把这个数算给你看了:
+  最大单件是 DXF 图纸(GYT_DRAWING_MAX_MB,**现为 100**,写方案时是 64)
+  → 前端转 base64 塞进 JSON,体积撑到 4/3 → 约 133MB(64 时是 85.3MB)
+  → 加 JSON 转义与多文件同发的余量 → **现取 192MB**(64 时取 128MB)
 ```
 
 **v3 说「收到与照片上限同量级」会直接打死图纸上传**,而报错是 Caddy 的 413,
@@ -620,7 +620,7 @@ Caddyfile:170-184 的注释已经把 128MB 算给你看了:
 | `src/gyt/graph.py` | `AGENT_REGISTRY` 追加一行,不动 `build_graph()` |
 | `src/gyt/core/uploads.py` | **只补 `photo_max_mb`**(现存 bug)。打卡不走这里 |
 | `backend/Dockerfile` | **`app` 阶段**装字体 |
-| `Caddyfile` | **新增打卡路径专用 route + 它自己的 `request_body`;全局 128MB 不动** |
+| `Caddyfile` | **新增打卡路径专用 route + 它自己的 `request_body`;全局那条一字不动** |
 | `eval/{scorers.py,datasets/routing.csv,README.md}` | 名单同步(22 → 26 行) |
 
 ### 4.4 前端(8)
@@ -717,7 +717,7 @@ Caddyfile:170-184 的注释已经把 128MB 算给你看了:
 | 水印字体候选路径 | `config.py` + `Dockerfile` **app 阶段** + **`ci.yml` 的安装步骤**。⚠️ 绝不能加进 `base` |
 | 业务时区 `Asia/Hong_Kong` | `receipt.py` / `db/attendance.py`。**不许靠宿主 `TZ`** |
 | 打卡链的用户可见文案 | **`src/gyt/attendance/messages.py`**(不是 `agents/` 下面)+ `agents/attendance/prompt.md`。两边头注互指 |
-| Caddy 请求体上限 | **全局 128MB(由 `GYT_DRAWING_MAX_MB` × 4/3 推出)** + **打卡 route 自己那条**。改 `GYT_DRAWING_MAX_MB` 要回去重算全局那行 |
+| Caddy 请求体上限 | **全局(由 `GYT_DRAWING_MAX_MB` × base64 4/3 + 余量推出,2026-08-15 实际为 192MB)** + **打卡 route 的 12MB**(由 `GYT_PHOTO_MAX_MB=10` + raw body 不膨胀推出)。⚠️ **改 `GYT_DRAWING_MAX_MB` 要回去重算全局那行** —— 2026-08-13 从 64 提到 100 时重算了 Caddyfile,但本文档没跟上,直到 08-15 上线验证才发现 |
 | 新文件的安装方式 | `setup-frontend.sh` 的 `install_new_file()`。**`apply_override` 装不了新文件** |
 | 前端文件数量 | `CLAUDE.md` 记**两个数**:`apply_override` **仍是十一件**(打上游的补丁),`install_new_file` **三件**(本仓自有)。⚠️ **不许合成一个数** —— 那句话的括号写着「以 `apply_override` 调用为准」,合并之后数出来永远对不上 |
 
@@ -793,7 +793,7 @@ Caddyfile:170-184 的注释已经把 128MB 算给你看了:
     那三样是视觉缓存键(TODO-11),动一个就是又一轮 22 分钟真花钱,而考勤和视觉链毫无关系
 - [x] **T11(P2,3h/20min)** — 凭证渲染(**`<img>` 走 `ARTIFACT_BASE`,NULL 时显示「已过期清理」**)+ **`GET /checkin/recent`** + 二维码(**装 QR 库**)
 - [x] **T12(P2,1h/10min)** — PICS 进 `login-page.html`(**用途/是否自愿/不提供后果/接收方类别/查阅更正/负责人信息**,六项齐)
-- [x] **T13(P2,1h/10min)** — `Caddyfile` **新增打卡专用 route + 它的 `request_body`;全局 128MB 不动**
+- [x] **T13(P2,1h/10min)** — `Caddyfile` **新增打卡专用 route + 它的 `request_body`;全局那条不动**
   - 验收:**传一张 >10MB 的 DXF 图纸仍能成功**(回归)
 - [x] **T14(P2,1h/10min)** — 补 `uploads.py` 的 `photo_max_mb`(**现存 bug**)
 - [x] **T15(P2,1h/10min)** — `CLAUDE.md` + `TODOS.md`(**含 §6 的两个前端文件数**)
@@ -896,3 +896,47 @@ timeout。后者会**取消**那次定位,下次又从冷启动重来;race 只�
 > **这条对后面的启示:** W7 的验收清单里「真机核对表」原本只列了四种浏览器组合
 > (§11.4),看的是**能不能跑通**。这次说明还要看**数值对不对** ——
 > 定位、时间、精度这类「跑通了但值是空的」的东西,自动化测试天然看不见。
+
+### 12.5 上线实录(2026-08-15)—— 详见 `W7_上线实录与部署踩坑.md`
+
+W7 于 2026-08-15 部署到 velactora.com。**上线成功、零停机**,线上真打卡跑通
+(含繁体姓名水印与坐标)。过程踩了 **12 个坑,其中 4 个是当天现造的** ——
+全部记在 `docs/W7_上线实录与部署踩坑.md`(md + html 双件套),这里只记与本方案直接相关的两条:
+
+**① 一条本方案自己的过期数已订正。** §1.10 与 §3.6 原写「Caddy 全局 128MB
+(DXF 64MB × base64 4/3 ≈ 85.3MB + 余量)」—— 那是写方案时的实测。
+2026-08-13 队友把 `GYT_DRAWING_MAX_MB` 从 64 提到 **100**,`Caddyfile` 也跟着
+重算成 **192MB**,而本文档没跟上,直到上线验证才发现。
+**打卡那条 12MB 的闸不受影响**(它由 `GYT_PHOTO_MAX_MB=10` 推出,那个值没变)。
+教训写进同源清单那一行了:改 `GYT_DRAWING_MAX_MB` 要回去重算 Caddyfile 全局那条,
+而文档里的数字**以 Caddyfile 为准,别照抄**。
+
+**② §11.5 那条闸的验法要补一句:必须带登录会话去验。**
+站点每条 `/api/*` 都先过 Caddy 的 `forward_auth`,**没有会话时它自己就回 401** ——
+于是「不带令牌 → 401 → 通过」在没会话时是**必然的假绿灯**:打卡端点完全裸奔也会绿。
+两种 401 的文案不同,这是唯一的分辨方法:
+
+```
+{"detail":"登录已过期,请刷新页面重新登录。"}   ← Caddy 门禁拦的,**不构成验证**
+{"detail":"访问被拒绝,请联系发你链接的人。"}   ← 打卡端点拦的,**这才算数**
+```
+
+线上实测走的是后者。⚠️ 登录表单字段名是 **`pw`** 不是 `password`。
+
+**上线当天的线上验证结果**(全部经 Caddy 全链路):
+
+| 项 | 结果 |
+|---|---|
+| 未登录首页 / `/api/*` | 302 → `/login` / 401 |
+| 🔴 有会话、无令牌打 `/checkin` | **401「访问被拒绝」** |
+| 有会话 + 令牌 + 真 JPEG | **200**,凭证 `GYT-A-20260815-165026-ecac` |
+| 同 event_id 同 digest 重发 | 200,**同一个编号**(幂等生效) |
+| 同 event_id 假 digest | **409 CONFLICT** |
+| 凭证图经 `/artifacts/by-id/…` | 200,98966 字节;**肉眼确认繁体「陳大文」「尖沙咀地盤」渲染正常** |
+| 库里 | `lat=22.297511 lon=114.1722 acc=18.5 source=camera geo_status=ok` |
+| 发布端口 | **恰好 3** |
+
+(测试数据事后已从生产库删除。)
+
+**§11 那 12 条闸的完成情况:** 1/2/3(本机)、5/6/7 的等价验证、11、12 已过;
+**4(四种浏览器真机组合)与 §12.3 说的真人手机端到端仍未做** —— 那是 curl 证明不了的部分。

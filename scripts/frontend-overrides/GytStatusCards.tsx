@@ -74,7 +74,13 @@ export function GytStatusCards() {
         )}
       </div>
 
-      <div className="grid grid-cols-4 gap-2.5">
+      {/* 窄屏 2×2、≥640px 恢复四列一排。
+          为什么加这个断点:2026-08-15 用无头浏览器在 390×844(iPhone)视口实测,
+          四列并排会把每张卡压到 **56px 宽**,卡名与说明文字被压成竖条、卡片顶部被裁掉。
+          页面并没有横向滚动(scrollWidth == innerWidth),所以不是溢出而是 flex/grid 挤压。
+          640px 是 Tailwind 的 sm 断点:768(iPad)与 1280(桌面)都在它之上,
+          走的仍是原来的 grid-cols-4,观感一个像素不变。 */}
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
         {CARDS.map((c) => {
           const lit = active === c.key;
           const dim = !!active && !lit;

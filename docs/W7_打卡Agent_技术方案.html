@@ -902,6 +902,44 @@ missing = [c for c in text if ord(c) not in set(faces[<b>IDX</b>].getBestCmap())
   </div>
 </section>
 
+  <h3>12.5 上线实录(2026-08-15)</h3>
+  <div class="box b-ok">
+    <p>W7 于 2026-08-15 部署到 velactora.com。<b>上线成功、零停机</b>,线上真打卡跑通(含繁体姓名水印与坐标)。
+      过程踩了 <b>12 个坑,其中 4 个是当天现造的</b> —— 全部记在
+      <code>docs/W7_上线实录与部署踩坑.md</code>(md + html 双件套)。</p>
+  </div>
+
+  <p><b>① 本方案自己的一条过期数已订正。</b> §1.10 与 §3.6 原写「Caddy 全局 128MB
+    (DXF 64MB × base64 4/3 ≈ 85.3MB + 余量)」—— 那是写方案时的实测。2026-08-13 队友把
+    <code>GYT_DRAWING_MAX_MB</code> 从 64 提到 <b>100</b>,<code>Caddyfile</code> 跟着重算成 <b>192MB</b>,
+    而本文档没跟上,直到上线验证才发现。<b>打卡那条 12MB 的闸不受影响</b>
+    (由 <code>GYT_PHOTO_MAX_MB=10</code> 推出,没变)。文档里的数字<b>以 Caddyfile 为准,别照抄</b>。</p>
+
+  <div class="box b-bad">
+    <p><b>② §11.5 那条闸必须带登录会话去验。</b> 站点每条 <code>/api/*</code> 都先过 Caddy 的
+      <code>forward_auth</code>,<b>没有会话时它自己就回 401</b> —— 于是「不带令牌 → 401 → 通过」
+      在没会话时是<b>必然的假绿灯</b>:打卡端点完全裸奔也会绿。两种 401 的文案不同,这是唯一的分辨方法:</p>
+<pre>{"detail":"登录已过期,请刷新页面重新登录。"}   ← Caddy 门禁拦的,<i>不构成验证</i>
+{"detail":"访问被拒绝,请联系发你链接的人。"}   ← 打卡端点拦的,<b>这才算数</b></pre>
+    <p>线上实测走的是后者。⚠️ 登录表单字段名是 <code>pw</code> 不是 <code>password</code>。</p>
+  </div>
+
+  <h3>上线当天的线上验证结果(全部经 Caddy 全链路)</h3>
+  <table>
+    <tr><th>项</th><th>结果</th></tr>
+    <tr><td>未登录首页 / <code>/api/*</code></td><td>302 → <code>/login</code> / 401</td></tr>
+    <tr><td>🔴 有会话、无令牌打 <code>/checkin</code></td><td><b>401「访问被拒绝」</b></td></tr>
+    <tr><td>有会话 + 令牌 + 真 JPEG</td><td><b>200</b>,凭证 <code>GYT-A-20260815-165026-ecac</code></td></tr>
+    <tr><td>同 event_id 同 digest 重发</td><td>200,<b>同一个编号</b>(幂等生效)</td></tr>
+    <tr><td>同 event_id 假 digest</td><td><b>409 CONFLICT</b></td></tr>
+    <tr><td>凭证图经 <code>/artifacts/by-id/…</code></td><td>200,98966 字节;<b>肉眼确认繁体「陳大文」「尖沙咀地盤」渲染正常</b></td></tr>
+    <tr><td>库里</td><td><code>lat=22.297511 lon=114.1722 acc=18.5 source=camera geo_status=ok</code></td></tr>
+    <tr><td>发布端口</td><td><b>恰好 3</b></td></tr>
+  </table>
+  <p>§11 那 12 条闸:1/2/3、5/6/7 的等价验证、11、12 已过;
+    <b>4(四种浏览器真机组合)与真人手机端到端仍未做</b> —— 那是 curl 证明不了的部分。</p>
+</section>
+
 <footer>
   docs/W7_打卡Agent_技术方案.md · v4 · 2026-08-15<br>
   /plan-eng-review 三轮(10 条裁决)+ Codex 两轮独立复审(68 条)· 共 23 条经实测确认是本方案自己的错误
