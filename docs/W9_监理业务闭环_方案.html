@@ -1,6 +1,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>监理业务闭环 —— 现状评估与 feat 清单 · 工友通 W9</title>
+<title>监理业务闭环 v2 · 工友通 W9</title>
 <style>
 :root{
   --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
@@ -97,6 +97,8 @@ tr:last-child td{border-bottom:none}
 .score .n{font-family:var(--mono);font-size:30px;font-weight:650;line-height:1;letter-spacing:-.03em}
 .score .l{font-size:12.5px;color:var(--ink-faint);margin-top:6px}
 .score .yes .n{color:var(--ok)} .score .half .n{color:var(--warn)} .score .no .n{color:var(--bad)}
+.d{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--accent);
+  background:var(--accent-soft);border:1px solid var(--accent);border-radius:4px;padding:0 5px;white-space:nowrap}
 a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}
 a:hover{border-bottom-color:var(--accent)}
 footer{margin-top:76px;padding-top:26px;border-top:1px solid var(--line);
@@ -114,42 +116,43 @@ footer{margin-top:76px;padding-top:26px;border-top:1px solid var(--line);
   <a href="#s"><b>0</b>结论</a>
   <a href="#m"><b>1</b>逐动作对照</a>
   <a href="#pre"><b>2</b>两个前置</a>
-  <a href="#f0"><b>F0</b>隐患台账</a>
-  <a href="#f1"><b>F1</b>方案审查</a>
-  <a href="#f2"><b>F2</b>分级文书</a>
-  <a href="#f3"><b>F3</b>复查销项</a>
-  <a href="#f4"><b>F4</b>汇总报告</a>
-  <a href="#f5"><b>F5</b>Agent 挂载</a>
-  <a href="#red"><b>4</b>三条红线</a>
-  <a href="#order"><b>5</b>建议顺序</a>
-  <a href="#touch"><b>6</b>会碰到哪儿</a>
+  <a href="#f0"><b>4</b>F0 台账</a>
+  <a href="#f2"><b>5</b>F2/F3/F5</a>
+  <a href="#x"><b>6</b>跨切面定案</a>
+  <a href="#dec"><b>7</b>15 个定案</a>
+  <a href="#no"><b>8</b>不在范围</a>
+  <a href="#reuse"><b>9</b>已有代码复用</a>
+  <a href="#fail"><b>10</b>失败模式</a>
+  <a href="#lane"><b>11</b>并行泳道</a>
 </nav>
 
 <main>
 <header>
-  <div class="meta">2026-08-16 · 评估对象 = 当前 main · docs/W9_监理业务闭环_方案.md</div>
-  <div class="eyebrow">工友通 W9 · 现状评估</div>
-  <h1>监理业务闭环<br>现状评估与 feat 清单</h1>
+  <div class="meta">2026-08-16 · v2:评审四章节 + 一轮独立外部挑错,15 个定案已回写 · docs/W9_监理业务闭环_方案.md</div>
+  <div class="eyebrow">工友通 W9 · 实施方案</div>
+  <h1>监理业务闭环<br>评估与实施方案 v2</h1>
   <p class="lede">把系统从「工友与安全员的随手工具」扩到<b>监理工程师的法定职责链</b>。
     依据是《建设工程安全生产管理条例》(国务院令第 393 号)<b>第十四条</b> ——
     需求里描述的四步,在法条里其实是同一条的四句话。</p>
 
+  <div class="box b-warn">
+    <span class="hd">v1 已作废,别照它实施</span>
+    <p>v1 是评估稿。经 <code>/plan-eng-review</code> 四章节评审 + 一轮独立外部挑错(18 条,核实 7 条全部属实),
+      <b>15 个议题定案已全部回写</b>。v1 的 DDL、编号表、状态机图都是决定之前的旧版。</p>
+  </div>
+
   <div class="verdict">
-    <div class="t">不能满足。十个动作里,一个全有、三个半有、六个全无。</div>
-    <p>但缺口<b>不是六个功能,而是一件地基</b>:隐患在系统里没有身份。</p>
+    <div class="t">当前不能满足。十个动作里,一个全有、三个半有、六个全无。</div>
+    <p>缺口<b>不是六个功能,而是一件地基</b>:隐患在系统里没有身份。</p>
     <p>现在的链条是「拍照 → 识别 → 渲染 docx → <b>完</b>」。docx 落盘那一刻,这条隐患就从系统里消失了 ——
       没有编号可追、没有状态可变,没法回答「上周那个临边无防护改了没」。</p>
-    <p>所以顺序不能反:<b>先做 hazards 台账 + 状态机,其余全挂上去</b>。
-      反过来先做文书生成,得到的是六个互不连通的 docx 生成器 —— 演示能过,业务闭不上。</p>
   </div>
 
   <div class="box b-ok">
-    <span class="hd">好消息:三层地基是现成的,缺的只有中间那层</span>
+    <span class="hd">三层地基是现成的,缺的只有中间那层</span>
     <p><b>感知层</b> safety 识别 8 类隐患 + <code>severity.py</code> 确定性定级 ·
       <b>产出层</b> python-docx 渲染 + <code>artifacts</code> 落盘与编号 ·
-      <b>检索层</b> knowledge 带页码出处 + 全局/项目双作用域。</p>
-    <p>要补的是它们之间的<b>状态与流程</b> —— 这也是为什么工作量集中在一张表和一个状态机上,
-      而不是六套新能力。</p>
+      <b>检索层</b> knowledge 带页码出处 + 全局/项目双作用域。缺的是它们之间的<b>状态与流程</b>。</p>
   </div>
 </header>
 
@@ -161,45 +164,8 @@ footer{margin-top:76px;padding-top:26px;border-top:1px solid var(--line);
     <div class="half"><div class="n">3</div><div class="l">半有 —— 定级 / 要求整改 / 复查销项</div></div>
     <div class="no"><div class="n">6</div><div class="l">全无 —— 方案审查、暂停令、报建设单位、报主管部门、汇总、专项报告</div></div>
   </div>
-  <p>「半有」三条都不是差一点,而是<b>差在关键处</b>:定级差的是监理要的「一般/严重」二分,
-    而那个二分决定了后面走哪条路;要求整改差的是《监理通知单》,现在的巡检记录与任务是两个孤岛;
-    复查销项差的是<b>证据</b> —— 现在一句话就能销。</p>
-</section>
-
-<section id="m">
-  <h2>1 / Mapping</h2>
-  <div class="h">逐动作对照</div>
-  <p class="sub">法条第十四条的四句话,依次就是需求里的四步。拆成可实现的动作:</p>
-  <table>
-    <thead><tr><th>#</th><th>监理动作</th><th>现状</th><th>现在有什么</th><th>差什么</th></tr></thead>
-    <tbody>
-      <tr><td>1</td><td>事前审查专项方案是否符合强制性标准</td><td><span class="tag t-no">全无</span></td>
-        <td>knowledge 一问一答查条文;项目级 PDF 可上传进向量库</td>
-        <td>没有「审查」这个动作:不能拿一份方案逐条比对出意见</td></tr>
-      <tr><td>2</td><td>巡查发现隐患</td><td><span class="tag t-yes">现成</span></td>
-        <td>safety 识别 8 类受控隐患</td><td>—</td></tr>
-      <tr><td>3</td><td>隐患定级</td><td><span class="tag t-half">半有</span></td>
-        <td><code>severity.py</code> 四档确定性定级(重大/较大/一般/待定级)</td>
-        <td>没有监理口径的<b>一般/严重</b>二分,而这个二分决定后续走哪条路</td></tr>
-      <tr><td>4</td><td>一般隐患 → 要求整改</td><td><span class="tag t-half">半有</span></td>
-        <td>report 出巡检记录 docx;schedule 能记一条带期限的任务</td>
-        <td>没有《监理通知单》;<b>巡检记录与任务互不关联</b>,两个孤岛</td></tr>
-      <tr><td>5</td><td>严重隐患 → 责令暂停施工</td><td><span class="tag t-no">全无</span></td>
-        <td>—</td>
-        <td>《工程暂停令》没有;更要命的是<b>没有分级分岔</b> —— 现在不管什么级别都只出同一份巡检记录</td></tr>
-      <tr><td>6</td><td>及时报告建设单位</td><td><span class="tag t-no">全无</span></td>
-        <td>—</td><td>无送达动作、无留痕</td></tr>
-      <tr><td>7</td><td>复查销项</td><td><span class="tag t-half">半有</span></td>
-        <td>schedule 的 <code>finish_task</code></td>
-        <td>销的是「任务」不是「隐患」;而且<b>销项不要求任何证据</b></td></tr>
-      <tr><td>8</td><td>拒不整改/不停工 → 报主管部门</td><td><span class="tag t-no">全无</span></td>
-        <td>—</td><td>无升级判定、无《监理报告》</td></tr>
-      <tr><td>9</td><td>定期汇总</td><td><span class="tag t-no">全无</span></td>
-        <td>report 只会做单张照片</td><td>无跨时间、跨照片的统计</td></tr>
-      <tr><td>10</td><td>重大隐患专项报告留档</td><td><span class="tag t-no">全无</span></td>
-        <td>—</td><td>—</td></tr>
-    </tbody>
-  </table>
+  <p>「半有」三条都差在关键处:定级差的是监理要的「一般/严重」二分,而那个二分决定后面走哪条路;
+    要求整改差的是《监理通知单》,现在的巡检记录与任务是两个孤岛;复查销项差的是<b>证据</b> —— 现在一句话就能销。</p>
 
   <h3>为什么「隐患要有身份」是这条链的支点</h3>
   <table>
@@ -214,345 +180,389 @@ footer{margin-top:76px;padding-top:26px;border-top:1px solid var(--line);
   </table>
 </section>
 
+<section id="m">
+  <h2>1 / Mapping</h2>
+  <div class="h">逐动作对照</div>
+  <table>
+    <thead><tr><th>#</th><th>监理动作</th><th>现状</th><th>差什么</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>事前审查专项方案是否符合强制性标准</td><td><span class="tag t-no">全无</span></td>
+        <td>knowledge 只能一问一答查条文,没有「审查」这个动作</td></tr>
+      <tr><td>2</td><td>巡查发现隐患</td><td><span class="tag t-yes">现成</span></td><td>—</td></tr>
+      <tr><td>3</td><td>隐患定级</td><td><span class="tag t-half">半有</span></td>
+        <td>有四档技术定级,没有监理口径的<b>一般/严重</b>二分</td></tr>
+      <tr><td>4</td><td>一般隐患 → 要求整改</td><td><span class="tag t-half">半有</span></td>
+        <td>没有《监理通知单》;<b>巡检记录与任务互不关联</b></td></tr>
+      <tr><td>5</td><td>严重隐患 → 责令暂停施工</td><td><span class="tag t-no">全无</span></td>
+        <td>《工程暂停令》没有;更要命的是<b>没有分级分岔</b></td></tr>
+      <tr><td>6</td><td>及时报告建设单位</td><td><span class="tag t-no">全无</span></td><td>无送达动作、无留痕</td></tr>
+      <tr><td>7</td><td>复查销项</td><td><span class="tag t-half">半有</span></td>
+        <td>销的是「任务」不是「隐患」;<b>销项不要求任何证据</b></td></tr>
+      <tr><td>8</td><td>拒不整改 → 报主管部门</td><td><span class="tag t-no">全无</span></td><td>无升级判定、无《监理报告》</td></tr>
+      <tr><td>9</td><td>定期汇总</td><td><span class="tag t-no">全无</span></td><td>report 只会做单张照片</td></tr>
+      <tr><td>10</td><td>重大隐患专项报告留档</td><td><span class="tag t-no">全无</span></td><td>—</td></tr>
+    </tbody>
+  </table>
+</section>
+
 <section id="pre">
   <h2>2 / Prerequisites</h2>
   <div class="h">两个前置</div>
-  <p class="sub">不解决的话,F0–F4 全做完也不能上生产。</p>
 
   <h3>前置 A:语料是空的 —— 这是<b>你或队友</b>要做的事</h3>
   <div class="box b-bad">
     <span class="hd">《建设工程安全生产管理条例》现在不在库里</span>
-    <p><code>data/demo/docs/</code> 里只有一份 <code>GB-50016-2014-建筑设计防火规范2018版.pdf</code>。</p>
-    <p>现在拿监理职责去问 knowledge,它会如实答「知识库里查不到」——
-      这是<b>正确行为</b>(no_answer 路径工作正常),但也意味着 F1 的「依据」是一片空白。</p>
+    <p><code>data/demo/docs/</code> 里只有一份 <code>GB-50016-2014-建筑设计防火规范2018版.pdf</code>。
+      现在拿监理职责问 knowledge,它会如实答「知识库里查不到」—— 这是<b>正确行为</b>,但意味着 F1 的依据是一片空白。</p>
   </div>
   <table>
     <thead><tr><th>要补的 PDF</th><th>用途</th><th>缺了会怎样</th></tr></thead>
     <tbody>
-      <tr><td>《建设工程安全生产管理条例》(国务院令第 393 号)</td><td>整条业务链的法定依据</td>
-        <td>所有文书都引不出条文出处</td></tr>
-      <tr><td>《建设工程监理规范》GB/T 50319-2013</td>
-        <td><b>通知单 / 暂停令 / 监理报告 / 复工令的标准表式</b>就在它的附录里</td>
-        <td>文书排版只能自创,拿不出去</td></tr>
-      <tr><td>《危险性较大的分部分项工程安全管理规定》(住建部令第 37 号)</td>
-        <td>F1 方案审查清单的来源</td><td>审查清单没有依据,变成拍脑袋</td></tr>
-      <tr><td>《建筑施工安全检查标准》JGJ 59-2011</td>
-        <td>隐患分级的行业依据</td><td>grade 映射表没人背书</td></tr>
+      <tr><td>《建设工程安全生产管理条例》(国务院令 393 号)</td><td>整条业务链的法定依据</td><td>所有文书都引不出条文出处</td></tr>
+      <tr><td>《建设工程监理规范》GB/T 50319-2013</td><td><b>通知单/暂停令/复工令/监理报告的标准表式</b>在它附录里</td><td>文书排版只能自创</td></tr>
+      <tr><td>《危险性较大的分部分项工程安全管理规定》(住建部 37 号令)</td><td>F1 审查清单来源</td><td>审查清单没有依据</td></tr>
+      <tr><td>《建筑施工安全检查标准》JGJ 59-2011</td><td>隐患分级的行业依据</td><td>grade 映射表没人背书</td></tr>
     </tbody>
   </table>
   <div class="box b-warn">
     <span class="hd">⚠️ 本文引用的条文号、表号一律以 PDF 原文为准,别照抄本文</span>
-    <p>写这份方案时这四份 PDF 都不在库里,条文映射是<b>凭记忆写的</b> ——
-      而「凭记忆写规范」正是这个项目从第一天就禁止的事(见 supervisor 提示词的职责边界:
-      「你脑子里记的东西可能是过时的,工地上照着过时信息干活是要出人命的」)。</p>
-    <p>PDF 进库后第一件事,就是拿 knowledge 把本文的每处引用核一遍。</p>
+    <p>写作时这四份都不在库里,条文映射是<b>凭记忆写的</b> —— 而「凭记忆写规范」正是本项目从第一天就禁止的事。</p>
   </div>
 
-  <h3>前置 B:签发人没有身份</h3>
-  <p>TODO-3(用户体系与多项目隔离)、TODO-35(打卡的「谁」是 localStorage 里的一个字符串)
-    记着同一件事:<b>现在系统里所有人都是同一个匿名登录者。</b></p>
-  <p>总监理工程师签发《工程暂停令》是有法律责任的行为。没有身份体系,「谁签的」这一栏只能是空的或写死的。</p>
-  <div class="box b-info">
-    <p><b>演示可以做</b> —— 签发人写死在配置里,文书页脚印「演示件 · 非正式文书」。</p>
-    <p><b>生产不能上</b> —— 必须先有角色与签名。</p>
-    <p>这条不阻塞 F0–F4 开发,但必须在文书模板里预留字段、在演示话术里说清楚。</p>
+  <h3>前置 B:签发人没有身份 —— <span class="d">D15</span> 已化解,不再阻塞</h3>
+  <div class="box b-ok">
+    <span class="hd">定位成「AI 出稿、总监理工程师签字生效」,不是「演示件」</span>
+    <p>每份文书固定印一句「本稿由工友通生成,经总监理工程师签字后生效」,签字栏留空。
+      这本来就是真实监理工作流,与 safety/report 已宣告的「初筛与记录,最终判定归持证人员」一脉相承。</p>
+    <p><b>代价要说清:</b>这套系统因此只能声称实现了法定职责链的「记录与出稿」部分,不能声称实现了职责链本身。
+      身份体系(TODO-3)从硬前置降为欠账。</p>
   </div>
 </section>
 
 <section id="f0">
-  <h2>F0 / Foundation</h2>
-  <div class="h">hazards 隐患台账 + 状态机</div>
-  <p class="sub">地基。其余五项全部依赖它。新模块 <code>backend/src/gyt/db/hazards.py</code>,
-    照 <code>db/tasks.py</code> 的写法:同步 sqlite3、每操作一条独立连接、幂等建表、全参数化、列表一次取回。</p>
+  <h2>4 / Foundation</h2>
+  <div class="h">F0 —— hazards 隐患台账 + 状态机</div>
+  <p class="sub">新模块 <code>backend/src/gyt/db/hazards.py</code>。<b>先做 <span class="d">D9</span> 的前置重构再写它。</b></p>
 
 <pre>CREATE TABLE IF NOT EXISTS <b>hazards</b> (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  hazard_no   TEXT NOT NULL UNIQUE,   -- GYT-H-20260816-0001
-  project_id  TEXT,                   -- <i>⚠️ 与 tasks 不同:这里必须真写,不能恒 NULL</i>
-  photo_id    TEXT NOT NULL,          -- 发现时那张照片的 artifact_id
-  item        TEXT NOT NULL,          -- 受控词表 8 选 1(词表外原样透传,同 safety)
-  severity    TEXT NOT NULL,          -- 重大/较大/一般/待定级 ← safety 直出,不改写
-  grade       TEXT NOT NULL CHECK (grade IN ('一般','严重')),   -- 监理口径,由 severity 映射
-  status      TEXT NOT NULL CHECK (status IN
-                ('open','notified','suspended','reinspect_failed','closed','escalated')),
-  due_date    TEXT,                   -- 整改期限
-  found_at    TEXT NOT NULL,
-  closed_at   TEXT,
-  created_at  TEXT NOT NULL,
-  updated_at  TEXT NOT NULL
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  hazard_no       TEXT NOT NULL UNIQUE,      -- GYT-H-YYYYMMDD-HHMMSS-4hex
+  project_id      TEXT NOT NULL DEFAULT '',  -- <b>D6</b>:取不到就空串,不是 NULL
+  photo_sha256    TEXT NOT NULL,             -- <b>D14</b>:内容哈希,<i>不是 artifact_id</i>
+  photo_id        TEXT NOT NULL,             -- 首次发现那张照片的 artifact_id(展示用)
+  item            TEXT NOT NULL,             -- 受控词表 8 选 1
+  severity        TEXT NOT NULL,             -- 重大/较大/一般/待定级 ← safety 直出
+  grade           TEXT NOT NULL CHECK (grade IN ('一般','严重')),
+  grading_version TEXT NOT NULL,             -- <b>D4</b>:定级规则版本快照
+  status          TEXT NOT NULL CHECK (status IN
+                    ('open','notified','suspended','reinspect_failed','resuming','closed','escalated')),
+  due_date        TEXT,                      -- 整改期限(HK 日历日)
+  found_at        TEXT NOT NULL,
+  closed_at       TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  <i>UNIQUE (photo_sha256, item)</i>              -- <b>D14</b>:幂等键
 );
 
 CREATE TABLE IF NOT EXISTS <b>hazard_docs</b> (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   hazard_no   TEXT NOT NULL,
   doc_type    TEXT NOT NULL CHECK (doc_type IN
-                ('notice','suspension','owner_report','authority_report','reinspect')),
-  doc_no      TEXT NOT NULL,          -- 各类文书各自的编号(见「三条红线」§4.3)
-  artifact_id TEXT,                   -- 生成的 docx 产物编号
-  photo_id    TEXT,                   -- 仅复查记录:复查照片
-  result      TEXT,                   -- 仅复查记录:pass / fail
+                ('notice','suspension','resumption','owner_report','authority_report','reinspect')),
+  doc_no      TEXT NOT NULL <i>UNIQUE</i>,           -- 外部意见 #9
+  artifact_id TEXT,   photo_id TEXT,   result TEXT,
   created_at  TEXT NOT NULL
-);</pre>
-
-  <div class="box b-info">
-    <span class="hd">为什么拆两张表</span>
-    <p>一条隐患会挂多份文书(通知单 → 暂停令 → 复查记录 ×N → 上报),是一对多。</p>
-    <p>而且 <code>hazard_docs</code> 天然就是<b>证据链</b> —— 上报主管部门时要证明
-      「我通知过、期限到了、复查过、他没改」,这份证明就是按 <code>hazard_no</code>
-      把 <code>hazard_docs</code> 全查出来,不需要另建一套。</p>
-  </div>
+);
+CREATE INDEX IF NOT EXISTS idx_hazard_docs_no ON hazard_docs(hazard_no);</pre>
 
   <div class="box b-bad">
-    <span class="hd">🔴 <code>project_id</code> 必须真写</span>
-    <p><code>tasks</code> 表的 <code>project_id</code> 是「建表即预留、写入恒 NULL」(W3 定案 #11)——
-      hazards <b>不能</b>这么干:监理汇总报表是<b>按项目</b>出的,项目维度从第一天就得是真的,
-      补做要迁移历史数据。</p>
+    <span class="hd">🔴 status 的语义边界(外部意见 #3)</span>
+    <p><code>status=suspended</code> 只证明<b>暂停令已出稿</b>,不证明工地真停了工;
+      <code>owner_report</code> 只证明报告已生成,不证明建设单位收到了。</p>
+    <p>升级判定与汇总在措辞上必须如实:「<b>已出具暂停令</b>」而不是「已责令停工」。
+      送达与执行确认不在本批范围。</p>
   </div>
 
-  <h3>状态机</h3>
+  <h3>状态机 <span class="d">D3</span> <span class="d">D5</span></h3>
 <pre>                    safety 判出违规项
                           │
                     登记 hazards(<u>open</u>)
                           │
-              ┌───────────┴───────────┐   ← 这个分岔由 grade 决定,
-          grade=一般               grade=严重     <i>代码判,不是 LLM 判</i>
+              ┌───────────┴───────────┐   ← 分岔由 grade 决定,<i>代码判,不是 LLM 判</i>
+          grade=一般               grade=严重
               │                       │
-       《监理通知单》         《监理通知单》+《工程暂停令》+ 报建设单位
-              │                       │
+       《监理通知单》         《监理通知单》+《工程暂停令》+《致建设单位报告》
+              │                       │      ↑ 三份由<b>一次工具调用</b>原子产出
           <u>notified</u>                <u>suspended</u>
               │                       │
               └──────────┬────────────┘
-                         │  复查(<i>必须挂复查照片 artifact_id</i>)
+                         │  复查(必须挂复查照片;模型给建议,<i>人下结论</i> — D11)
               ┌──────────┴──────────┐
-          复查合格              复查不合格 / 超期未改
+          人确认合格            人确认不合格 / 超期未改
               │                       │
-           <u>closed</u>              <u>reinspect_failed</u>
-                                      │  再复查 ┄┄┄┄┄┄┘
-                                      │  或升级
-                                      └──► <u>escalated</u> ──《监理报告》报主管部门</pre>
+      ┌───────┴───────┐         <u>reinspect_failed</u>
+   原为 notified   原为 suspended        │  再复查 ┄┄┄┄┄┘
+      │               │                  │  或升级
+   <u>closed</u>        <u>resuming</u> ──《工程复工令》──► <u>closed</u>
+                                          └──► <u>escalated</u> ──《监理报告》报主管部门</pre>
+  <p><code>ALLOWED_TRANSITIONS</code> 写在 <code>agents/supervision/states.py</code>,<b>是这张图的唯一真相</b>;
+    db 层每个迁移函数的 <code>WHERE status IN (...)</code> 从它派生,靠 <code>rowcount</code> 判成败,
+    <b>不许信先读的快照</b>(同 <code>db/tasks.py:136-138</code> 的写前守卫)。</p>
 
-  <h3>severity → grade 的默认映射</h3>
-  <p>新建 <code>agents/supervision/grading.py</code>,照 <code>safety/severity.py</code> 的写法:确定性、纯函数、单测锁死。</p>
+  <h3>severity → grade 映射 <span class="d">D4</span></h3>
   <table>
-    <thead><tr><th>safety 定级</th><th>监理 grade</th><th>理由</th></tr></thead>
+    <thead><tr><th>safety 定级</th><th>grade</th><th>理由</th></tr></thead>
     <tbody>
       <tr><td>重大(高空未系安全带、动火无监护)</td><td><span class="tag t-no">严重</span></td><td>直接威胁生命,应停工处理</td></tr>
-      <tr><td>较大(临边无防护、用电隐患、消防通道堵塞)</td><td><span class="tag t-no">严重</span></td><td>系统性缺陷,影响一片人而不是一个人</td></tr>
+      <tr><td>较大(临边无防护、用电隐患、消防通道堵塞)</td><td><span class="tag t-no">严重</span></td><td>系统性缺陷,影响一片人</td></tr>
       <tr><td>一般(未戴安全帽、未穿反光衣、材料堆放混乱)</td><td><span class="tag t-half">一般</span></td><td>个人防护单项缺失</td></tr>
-      <tr><td>待定级(词表外)</td><td><span class="tag t-half">一般 + 标注「需人工定级」</span></td><td>不知道 ≠ 不严重,但也不能自动触发停工</td></tr>
+      <tr><td>待定级(词表外)</td><td><span class="tag t-half">一般 + 需人工定级</span></td><td>不知道 ≠ 不严重,但也不能自动触发停工</td></tr>
     </tbody>
   </table>
-  <p>这张表和 <code>severity.py</code> 一样是<b>初版默认值,上线前应由总监理工程师过目校准</b>。
-    放代码不放模型的三个理由完全照搬:<b>可解释</b>(问起来答案是「表里定的」不是「模型觉得」)、
-    <b>可校准</b>(改一处生效,不动提示词就不烧视觉缓存)、<b>可测试</b>(纯函数,单测锁死)。</p>
-</section>
-
-<section id="f1">
-  <h2>F1 / Pre-review</h2>
-  <div class="h">事前方案审查 —— 这就是「结合 knowledge」的正解</div>
-  <p class="sub">做法:<b>清单驱动的形式审查</b>。完全复用 knowledge 现有的双作用域,不需要新检索能力。</p>
-
-<pre>                     ┌─ <b>global scope</b> ──► 检索对应强条 ──► 规范出处(文件名 + 页码)
-一张检查项表 ×N 项 ──┤
-                     └─ <b>project scope</b> ─► 在方案 PDF 里检索 ──► 方案出处(第 X 页)
-                                              │
-                        ┌─────────────────────┴─────────────────────┐
-                    找得到                                       找不到
-                        │                                           │
-                  「已包含」+ 两处出处                          「未提及」
-                        │
-                数值可比对的再比一次 ──► 「符合」/「存疑」
-                                              │
-                                    《专项方案审查意见》docx</pre>
-
-  <p>检查项表 <code>SCHEME_CHECKLIST</code>(来源 = 住建部 37 号令,PDF 进库后逐条核):
-    编制人签字 / 施工单位技术负责人审批 / 总监理工程师签字 / 是否需专家论证 /
-    应急处置措施 / 监测监控措施 / 计算书 / 验收要求 …</p>
-
-  <div class="box b-bad">
-    <span class="hd">🔴 这条边界必须像 report 的 <code>_DISCLAIMER</code> 一样印在每一份审查意见书上</span>
-    <p><b>AI 判的是「写没写」,不是「写得对不对」。</b></p>
-    <p><b>能答:</b>专项方案里有没有写应急预案、有没有专家论证签字、这个数值和强条对不对得上。</p>
-    <p><b>不能答:</b>这个支撑体系设计得对不对、这个工况下的荷载取值合不合理。</p>
-    <p><b>实质性技术审查以注册监理工程师判定为准。</b></p>
-    <p>这个定位和 safety 的「初筛与记录」是同一句话,不是新增让步。</p>
-  </div>
+  <p>模块级常量 <code>GRADING_VERSION</code>,<b>改表必须 +1</b>(单测盯住)。写入 hazards 时快照。</p>
 </section>
 
 <section id="f2">
-  <h2>F2 / Documents</h2>
-  <div class="h">分级处置文书</div>
-  <p class="sub">三个工具 + 一套 docx 模板。<b>表式照 GB/T 50319-2013 附录,别自创。</b></p>
+  <h2>5 / F2 · F3 · F5</h2>
+  <div class="h">文书 · 复查 · Agent 挂载</div>
+
+  <h3>F2 分级处置文书</h3>
   <table>
     <thead><tr><th>工具</th><th>产物</th><th>触发条件(代码强制)</th></tr></thead>
     <tbody>
-      <tr><td><code>issue_notice(hazard_no, due_date)</code></td><td>《监理通知单》</td><td>任何 grade 都可签</td></tr>
-      <tr><td><code>issue_suspension(hazard_no)</code></td><td>《工程暂停令》</td>
-        <td><b>grade=严重 才允许</b>,一般隐患调用直接 fail</td></tr>
-      <tr><td><code>report_to_owner(hazard_no)</code></td><td>《致建设单位报告》</td><td>伴随暂停令,一并生成</td></tr>
+      <tr><td><code>issue_notice(hazard_no, due_phrase)</code></td><td>《监理通知单》</td><td>任何 grade</td></tr>
+      <tr><td><code>issue_suspension(hazard_no, due_phrase)</code></td>
+        <td>《监理通知单》+《工程暂停令》+《致建设单位报告》<b>三份原子产出</b></td>
+        <td><b>grade=严重 才允许</b>,一般隐患直接 fail</td></tr>
+      <tr><td><code>issue_resumption(hazard_no)</code></td><td>《工程复工令》</td><td>仅 <code>resuming</code> 态</td></tr>
     </tbody>
   </table>
-
   <div class="box b-bad">
-    <span class="hd">🔴 分级判定必须硬拦,不能靠提示词</span>
-    <p>「一般隐患签了暂停令」和「严重隐患只发了通知单」是<b>两个方向相反的事故</b>,都不能靠措辞管住。</p>
-    <p>必须在工具里用 <code>if grade != '严重': return fail(...)</code> 硬拦。理由和本项目
-      <b>三次栽在「用提示词管住模型行为」上</b>完全一致 —— 收工信号、表格复读、台账回执,
-      最后全是靠图配置 / 渲染层裁剪 / 中间件解决的。</p>
+    <span class="hd">🔴 两条红线</span>
+    <p><b>①</b> <code>if grade != '严重': return fail(...)</code> 必须硬拦。「一般隐患签了暂停令」与
+      「严重隐患只发通知单」是两个方向相反的事故 —— 本项目三次栽在「用提示词管住模型行为」上。</p>
+    <p><b>②</b> <code>due_phrase</code> <b>收用户原话,不收日期</b>。<code>agents/schedule/dates.py</code>
+      用 314 行证明了模型换算中文日期不可靠,红线是「模型只传原话,代码来算」。
+      算错的是<b>法定整改期限</b>,而超期升级直接读它。</p>
   </div>
-
-  <h3>谁能按下停工按钮 —— 需要拍板</h3>
-  <p>暂停令的后果是真金白银的停工。有两条路:</p>
   <div class="box b-ok">
-    <span class="hd">方案甲(推荐,有先例):走 HTTP 直连接口 + 前端确认按钮,不走 Agent 工具</span>
-    <p>Agent 只能「建议签发」并把要点讲清楚,实际签发要人在界面上点。</p>
-    <p>这与 W7 打卡「<b>写入不走 LLM</b>」(D15)完全同构 —— 那次的理由是防编造,
-      这次的理由更硬:<b>法律行为不能由概率性系统单方面触发</b>。</p>
-    <p>代价:多一件前端覆盖件 + 一条 <code>/api/supervision/suspend</code> 端点。</p>
+    <span class="hd">谁能按下停工按钮:走 HTTP 端点 + 前端确认,不走 Agent 工具</span>
+    <p>Agent 只能「建议签发」,实际签发要人在界面上点。与 W7 打卡「写入不走 LLM」同构 ——
+      那次理由是防编造,这次更硬:<b>法律行为不能由概率性系统单方面触发</b>。</p>
   </div>
-  <div class="box b-warn">
-    <span class="hd">方案乙(演示简化):Agent 可直接签发</span>
-    <p>但文书页脚固定印「演示件 · 非正式文书」。代价:结构上没有拦截,只靠文案自证。</p>
-  </div>
-</section>
 
-<section id="f3">
-  <h2>F3 / Re-inspection</h2>
-  <div class="h">复查销项 + 超期升级</div>
-
-<pre><b>reinspect_hazard(hazard_no, after_photo_id)</b>
-    │ 重新调 analyze_site_photo(复查照片)     ← 复用 safety,<u>零新增识别能力</u>
+  <h3>F3 复查销项 <span class="d">D11</span> <span class="d">D14</span></h3>
+<pre>reinspect_hazard(hazard_no, <i>after_photo_id</i>)
+    │ 调<b>识别半</b>(不登记 — D14)看复查照片
     ▼
-该 item 还在 ──► fail:复查不合格 → status=<i>reinspect_failed</i>
-该 item 没了 ──► pass:复查合格   → status=<u>closed</u> + closed_at</pre>
-
+  把「改前/改后」两组判断并排给人看 + 给出<b>建议</b>结论
+    ▼
+  人在界面上确认:合格 / 不合格     ← 结论由人下,<u>照片是证据不是判据</u></pre>
   <div class="box b-bad">
-    <span class="hd">🔴 复查销项必须挂复查照片的 artifact_id,不许纯文本销项</span>
-    <p>这是 <code>RequireReceiptSource</code> 思路的自然延伸,而且这次赌注更大。</p>
-    <p>真机<b>已经抓到过</b>模型不调工具、凭记忆编回执「销了:T1 已完成」而库里还是 open
-      (见 <code>core/require_tool.py</code>)。同样的失效换到监理场景,后果是
-      <b>「隐患已消除」被写进留档文书,而现场原样没动</b> —— 这是要出人命的假账。</p>
-    <p><b>结构上的保证:</b><code>after_photo_id</code> 是必填参数,编号不合法/照片不存在直接 fail
-      (照片编号是 32 位 hex,模型编不出一个能通过 <code>artifacts.resolve</code> 的);
-      拿不到照片就<b>没有任何路径</b>能把状态改成 closed。</p>
+    <span class="hd">🔴 after_photo_id 必填,拿不到照片就没有任何路径能改成 closed</span>
+    <p>真机已经抓到过模型不调工具、凭记忆编回执「销了:T1 已完成」而库里还是 open。
+      同样的失效换到监理场景,后果是<b>「隐患已消除」被写进留档文书,而现场原样没动</b>。</p>
+    <p><b>为什么结论由人下:</b>复查照片角度光线取景都变了,「<b>没拍到那个部位</b>」和「问题已消除」
+      在模型眼里一样 —— 那是往「误判合格」方向错,而这一侧会死人。</p>
   </div>
 
-  <p><b>超期升级:</b><code>list_overdue(project_id)</code> 纯 Python 日期比较
-    (照 schedule 的做法,不往 SQL 里塞「今天」)。超期未闭环 → Agent 提示可签发《监理报告》报主管部门,
-    <code>escalate_hazard(hazard_no)</code> 生成文书并把 <code>hazard_docs</code> 的完整证据链附进正文。</p>
-</section>
-
-<section id="f4">
-  <h2>F4 / Reporting</h2>
-  <div class="h">定期汇总 + 重大隐患专项报告</div>
-  <table>
-    <thead><tr><th>工具</th><th>产物</th></tr></thead>
-    <tbody>
-      <tr><td><code>summarize_hazards(project_id, start, end)</code></td>
-        <td>周期汇总 docx:总数 / 分级构成 / 整改率 / 超期清单 / 未闭环明细</td></tr>
-      <tr><td><code>major_hazard_report(hazard_no)</code></td>
-        <td>重大隐患专项报告:发现经过 + 照片 + 全部文书 + 复查记录 + 法条依据</td></tr>
-    </tbody>
-  </table>
-  <p>两者都是 <code>hazard_docs</code> 的直接投影,没有新数据 —— 这也是为什么它排在 F0 之后就很快。</p>
-</section>
-
-<section id="f5">
-  <h2>F5 / Routing</h2>
-  <div class="h">supervision Agent 挂载</div>
-  <p class="sub">往 <code>graph.AGENT_REGISTRY</code> 加一行。同步清单照 CLAUDE.md 的同源表:
-    <code>eval/scorers.ROUTING_AGENTS</code> 加 <code>"supervision"</code> +
-    <code>eval/datasets/routing.csv</code> 加行 + <code>eval/README.md</code> 的路由小节。</p>
-
-  <h3>路由摩擦(真实存在,必须在 summary 里写死边界)</h3>
-  <table>
-    <thead><tr><th>与谁摩擦</th><th>分界</th></tr></thead>
-    <tbody>
-      <tr><td>safety / inspection</td>
-        <td>它们回答<b>照片里有什么问题</b>;supervision 回答<b>这个问题接下来怎么办</b></td></tr>
-      <tr><td>schedule</td>
-        <td>🔴 <b>这条是真冲突。</b>schedule 是自由任务台账(「给谁排个活」「改到周五」);
-          supervision 是法定隐患台账(有文书、有证据、有法条)。而 TODO-21 第 2 条明确记着
-          现在的协同一手就是「巡检 → 一句话记整改任务」,<b>那条路要保留</b></td></tr>
-    </tbody>
-  </table>
-  <p><b>分界写法:</b>supervision 的正域锚在<b>文书与法定动作</b> ——「签发通知单」「下暂停令」
-    「这条隐患复查了吗」「本月隐患汇总」「审一下这个方案」;
-    免责句写「只排个期限、不出文书的,派 schedule」。</p>
+  <h3>F5 supervision Agent</h3>
+  <div class="box b-bad">
+    <span class="hd">🔴 销项只有一个出口 <span class="d">D13</span></span>
+    <p>hazards 保持独立表,但 <code>schedule.finish_task</code> 对<b>由隐患派生的任务</b>不直接销 ——
+      它转去走 supervision 的复查流程(要照片、要人确认)。<code>tasks</code> 加一列可空 <code>hazard_no</code>。</p>
+    <p><b>不这么做的后果:</b>TODO-21 认可的协同一手是「巡检 → 一句话记整改任务」。工友走那条<b>对的路</b>
+      在 schedule 里销了项,hazards 还是 open → 超期 → 系统建议签发《监理报告》<b>指控施工方拒不整改</b>
+      —— 一份建立在我们自己记乱账上的对外指控。措辞划界拦不住这个。</p>
+  </div>
   <div class="box b-warn">
-    <span class="hd">⚠️ routing 26/26 那个数当场失效</span>
-    <p>加 Agent 就等于改了 supervisor 提示词,<b>26/26 的前提不再成立,必须重跑</b>。
-      routing 现有 26 行 / 下限 20,富余 6 行,加行没问题。</p>
+    <span class="hd">🔴 防假账守卫要写第三种判据(外部意见 #5)</span>
+    <p>现成两件都不适用:<b>首答判据</b>会把「建议签发暂停令,请点界面上的按钮」这句最重要的正确回答顶替掉;
+      <b>编号溯源判据</b>会把用户自己打进来的 <code>GYT-H-…</code> 判成编造(<code>_sourced</code> 只扫 <code>ToolMessage</code>)。</p>
+    <p><b>第三种:</b>扩展 <code>_sourced</code> 让它同时扫<b>本回合的 HumanMessage</b> —— 用户自己报的编号是合法出处。</p>
   </div>
 </section>
 
-<section id="red">
-  <h2>4 / Red lines</h2>
-  <div class="h">三条设计红线</div>
+<section id="x">
+  <h2>6 / Cross-cutting</h2>
+  <div class="h">跨切面定案</div>
 
-  <h3>4.1 状态迁移与文书类型由代码判定,不由 LLM 判定</h3>
-  <p>理由同 <code>severity.py</code>,但这次更硬:签发暂停令是<b>法律行为</b>。
-    LLM 只负责搬运编号和讲人话,分岔一律走 <code>grading.py</code> 的纯函数。</p>
-
-  <h3>4.2 销项必须有证据</h3>
-  <p>见 F3。<code>after_photo_id</code> 必填,拿不到照片就没有任何路径能改成 closed。</p>
-
-  <h3>4.3 每类文书各写各的编号正则 —— 不许复用</h3>
-  <div class="box b-warn">
-    <p>CLAUDE.md 已经记过这个教训:attendance 的 <code>GYT-A-日期-时刻-4hex</code> 与 report 的
-      <code>REPORT_RECEIPT_PATTERN</code> <b>互不匹配是实测过的</b>,
-      <code>test_checkin_api.py</code> 有守门断言。</p>
-    <p>反向约束就写在 <code>attendance/receipt.py</code> 头注里:哪天要挂编号守卫,必须写自己的正则,
-      拿 report 那条会<b>一个都认不出、静默全放行</b>。</p>
+  <h3>D9 前置重构(单独提交,先于一切)</h3>
+  <div class="box b-bad">
+    <span class="hd">🔴 抽的时候有一颗地雷</span>
+    <p><code>PRAGMA foreign_keys = ON</code> <b>必须在 <code>with conn:</code> 之外执行</b> ——
+      事务内是 no-op(<code>db/projects.py:137</code> 有原注释)。放进事务里 = 全库外键静默失效、零报错。</p>
+    <p>且这次要动<b>线上已有真实打卡数据的 attendance</b>,改完必须跑一遍真机打卡。</p>
   </div>
-  <table>
-    <thead><tr><th>对象</th><th>编号</th></tr></thead>
-    <tbody>
-      <tr><td>隐患</td><td><code>GYT-H-YYYYMMDD-NNNN</code></td></tr>
-      <tr><td>监理通知单</td><td><code>GYT-TZ-YYYYMMDD-NNN</code></td></tr>
-      <tr><td>工程暂停令</td><td><code>GYT-ZT-YYYYMMDD-NNN</code></td></tr>
-      <tr><td>监理报告(报主管部门)</td><td><code>GYT-JB-YYYYMMDD-NNN</code></td></tr>
-      <tr><td>方案审查意见</td><td><code>GYT-SC-YYYYMMDD-NNN</code></td></tr>
-    </tbody>
-  </table>
-</section>
 
-<section id="order">
-  <h2>5 / Sequencing</h2>
-  <div class="h">建议顺序与演示价值</div>
-  <table>
-    <thead><tr><th>批次</th><th>内容</th><th>为什么排这里</th></tr></thead>
-    <tbody>
-      <tr><td><b>一</b></td><td>F0 台账 + 状态机 + grading 映射</td>
-        <td>地基。做完之后隐患才有身份,别的都能挂上去</td></tr>
-      <tr><td><b>二</b></td><td>F2 通知单 + 暂停令 &nbsp;·&nbsp; F3 复查销项</td>
-        <td><b>演示最亮的一条链</b>:拍照 → 判严重 → 出暂停令 → 整改 → 复查照片 → 销项。
-          全程有文书、有证据、有编号</td></tr>
-      <tr><td><b>三</b></td><td>F4 汇总 + 专项报告</td>
-        <td><code>hazard_docs</code> 的投影,做起来快</td></tr>
-      <tr><td><b>四</b></td><td>F1 方案审查</td>
-        <td>最能体现「结合 knowledge」,但<b>质量高度依赖语料</b> —— 四份 PDF 没进库之前做它是空转</td></tr>
-    </tbody>
-  </table>
-  <p>所以 F1 排在最后<b>不是因为它不重要</b>,而是因为它的前置在你手上(前置 A)。
-    四份 PDF 一进库,F1 就可以往前提。</p>
-</section>
+  <h3>D14 登记路径</h3>
+<pre>analyze 内部拆两半:
 
-<section id="touch">
-  <h2>6 / Blast radius</h2>
-  <div class="h">已知会被这次改动碰到的地方</div>
+    <b>_recognize(artifact_id)</b> -> 五键判断        ← 纯函数,零副作用
+         ↑                            ↑
+   analyze_site_photo            reinspect / eval/hooks
+   (工具:识别 + 登记)            (<u>只识别,不登记</u>)</pre>
   <ul>
-    <li><code>checkin_api.py</code> 已经 1131 行,超了仓库 800 行的规约。监理这块<b>必须开自己的模块</b>
-      (<code>agents/supervision/</code> + <code>db/hazards.py</code> + 若走方案甲则 <code>supervision_api.py</code>),
-      不要往 <code>webapp.py</code> 里堆。</li>
-    <li>CLAUDE.md 的「改一处必须改多处」同源清单要新增三行:hazards 状态机的真相源、
-      五种文书编号、supervision 的路由名单。</li>
-    <li>演示照片的人脸合规(TODO-22)在监理场景更敏感 —— 通知单/暂停令是要<b>送达外部单位</b>的文书。</li>
+    <li>幂等键 = <code>UNIQUE(photo_sha256, item)</code>,<b>不是 artifact_id</b> ——
+      <code>core/artifacts.py:208</code> 是 <code>uuid4().hex</code>,同一张照片重传就是新号,彩排三轮会得三批</li>
+    <li><code>reinspect</code> 与 <code>eval/hooks.py</code> 只调 <code>_recognize</code> ——
+      否则复查一次多一条 open 隐患,<code>make eval SUITE=safety</code> 每跑一次往生产台账灌 <b>30 条幽灵</b></li>
+    <li><code>analyze_site_photo</code> 加 <code>*, config: RunnableConfig</code>。
+      <b>注解必须恰好是 <code>RunnableConfig</code></b>,写成联合类型会漏掉、config 永远拿不到</li>
+    <li><b>写库失败 <span class="d">D10</span>:</b>Envelope 仍是 ok,<code>data</code> 多一个 <code>registered: bool</code>,
+      汇总显式报「本期 N 次登记失败」。⚠️ 五键变六键 = <b>改了 safety→report 的交接契约</b></li>
   </ul>
+
+  <h3>时间与编号 <span class="d">D7</span></h3>
+  <p><b>唯一时间权威 = <code>attendance/receipt.py</code> 的 <code>HK = ZoneInfo("Asia/Hong_Kong")</code>。</b>
+    <code>found_at</code> / <code>due_date</code> / <code>closed_at</code> / 超期判定 / 所有文书编号,全部走它。
+    <b>不许用 <code>datetime.now(UTC).astimezone()</code></b> —— 那是宿主时区(<code>report/tools.py:151</code>
+    现在就踩着,容器是 Shanghai、数值一致纯属巧合,已记 TODO-41)。</p>
+  <table>
+    <thead><tr><th>对象</th><th>编号</th><th>对象</th><th>编号</th></tr></thead>
+    <tbody>
+      <tr><td>隐患</td><td><code>GYT-H-…</code></td><td>工程复工令</td><td><code>GYT-FG-…</code></td></tr>
+      <tr><td>监理通知单</td><td><code>GYT-TZ-…</code></td><td>致建设单位报告</td><td><code>GYT-JS-…</code></td></tr>
+      <tr><td>工程暂停令</td><td><code>GYT-ZT-…</code></td><td>监理报告(报主管部门)</td><td><code>GYT-JB-…</code></td></tr>
+    </tbody>
+  </table>
+  <p>形式 <code>GYT-&lt;类型&gt;-YYYYMMDD-HHMMSS-4hex</code>,后缀用 <code>secrets.token_hex(2)</code>。
+    <b>用随机后缀而不是日内序号</b> —— 序号要先数再加一,check-then-act 竞态,而批量签发正是会撞的场景。</p>
+
+  <h3>熔断与原子性(外部意见 #10)</h3>
+  <div class="box b-warn">
+    <p><code>config.py:210</code> 是 <code>supervisor_recursion_limit = 8</code>。严重隐患若要三次工具调用出三份文书,
+      加上先查一次 = 9 步,<b>顶穿熔断</b>;炸在第三份之前时前两份已落盘、<code>hazard_docs</code> 已插行、
+      状态已改,<b>没有任何一步能回滚</b>。</p>
+    <p><b>定案:三份文书由 <code>issue_suspension</code> 一次调用原子产出</b>,一个事务写三行。
+      不提高 <code>recursion_limit</code>(那只是把问题往后推)。</p>
+  </div>
+
+  <h3>同源清单:F5 落地必须同步的全部位置</h3>
+  <table>
+    <thead><tr><th>位置</th><th>漏了会怎样</th></tr></thead>
+    <tbody>
+      <tr><td><code>graph.AGENT_REGISTRY</code></td><td>—</td></tr>
+      <tr><td><code>eval/scorers.ROUTING_AGENTS</code></td><td>那些行永远判不对,矛头指向模型</td></tr>
+      <tr><td><code>eval/datasets/routing.csv</code>(加 6–8 行)</td><td>新 Agent 无覆盖</td></tr>
+      <tr><td><code>eval/README.md</code> 路由小节</td><td>—</td></tr>
+      <tr><td><b><code>tests/unit/test_eval_runner.py:1287</code> 的 <code>FILLED_DATASETS</code></b></td>
+        <td><b><code>make test</code> 当场红一片</b>,而这是刻意的同源闸</td></tr>
+      <tr><td><b><code>backend/scripts/live_acceptance.py</code></b></td>
+        <td>A 组用 schedule 原话提问「记一下…整改」,加 supervision 后首要被钓走 —— 而真机验收是演示前唯一的兜底</td></tr>
+      <tr><td><b><code>scripts/frontend-overrides/tool-calls.tsx:82</code></b></td>
+        <td><code>REPORT_TOOL_NAME</code> 写死只认 <code>render_inspection_report</code>,新增六种文书
+          <b>界面上没有出口</b>:演示时说「暂停令已签发」,点不开、下不到,<b>且不会报错</b></td></tr>
+      <tr><td><code>scripts/setup-frontend.sh</code> 的 12+5 计数</td><td>下一个人以为文档旧了</td></tr>
+      <tr><td><code>CLAUDE.md</code> 同源表(加三行)</td><td>—</td></tr>
+    </tbody>
+  </table>
+  <div class="box b-warn">
+    <p>⚠️ 加了 Agent 就等于改了 supervisor 提示词,<b>routing 26/26 那个数的前提当场失效,必须整套重跑</b>。</p>
+  </div>
+</section>
+
+<section id="dec">
+  <h2>7 / Decisions</h2>
+  <div class="h">15 个定案速查</div>
+  <table>
+    <thead><tr><th>#</th><th>议题</th><th>定案</th></tr></thead>
+    <tbody>
+      <tr><td>D1</td><td>实现范围</td><td>F0+F2+F3+F5,砍 F1/F4</td></tr>
+      <tr><td>D2</td><td>隐患登记位置</td><td>写进 analyze(<b>幂等键已由 D14 改写</b>)</td></tr>
+      <tr><td>D3</td><td>状态机分层</td><td>显式迁移表做唯一真相,db 层 WHERE 从它派生</td></tr>
+      <tr><td>D4</td><td>grade 存法</td><td>存 grade + 存 <code>grading_version</code> 快照</td></tr>
+      <tr><td>D5</td><td>复工令</td><td>加,作为状态机一环</td></tr>
+      <tr><td>D6</td><td>项目归属</td><td>允许空串,supervision 侧显式报「未归属 N 条」</td></tr>
+      <tr><td>D7</td><td>编号生成</td><td>共用生成器,复用 HK 时区权威 + <code>token_hex(2)</code></td></tr>
+      <tr><td>D8</td><td>文书渲染</td><td>抽共用 docx 骨架,表式保真等语料到位</td></tr>
+      <tr><td>D9</td><td>db 样板</td><td>抽到 core,三个现有模块一并改,单独前置提交</td></tr>
+      <tr><td>D10</td><td>写库失败</td><td>识别照常返回 + <code>registered</code> 布尔 + 汇总报失败数</td></tr>
+      <tr><td>D11</td><td>复查判定</td><td>模型给建议,人下结论,照片是证据</td></tr>
+      <tr><td>D12</td><td>外部意见</td><td>跑(Codex 超时,回退 Claude 子代理,18 条,核了 7 条全属实)</td></tr>
+      <tr><td>D13</td><td>台账形状</td><td>不合表,但<b>销项只一个出口</b></td></tr>
+      <tr><td>D14</td><td>登记幂等</td><td>拆「识别/登记」两半,幂等键改内容 sha256</td></tr>
+      <tr><td>D15</td><td>文书定位</td><td>「AI 出稿、总监签字生效」,不是「演示件」</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="no">
+  <h2>8 / Out of scope</h2>
+  <div class="h">不在范围(考虑过,明确推迟)</div>
+  <table>
+    <thead><tr><th>项</th><th>为什么推迟</th></tr></thead>
+    <tbody>
+      <tr><td><b>F1 事前方案审查</b></td><td>前置 A 未到位 —— 四份 PDF 不在库里,写完无法验证。语料一到就可以往前提</td></tr>
+      <tr><td><b>F4 定期汇总 + 专项报告</b></td><td><code>hazard_docs</code> 的直接投影,台账有真实数据后随时能加</td></tr>
+      <tr><td>文书送达与执行确认</td><td><code>status=suspended</code> 只证明出稿。真实送达要签收回执,属线下流程数字化</td></tr>
+      <tr><td>国标表式保真(.docx 模板)</td><td>与 F1 卡在同一个前置(GB/T 50319 PDF)</td></tr>
+      <tr><td>身份体系 / 签名(TODO-3)</td><td>由 D15 化解为欠账。代价是本系统只声称实现「记录与出稿」</td></tr>
+      <tr><td>一个暂停令对应多条隐患的建模</td><td>严格说暂停令针对工程部位。演示一次只涉及一条,本批按 hazard 挂,已知边界</td></tr>
+      <tr><td>评测与生产库隔离</td><td>由 D14 的「eval 只调识别半」化解,不再需要单独机制</td></tr>
+      <tr><td>复查照片是否来自同一部位的校验</td><td>系统认不出来,靠人看两张图判断</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="reuse">
+  <h2>9 / Reuse</h2>
+  <div class="h">已有代码复用情况</div>
+  <table>
+    <thead><tr><th>子问题</th><th>复用什么</th><th>复用还是重造</th></tr></thead>
+    <tbody>
+      <tr><td>台账存储层</td><td><code>db/tasks.py</code> 的写法</td><td><b>抽到 core 共用</b>(D9)</td></tr>
+      <tr><td>docx 渲染</td><td><code>report/tools.py:65</code></td><td><b>抽共用骨架</b>(D8),report 一并改</td></tr>
+      <tr><td>编号 + 业务时区</td><td><code>attendance/receipt.py</code></td><td><b>直接复用</b>(D7)</td></tr>
+      <tr><td>中文日期解析</td><td><code>agents/schedule/dates.py</code>(314 行)</td><td><b>直接复用</b>,签发工具收原话</td></tr>
+      <tr><td>隐患定级</td><td><code>safety/severity.py</code></td><td><code>grading.py</code> 照抄结构做二次映射</td></tr>
+      <tr><td>照片识别</td><td><code>analyze_site_photo</code></td><td><b>拆两半复用</b>(D14),零新增识别能力</td></tr>
+      <tr><td>产物落盘</td><td><code>core/artifacts.py</code></td><td>直接复用</td></tr>
+      <tr><td>防假账守卫</td><td><code>core/require_tool.py</code></td><td><b>扩展 <code>_sourced</code></b>,不新写一套</td></tr>
+      <tr><td>鉴权与令牌桶</td><td><code>core/access.py</code></td><td>直接复用</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="fail">
+  <h2>10 / Failure modes</h2>
+  <div class="h">失败模式清单</div>
+  <table>
+    <thead><tr><th>失败</th><th>有测试?</th><th>有错误处理?</th><th>用户看得见?</th></tr></thead>
+    <tbody>
+      <tr><td>台账写库失败</td><td>计划内</td><td>是(D10)</td><td>是(汇总里)</td></tr>
+      <tr><td>一般隐患被签暂停令</td><td>计划内</td><td>是(硬拦 fail)</td><td>是(人话)</td></tr>
+      <tr><td>复查照片编号打错</td><td>计划内</td><td>是</td><td>是</td></tr>
+      <tr><td>复查照片没拍到部位 → 误判合格</td><td>无法自动测</td><td><b>由人确认兜底</b>(D11)</td><td>是(人看两张图)</td></tr>
+      <tr><td>非法状态迁移</td><td>计划内(补集循环)</td><td>是(<code>rowcount=0</code>)</td><td>是</td></tr>
+      <tr><td>同秒批量签发撞号</td><td>计划内</td><td>是(<code>token_hex</code> + UNIQUE)</td><td>是</td></tr>
+      <tr><td>文书生成到一半熔断</td><td>计划内</td><td>是(三份原子产出)</td><td>是</td></tr>
+      <tr><td><b>暂停令已出稿但工地没停工</b></td><td>❌ 无法检测</td><td>❌ 无</td><td>❌ <b>不可见 —— 已知边界</b></td></tr>
+      <tr><td>前端没有文书出口</td><td>计划内(postdeploy ⑧)</td><td>—</td><td>会静默:点不开、不报错</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="lane">
+  <h2>11 / Lanes</h2>
+  <div class="h">并行泳道</div>
+<pre>S1 D9 前置重构        core/ · db/(三模块)          依赖 —
+S2 F0 台账+状态机     db/hazards.py · states.py     依赖 S1
+S3 编号器+docx 骨架   core/ · docgen.py · report    依赖 S1
+S4 D14 登记拆分       safety/tools.py · eval/hooks  依赖 S2
+S5 F2/F3 工具+端点    supervision/tools.py · api    依赖 S2,S3
+S6 F5 挂载+同源+评测  graph.py · eval/ · tests/     依赖 S5
+S7 前端文书出口       frontend-overrides/           依赖 S3
+
+Lane A: S1 → S2 → S4 ┐
+Lane B: S1 → S3 ─────┼→ S5 → S6
+Lane C:      S3 → S7 ┘</pre>
+  <p><b>S1 是全局串行前置</b>(它动三个已上线模块,不能和别的并行)。S2 与 S3 可并行。
+    ⚠️ Lane B 与 Lane C 都碰 <code>core/</code>,注意合并冲突。</p>
 </section>
 
 <footer>
-  docs/W9_监理业务闭环_方案.md &nbsp;·&nbsp; 2026-08-16 &nbsp;·&nbsp; 工友通 GYT<br>
+  docs/W9_监理业务闭环_方案.md · v2 · 2026-08-16 · 工友通 GYT<br>
   条文引用凭记忆写,PDF 进库后必须逐处复核 —— 见「前置 A」。
 </footer>
 </main>
