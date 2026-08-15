@@ -213,6 +213,28 @@
 		}
 
 		# -------------------------------------------------------------------------
+		# 路由〇之二:/api/supervision* → 监理处置直连接口(W9)
+		# -------------------------------------------------------------------------
+		# 这些端点收的是一个小 JSON(隐患编号 + 期限原话),不传文件 —— 上面那条全局
+		# 192MB 是按 DXF 图纸算出来的,对监理端点等于没有闸。1MB 足够装下 200 条
+		# 隐患编号的批量确认,同时把「拿一个大 body 打后端」挡在应用层之前。
+		#
+		# ⚠️ 与 /api/checkin* 同样用 handle + uri strip_prefix,**不能用 handle_path**:
+		#    handle_path /api/supervision* 剥的是整个匹配前缀「/api/supervision」,
+		#    后端会收到「/confirm」「/notice」,一路 404。我们要剥的只是「/api」。
+		# ⚠️ 位置必须在下面 handle_path /api/* **之前**:route{} 里 handle 系列按书写
+		#    顺序择一匹配,写到后面 = 永远不生效,而且没有任何报错
+		#    (与上面 /api/checkin* 和下面 /artifacts/* 说的是同一个坑)。
+		@supervision path /api/supervision /api/supervision/*
+		handle @supervision {
+			request_body {
+				max_size 1MB
+			}
+			uri strip_prefix /api
+			reverse_proxy backend:2024
+		}
+
+		# -------------------------------------------------------------------------
 		# 路由一:/api/* → 后端 LangGraph 服务
 		# -------------------------------------------------------------------------
 		# 用 handle_path 而不是 handle:它 = handle + 自动剥掉匹配到的前缀。

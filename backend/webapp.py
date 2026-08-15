@@ -38,6 +38,7 @@ from gyt.config import ALLOWED_CAD_EXT, get_settings
 from gyt.core import artifacts, project_fs
 from gyt.core.artifacts import ArtifactKind
 from gyt.db import projects as db
+from gyt.supervision_api import SUPERVISION_ROUTES
 
 logger = logging.getLogger(__name__)
 
@@ -509,6 +510,16 @@ app = Starlette(
         # 且要能被 docker-compose.dev.yml 的 src 挂载热重载覆盖到)。
         # ⚠️ 删掉这一行 = 打卡端点整个消失,而现象是 404、**不是启动报错**。
         *CHECKIN_ROUTES,
+        # 监理处置(gyt/supervision_api.py 的 SUPERVISION_ROUTES)—— W9 七条:
+        # 确认 / 定级 / 通知单 / 暂停令三文书 / 复查结论 / 复工令 / 上报主管部门。
+        # **别在这儿数条数**,同上:以那个列表为准。
+        #
+        # 挂在这里的理由与打卡那一铺一字不差:``langgraph.json`` 的 ``http.app``
+        # 只能有一个,这里是三拨自定义路由唯一的汇合点。实现同样住在 gyt 包里
+        # (它要 from gyt.db / gyt.core 取东西,且要能被 docker-compose.dev.yml
+        # 的 src 挂载热重载覆盖到)。
+        # ⚠️ 删掉这一行 = 监理端点整个消失,现象还是 404、**不是启动报错**。
+        *SUPERVISION_ROUTES,
     ]
 )
 
