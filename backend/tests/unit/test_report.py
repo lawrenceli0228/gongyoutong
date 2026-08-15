@@ -32,14 +32,21 @@ from tests.unit.test_base_agent import FakeChatModel
 
 
 class _FakeAnalyze:
-    """替身:analyze_site_photo 的 BaseTool.ainvoke 入口。"""
+    """替身:safety 的 ``_recognize`` —— **普通协程函数**,直接 await 调用。
+
+    W9 之前这里替的是 ``analyze_site_photo`` 那个 BaseTool(``.ainvoke(payload)``)。
+    换掉是因为那个工具现在还会把违规项**登记进隐患台账**,而 report 的保真复调是工具
+    内部直调、拿不到 config —— 登记会落进 ``project_id=''``,同一张照片的同一个隐患在
+    台账里变成两行、一行还无主(理由写在 report/tools.py 顶部「数据保真」那段)。
+    ``seen`` 仍旧记成 ``{"artifact_id": …}`` 的形状,下面那些断言一个字都不用改。
+    """
 
     def __init__(self, envelope: Any) -> None:
         self.envelope = envelope
         self.seen: list[dict[str, Any]] = []
 
-    async def ainvoke(self, payload: dict[str, Any]) -> Any:
-        self.seen.append(payload)
+    async def __call__(self, artifact_id: str) -> Any:
+        self.seen.append({"artifact_id": artifact_id})
         return self.envelope
 
 
@@ -57,7 +64,7 @@ def _ok_envelope(**data: Any) -> dict[str, Any]:
 
 def _patch(monkeypatch: pytest.MonkeyPatch, envelope: Any) -> _FakeAnalyze:
     fake = _FakeAnalyze(envelope)
-    monkeypatch.setattr(report_tools, "analyze_site_photo", fake)
+    monkeypatch.setattr(report_tools, "_recognize", fake)
     return fake
 
 

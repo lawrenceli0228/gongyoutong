@@ -38,6 +38,8 @@ from gyt.core import artifacts, llm
 from gyt.core.artifacts import ArtifactKind
 from gyt.core.errors import ErrorCode
 from gyt.core.llm import LLMCallError
+from gyt.core.run_context import PROJECT_CONFIG_KEY
+from gyt.db import hazards
 
 
 def _make_jpeg(
@@ -115,13 +117,18 @@ def _patch_llm(
     return recorded
 
 
-async def _call(artifact_id: str) -> dict[str, Any]:
+async def _call(artifact_id: str, *, project_id: str | None = None) -> dict[str, Any]:
     """走真实的工具调用入口(BaseTool.ainvoke),而不是绕过装饰器直接调函数体。
 
     刻意不走 .coroutine/.func 捷径:@tool + @tool_guard 这两层本身就是被测对象的一部分,
     绕过去测等于没测到「异常会不会变成信封」这条最重要的保证。
+
+    ``project_id`` 走的是**真实的注入通道**(config.configurable),和前端选中工地时
+    LangGraph 透传下来的是同一条路 —— 直接给函数塞参数就测不到"注解写错导致 config
+    永远拿不到"那个坑了(见 test_config是注入参数_模型看不见它)。不传 = 没选工地。
     """
-    result = await analyze_site_photo.ainvoke({"artifact_id": artifact_id})
+    config = {"configurable": {PROJECT_CONFIG_KEY: project_id}} if project_id is not None else None
+    result = await analyze_site_photo.ainvoke({"artifact_id": artifact_id}, config=config)
     assert isinstance(result, dict), f"工具应当返回信封 dict,实际拿到 {type(result).__name__}"
     return result
 
@@ -341,11 +348,20 @@ async def test_工具内部抛异常也会变成信封(monkeypatch: pytest.Monke
 # ---------------------------------------------------------------------------
 
 
+CONTRACT_KEYS: tuple[str, ...] = ("label", "violations", "severity", "max_severity", "note")
+"""safety → report 的五键交接契约。W9 起工具在这五键之外**再补两个登记侧的键**
+(hazards / failed_items),但这五个的键名与取值口径一个字都不许变。"""
+
+
 async def test_成功路径返回交接契约的五个键(monkeypatch: pytest.MonkeyPatch) -> None:
     """这份 data 就是 safety → report(W3)的交接契约,键名一个都不许变。
 
     severity / max_severity 是**代码算的**(severity.py 映射表),不经过模型 ——
     模型只回答"看见了什么",级别是管理口径,同一违规项永远同一级。
+
+    W9(方案 §6.2)在这份 data 上**加了** hazards / failed_items 两个键 ——
+    「data 从五键变多键 = 改了交接契约」是方案里明写的,所以这条一并钉住
+    **整个键集**:再有人往里加键,得先来改这条断言,顺手就会看见上面这行提醒。
     """
     _patch_llm(
         monkeypatch,
@@ -354,13 +370,14 @@ async def test_成功路径返回交接契约的五个键(monkeypatch: pytest.Mo
     artifact_id = _register_photo()
     result = await _call(artifact_id)
     assert result["ok"] is True
-    assert result["data"] == {
+    assert {key: result["data"][key] for key in CONTRACT_KEYS} == {
         "label": "violation",
         "violations": ["未戴安全帽"],
         "severity": {"未戴安全帽": "一般"},
         "max_severity": "一般",
         "note": "两人头部裸露",
     }
+    assert set(result["data"]) == {*CONTRACT_KEYS, "hazards", "failed_items"}
     assert "未戴安全帽" in result["user_msg"]
 
 
@@ -470,7 +487,11 @@ async def test_label非法时不当作工具失败(monkeypatch: pytest.MonkeyPat
 
 
 async def test_缺字段时补成空值而不是报错(monkeypatch: pytest.MonkeyPatch) -> None:
-    """下游(Agent 提示词、scorers)都按三个键取值,缺键会变成 KeyError/None 传染。"""
+    """下游(Agent 提示词、scorers)都按三个键取值,缺键会变成 KeyError/None 传染。
+
+    hazards / failed_items 同理**恒存在**(这里是两个空列表):下游写
+    ``data["hazards"]`` 时不该先问一句"有没有这个键"。
+    """
     _patch_llm(monkeypatch, reply='{"label":"compliant"}')
     result = await _call(_register_photo())
     assert result["ok"] is True
@@ -480,6 +501,8 @@ async def test_缺字段时补成空值而不是报错(monkeypatch: pytest.Monke
         "severity": {},
         "max_severity": None,
         "note": "",
+        "hazards": [],
+        "failed_items": [],
     }
 
 
@@ -930,3 +953,285 @@ def test_一句话结论重的排前面() -> None:
     text = _summarize("violation", ["未穿反光衣", "高空作业未系安全带"])
     assert "最高级别:重大" in text
     assert text.index("高空作业未系安全带") < text.index("未穿反光衣")
+
+
+# ===========================================================================
+# 八、隐患登记(W9 方案 §6.2 的 D14 / D17)—— 识别归识别、登记归登记
+#
+# 这一节全是「不报错但结果错」那一类的守门断言,删之前先读 docstring:
+#   · 幂等键算在**照片内容**上,不是 artifact_id —— 弄错了彩排三轮得三批隐患;
+#   · 幂等键**必须带 project_id** —— 漏了就是跨项目串账(A 工地的整改挂到 B 头上);
+#   · report 的保真复调**不许再登记一遍** —— 漏了就是同一隐患两行、一行还无主;
+#   · 写库失败**不许堵死识别** —— 反了的话一次 sqlite 抖动就毁掉整条演示主路径。
+# ===========================================================================
+
+VIOLATION_REPLY = '{"label":"violation","violations":["未戴安全帽"],"note":"两人头部裸露"}'
+"""这一节的标准回答:一处受控词表内的违规项,定级"一般"、不需要人工定级。"""
+
+PROJECT_A = "gyt-a3"
+PROJECT_B = "gyt-b7"
+
+
+async def test_登记回执给出编号且落在待确认态(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**回执里必须有编号。**
+
+    v2 那版只回一个 `registered` 布尔,于是后面所有要 hazard_no 的动作(确认、签发、
+    复查、升级)全都没有入口 —— 工友看到"已登记",却没人说得出登记的是哪一条。
+
+    顺带钉住 D17:自动登记一律落 ``pending``,不是 ``open``。这一条是"模型看一眼照片
+    就能单方面开启法律流程"与"人确认后才进正式流程"之间唯一的闸。
+    """
+    import re as _re
+
+    from gyt.core.doc_no import HAZARD_NO_PATTERN
+
+    _patch_llm(
+        monkeypatch,
+        reply='{"label":"violation","violations":["高空作业未系安全带","没戴手套"],"note":""}',
+    )
+    result = await _call(_register_photo(), project_id=PROJECT_A)
+
+    entries = result["data"]["hazards"]
+    assert [e["item"] for e in entries] == ["高空作业未系安全带", "没戴手套"]
+    assert all(e["status"] == hazards.STATUS_PENDING for e in entries), "自动登记只能落 pending"
+    assert all(_re.fullmatch(HAZARD_NO_PATTERN, e["hazard_no"]) for e in entries)
+
+    # 定级走的是 grading.py 那张表:重大 → 严重;词表外的「没戴手套」→ 待定级 →
+    # 一般 + needs_grading,签发前必须由人定级(Codex#11)。
+    assert entries[0]["grade"] == hazards.GRADE_SEVERE
+    assert entries[0]["needs_grading"] is False
+    assert entries[1]["grade"] == hazards.GRADE_NORMAL
+    assert entries[1]["needs_grading"] is True
+
+    # 回执上的编号必须在库里真查得到 —— 这是"报出去的号有出处"的最低要求。
+    rows = hazards.list_rows()
+    assert {r.hazard_no for r in rows} == {e["hazard_no"] for e in entries}
+    assert all(r.project_id == PROJECT_A for r in rows)
+
+
+async def test_同一张照片识别两次台账只留一行(monkeypatch: pytest.MonkeyPatch) -> None:
+    """幂等:彩排要反复对着同一张图跑,不能跑几轮就多几条隐患。
+
+    第二次拿到的编号必须是**第一次那个**(db.create 冲突时回的是首次登记的行),
+    不然工友手上会有两个号指着同一条隐患,而其中一个库里根本没有。
+    """
+    _patch_llm(monkeypatch, reply=VIOLATION_REPLY)
+    artifact_id = _register_photo()
+
+    first = await _call(artifact_id, project_id=PROJECT_A)
+    second = await _call(artifact_id, project_id=PROJECT_A)
+
+    assert len(hazards.list_rows()) == 1
+    assert first["data"]["hazards"] == second["data"]["hazards"]
+
+
+async def test_同一张照片重传拿到新编号也只登记一条(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**这条锁的是"幂等键算在照片内容上,不是 artifact_id"。**
+
+    ``core/artifacts.py`` 用 ``uuid4().hex`` 发号 —— 同一张照片重传就是一个全新的
+    artifact_id。要是拿它当幂等键的一节,工友重传一次(网不好点了两下)就多一条隐患,
+    彩排三轮得三批,而台账上看着像现场真有那么多问题。
+    """
+    _patch_llm(monkeypatch, reply=VIOLATION_REPLY)
+    first_id = _register_photo(data=FAKE_JPEG)
+    second_id = _register_photo(data=FAKE_JPEG)  # 同样的字节,不同的产物编号
+    assert first_id != second_id
+
+    a = await _call(first_id, project_id=PROJECT_A)
+    b = await _call(second_id, project_id=PROJECT_A)
+
+    assert len(hazards.list_rows()) == 1
+    assert a["data"]["hazards"][0]["hazard_no"] == b["data"]["hazards"][0]["hazard_no"]
+
+
+async def test_同一张照片在两个工地各记一条_跨项目不串账(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**守门断言(Codex#9)。** 幂等键漏掉 project_id 的表现:
+
+    同一张示范照片用在第二个工地时,B 工地"复用"了 A 工地那条隐患 —— B 的整改记录
+    挂到 A 头上,而 B 的台账里凭空少一条。两边都不报错,报表也算得出数来。
+    """
+    _patch_llm(monkeypatch, reply=VIOLATION_REPLY)
+    artifact_id = _register_photo()
+
+    await _call(artifact_id, project_id=PROJECT_A)
+    await _call(artifact_id, project_id=PROJECT_B)
+
+    rows = hazards.list_rows()
+    assert len(rows) == 2
+    assert {r.project_id for r in rows} == {PROJECT_A, PROJECT_B}
+    assert len({r.hazard_no for r in rows}) == 2, "两个工地各自一条,编号不许共用"
+
+
+async def test_没选工地时项目编号是空串而不是None(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D6:取不到项目就是**空串**,不是 NULL —— SQL 里 ``NULL != NULL``,
+    用 NULL 的话唯一键当场失效,同一张照片重传能无限新增行。
+
+    这条同时验证「没选工地也照常登记、不报错」:未归属的隐患由 supervision 侧
+    显式报「未归属 N 条」,不是悄悄丢掉。
+    """
+    _patch_llm(monkeypatch, reply=VIOLATION_REPLY)
+
+    result = await _call(_register_photo())  # 不传 config = 没选工地
+
+    assert result["ok"] is True
+    rows = hazards.list_rows()
+    assert len(rows) == 1
+    assert rows[0].project_id == ""
+    assert rows[0].project_id is not None
+
+
+@pytest.mark.parametrize(
+    ("reply", "label"),
+    [
+        ('{"label":"compliant","violations":[],"note":"都戴了"}', "合规照片"),
+        ('{"label":"not_site","violations":[],"note":"办公室"}', "不是工地"),
+        # 野 label:模型没守格式(见 tools.py 顶部②)。violations 照样原样透传,
+        # 但**不认识的结论不许写库** —— 不知道就不登记,和词表外违规项定"待定级"同一个原则。
+        ('{"label":"有违规","violations":["未戴安全帽"],"note":""}', "label 不在三态里"),
+    ],
+)
+async def test_不是violation时一条隐患都不登记(
+    monkeypatch: pytest.MonkeyPatch, reply: str, label: str
+) -> None:
+    """给合规 / 非现场照片建台账行 = 往整改率里掺噪声,而且每条都要人去点"否决"。"""
+    _patch_llm(monkeypatch, reply=reply)
+
+    result = await _call(_register_photo(), project_id=PROJECT_A)
+
+    assert result["ok"] is True, label
+    assert result["data"]["hazards"] == []
+    assert result["data"]["failed_items"] == []
+    assert hazards.list_rows() == []
+
+
+async def test_写库失败时识别照常返回并把失败落表(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**D10:登记这一半不许堵死"看照片"这条已上线的演示主路径。**
+
+    反过来做(写库失败就 fail)的后果:一次 sqlite 抖动,工友连"这张有没有隐患"
+    都问不出来了 —— 而他本来只是想看一眼照片。
+
+    失败必须**落表**而不是只打日志:进程一重启日志就统计不出来了,
+    而 ``hazard_ingest_failures`` 恰恰是"隐患漏记了多少条"的唯一线索(Codex#10)。
+    """
+    import sqlite3
+
+    _patch_llm(monkeypatch, reply=VIOLATION_REPLY)
+
+    def boom(**_kwargs: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(hazards, "create", boom)
+
+    result = await _call(_register_photo(), project_id=PROJECT_A)
+
+    assert result["ok"] is True, "识别结果照常返回"
+    assert result["data"]["violations"] == ["未戴安全帽"], "识别那一半一个字都不该受影响"
+    assert result["data"]["hazards"] == []
+    assert result["data"]["failed_items"] == ["未戴安全帽"], "部分成功要能表达出来"
+
+    failures = hazards.list_ingest_failures()
+    assert len(failures) == 1
+    assert failures[0].item == "未戴安全帽"
+    assert failures[0].project_id == PROJECT_A
+    assert "OperationalError" in failures[0].reason, "reason 是给排查的人看的内部细节"
+    # 内部细节到此为止:一个字都不许出现在工友看得见的那句话里
+    assert "OperationalError" not in result["user_msg"]
+    assert "sqlite" not in result["user_msg"].lower()
+
+
+async def test_连失败表都写不进时也只是少一条记录(monkeypatch: pytest.MonkeyPatch) -> None:
+    """整个 sqlite 挂了的极端情况:退化成**只有日志**(方案 §6.2 明确认了)。
+
+    这条要保证的是"退化"而不是"崩" —— 兜底的兜底再抛异常,会被 tool_guard 兜成
+    「系统开小差了」,工友连照片判断都拿不到。
+    """
+    import sqlite3
+
+    _patch_llm(monkeypatch, reply=VIOLATION_REPLY)
+
+    def boom(**_kwargs: Any) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(hazards, "create", boom)
+    monkeypatch.setattr(hazards, "record_ingest_failure", boom)
+
+    result = await _call(_register_photo(), project_id=PROJECT_A)
+
+    assert result["ok"] is True
+    assert result["data"]["failed_items"] == ["未戴安全帽"]
+
+
+async def test_同一项说两遍也只登记一条(monkeypatch: pytest.MonkeyPatch) -> None:
+    """模型偶尔会把同一项说两遍。台账里本来就只会有一行(幂等键),
+    但回执要是报两条一模一样的待确认项,监理会以为现场真有两处。
+
+    注意 ``violations`` 本身**不去重** —— 那份是原样透传的诊断信号(见 tools.py 顶部①)。
+    """
+    _patch_llm(
+        monkeypatch,
+        reply='{"label":"violation","violations":["未戴安全帽","未戴安全帽"],"note":""}',
+    )
+    result = await _call(_register_photo(), project_id=PROJECT_A)
+
+    assert result["data"]["violations"] == ["未戴安全帽", "未戴安全帽"], "诊断信号不许被抹平"
+    assert len(result["data"]["hazards"]) == 1
+    assert len(hazards.list_rows()) == 1
+
+
+def test_config是注入参数_模型看不见它() -> None:
+    """**这条锁的是 core/run_context.py 头注点名的那个坑。**
+
+    langchain 按 ``param.annotation is RunnableConfig`` 判定要不要注入。写成
+    ``RunnableConfig | None`` 会两头落空:既拿不到 config(project_id 恒为空串,
+    **所有工地的隐患全挤进"未归属"那一堆**),又会把 config 暴露进工具入参 schema,
+    让模型去猜着填。两种后果都不报错。
+
+    所以这里从两个方向钉:模型看不见它(schema 里只有 artifact_id),
+    且注解**恰好**是 RunnableConfig 这个类本身。
+    """
+    import inspect
+
+    from langchain_core.runnables import RunnableConfig
+
+    assert set(analyze_site_photo.args) == {"artifact_id"}, "config 漏进了模型可见的入参"
+    signature = inspect.signature(analyze_site_photo.coroutine, eval_str=True)
+    assert signature.parameters["config"].annotation is RunnableConfig
+
+
+# ---------------------------------------------------------------------------
+# 英雄链端到端:safety 登记 → report 保真复调,台账**只能**有一行
+# ---------------------------------------------------------------------------
+
+
+async def test_英雄链里report的保真复调不会再登记一条(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**这条锁的是 W9 S3 最容易踩的那个坑。**
+
+    report 为了数据保真会拿同一个 artifact_id **重跑一次识别**。要是它调的是
+    ``analyze_site_photo``(识别 + 登记),而工具内部直调拿不到 config →
+    ``project_id`` 取到空串:
+
+        safety 那一跳 → 登记进 project_id='gyt-a3'
+        report 那一跳 → 登记进 project_id=''      ← 同一张照片同一个隐患的第二行,还无主
+
+    全程零报错:巡检记录照出、话术照说,只是台账里凭空多一条无主隐患。
+    修法是让 report 调 ``_recognize``(只识别、不登记)。
+    """
+    from gyt.agents.report.tools import render_inspection_report
+
+    _patch_llm(monkeypatch, reply=VIOLATION_REPLY)
+    artifact_id = _register_photo()
+
+    # 第一跳:safety 看图 + 登记(带着"当前工地")
+    analysed = await _call(artifact_id, project_id=PROJECT_A)
+    assert len(analysed["data"]["hazards"]) == 1
+
+    # 第二跳:硬边推到 report,它拿同一个编号复调 —— 工具内部直调,拿不到 config
+    rendered = await render_inspection_report.ainvoke({"artifact_id": artifact_id})
+    assert rendered["ok"] is True, "巡检记录该照常出"
+    assert rendered["data"]["violations"] == ["未戴安全帽"], "保真性质不变:仍是那份识别结果"
+
+    rows = hazards.list_rows()
+    assert len(rows) == 1, "report 的复调又登记了一遍 —— 同一隐患两行"
+    assert rows[0].project_id == PROJECT_A, "第二行会是无主的(project_id='')"

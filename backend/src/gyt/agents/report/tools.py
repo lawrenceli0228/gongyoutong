@@ -4,12 +4,13 @@
 数据保真:隐患内容**不经过任何 LLM 转抄**
 ---------------------------------------------------------------------------
 巡检记录是要留档、可能用于追责的文档,里面的隐患项错一个字就是另一份文件。
-所以本工具只收 artifact_id,内部**重新调用** safety 的 analyze_site_photo:
+所以本工具只收 artifact_id,内部**重新跑一遍** safety 的识别:
 
     render_inspection_report(artifact_id)
-        │ analyze_site_photo(artifact_id)   ← 提示词已冻结 + 键算在图片内容上
-        │                                     → 必然命中磁盘缓存:零成本,
-        │                                       且与 safety 刚讲给用户的判断逐字节一致
+        │ _recognize(artifact_id)   ← safety 的「只识别、不登记」那一半;
+        │                             提示词已冻结 + 缓存键算在图片内容上
+        │                             → 必然命中磁盘缓存:零成本,
+        │                               且与 safety 刚讲给用户的判断逐字节一致
         ▼ envelope.data(五键契约:label/violations/severity/max_severity/note)
     python-docx 渲染 → artifacts.register(REPORT) → 报告编号
 
@@ -17,8 +18,17 @@
 32 位编号从上文搬进工具参数 —— 搬错一位立刻 NOT_FOUND 报错,
 **不可能产出一份内容错误却看起来正常的文档**。这比让模型转抄隐患清单安全一个量级。
 
+⚠️ **为什么复调的是 ``_recognize`` 而不是 ``analyze_site_photo``**(W9 S3 改的):
+W9 起 ``analyze_site_photo`` = 识别 + **把违规项登记成 pending 隐患**,幂等键是
+``(project_id, photo_sha256, item)``。而这条复调**不带 config** —— 它是工具内部的
+一次直调,LangGraph 的 configurable 到不了这里,``project_from_config`` 会取到空串。
+于是 safety 那次登记进「工地A」、report 这次登记进 ``''``:**同一张照片的同一个隐患,
+台账里两行,一行还是无主的**,而且全程零报错。改调 ``_recognize`` 之后,
+**保真性质一个字没变** —— 仍是同一个纯函数、仍命中同一份缓存、仍是那五个键 ——
+变的只是不再重复登记一遍。
+
 依赖方向说明:report → safety 的 import 是**有意的**,英雄链本身就是这条耦合
-(拍照识违规 → 自动出记录)。别为了"解耦"把 analyze 抽到 core 去 ——
+(拍照识违规 → 自动出记录)。别为了"解耦"把识别抽到 core 去 ——
 它的提示词、缓存维度、词表守卫全长在 safety 包里,搬家只会制造第二真相源。
 
 另外两条 import(W9 S2 抽公共件时加的,方案 §11 的 S2 泳道):
@@ -39,7 +49,7 @@ from typing import Any, Final
 
 from langchain_core.tools import tool
 
-from gyt.agents.safety.tools import analyze_site_photo
+from gyt.agents.safety.tools import _recognize
 from gyt.agents.supervision import docgen
 from gyt.attendance.receipt import make_snapshot
 from gyt.config import get_settings
@@ -140,15 +150,15 @@ async def render_inspection_report(artifact_id: str) -> Envelope:
     """生成一张照片的巡检记录 docx,登记为 REPORT 产物。
 
     artifact_id
-      │ 编号不合法/照片不存在/识别失败 ──▶ 原样透传 safety 工具的失败信封
-      ▼ analyze_site_photo(缓存必中,数据与 safety 口径逐字节一致)
+      │ 编号不合法/照片不存在/识别失败 ──▶ 原样透传 safety 识别的失败信封
+      ▼ _recognize(缓存必中,数据与 safety 口径逐字节一致,**不重复登记隐患**)
     五键契约 data
       ▼ python-docx 渲染 + artifacts.register(REPORT)
     ok(data={report_id, filename, label, violations, severity, max_severity})
     """
     settings = get_settings()
 
-    analysis = await analyze_site_photo.ainvoke({"artifact_id": (artifact_id or "").strip()})
+    analysis = await _recognize((artifact_id or "").strip())
     if not isinstance(analysis, dict) or not analysis.get("ok"):
         # 失败信封原样透传:里面的 user_msg 已经是中文人话(编号不对/照片没了/模型超时),
         # 在这里重新包装一层只会把「该怎么办」的信息越包越模糊。
