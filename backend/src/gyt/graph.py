@@ -138,6 +138,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph_supervisor import create_supervisor
 
+from gyt.agents.attendance import ATTENDANCE_AGENT_NAME, build_attendance_agent
 from gyt.agents.cad import CAD_AGENT_NAME, build_cad_agent
 from gyt.agents.knowledge import KNOWLEDGE_AGENT_NAME, build_knowledge_agent
 from gyt.agents.report import build_report_agent
@@ -296,6 +297,22 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             # 正域写足(消防/防火/安全/施工 + 数值/程序/标准的口语说法),结尾带同款免责句。
         ),
         build=build_knowledge_agent,
+    ),
+    AgentSpec(
+        name=ATTENDANCE_AGENT_NAME,
+        summary=(
+            "查打卡考勤(只读):某段时间每人出勤几天、打了几次卡,某天谁到了、几点打的。"
+            "用户问「张三这个月来了几天」「今天谁到了」「李四昨天几点打的卡」"
+            "「上周都谁来过」这类**打卡记录/出勤天数**的话,派给它。"
+            "有人想「打卡/补卡」也派它 —— 它会告知打卡要在界面上点按钮,不会替人打卡。"
+            "它只查打卡台账,不记任务、不排期 ——「给谁排个活」「改期限」是任务台账的活;"
+            "它也不看照片、不答规范条文。"
+            # W7(2026-08-15)落地。打卡**写入**是直连接口(src/gyt/checkin_api.py,D15),
+            # 不经过任何 Agent —— 这里只有查询一半。正域锚在「打卡/出勤/来了几天/谁到了」,
+            # 不与 schedule 的「安排活儿和期限」抢词;「想打卡也派它」是刻意的:
+            # 让「请点界面上的打卡按钮」这句标准答复出自 prompt.md,而不是 supervisor 现编。
+        ),
+        build=build_attendance_agent,
     ),
     # W2/W3 在这里往下追加，一个 Agent 一行。改这里就等于改路由能力，
     # 记得同步更新 D18 的路由评测集（backend/eval/datasets/routing.csv，

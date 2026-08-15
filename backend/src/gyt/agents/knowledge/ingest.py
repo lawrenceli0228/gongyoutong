@@ -198,9 +198,7 @@ def ingest_document(
     return len(docs)
 
 
-def delete_document(
-    source: str, *, scope: str, project_id: str = "", vectorstore=None
-) -> int:
+def delete_document(source: str, *, scope: str, project_id: str = "", vectorstore=None) -> int:
     """删除某份文档在向量库里的所有 chunk。返回删除块数。阻塞。
 
     按 source + scope + project_id 精确匹配。
@@ -230,9 +228,7 @@ def delete_project_documents(project_id: str, *, vectorstore=None) -> int:
     if not project_id:
         raise ValueError("项目作用域必须给 project_id")
     vs = vectorstore or get_vectorstore()
-    existing = vs.get(
-        where={"$and": [{"scope": SCOPE_PROJECT}, {"project_id": project_id}]}
-    )
+    existing = vs.get(where={"$and": [{"scope": SCOPE_PROJECT}, {"project_id": project_id}]})
     ids = (existing or {}).get("ids") or []
     if ids:
         vs.delete(ids=ids)

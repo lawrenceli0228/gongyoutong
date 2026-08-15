@@ -21,3 +21,7 @@ R19,none,你能做什么,none,能力询问由 supervisor 自己答
 R20,none,帮我算算这个月工资能拿多少,none,"超范围请求:该如实说做不了,不该硬塞给谁"
 R21,ambiguous,看一下这个,none,"没说看什么,应追问而非瞎派"
 R22,ambiguous,那个问题处理一下,none,"无指代,应追问"
+R23,positive,张三这个月来了几天,attendance,最典型的出勤天数问法
+R24,positive,今天工地都谁到了,attendance,当天点名式问法
+R25,positive,李四昨天几点打的卡,attendance,单人单日明细
+R26,positive,"上周都有谁来过,各来了几天",attendance,"不出现「打卡」「考勤」二字也要认得出;「来了几天」是 D16 点名的危险词,盯它别被 schedule 钓走"

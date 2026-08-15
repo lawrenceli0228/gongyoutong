@@ -37,6 +37,13 @@ class ErrorCode(str, Enum):
     NOT_FOUND = "NOT_FOUND"
     EMPTY_RESULT = "EMPTY_RESULT"
     INVALID_INPUT = "INVALID_INPUT"
+    # 下面两个是打卡直连接口(W7,checkin_api.py)带进来的 HTTP 语义,
+    # Agent 工具链用不到:工具没有「同幂等键但内容对不上」(409)和
+    # 「令牌不过」(401)这两种失败形态。但直连 handler 的响应体同样走
+    # Envelope(checkin_api.py 模块头注的响应契约),错误码得在这一张表里有名字,
+    # 不许在 handler 里另起一套字符串。
+    CONFLICT = "CONFLICT"
+    UNAUTHORIZED = "UNAUTHORIZED"
     INTERNAL = "INTERNAL"
 
 
@@ -66,6 +73,11 @@ DEFAULT_USER_MSG: dict[ErrorCode, str] = {
     ErrorCode.NOT_FOUND: "没找到这份东西,可能已经被删掉了,请确认后再试。",
     ErrorCode.EMPTY_RESULT: "没查到相关内容,换个说法或者补充点条件再问一次。",
     ErrorCode.INVALID_INPUT: "填的信息不太对,请检查一下再重新提交。",
+    ErrorCode.CONFLICT: "这次提交的内容和之前那次对不上,请核对后再试一次。",
+    # 与 backend/auth.py 的 DENY_MESSAGE 同一句 —— 那边的头注解释了为什么拒绝文案
+    # 必须只有一句且一字不差(任何差异都是送给爆破脚本的信号)。改这句要连
+    # auth.DENY_MESSAGE 和 attendance/messages.py 的 DENY 一起改。
+    ErrorCode.UNAUTHORIZED: "访问被拒绝,请联系发你链接的人。",
     ErrorCode.INTERNAL: "系统开小差了,已经记录下来,请稍后再试一次。",
 }
 

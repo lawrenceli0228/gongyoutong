@@ -102,7 +102,11 @@ def test_加图往返全字段保真() -> None:
     _seed_project()
 
     drawing_id = projects.add_drawing(
-        "gyt-a3", _AID_A, "plan", "首层平面图", floor="1F",
+        "gyt-a3",
+        _AID_A,
+        "plan",
+        "首层平面图",
+        floor="1F",
         rel_path="drawings/plan/首层平面图.dxf",
     )
 

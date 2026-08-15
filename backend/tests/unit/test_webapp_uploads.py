@@ -140,9 +140,7 @@ def test_传图_不给title默认用文件名主干(client: TestClient) -> None:
 def test_传图_非法view_type_400(client: TestClient) -> None:
     pid = _make_project(client)
 
-    resp = client.post(
-        f"/projects/{pid}/drawings", files=_dxf_files(), data={"view_type": "3d"}
-    )
+    resp = client.post(f"/projects/{pid}/drawings", files=_dxf_files(), data={"view_type": "3d"})
 
     assert resp.status_code == 400
     assert resp.json()["error_code"] == "INVALID_INPUT"
@@ -186,9 +184,7 @@ def test_传图_超大_413(client: TestClient, monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_传图_项目不存在_404(client: TestClient) -> None:
-    resp = client.post(
-        "/projects/no-such/drawings", files=_dxf_files(), data={"view_type": "plan"}
-    )
+    resp = client.post("/projects/no-such/drawings", files=_dxf_files(), data={"view_type": "plan"})
 
     assert resp.status_code == 404
     assert resp.json()["error_code"] == "NOT_FOUND"
@@ -480,9 +476,7 @@ def test_删项目_不存在_404(client: TestClient, fake_ingest_delete: list) -
 # ---------------------------------------------------------------------------
 
 
-def test_传文档_后台入库失败_回滚(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_传文档_后台入库失败_回滚(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     # 异步:预检过(有文字),但后台 embedding 炸了 → 客户端先拿 202,后台回滚落地文件。
     # TestClient 会跑完 background,所以回滚在断言时已完成。
     monkeypatch.setattr("gyt.agents.knowledge.ingest.pdf_has_text", lambda _p: True)
@@ -499,9 +493,7 @@ def test_传文档_后台入库失败_回滚(
     assert not (get_settings().global_dir / "docs" / "regulation" / "坏了.pdf").exists()
 
 
-def test_传文档_抽不出文字_同步拒且422(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_传文档_抽不出文字_同步拒且422(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     # 扫描件:同步预检 pdf_has_text 就发现没文字层 → 当场 422 拒 + 回滚,不必等几分钟白跑 embedding。
     monkeypatch.setattr("gyt.agents.knowledge.ingest.pdf_has_text", lambda _p: False)
 

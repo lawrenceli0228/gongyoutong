@@ -48,12 +48,15 @@
 | `id` | R01、R02……唯一即可 |
 | `type` | `positive` 正常请求 / `none` 不该派给任何子 Agent / `ambiguous` 信息不足应追问 |
 | `user_input` | **工人真会说的话**,不是规范书面语。多写几种同义说法 |
-| `expected_agent` | `safety` / `inspection` / `knowledge` / `schedule` / `cad` / `none` |
+| `expected_agent` | `safety` / `inspection` / `knowledge` / `schedule` / `cad` / `attendance` / `none` |
 | `note` | 这条测什么,可空 |
 
 判分:实际派给的 Agent == `expected_agent` 即算对。`none` 表示 supervisor 应自己回答或追问。
 
-> **`expected_agent` 只能填上面那六个词之一,拼错会当场炸**(`scorers.ROUTING_AGENTS`,与本表同源)。
+> **`expected_agent` 只能填上面那七个词之一,拼错会当场炸**(`scorers.ROUTING_AGENTS`,与本表同源)。
+> `attendance` 是 W7(2026-08-15)加的:**只管查**(来了几天/谁到了/几点打的);
+> 「打卡」这个动作本身走直连接口不经过路由,别造「帮我打个卡→期望某个 Agent 真打卡」的行 ——
+> 正确期望仍是 `attendance`(它答「请点界面上的打卡按钮」),R23-R26 就是这么标的。
 >
 > ⚠️ **别填 `report`。** 2026-08-11 把它从白名单里删掉了:`report` 不在 `graph.AGENT_REGISTRY`,
 > 它只是英雄链 `inspection` 子图**内部**的第二跳(靠硬边串,`transfer_to_report` 不存在),

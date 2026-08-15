@@ -87,6 +87,8 @@ _PDF_HINT: Final[str] = (
 
 _DRAWING_TOO_LARGE_HINT: Final[str] = "(你传的图纸太大了,先精简一下再传一次)"
 
+_PHOTO_TOO_LARGE_HINT: Final[str] = "(你传的照片太大了,压缩一下或者截个图再传一次)"
+
 
 def _decode_dxf_part(part: dict[str, Any]) -> tuple[bytes, str] | None:
     """从一个上传附件块里认出 DXF 图纸,取出 (字节, 落盘用文件名)。不是 DXF 返回 None。
@@ -186,7 +188,10 @@ def _rewrite(message: HumanMessage) -> HumanMessage | None:
     rejected = 0
     pdf_rejected = 0
     oversized = 0
-    drawing_limit = int(get_settings().drawing_max_mb * _BYTES_PER_MB)
+    photo_oversized = 0
+    settings = get_settings()
+    drawing_limit = int(settings.drawing_max_mb * _BYTES_PER_MB)
+    photo_limit = int(settings.photo_max_mb * _BYTES_PER_MB)
     for part in message.content:
         if isinstance(part, str):
             texts.append(part)
@@ -226,11 +231,24 @@ def _rewrite(message: HumanMessage) -> HumanMessage | None:
                 rejected += 1
                 continue
             payload, ext = decoded
+            if len(payload) > photo_limit:
+                # 与图纸同一姿势在入口就挡(2026-08-15 补的现存 bug,W7 §1.10:
+                # 此前只有 drawing 查了上限,照片分支裸奔 —— 超大图会被原样登记落盘,
+                # 直到 Safety 工具解码才在链路深处翻车)。
+                photo_oversized += 1
+                continue
             photo_ids.append(
                 artifacts.register(payload, kind=ArtifactKind.PHOTO, original_name=f"upload{ext}")
             )
 
-    if not photo_ids and not drawing_ids and not rejected and not pdf_rejected and not oversized:
+    if (
+        not photo_ids
+        and not drawing_ids
+        and not rejected
+        and not pdf_rejected
+        and not oversized
+        and not photo_oversized
+    ):
         return None  # 没有附件,原样放行
 
     body = " ".join(t.strip() for t in texts if t.strip())
@@ -250,6 +268,8 @@ def _rewrite(message: HumanMessage) -> HumanMessage | None:
         body = f"{body} {_PDF_HINT}"
     if oversized:
         body = f"{body} {_DRAWING_TOO_LARGE_HINT}"
+    if photo_oversized:
+        body = f"{body} {_PHOTO_TOO_LARGE_HINT}"
 
     return HumanMessage(content=body, id=message.id)
 

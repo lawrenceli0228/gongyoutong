@@ -86,30 +86,31 @@ from __future__ import annotations
 import hmac
 import logging
 import math
-import threading
-import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any, Final
 
 from langgraph_sdk import Auth
 
 from gyt.config import get_settings
+from gyt.core.access import (
+    API_KEY_HEADER,
+    TokenBucket,
+    _access_token,
+    _api_key_from_headers,
+    _token_problem,
+)
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 对外契约常量。改这里等于改对外 API,下游(Caddyfile / 前端覆盖件 / 部署文档)
 # 要跟着改,别只改一头。
+#
+# API_KEY_HEADER 本体已搬到 src/gyt/core/access.py(2026-08-15,W7 打卡):
+# checkin_api.py 要与本文件共用同一个头名、同一套取值与令牌判定,而两个文件
+# 都是被 langgraph-api 按文件路径加载的,互相 import 不可靠 —— gyt 包是唯一
+# 共同地面。顶部 import 按原名 re-export,本文件与下游的旧引用一个不断。
 # ---------------------------------------------------------------------------
-
-API_KEY_HEADER: Final[str] = "x-api-key"
-"""令牌请求头名(**小写**存放,比对时两边都转小写)。
-
-前端已经在发这个头了:``frontend/src/providers/Stream.tsx`` 里
-``if (apiKey) headers.set("X-Api-Key", apiKey);`` —— 大小写是 ``X-Api-Key``。
-HTTP 头名本来就大小写不敏感,ASGI 规范还要求传到应用层时已经小写,
-但**下面的取值逻辑不依赖这条规范**,理由见 ``_api_key_from_headers``。
-"""
 
 DENY_MESSAGE: Final[str] = "访问被拒绝,请联系发你链接的人。"
 """鉴权失败时**返回给客户端**的唯一文案。
@@ -153,48 +154,12 @@ IDENTITY_LOCAL: Final[str] = "gyt-local"
 
 
 # ---------------------------------------------------------------------------
-# 配置读取(唯一入口是 gyt.config.get_settings,不许在本文件里写死任何数字)
+# 「有效令牌」判定已整段搬到 src/gyt/core/access.py(2026-08-15,W7 打卡):
+# _access_token / _token_problem / _PLACEHOLDER_PREFIXES / _MIN_TOKEN_LEN 全在那边,
+# 语义一字没动 —— 空 / 占位符开头 / 过短 = 未配置 = 鉴权关闭。
+# checkin_api.py 的令牌自查必须与这里完全同源,靠的就是共用那一份。
+# 顶部 import 按原名 re-export;is_enforcing 留在本文件(它是这道闸门自己的开关语义)。
 # ---------------------------------------------------------------------------
-
-
-def _access_token() -> str:
-    """当前配置的访问令牌;空串 = 没配 = 鉴权关闭。
-
-    每次调用都重新走 ``get_settings()`` —— 它自带 lru_cache,进程内只解析一次,
-    但测试里 ``get_settings.cache_clear()`` 之后能立刻拿到新值。
-    不在模块级把它读成常量,就是为了这个可测性。
-    """
-    return get_settings().access_token.strip()
-
-
-_PLACEHOLDER_PREFIXES: Final[tuple[str, ...]] = ("替换成", "change", "your", "todo", "xxx")
-"""模板占位符的开头。命中就当成「没设」处理。
-
-为什么需要这张表:``docker-compose.vps.yml`` 用 ``${GYT_ACCESS_TOKEN:?…}`` 做 fail-closed,
-但那道闸只认**空**,不认「非空但是假的」。2026-08-11 安全复核实测:
-``.env.vps.example`` 里那行占位符是非空中文字符串,**顺利通过 compose 检查**,
-后端于是「正常开启鉴权」,而令牌是一串**公开写在 git 仓库里的字**——
-第二道锁当场归零,且全流程零信号(横幅只在令牌为空时打,日志里写的是「已开启」)。
-
-判据与 ``scripts/frontend-overrides/api-key.tsx`` 的 ``startsWith("替换成")`` 同源。
-"""
-
-_MIN_TOKEN_LEN: Final[int] = 24
-"""令牌的最短长度。``openssl rand -hex 32`` 出来是 64 位,离这个下限很远;
-而人手打的「test」「gyt123」这种一定过不去。取 24 不是密码学结论,
-是「挡住随手填的,不挡住真随机的」这条工程判据。"""
-
-
-def _token_problem(raw: str) -> str | None:
-    """令牌看着像不像真的。像就返回 None,不像就返回一句中文说明(只进日志)。"""
-    if not raw:
-        return None  # 空 = 明确的「没配」,由 is_enforcing 走关闭分支,不算问题
-    low = raw.lower()
-    if any(low.startswith(p) for p in _PLACEHOLDER_PREFIXES):
-        return "它看着是模板里的占位符,不是真令牌"
-    if len(raw) < _MIN_TOKEN_LEN:
-        return f"它只有 {len(raw)} 个字符,短于最低要求的 {_MIN_TOKEN_LEN} 位"
-    return None
 
 
 def is_enforcing() -> bool:
@@ -213,105 +178,20 @@ def is_enforcing() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 请求头取值
+# 请求头取值:_api_key_from_headers(连同它依赖的 _decode_header_part)已搬到
+# src/gyt/core/access.py,理由同上(checkin_api 的自查要用同一条取值逻辑)。
+# 顶部 import 按原名 re-export,本文件的调用点原样没动。
 # ---------------------------------------------------------------------------
 
-
-def _decode_header_part(raw: Any) -> str:
-    """把 ASGI 原始头里的一段(bytes 或 str)转成 str。
-
-    ``errors="replace"``:头是外部输入,收到非法 UTF-8 时**不许抛异常** ——
-    抛出去就变成 500,等于给了攻击者一个「用畸形字节撬服务」的把手。
-    转成替换字符后照常走比对,结果必然不匹配,走正常的 401 路径。
-    """
-    if isinstance(raw, bytes | bytearray):
-        return bytes(raw).decode("utf-8", errors="replace")
-    return str(raw)
-
-
-def _api_key_from_headers(headers: Mapping[Any, Any] | None) -> str:
-    """从请求头里取 ``X-Api-Key``,**大小写不敏感**;取不到返回空串。
-
-    为什么要自己归一化,不直接 ``headers[b"x-api-key"]``:
-
-    1. HTTP 头名本来就大小写不敏感(RFC 9110),客户端写成 ``X-API-KEY`` 完全合法;
-    2. 键的**类型**在上游两处文档里就对不上 —— langgraph_sdk 的 authenticate
-       文档字符串写的是 ``headers: dict[str, bytes]``
-       (``langgraph_sdk/auth/types.py:307``),而真正注入这个参数的
-       ``langgraph_api/auth/custom.py`` 里 ``SUPPORTED_PARAMETERS`` 标的是
-       ``dict[bytes, bytes] | None``,实现是 ``dict(scope.get("headers", {}))``
-       (ASGI 原始头,bytes→bytes)。两边说法不一致时,**按最宽的处理**,
-       别赌哪一份是对的;
-    3. 单测里直接传 str 键的字典也能跑,不用为了测试去凑 bytes。
-
-    ``headers=None`` 也要接住:上游把这个参数标成了 ``| None``。
-    """
-    if not headers:
-        return ""
-    for raw_name, raw_value in headers.items():
-        if _decode_header_part(raw_name).strip().lower() == API_KEY_HEADER:
-            return _decode_header_part(raw_value).strip()
-    return ""
-
-
 # ---------------------------------------------------------------------------
-# 令牌桶
+# 令牌桶:TokenBucket 类本体已搬到 src/gyt/core/access.py(checkin_api 的两只
+# 打卡限流桶复用同一实现)。顶部 import 按原名 re-export —— test_auth.py 与
+# 本文件照旧写 auth.TokenBucket。
+# ⚠️ **桶的实例与状态没搬**:_limiter / get_limiter / reset_limiter 必须留在
+# 这里 —— test_auth.py 靠 monkeypatch.setattr(auth, "_limiter", …) 注入假时钟
+# 的桶,get_limiter 读的必须是同一个模块变量,搬走它们这条注入路径就断了;
+# 而且这只桶护的是「创建 run」,与打卡的两只桶各管各的账,状态不该合并。
 # ---------------------------------------------------------------------------
-
-
-class TokenBucket:
-    """按身份计的令牌桶。放行返回 ``None``,拒绝返回「建议等待秒数」。
-
-    形态选的是令牌桶而不是固定窗口计数,因为它天然同时表达两件事:
-
-        capacity(桶容量)      = 允许的**突发**量(连着点几下不该被拦)
-        refill(每分钟补多少)  = 允许的**持续**速率(挡住脚本长跑)
-
-    固定窗口做不到这一点 —— 要么突发被误杀,要么窗口边界上能打进双倍。
-
-    ``clock`` 可注入是为了测试:限流的行为**全靠时间推进**,真 ``sleep`` 写出来的
-    测试又慢又飘(CI 上负载一高就红)。注入一个假时钟,时间就成了普通输入。
-
-    不可变性红线的说明:限流器就是一件有状态的东西,这里没法「返回新对象」。
-    折中做法是每次结算都往 dict 里放一个**新的 tuple**,不原地改可变对象,
-    并且状态全部关在这个类里,外面拿不到引用。
-    """
-
-    def __init__(
-        self,
-        capacity: int,
-        refill_per_minute: float,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self.capacity = float(capacity)
-        self.refill_per_minute = float(refill_per_minute)
-        self._refill_per_second = float(refill_per_minute) / 60.0
-        self._clock = clock
-        # identity -> (剩余令牌, 上次结算时刻)
-        self._state: dict[str, tuple[float, float]] = {}
-        # langgraph dev 大部分时候是单事件循环,但框架里有 run_in_threadpool 这类
-        # 线程逃逸路径。锁很便宜(dict 读改写,微秒级),不赌「不会并发」。
-        self._lock = threading.Lock()
-
-    def take(self, identity: str) -> float | None:
-        """取一枚令牌。放行返回 ``None``;拒绝返回建议等待的秒数(> 0)。
-
-        补令牌用的是「按经过时间连续补」而不是「定时器」:没有后台任务,
-        也就没有「进程闲着也在跑东西」的成本,冷启动即正确。
-        """
-        now = self._clock()
-        with self._lock:
-            tokens, last_seen = self._state.get(identity, (self.capacity, now))
-            # max(0.0, ...):time.monotonic 不会倒流,但注入的假时钟可能被写错,
-            # 倒流时按「没过时间」处理,绝不凭空补令牌。
-            elapsed = max(0.0, now - last_seen)
-            tokens = min(self.capacity, tokens + elapsed * self._refill_per_second)
-            if tokens >= 1.0:
-                self._state[identity] = (tokens - 1.0, now)
-                return None
-            self._state[identity] = (tokens, now)
-            return (1.0 - tokens) / self._refill_per_second
-
 
 _limiter: TokenBucket | None = None
 """进程内唯一的限流器。局限(多进程 / 重启失效)已在模块文档字符串里写明。"""

@@ -116,6 +116,31 @@ def test_default_file_limits_and_thresholds(monkeypatch: pytest.MonkeyPatch) -> 
     assert settings.eval_threshold_rag == 0.80
 
 
+def test_默认打卡参数与视觉压缩是两组独立旋钮(monkeypatch: pytest.MonkeyPatch) -> None:
+    """W7 打卡块的缺省值留档。
+
+    单独断 attendance_max_edge_px 与 photo_compress_max_edge_px 不相等且各自存在:
+    两个长边旋钮动机完全不同(一个是 1.9GB VPS 的内存闸,一个管识图清晰度),
+    哪天有人「消除重复」把它们合并,这条会先红。
+    """
+    # Arrange & Act
+    settings = _pristine_settings(monkeypatch)
+
+    # Assert
+    assert settings.attendance_watermark_font == ""  # 空 = 候选表探测
+    assert settings.attendance_max_edge_px == 1600
+    assert settings.attendance_max_edge_px != settings.photo_compress_max_edge_px
+    assert settings.attendance_decode_max_pixels == 200_000_000
+    assert settings.attendance_retention_days == 90
+    assert settings.attendance_rate_per_minute == 30.0
+    assert settings.attendance_rate_burst == 10
+    assert settings.attendance_worker_rate_per_minute == 6.0
+    assert settings.attendance_worker_rate_burst == 3
+    assert settings.attendance_recent_limit == 20
+    assert settings.attendance_query_max_workers == 50
+    assert settings.attendance_cleanup_min_age_h == 1.0
+
+
 # ---------------------------------------------------------------------------
 # 数据根目录(本次「两份数据」事故的命脉,单开一节)
 # ---------------------------------------------------------------------------

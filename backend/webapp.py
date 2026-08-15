@@ -33,6 +33,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from gyt.agents.knowledge import ingest, store
+from gyt.checkin_api import CHECKIN_ROUTES
 from gyt.config import ALLOWED_CAD_EXT, get_settings
 from gyt.core import artifacts, project_fs
 from gyt.core.artifacts import ArtifactKind
@@ -269,9 +270,7 @@ async def _handle_doc_upload(request: Request, *, scope: str, project_id: str) -
         if scope == project_fs.SCOPE_PROJECT and db.get_project(project_id) is None:
             return {"status": "no_project"}
         landed = project_fs.land_doc(scope, doc_type, filename, payload, project_id=project_id)
-        artifact_id = artifacts.register(
-            landed, kind=ArtifactKind.DOCUMENT, original_name=filename
-        )
+        artifact_id = artifacts.register(landed, kind=ArtifactKind.DOCUMENT, original_name=filename)
         try:
             has_text = ingest.pdf_has_text(landed)
         except Exception:  # noqa: BLE001 —— PDF 打不开(加密/损坏)当没文字层处理,回滚
@@ -498,6 +497,16 @@ app = Starlette(
         ),
         Route("/docs", remove_global_doc, methods=["DELETE"]),
         Route("/projects/{project_id}/docs", remove_project_doc, methods=["DELETE"]),
+        # 打卡两条(W7,gyt/checkin_api.py 的 CHECKIN_ROUTES)。
+        #
+        # 为什么铺在这儿而不是它自己挂:``langgraph.json`` 的 ``http.app``
+        # **只能有一个**,而本项目现在有两拨自定义路由 —— 本文件的项目/图纸/资料
+        # 管理,和打卡。2026-08-15 两条分支合流时撞上,这里是唯一的汇合点。
+        #
+        # 打卡那侧的实现不在 backend/ 根而在 gyt 包里(它要 from gyt.config 取常量,
+        # 且要能被 docker-compose.dev.yml 的 src 挂载热重载覆盖到)。
+        # ⚠️ 删掉这一行 = 打卡端点整个消失,而现象是 404、**不是启动报错**。
+        *CHECKIN_ROUTES,
     ]
 )
 

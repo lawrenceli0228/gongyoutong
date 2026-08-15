@@ -1,0 +1,910 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>打卡功能技术方案 v4 · 工友通 W7</title>
+<style>
+:root{
+  --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5;
+  --accent:#c2410c; --accent-soft:#fff1e8;
+  --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec;
+  --warn:#b45309; --warn-soft:#fdf3e2;
+  --bad:#a52a2a; --bad-soft:#fbeceb;
+  --sans:"PingFang SC","Hiragino Sans GB","Noto Sans SC",system-ui,-apple-system,sans-serif;
+  --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme:dark){
+  :root{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+    --line:#37332c; --line-soft:#2a2620; --accent:#f97b3d; --accent-soft:#2e1c10;
+    --blue:#6aa5d8; --blue-soft:#152433; --ok:#6fbf8f; --ok-soft:#12271a;
+    --warn:#e0a34e; --warn-soft:#2b2010; --bad:#e97a70; --bad-soft:#2c1614; }
+}
+:root[data-theme="light"]{ --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5; --accent:#c2410c; --accent-soft:#fff1e8; --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec; --warn:#b45309; --warn-soft:#fdf3e2; --bad:#a52a2a; --bad-soft:#fbeceb; }
+:root[data-theme="dark"]{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+  --line:#37332c; --line-soft:#2a2620; --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+  --ok:#6fbf8f; --ok-soft:#12271a; --warn:#e0a34e; --warn-soft:#2b2010; --bad:#e97a70; --bad-soft:#2c1614; }
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;font-feature-settings:"tnum"}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px 96px;display:grid;grid-template-columns:1fr;gap:0}
+@media(min-width:1060px){ .wrap{grid-template-columns:172px minmax(0,1fr);gap:50px;padding-right:34px} }
+nav{display:none}
+@media(min-width:1060px){
+  nav{display:block;position:sticky;top:0;align-self:start;padding-top:124px;height:100vh;overflow-y:auto}
+  nav a{display:block;font-size:12.5px;color:var(--ink-faint);text-decoration:none;
+    padding:5px 0 5px 11px;border-left:2px solid var(--line-soft);transition:.15s}
+  nav a:hover{color:var(--accent);border-left-color:var(--accent)}
+  nav a b{font-family:var(--mono);font-size:10.5px;margin-right:6px;opacity:.6}
+}
+main{min-width:0}
+header{padding:70px 0 0}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--accent);margin-bottom:16px}
+h1{font-size:clamp(29px,4.2vw,46px);line-height:1.15;letter-spacing:-.022em;font-weight:680;
+  margin:0 0 16px;text-wrap:balance;max-width:17em}
+.lede{font-size:clamp(15.5px,1.5vw,18px);color:var(--ink-soft);max-width:45em;margin:0 0 28px;line-height:1.72}
+.lede b{color:var(--ink);font-weight:600}
+.meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);padding-bottom:8px}
+.verdict{border:1.5px solid var(--bad);background:var(--bad-soft);border-radius:var(--r);
+  padding:20px 24px;margin-bottom:14px}
+.verdict .t{font-size:19px;font-weight:650;margin-bottom:8px;letter-spacing:-.01em}
+.verdict p{margin:0 0 10px;color:var(--ink-soft);font-size:15px;max-width:none}
+.verdict p:last-child{margin:0}
+section{padding-top:58px;scroll-margin-top:24px}
+h2{font-size:12px;font-family:var(--mono);letter-spacing:.15em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 8px;font-weight:600}
+h2 + .h{font-size:clamp(21px,2.3vw,26px);font-weight:640;letter-spacing:-.016em;margin:0 0 8px;line-height:1.3;text-wrap:balance}
+.sub{color:var(--ink-soft);max-width:44em;margin:0 0 24px;font-size:15.5px}
+h3{font-size:17px;font-weight:640;margin:34px 0 10px;letter-spacing:-.01em}
+p{max-width:46em;margin:0 0 14px}
+ul,ol{max-width:46em;padding-left:22px;margin:0 0 16px}
+li{margin-bottom:7px}
+code{font-family:var(--mono);font-size:.875em;background:var(--line-soft);
+  padding:1.5px 5px;border-radius:4px;color:var(--ink)}
+pre{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;
+  line-height:1.62;margin:0 0 20px;color:var(--ink-soft)}
+pre b{color:var(--accent);font-weight:600}
+pre i{color:var(--bad);font-style:normal;font-weight:600}
+table{width:100%;border-collapse:collapse;margin:0 0 22px;font-size:14px;display:block;overflow-x:auto}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+th{font-size:11.5px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:600;border-bottom:1.5px solid var(--line);white-space:nowrap}
+tr:last-child td{border-bottom:none}
+.box{border-radius:var(--r);padding:15px 18px;margin:0 0 20px;font-size:14.5px;border-left:3px solid}
+.box p{margin:0 0 9px;max-width:none;font-size:14.5px}
+.box p:last-child{margin:0}
+.box .hd{display:block;font-weight:650;font-size:15px;margin-bottom:7px;color:var(--ink)}
+.box ul,.box ol{margin:8px 0;max-width:none}
+.box li{font-size:14.5px}
+.b-bad{border-color:var(--bad);background:var(--bad-soft);color:var(--ink-soft)}
+.b-warn{border-color:var(--warn);background:var(--warn-soft);color:var(--ink-soft)}
+.b-ok{border-color:var(--ok);background:var(--ok-soft);color:var(--ink-soft)}
+.b-info{border-color:var(--blue);background:var(--blue-soft);color:var(--ink-soft)}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}
+a:hover{border-bottom-color:var(--accent)}
+footer{margin-top:76px;padding-top:26px;border-top:1px solid var(--line);
+  font-size:13px;color:var(--ink-faint);font-family:var(--mono)}
+.toggle{position:fixed;top:16px;right:16px;z-index:9;background:var(--card);border:1px solid var(--line);
+  color:var(--ink-soft);border-radius:20px;padding:6px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer}
+</style>
+
+<button class="toggle" onclick="(function(){var r=document.documentElement;var d=r.getAttribute('data-theme');
+  var isDark=d?d==='dark':matchMedia('(prefers-color-scheme:dark)').matches;
+  r.setAttribute('data-theme',isDark?'light':'dark')})()">明 / 暗</button>
+
+<div class="wrap">
+<nav>
+  <a href="#v"><b>—</b>版本沿革</a>
+  <a href="#d"><b>0</b>决策台账</a>
+  <a href="#f"><b>1</b>事实核查</a>
+  <a href="#a"><b>2</b>架构</a>
+  <a href="#k"><b>3</b>关键设计</a>
+  <a href="#c"><b>4</b>文件清单</a>
+  <a href="#t"><b>5</b>测试</a>
+  <a href="#r"><b>7</b>残余风险</a>
+  <a href="#i"><b>10</b>实施任务</a>
+  <a href="#g"><b>11</b>上线闸</a>
+  <a href="#done"><b>12</b>落地对账</a>
+</nav>
+
+
+<main>
+<header>
+  <div class="meta">2026-08-15 · /plan-eng-review 三轮 + Codex 两轮独立复审 · docs/W7_打卡Agent_技术方案.md</div>
+  <div class="eyebrow">工友通 W7 · 香港建造业</div>
+  <h1>打卡功能技术方案 v4</h1>
+  <p class="lede">工友跑多个地盤,<b>自拍打卡、后端盖水印、出可存档凭证</b>。
+    16 条决策由负责人当场拍板;三轮工程审查 + Codex 两轮独立复审,
+    <b>共 23 条经实测确认是本方案自己的错误</b>。</p>
+
+  <div class="verdict">
+    <div class="t">🔴 v4 的头号修正:v3 的凭证图端点必然裂图</div>
+    <p>v3 发明了 <code>GET /checkin/photo/{receipt_no}</code>,而它和 v3 自己刚补好的鉴权是<b>互斥</b>的:</p>
+<pre style="background:transparent;border:none;padding:0;margin:0 0 10px">// human.tsx:213 —— 现存代码,线上在跑
+&lt;img src={byIdUrl(id)} /&gt;
+
+# Caddyfile 注释原文:
+#   同源之后浏览器会自动把口令带到 &lt;img src&gt; 上,不用前端做任何事
+#   ↑ 靠的是<i>登录 Cookie</i>,而 auth.py:105 要的是<i>请求头 x-api-key</i></pre>
+    <p><b><code>&lt;img&gt;</code> 只送 Cookie,送不了自定义头。</b>
+      两件事凑一起 = 凭证图恒 401,界面上是个裂图标,控制台只有一行。</p>
+    <p><b>v4 改法:删掉这个端点</b>,直接返回 <code>artifact_id</code>,
+      走 <code>human.tsx</code> 已经验证过的那条出口 —— 少一个端点,少一条会裂图的路径。</p>
+  </div>
+
+  <div class="box b-warn">
+    <span class="hd">v4 这 10 条的共同点:全部要读现存代码才看得见</span>
+    <p>两轮 Codex 复审都没抓到。它们不是逻辑推理能发现的,而是
+      「<code>&lt;img&gt;</code> 送不了头」「Caddy 的 128MB 是从 DXF 算出来的」
+      「VPS 只有 1.9GB 而 BGE-M3 已占 955MB」这类<b>只存在于本仓具体代码与部署里的事实</b>。
+      这是「复审不能替代读代码」的一次实证。</p>
+  </div>
+</header>
+
+<section id="v">
+  <h2>— / History</h2>
+  <div class="h">版本沿革</div>
+  <p class="sub">被推翻的判断本身是资产 —— 留档是为了让下一个人别再走一遍。</p>
+  <table>
+    <tr><th>版本</th><th>触发</th><th>主要改动</th></tr>
+    <tr><td><b>v1</b></td><td>15 条问答定案</td><td>打卡走对话链</td></tr>
+    <tr><td><b>v2</b></td><td>Codex 复审 24 条</td><td><b>打卡改走直接接口</b>;7 处事实订正</td></tr>
+    <tr><td><b>v3</b></td><td>Codex 二轮复审 44 条</td><td><b>raw body 取代 multipart</b>;鉴权默认值修正;凭证持久化;清理可实施</td></tr>
+    <tr><td><b>v4</b></td><td><b>eng-review 第三轮 10 条裁决</b></td>
+        <td><b>凭证图改走已有出口</b>;幂等指纹进 header;限流维度重定;Caddy 闸改路由级;水印先缩图;文案层次归位;补上没有模块的 cleanup</td></tr>
+  </table>
+
+  <h3>九条被推翻的判断</h3>
+  <ol>
+    <li><b>「<code>InjectedState</code> 就能保证数据可信」</b> —— 偷换概念。它只把参数从模型 schema 里藏起来,state 里的值仍由客户端控制。</li>
+    <li><b>「打卡走对话链和其它 Agent 同构所以更好」</b> —— 同构不是价值。</li>
+    <li><b>「凭证编号 <code>GYT-A-日期-秒</code> 够用」</b> —— 同秒多人会碰。</li>
+    <li><b>「原图从不落盘」(v2)</b> —— multipart 会 spool 到 <code>/tmp</code>。</li>
+    <li><b>「凭证卡片放 tool-calls.tsx」(v2)</b> —— 直接 HTTP 不产生 ToolMessage。</li>
+    <li><b>「加个 <code>/checkin/photo</code> 端点就能取凭证图」(v3)</b> —— <code>&lt;img&gt;</code> 带不了头。</li>
+    <li><b>「读 body 前就能比对 <code>req_digest</code>」(v3)</b> —— 指纹含照片哈希,算不出来。</li>
+    <li><b>「Caddy 请求体上限收到照片同量级」(v3)</b> —— 会打死 DXF 图纸上传。</li>
+    <li><b>「限流按 <code>event_id</code> 前缀分桶」(v3)</b> —— <code>event_id</code> 是客户端生成的,换前缀就是新满桶,零防护。</li>
+  </ol>
+</section>
+
+<section id="d">
+  <h2>0 / Decisions</h2>
+  <div class="h">决策台账(16 条)</div>
+  <table>
+    <tr><th>#</th><th>决策点</th><th>结果</th></tr>
+    <tr><td>D1</td><td>前置技能</td><td>跳过 /office-hours</td></tr>
+    <tr><td>D2</td><td>打卡的「谁」</td><td>按「已登录员工」当既定前提</td></tr>
+    <tr><td>D3</td><td>范围深度</td><td>打卡 + 凭证 + 查</td></tr>
+    <tr><td>D4</td><td>姓名怎么落地</td><td>前端存,随请求带</td></tr>
+    <tr><td>D5</td><td>取像方式</td><td>自写 getUserMedia 组件</td></tr>
+    <tr><td>D6</td><td>内置浏览器降级</td><td>特性检测 + 退回 <code>&lt;input capture&gt;</code>,标记弱凭证</td></tr>
+    <tr><td>D7</td><td>电脑端二维码</td><td>本站网址,不带 token</td></tr>
+    <tr><td>D8</td><td>证据链</td><td>后端画水印;原图不进产物库</td></tr>
+    <tr><td>D9</td><td>中文字体</td><td>apt 装 fonts-wqy-microhei</td></tr>
+    <tr><td>D10</td><td>打卡频次</td><td>流水账,次数不限</td></tr>
+    <tr><td>D11</td><td>定位用法</td><td>只存坐标 + 精度,地盤名由人给</td></tr>
+    <tr><td>D12</td><td>简繁体</td><td>先做简体,文案集中可替换</td></tr>
+    <tr><td>D13</td><td>PDPO 声明</td><td>登录页底部静态文字,不拦,不存同意记录</td></tr>
+    <tr><td>D14</td><td>前端测试</td><td>vitest 测纯函数 + 真机核对表</td></tr>
+    <tr><td><b>D15</b></td><td><b>打卡走不走 LLM</b></td><td><b>走直接接口,LLM 只管查</b></td></tr>
+    <tr><td><b>D16</b></td><td><b>查询要不要单独 Agent</b></td><td><b>要,独立 attendance Agent</b></td></tr>
+  </table>
+
+  <h3>D16 的推演(下一个人一定会再问)</h3>
+  <p>D15 之后打卡<b>写入</b>已完全不经过 Agent,问题只剩「查询这一半放哪」。</p>
+  <table>
+    <tr><th>方案</th><th>省什么</th><th>代价</th></tr>
+    <tr><td><b>A · 独立 Agent(选定)</b></td><td>——</td>
+        <td>五个文件固定税:<code>graph.py</code> + <code>scorers.py</code> + <code>routing.csv</code> + <code>eval/README</code> + <code>CLAUDE.md</code></td></tr>
+    <tr><td>B · 挂给 schedule</td><td>整个 Agent 目录</td>
+        <td><b>污染正域</b>。summary 是路由的<b>唯一依据</b>;危险词真实存在:「张三这个月干了几天」是考勤还是任务?</td></tr>
+    <tr><td>C · 界面出一张表</td><td>Agent + eval 三处</td>
+        <td>失去组合查询;写入已拿出 Agent 体系,查询再拿出去 = 对项目主线零贡献</td></tr>
+  </table>
+  <div class="box b-info">
+    <p><code>AGENT_REGISTRY</code> 顶部记着 ping 被摘除的三连实锤 —— <b>三轮改 summary 措辞都没收住</b>。
+      schedule 现在那句很稳,不拿它去赌。</p>
+  </div>
+</section>
+
+<section id="f">
+  <h2>1 / Facts</h2>
+  <div class="h">事实核查留档</div>
+  <p class="sub">下面每一条都实测过。这一节存在的理由:方案里凡是「我觉得」都可能是错的,而错在这个仓库的代价是别人照着改错文件。</p>
+
+  <h3>1.1 🔴 自定义路由默认不鉴权</h3>
+<pre># langgraph_api/server.py:169(实测)
+enable_auth_on_custom_routes = config.HTTP_CONFIG and config.HTTP_CONFIG.get(
+    <i>"enable_custom_route_auth"</i>)
+
+# 同一文件 :167 —— middleware_order 也是真键
+config.HTTP_CONFIG and config.HTTP_CONFIG.get("middleware_order") == "auth_first"</pre>
+  <div class="box b-bad">
+    <p><b>不写这个键 = 假值 = 自定义路由完全不过 <code>auth.py</code>,而且不会有任何报错。</b></p>
+    <p>⚠️ <code>@auth.on.threads.create_run</code> 的限流也管不到它 —— 那个钩子只处理 LangGraph 的 run 动作,
+      普通 Starlette 路由要自己带限流。</p>
+  </div>
+
+  <h3>1.2 Starlette 上传会落盘 —— v2 的「原图从不落盘」是假的</h3>
+<pre># starlette/formparsers.py:146
+class MultiPartParser:
+    spool_max_size = <i>1024 * 1024</i>   # 1MB</pre>
+  <p>照片上限 10MB,超过 1MB 的 multipart 上传会自动滚到 <code>/tmp</code>。
+    而且 <code>python-multipart</code> 当时<b>不在依赖里</b>(实测 <code>import multipart</code> → ImportError)。</p>
+  <div class="box b-warn"><p>⚠️ <b>这一条 2026-08-15 合流后已失效</b>:队友为 <code>webapp.py</code> 的图纸上传把它加成了正式依赖。
+    <b>但另外三条理由不受影响</b>(落 /tmp、短路不了幂等、大小检查太晚),raw body 的选择不变。</p></div>
+  <div class="box b-ok">
+    <p><b>解法不是打补丁,是换协议:元数据走 header,照片走 raw body。</b>
+      <code>Request.stream()</code> 实测是真流式,一次解掉四条:不要 multipart 依赖、不落临时盘、
+      读第一个字节前就能短路幂等、能边读边掐大小。</p>
+  </div>
+
+  <h3>1.3 🔴 <code>&lt;img&gt;</code> 带不了自定义请求头</h3>
+  <p>见页首。v3 发明 <code>/checkin/photo</code> 的理由是「静态服务只认 <code>artifact_id</code>,而 Agent 故意不返回它」——
+    这句话把两个东西混为一谈:<b>做最小化的是 LLM Agent 的工具返回值</b>,
+    而 <code>POST /checkin</code> 是本人刚拍完照的直连接口,它返回 <code>artifact_id</code> 给自己的前端没有最小化问题。</p>
+
+  <h3>1.4 🔴 v3 的幂等层① 逻辑上跑不通</h3>
+<pre>① 读 body 前:SELECT WHERE event_id = X
+     ├─ 命中 且 <i>req_digest 相同</i> → 200 + 原记录(不读 body)
+
+# req_digest = 姓名 + 地盤 + 坐标 + <i>照片 sha256</i>
+#              ↑ 照片的哈希必须先把照片读完才算得出来</pre>
+  <p>「不读 body 就比对指纹」自相矛盾。而且 v3 列的 header
+    (Event-Id / Worker / Site / Geo / Source)<b>没有指纹这个字段</b>。
+    v4 加 <code>X-GYT-Digest</code>,进 T1 的冻结契约。</p>
+
+  <h3>1.5 <code>tool-calls.tsx</code> 渲染不了打卡凭证</h3>
+<pre>export function ToolResult({ message }: { message: <i>ToolMessage</i> })</pre>
+  <p>它只消费 <code>ToolMessage</code>。第一轮复审说「凭证卡片该放这儿」——<b>在 v1 里那是对的</b>
+    (当时 check_in 是工具)。D15 改成直接 HTTP 之后根本不产生 ToolMessage。典型的「修了 A 引入 B」。</p>
+
+  <h3>1.6 缺字检测:<code>getbbox</code> 是废判据(实测推翻)</h3>
+<pre># ❌ Courier New 里一个汉字都没有,但:
+ImageFont.truetype("Courier New.ttf", 40).getmask("张").getbbox()
+#   → <i>(2, 0, 23, 25)</i>   ← 这是 FreeType 渲染 .notdef 方块本身的像素
+# 有字和缺字返回同样的东西 —— 判据零区分度,挂上去一次都不会触发。</pre>
+  <p>唯一可靠做法是查字体 cmap。Pillow 原生无替代 —— 实测 <code>FreeTypeFont</code> 不暴露任何 glyph/char 查询方法。</p>
+
+  <h3>1.7 法规与合规(两轮订正后的措辞)</h3>
+  <p>香港适用<b>《建造業工人註冊條例》(第583章)</b>:工人须註冊、持智能註冊證、进工地经读证核验,
+    <b>每 7 天的每日出勤记录须在 2 个工作日内提交註冊主任(DAR)</b>。</p>
+  <div class="box b-warn">
+    <span class="hd">⚠️ 两次订正过头,这里是收敛后的说法</span>
+    <ul>
+      <li>存在读证装置豁免与流動 DAR App,但<b>声明册只处理「已注册工人无法出示證件」的情形,不是读证的通用替代</b>;读证豁免也不免除提交 DAR。</li>
+      <li><b>不要宣称「跑多个地盤的管理人员正是法定考勤覆盖场景」</b> —— DAR 覆盖的是受雇并亲自进行建造工作的注册工人。</li>
+    </ul>
+    <p><b>稳的结论只有一条:这套系统不构成法定考勤记录,它是班组内部台账。</b></p>
+  </div>
+  <p><b>PDPO(第486章)</b>:PICS 要写明用途、<b>是否自愿</b>、<b>不提供的后果</b>、
+    <b>可能转交给谁</b>、<b>查阅更正方式</b>、<b>负责人姓名/职衔/联系地址</b>。</p>
+  <div class="box b-bad">
+    <p><b>⚠️ v2 说「D15 从根上解掉跨境传输」是错的。</b> D15 去掉的是自拍和精确坐标;
+      查询链里的问题和工具结果<b>仍然包含姓名、时间、地盤</b>,照样发给 DeepSeek。</p>
+    <p>另:PDPO 第 33 条(跨境转移)<b>至今未生效</b>,不能写成一条已生效的独立硬义务。
+      但<b>接收方类别披露</b>是现行要求,PICS 必须写。</p>
+  </div>
+
+  <h3>1.8 坐标与摄像头(措辞收敛)</h3>
+  <ul>
+    <li><b>Geolocation 规范本来就规定输出 WGS-84</b>,与在不在香港无关。GCJ-02 偏移只对大陆境内生效。
+      高德接口契约仍要求 GCJ-02 输入 —— <b>「香港零转换成本」的说法不成立</b>。本方案不上地图。</li>
+    <li><b>WebKit 自 iOS 14.3 起已允许符合条件的 WKWebView 暴露 <code>getUserMedia</code>。</b>
+      能不能用取决于宿主 App,<b>不保证,也不必然没有</b>。</li>
+    <li><code>capture="user"</code> 支持<b>有限且因浏览器与设备而异</b>,不能断言「安卓一律忽略」。</li>
+    <li>结论:降级路径保留,但<b>必须特性检测 <code>navigator.mediaDevices</code>,不许嗅 UA</b> ——
+      WhatsApp / Facebook / Instagram 全是 WKWebView,UA 白名单必然漏。</li>
+  </ul>
+
+  <h3>1.9 v4 新增的现存代码事实(全部实测)</h3>
+  <table>
+    <tr><th>事实</th><th>位置</th><th>影响</th></tr>
+    <tr><td><code>&lt;img&gt;</code> 只送 Cookie,送不了 <code>X-Api-Key</code></td>
+        <td><code>human.tsx:213</code> + Caddyfile 注释 + <code>auth.py:105</code></td>
+        <td><b><code>/checkin/photo</code> 必裂图</b></td></tr>
+    <tr><td><code>TokenBucket.take(identity)</code> 收任意字符串当桶键</td><td><code>auth.py:262</code></td>
+        <td>三种限流维度成本一样,差的是<b>桶键谁说了算</b></td></tr>
+    <tr><td>Caddy <code>request_body max_size 128MB</code> 在 <b>:182</b>(v3 写的 :170 是错的),
+        且 <b>128 是算出来的</b>:DXF 64MB × base64 4/3 ≈ 85.3MB + 余量</td>
+        <td><code>Caddyfile:170-184</code></td>
+        <td><b>v3 的「收到照片同量级」会打死图纸上传</b></td></tr>
+    <tr><td>VPS <b>1.9GB 内存</b>,检索时 BGE-M3 峰值 <b>955MB</b>;
+        <code>docker-compose.vps.yml:449</code> <b>故意不写 <code>deploy.resources.limits</code></b></td>
+        <td><code>docs/W6_VPS_队友接入.md:203</code></td>
+        <td>水印解位图会 OOM 整个容器</td></tr>
+    <tr><td><code>safety/tools.py:315</code> <b>已经在缩图</b>:<code>thumbnail(…, LANCZOS)</code></td><td>同左</td>
+        <td>水印抄这个写法,<b>顺带把水印字号固定下来</b></td></tr>
+    <tr><td><code>setup-frontend.sh</code> 现有 <b>11 处</b> <code>apply_override</code></td><td>:386–:418</td>
+        <td><code>install_new_file</code> 装的三件<b>不计入这个数</b></td></tr>
+    <tr><td><code>eval_threshold_routing = 0.90</code> / <code>eval_min_rows_routing = 20</code>;<code>routing.csv</code> 现 22 行</td>
+        <td><code>config.py:311,319</code></td><td>§11 的门槛数与配置对得上</td></tr>
+    <tr><td><code>uploads.py</code> 只查了 <code>drawing_limit</code>,照片分支无上限</td>
+        <td><code>:205</code> vs <code>:229</code></td><td><b>现存 bug</b>,T14</td></tr>
+    <tr><td><code>artifacts.py</code> 只有 register/resolve/read_meta;ArtifactKind 五个成员</td>
+        <td><code>:185,219,229,234</code></td><td>清理不可实施 → <b>必须改 artifacts.py</b></td></tr>
+    <tr><td><code>apply_override</code> 目标不存在就 warning 跳过</td><td><code>setup-frontend.sh:371</code></td>
+        <td>新增文件不能用它 → <code>install_new_file()</code></td></tr>
+    <tr><td><code>serve_login</code> 登录后重定向写死 <code>/</code></td><td><code>:350</code></td><td>二维码不能带 <code>?name=</code></td></tr>
+    <tr><td><code>FROM base AS models</code></td><td><code>Dockerfile:144</code></td>
+        <td>字体只能装 <code>app</code> 阶段,否则重下 2.2GB</td></tr>
+    <tr><td>容器 <code>TZ=Asia/Shanghai</code></td><td><code>Dockerfile:253</code></td><td><b>业务时区不许靠宿主</b></td></tr>
+    <tr><td><code>fonttools</code> 只是传递依赖(ezdxf / matplotlib 带入)</td><td><code>uv.lock</code> 4.63.0</td>
+        <td>缺字检测靠它 → <b>必须提成显式依赖</b></td></tr>
+    <tr><td>工具多传参数<b>静默忽略,不抛 TypeError</b></td><td>实测 langchain 1.3.14</td><td>早期那条守门测试断言是错的</td></tr>
+    <tr><td>v3 §4.2 有 <code>test_attendance_cleanup.py</code>,而 §4.1 <b>没有对应模块</b></td><td>v3 自身</td>
+        <td>测试没有被测对象 → v4 补 <code>attendance/cleanup.py</code></td></tr>
+  </table>
+</section>
+
+<section id="a">
+  <h2>2 / Architecture</h2>
+  <div class="h">架构</div>
+<pre>                          工友的手机 / 电脑
+        ┌────────────────────────┴────────────────────────┐
+  ①【打卡】点按钮                                  ②【问一句】打字
+        │                                                 │
+  前端自拍组件                                            │
+   ├ navigator.mediaDevices 有 → 前置取景 → canvas 截帧    │
+   └ 没有 → &lt;input capture&gt;  → source=fallback            │
+   ‖ 并行:getCurrentPosition(3s 超时,失败照样能打)        │
+   ‖ 算 sha256 → 拼进 <b>X-GYT-Digest</b>                        │
+        │                                                 │
+        │ POST /checkin                                   │
+        │   Content-Type: image/jpeg                      │
+        │   X-Api-Key: &lt;显式复用 getApiKey()&gt;              │
+        │   X-GYT-Event-Id / Worker / Site / Geo / Source  │
+        │   <b>X-GYT-Digest</b>   ← 只用于短路比对,<i>不可信</i>         │
+        │   body = JPEG 原始字节(不是 multipart)          │
+        ▼                                                 │
+  ┌──────────────────────────────────────────┐            │
+  │ src/gyt/checkin_api.py:app                │            │
+  │  ⓪ 鉴权(<b>enable_custom_route_auth:true</b>)  │            │
+  │  ① 限流(读 body 之前)                    │            │
+  │  ② 幂等:查 event_id + 比 header digest    │            │
+  │     —— <b>读第一个字节之前</b>                │            │
+  │  ③ 流式收 body,超限当场断开               │            │
+  │  ④ <b>缩图</b> → 画水印;原图<b>不进产物库</b>       │            │
+  │  ⑤ register(kind=<b>ATTENDANCE</b>)             │            │
+  │  ⑥ 写库(digest 用<b>服务端自己算的</b>)      │            │
+  └──────────┬───────────────────────────────┘            │
+             │ 200 { receipt_no, <b>artifact_id</b>, ... }        │
+             ▼                                            ▼
+   GET /checkin/recent → 前端渲染                supervisor → attendance Agent(只读)
+   &lt;img src={ARTIFACT_BASE}/by-id/{artifact_id}&gt;  返回值<b>不含</b> artifact_id / 坐标
+   ↑ 与 human.tsx 完全同一条已验证路径</pre>
+
+  <h3>2.1 为什么用 raw body 而不是 multipart</h3>
+  <table>
+    <tr><th>multipart(v2)</th><th>raw body(v3 起)</th></tr>
+    <tr><td><s>需要 <code>python-multipart</code> —— 不在依赖里</s>(合流后已成正式依赖,此条失效)</td><td>零新增依赖</td></tr>
+    <tr><td><code>spool_max_size=1MB</code>,4MB 照片<b>落 /tmp</b></td><td><code>Request.stream()</code> 真流式,<b>不落盘</b></td></tr>
+    <tr><td><code>event_id</code> 和文件在同一个 body 里,<b>必须先解析完整请求</b></td>
+        <td><code>event_id</code> + <code>digest</code> 在 header,<b>读第一个字节前就能短路</b></td></tr>
+    <tr><td>大小检查在解析完之后</td><td><b>边读边数,超限当场 disconnect</b></td></tr>
+  </table>
+  <p>元数据放 header 的代价:值必须 ASCII 安全 → <b>姓名与地盤名用 Base64URL 编码后放 header</b>,服务端解回。</p>
+</section>
+
+<section id="k">
+  <h2>3 / Design</h2>
+  <div class="h">关键设计</div>
+
+  <h3>3.1 数据模型</h3>
+<pre>CREATE TABLE IF NOT EXISTS attendance (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id    TEXT    NOT NULL <b>UNIQUE</b>,   -- 客户端幂等键
+  req_digest  TEXT    NOT NULL,          -- <b>服务端自己算的</b>指纹
+                                         -- ⚠️ 绝不落 header 里那个客户端报的值
+  worker_name TEXT    NOT NULL,          -- 原样存。⚠️ 绝不做简繁转换
+  site_name   TEXT,
+  checked_at  TEXT    NOT NULL,          -- <b>服务器时钟 + 显式 Asia/Hong_Kong</b>
+  work_date   TEXT    NOT NULL,          -- 同一快照派生
+  lat REAL,  lon REAL,  accuracy_m REAL,
+  <b>geo_status</b>  TEXT    NOT NULL
+              CHECK (geo_status IN ('ok','denied','timeout','unsupported','error','absent')),
+  source      TEXT    NOT NULL CHECK (source IN ('camera','fallback')),
+  receipt_no  TEXT    NOT NULL UNIQUE,
+  <b>artifact_id TEXT</b>,                      -- ⚠️ 可空 —— 清理后置 NULL
+  photo_purged_at TEXT,                  -- 非空 = 界面显示「凭证图已过期清理」
+  project_id  TEXT,                      -- 建表即预留、写入恒 NULL(照搬 tasks 表)
+  created_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_att_date   ON attendance(work_date);
+CREATE INDEX IF NOT EXISTS idx_att_worker ON attendance(worker_name, work_date);</pre>
+  <div class="box b-info">
+    <p><b><code>geo_status</code> 六个值:</b> 光靠 <code>lat IS NULL</code> 分不清「拒绝权限 / 超时 / 设备不支持 /
+      前端字段漂了 / 程序出错 / 前端压根没发」—— 审计时这六种意义完全不同。</p>
+    <p>⚠️ 判定规则要写进 <code>checkin-lib.ts</code> 的纯函数并有 vitest,
+      否则前端会随手塞一个不在 CHECK 里的值,<b>表现是整条 INSERT 失败而报错在数据库层</b>。</p>
+  </div>
+
+  <h3>3.2 幂等:三层,缺一层都不够</h3>
+<pre>① 读 body 前:SELECT WHERE event_id = X,与 header 的 <b>X-GYT-Digest</b> 比
+     ├─ 命中 且 digest 相同 → 200 + 原记录(不读 body、不缩图、不画水印、不写库)
+     └─ 命中 但 digest 不同 → 409,人话:「这次打卡的信息和之前那次对不上」
+② 未命中 → 流式收 body → <b>服务端自己算 digest</b> → 缩图 → 画水印 → register
+③ INSERT 撞 UNIQUE(并发同键)→ 回查那条返回它;本次的图成孤儿,交清理</pre>
+  <div class="box b-bad">
+    <span class="hd"><code>X-GYT-Digest</code> 是客户端报的,不可信 —— 但这不影响它的用途</span>
+    <p>层①压根不读 body,客户端谎报只是让自己拿回一条对不上的记录;
+      层②真读了 body,<b>落库用的是服务端自己算的那个</b>。</p>
+    <p><b>这两句必须写进 <code>checkin_api.py</code> 的模块 docstring</b> —— 少了它,
+      下一个人看到 header 里有个现成的 digest 就会直接拿去落库,而那是伪造入口。</p>
+  </div>
+  <div class="box b-warn">
+    <p><b><code>event_id UNIQUE</code> 只保证「最多一行」,不保证整个操作幂等。</b>
+      并发同键时两张水印图都会被生成,输家只是 INSERT 失败 —— 副作用已经发生。
+      <b>这是「够用」不是「完美」,写明白。</b></p>
+    <p><b>客户端也要负责:</b> 只在同一个 React 生命周期里复用 <code>event_id</code> 不够 ——
+      刷新、崩溃、App 被杀之后会生成新 ID,用户再提交就是重复记账。
+      <b><code>event_id</code> 必须落 <code>sessionStorage</code>,提交成功后才清除。</b></p>
+  </div>
+
+  <h3>3.3 原图、缩图与写入顺序</h3>
+<pre>raw body(≤10MB,流式,<b>不落盘</b>)
+   → Image.open → <b>thumbnail(长边上限, LANCZOS)</b>     ← 与 safety/tools.py:315 同一写法
+   → 画水印 → 重新编码 JPEG → register(ATTENDANCE)</pre>
+  <p>理由有三,内存只是其中一条:① 峰值内存从一张 4000×3000 的约 36MB 降到约 7MB;
+    ② <b>水印字号必须相对图尺寸固定</b> —— 不缩图的话同一号字在 4000px 上是蚂蚁、在 800px 上糊满半张;
+    ③ 缩图本身是解压炸弹的第二道闸。</p>
+  <div class="box b-warn">
+    <p><b>⚠️ 代价要写明白:凭证图不是原始分辨率,放大看不清安全帽细节。</b>
+      可接受的理由:凭证的用途是「证明这个人这个时间在这里」,不是取证照片 ——
+      §7 风险 4 早就写了这套东西没有实名/活体/签名。<b>别把它当成能事后放大查违规的证据库。</b></p>
+  </div>
+  <div class="box b-bad">
+    <p><b>顺序不许颠倒:先落图后写库。</b>
+      图成功库失败 → <b>孤儿文件</b>(无害);库成功图失败 → <b>死链</b>(工友点了打不开,无提示)。</p>
+    <p>⚠️ <b>这不是原子提交,别宣称是。</b> <code>artifacts.register()</code> 的文件与 sidecar 没有 <code>fsync</code>。
+      可接受的理由:掉电是低频且可人工修复,而死链是高频路径。</p>
+  </div>
+
+  <h3>3.4 水印</h3>
+  <p><b>① 先缩图再画 —— 这是 1.9GB VPS 上的硬要求,不是优化。</b></p>
+  <table>
+    <tr><th>实测数</th><th>值</th></tr>
+    <tr><td>VPS 内存</td><td><b>1.9GB</b>(<code>docs/W6_VPS_队友接入.md:203</code>)</td></tr>
+    <tr><td>检索时 BGE-M3 峰值</td><td><b>955MB</b> —— 半台机器</td></tr>
+    <tr><td><code>docker-compose.vps.yml:449</code></td><td><b>故意不写 <code>deploy.resources.limits</code></b></td></tr>
+    <tr><td>限流突发</td><td>10 —— 十个人同时打卡就是十份位图同时叠</td></tr>
+  </table>
+  <div class="box b-bad">
+    <p>一张 4000×3000 解开约 36MB,加水印副本与编码缓冲,单请求一百多 MB。
+      <b>OOM 杀的不是「打卡」这个请求,是整个 backend 容器</b> ——
+      现象是全站突然挂掉、历史会话中断,而日志里只有内核 OOM killer 一行,
+      <b>没人会把它和「有人打了张卡」连起来</b>。</p>
+  </div>
+  <p><b>② 字体装 <code>app</code> 阶段,绝不动 <code>base</code>。</b>
+    <code>Dockerfile:144</code> 是 <code>FROM base AS models</code>,动 base 会让 models 缓存失效、重下 2.2GB。</p>
+  <p><b>③ 字体路径按候选列表探测。</b> 写死 Debian 路径会破坏 macOS 本机开发。
+    <b>绝不 fallback 到 <code>ImageFont.load_default()</code></b>(ASCII 位图字体,汉字画方块)。</p>
+  <div class="box b-warn">
+    <p><b>启动硬失败会打死非 Docker CI。</b> GitHub 的 Ubuntu runner 没装 WQY。
+      <b>已定死走这条:CI 里 <code>apt-get install fonts-wqy-microhei</code></b>(T7)。
+      另一条路(打 skip + 用仓内测试字体)被否决 —— 它会让 CI 和线上测的不是一回事。</p>
+  </div>
+  <p><b>④ 缺字硬失败,判据只有一个是对的。</b></p>
+<pre>from fontTools.ttLib import TTCollection, TTFont
+# 三条一起才对:
+# 1) .ttc 是集合,按 index 取面;
+# 2) <b>Pillow 的 truetype(path, index=N) 与 fonts[N] 必须同一个 N</b> ——
+#    实测 STHeiti.ttc 两面的 cmap 码点数是 <i>37707 vs 37708</i>,查错面就在那几个字上错;
+# 3) 用 getBestCmap()。
+faces = TTCollection(p).fonts if p.endswith(".ttc") else [TTFont(p)]
+missing = [c for c in text if ord(c) not in set(faces[<b>IDX</b>].getBestCmap())]</pre>
+  <p><code>fonttools</code> <b>必须提成显式依赖</b> —— 现在只是 ezdxf / matplotlib 的传递依赖,断的方式是静默的。</p>
+  <div class="box b-warn">
+    <p>⚠️ <b>「传 𠮶 必须失败」这条测试不可移植</b> —— macOS 的 PingFang HK 本身支持该字。
+      测试必须<b>钉死用 WQY</b>,不能依赖候选探测的结果。</p>
+  </div>
+
+  <h3>3.5 时间与时区</h3>
+<pre>NOW = datetime.now(<b>ZoneInfo("Asia/Hong_Kong")</b>)   # ⚠️ 不许 astimezone() 靠宿主猜</pre>
+  <p><code>checked_at</code>、<code>work_date</code>、水印上的时间、<code>receipt_no</code> 里的日期时刻<b>全部来自 NOW</b>。</p>
+  <div class="box b-bad">
+    <p>容器 <code>TZ=Asia/Shanghai</code>,本机开发可能是任意时区。两地都是 UTC+8 无夏令时所以数值碰巧一致 ——
+      <b>但这是巧合,不是保证</b>。</p>
+    <p><b>这条是「静默失败类」的头号</b> —— <code>make test</code> 在本机全绿也发现不了(本机也是 UTC+8),
+      所以它进闸⑥:测试要<b>显式篡改宿主 TZ 再断言 <code>work_date</code> 不变</b>。</p>
+    <p>夜班跨午夜的业务语义仍未定义(当前 = 日历日)→ TODO-38。</p>
+  </div>
+
+  <h3>3.6 限流、请求体上限与输入校验</h3>
+  <table>
+    <tr><th>桶</th><th>取值</th><th>它是什么 / 它不是什么</th></tr>
+    <tr><td><b>全局</b></td><td>30 次/分,突发 10</td><td><b>这是唯一的真闸。</b>一个班组的量级</td></tr>
+    <tr><td><b>按 <code>worker_name</code></b></td><td>更小的桶</td>
+        <td><b>防手抖连点,不是安全控制</b> —— <code>worker_name</code> 由客户端提供,改一下就换个桶</td></tr>
+    <tr><td><s>按 <code>event_id</code> 前缀</s></td><td>——</td>
+        <td><b>v3 的写法,已废。</b><code>event_id</code> 是客户端生成的,换前缀 = 全新满桶,零防护</td></tr>
+  </table>
+  <div class="box b-warn">
+    <p><b>注释必须写死那句「worker_name 桶是防手抖,不是安全控制」。</b>
+      否则下一个人看到「按人限流」会以为滥用问题已经解决了。真正的天花板只有全局那 30/分。</p>
+  </div>
+  <p><b>Caddy 请求体上限:给打卡路径单设,全局那条一个字不动。</b></p>
+<pre>Caddyfile:170-184 的注释已经把 128MB 算给你看了:
+  最大单件是 DXF 图纸(GYT_DRAWING_MAX_MB=64)
+  → 前端转 base64 塞进 JSON,体积撑到 4/3 → 约 <i>85.3MB</i>
+  → 加 JSON 转义与多文件同发的余量 → 取 <b>128MB</b></pre>
+  <div class="box b-bad">
+    <p><b>v3 说「收到与照片上限同量级」会直接打死图纸上传</b>,而报错是 Caddy 的 413,
+      不是那句写好的中文提示 —— 查的人会去翻 <code>uploads.py</code> 和 <code>DRAWING_MAX_MB</code>,方向全错。</p>
+    <p>⚠️ 新 route 块的位置要连同注释一起核。Caddy 有一张固定的指令顺序表,而
+      <code>handle</code> / <code>handle_path</code> 在那张表里的排位是这个文件<b>已经踩过一次「站点裸奔」</b>的地方
+      (<code>Caddyfile:135-139</code>)。位置写错的现象不是报错,是<b>闸不生效</b>或<b>路由错乱</b>。</p>
+  </div>
+  <p><b>输入校验清单(逐条要有测试):</b>
+    <code>event_id</code> 格式与长度 · <code>X-GYT-Digest</code> 格式(仅十六进制、定长)·
+    姓名/地盤长度上限与控制字符和换行 · 经纬度范围与<b>成对出现</b> ·
+    <code>accuracy_m</code> 非负且有限(挡 NaN/Infinity)· 图片字节上限(流式)·
+    <b>解码后像素上限</b>(挡解压炸弹,缩图是第二道)· JPEG 魔数 · EXIF 方向 ·
+    <code>source</code> 与 <code>geo_status</code> 枚举。</p>
+
+  <h3>3.7 凭证的渲染与持久化</h3>
+  <p>不能放 <code>tool-calls.tsx</code>(§1.5),<b>也不能自己开取图端点</b>(§1.3)。</p>
+  <ul>
+    <li><b><code>POST /checkin</code> 的 200 响应带 <code>artifact_id</code></b>;打卡组件自己渲染凭证卡片,
+      图走 <code>&lt;img src={`${ARTIFACT_BASE}/by-id/${artifact_id}`}&gt;</code> —— 与 <code>human.tsx:213</code> 同一条路。</li>
+    <li><b><code>GET /checkin/recent?limit=N</code></b>(同样返回 <code>artifact_id</code>)—— 刷新、换设备、重开线程后凭证还在。</li>
+    <li><b><code>artifact_id</code> 为 NULL 时渲染「凭证图已过期清理」,不渲染 <code>&lt;img&gt;</code>。</b>
+      做成纯函数 + vitest —— 漏了就是个裂图标,而<b>裂图标和「图真的没了」在界面上长得一模一样</b>。</li>
+    <li><b>没有 <code>/checkin/photo/{receipt_no}</code>。</b> 它在 v3 里存在,v4 删掉。</li>
+  </ul>
+  <div class="box b-info">
+    <p><b>口径差异要写进 §3.10 和 TODO-36:</b> <code>artifact_id</code> 出现在<b>直连 HTTP 响应</b>里,
+      但<b>不出现在 Agent 的工具返回值</b>里。最小化约束的是喂给 LLM 的东西,不是本人的接口。</p>
+  </div>
+
+  <h3>3.8 <code>install_new_file()</code> 的语义</h3>
+<pre>目标不存在        → 拷贝,log_ok
+目标存在且内容相同 → 跳过,log_skip
+目标存在且不同     → <b>覆盖并 log_warn</b>,警告文案写明「本文件由本仓管理,
+                     若上游新增了同名文件请人工核对」</pre>
+  <p><b>为什么是覆盖而不是拒绝:</b> 这些文件是<b>本仓自有</b>的,不是上游的补丁点。
+    拒绝会让脚本永远无法更新自己的文件;跳过会留下旧版本且看不出来。</p>
+
+  <h3>3.9 留存与清理</h3>
+  <ul>
+    <li><b><code>ArtifactKind</code> 加 <code>ATTENDANCE</code></b> —— 必须改 <code>artifacts.py</code>。不加就无法把考勤图与其它业务照片分开。</li>
+    <li><b><code>artifacts.py</code> 加删除 API</b> —— 现在只有 register/resolve/read_meta。</li>
+    <li><b><code>attendance/cleanup.py</code> 是一个真模块</b> —— v3 只有测试文件而没有被测对象。</li>
+    <li><b>找孤儿图:一次 SELECT 取回全部在用的 <code>artifact_id</code> 建成集合,再扫目录做差集。</b>
+      <b>不许</b>在目录遍历里逐个查库 —— CLAUDE.md 明文红线。清理器跑在定时任务里,
+      <b>慢了也没人看见,会一直慢下去</b>。一行是 32 字符的 id,十万行也就几 MB。</li>
+    <li><b>老化窗口</b>(只删 <code>created_at</code> 早于 1 小时且无 DB 引用的),
+      否则会误删 register 成功但 INSERT 还没完成的正常请求的图。</li>
+    <li><b>入口要有:</b> 一个 <code>make</code> 目标 + 容器里的定时/启动任务,否则脚本写了没人跑。</li>
+  </ul>
+  <div class="box b-warn">
+    <p>⚠️ <b>照片留存 ≠ 数据留存。</b> 只清图片而不定义考勤行、姓名、坐标的删除期限,PDPO 的留存问题仍未解决 → TODO-37。</p>
+  </div>
+
+  <h3>3.10 查询:聚合在 SQL 里,且必须有上限</h3>
+  <table>
+    <tr><th>工具</th><th>干什么</th><th>SQL</th></tr>
+    <tr><td><code>list_attendance_days</code></td><td>「张三这个月来了几天」</td><td><code>COUNT(DISTINCT work_date)</code> + <code>GROUP BY</code></td></tr>
+    <tr><td><code>list_attendance_detail</code></td><td>「今天谁到了」「张三今天几点打的」</td>
+        <td>按天取,<b>每人返回首末两次 + 次数</b>,<code>LIMIT</code> 封顶</td></tr>
+  </table>
+  <p><b>「按人去重」与「张三今天几点打的」是矛盾的</b>(v2 没定义)。定死:每人返回首次、末次、总次数;
+    要全部流水就明说「他今天打了 6 次」并让人再问。<b>必须有 LIMIT 与最大人数</b> —— D10 允许无限打卡。</p>
+  <div class="box b-warn">
+    <p><b>最小化约定只约束 Agent 侧:</b> 工具返回值不含经纬度、不含 <code>artifact_id</code>。
+      直连 HTTP 接口返回 <code>artifact_id</code> 是<b>刻意的</b>,两者不冲突。</p>
+    <p>⚠️ 但<b>姓名仍会进模型上下文</b> —— 别再说「跨境已解决」。</p>
+  </div>
+
+  <h3>3.11 错误契约:三层不一致,前端必须知道</h3>
+  <table>
+    <tr><th>来源</th><th>长相</th></tr>
+    <tr><td>Caddy 未登录</td><td>302 到 <code>/login</code>(<code>/api/*</code> 是 401 JSON)</td></tr>
+    <tr><td>Caddy 413</td><td>Caddy 自己的错误页,<b>不是 Envelope</b></td></tr>
+    <tr><td>langgraph 鉴权中间件</td><td><code>{"detail":…}</code></td></tr>
+    <tr><td>进了 handler 之后</td><td><b><code>Envelope</code></b></td></tr>
+  </table>
+  <p><b>前端不能假设所有错误都是 Envelope。</b> <code>checkin-lib.ts</code> 要有一个归一化函数,
+    把这四种压成同一个形状再给 UI —— 它是纯函数,<b>vitest 测得到</b>。</p>
+
+  <h3>3.12 文案集中(为 D12 破一次惯例)</h3>
+  <div class="box b-bad">
+    <p><b>⚠️ 是 <code>src/gyt/attendance/messages.py</code>,不是 <code>agents/attendance/</code>。</b>
+      D15 之后打卡<b>写入路径一个 LLM 都不经过</b>,而那条路径上的中文不少
+      (409、限流、超大、缺字硬失败、「凭证图已过期清理」)。</p>
+    <p>文案若放在 <code>agents/</code> 下面,<code>checkin_api.py</code> / <code>db/attendance.py</code> /
+      <code>watermark.py</code> 这三个与 Agent 无关的模块全得反过来 import Agent 包 —— <b>依赖方向反了</b>。</p>
+    <p>正确方向是单向:<code>agents/attendance</code> → <code>attendance</code> → <code>core</code>。
+      仓里已有同型约定:<code>core/focus.py</code> 那条 <code>SUPERVISOR_NAME</code> 就是「core 层不许反向 import 编排层」。</p>
+  </div>
+  <p>理由:负责人明说最后要换简繁,散在十几个分支的 f-string 漏一条就是混排,<b>没有测试会发现</b>。
+    <b>姓名是例外中的例外:原样存、原样画,任何情况下不进转换。</b>
+    ⚠️ <code>agents/attendance/prompt.md</code> 里还有一份给模型看的文案,<b>换简繁时是两个地方</b>。</p>
+</section>
+
+<section id="c">
+  <h2>4 / Files</h2>
+  <div class="h">文件清单(40 个文件 / 五段)</div>
+  <div class="box b-warn">
+    <span class="hd">⚠️ 增长曲线要摆在台面上</span>
+    <p>v1 估 <b>17</b> → v2 <b>28</b> → v3 <b>39</b> → v4 <b>40</b>。涨的不是需求,是<b>三轮复审暴露出来的必要工作</b>。</p>
+    <p>v3→v4 净 +1:<code>attendance/cleanup.py</code>(v3 有测试没模块)与 <code>messages.py</code> 换包,
+      同时<b>删掉</b> <code>/checkin/photo</code> 这个端点 —— <b>净增只有一个文件,却少了一整条会裂图的路径</b>。</p>
+    <p><b>计数口径:</b>每段的括号数字是<b>文件数</b>,不是表格行数 —— §4.3 的 eval 那一行覆盖 3 个文件。</p>
+  </div>
+  <table>
+    <tr><th>段</th><th>文件</th></tr>
+    <tr><td><b>4.1 新增 · 后端(10)</b></td>
+        <td><code>src/gyt/checkin_api.py</code> · <code>src/gyt/db/attendance.py</code> ·
+            <code>src/gyt/attendance/{watermark,receipt,messages,cleanup}.py</code> ·
+            <code>src/gyt/agents/attendance/{__init__,tools,ranges}.py</code> ·
+            <code>src/gyt/agents/attendance/prompt.md</code></td></tr>
+    <tr><td><b>4.2 新增 · 测试(6)</b></td>
+        <td><code>test_checkin_api.py</code> · <code>test_db_attendance.py</code> · <code>test_attendance_watermark.py</code> ·
+            <code>test_attendance_tools.py</code> · <code>test_attendance_ranges.py</code> · <code>test_attendance_cleanup.py</code></td></tr>
+    <tr><td><b>4.4 前端(8)</b></td>
+        <td><code>checkin.tsx</code>(新)· <code>checkin-lib.ts</code>(新)· <code>qrcode.tsx</code>(新)·
+            <code>thread-index.tsx</code>(改)· <code>setup-frontend.sh</code>(改)·
+            <code>frontend-tests/{package.json,pnpm-lock.yaml,checkin-lib.test.ts}</code>(新)</td></tr>
+    <tr><td><b>4.5 构建与文档(5)</b></td>
+        <td><code>Makefile</code> · <code>.github/workflows/ci.yml</code> ·
+            <code>scripts/login-page.html</code> · <code>CLAUDE.md</code> · <code>TODOS.md</code></td></tr>
+  </table>
+
+  <h3>4.3 改动 · 后端与部署(11 个文件 / 9 行)</h3>
+  <table>
+    <tr><th>文件</th><th>改什么</th></tr>
+    <tr><td><code>backend/langgraph.json</code></td><td><code>http.app</code> + <b><code>enable_custom_route_auth: true</code></b> + <code>middleware_order: auth_first</code></td></tr>
+    <tr><td><code>backend/pyproject.toml</code></td><td><b><code>fonttools</code> 提成显式依赖</b></td></tr>
+    <tr><td><code>src/gyt/core/artifacts.py</code></td><td><b>加 <code>ATTENDANCE</code> kind + 删除 API</b></td></tr>
+    <tr><td><code>src/gyt/config.py</code></td><td>字体候选路径 / <b>缩图长边上限</b> / 留存天数 / 限流参数 / 像素上限</td></tr>
+    <tr><td><code>src/gyt/graph.py</code></td><td><code>AGENT_REGISTRY</code> 追加一行,不动 <code>build_graph()</code></td></tr>
+    <tr><td><code>src/gyt/core/uploads.py</code></td><td><b>只补 <code>photo_max_mb</code></b>(现存 bug)。打卡不走这里</td></tr>
+    <tr><td><code>backend/Dockerfile</code></td><td><b><code>app</code> 阶段</b>装字体</td></tr>
+    <tr><td><code>Caddyfile</code></td><td><b>新增打卡路径专用 route + 它自己的 <code>request_body</code>;全局 128MB 不动</b></td></tr>
+    <tr><td><code>eval/{scorers.py,routing.csv,README.md}</code></td><td>名单同步(22 → 26 行)</td></tr>
+  </table>
+
+  <h3>4.6 为什么 <code>ranges.py</code> 不复用 <code>schedule/dates.py</code></h3>
+  <p><b>语义相反:</b>「周三」在 schedule 是<b>未来</b>最近的周三,在考勤查询里是<b>过去</b>最近的周三。
+    共用一份词表必然有一边错。两个文件头注互相指认,防下一个人来「消除重复」。</p>
+  <div class="box b-warn">
+    <p>⚠️ <b>二维码要有实现依赖。</b> 前端现在没有 QR 库,要么装一个,要么手写编码器 ——
+      后者必须补「真实可扫、纠错级别、长 URL」测试。<b>推荐装库。</b></p>
+  </div>
+</section>
+
+<section id="t">
+  <h2>5 / Tests</h2>
+  <div class="h">测试</div>
+<pre>后端代码路径                                      用户流程 / 交互
+[+] checkin_api.py                                [+] 手机打卡主流程
+ ├── POST /checkin                                 ├── 真机 iOS Safari 取景→提交→看凭证
+ │   ├── 无 X-Api-Key 被拒          <b>★★★ 闸①</b>        ├── 真机 安卓 Chrome 同上
+ │   ├── 限流:worker 桶 / 全局桶                    ├── 真机 iOS/安卓 WhatsApp 降级
+ │   ├── 同键同 digest → 原记录     ★★★             └── 双击提交(sessionStorage 复用)
+ │   ├── 同键异 digest → 409        ★★★
+ │   ├── header digest ≠ 服务端算的 <b>★★★ 闸②</b>        [+] 凭证可见性
+ │   │      → 落库必须是服务端那个                   ├── artifact_id 为 NULL → 「已过期清理」<b>★★★ 闸③</b>
+ │   ├── 超限流式断开,/tmp 无残留  ★★★             ├── 刷新页面后凭证还在(/checkin/recent)
+ │   ├── JPEG 魔数 / EXIF / 解压炸弹                 └── 传大 DXF 图纸仍能成 <b>★★★ 闸④</b>(回归)
+ │   ├── 经纬度成对 / NaN / 范围
+ │   └── INSERT 撞 UNIQUE → 回查那条                [+] 错误状态
+ └── GET /checkin/recent(含 artifact_id)          ├── 未登录 302 / 401 两种形状归一
+                                                   ├── Caddy 413(非 Envelope)归一
+[+] attendance/watermark.py                        └── 断网重发 → 同一条,不重复记账
+ ├── 字体全无 → 启动硬失败         ★★★
+ ├── 缺字 → 指出哪个字(钉死 WQY)  ★★★             [+] 定位
+ ├── .ttc 取错面(37707 vs 37708) <b>★★★ 闸⑤</b>         └── 拒绝/超时/不支持/没发 → geo_status 六分支
+ └── 缩图后峰值内存在预算内
+                                                   LLM 侧
+[+] attendance/receipt.py                          └── AGENT_REGISTRY 加一行 = 改了 supervisor
+ ├── 篡改宿主 TZ,work_date 不变    <b>★★★ 闸⑥</b>             提示词 → routing 必重跑(26 行)
+ └── receipt_no 撞库重试
+
+[+] attendance/cleanup.py
+ ├── 老化窗口:register 成功但 INSERT 未完成的图不许删  ★★★
+ └── 一次 SELECT + 内存差集,不在循环里查库
+
+[+] db/attendance.py ····· 建表与读写
+[+] uploads.py ··········· 三条老线回归(safety / inspection / cad)</pre>
+
+  <h3>5.1 六个闸的选取理由:只有静默失败类进闸</h3>
+  <table>
+    <tr><th>闸</th><th>坏了会怎样</th></tr>
+    <tr><td>① 无令牌被拒</td><td>端点裸奔,而且<b>不会有任何报错</b></td></tr>
+    <tr><td>② header digest 被当可信输入</td><td>伪造入口,库里的指纹是攻击者说了算</td></tr>
+    <tr><td>③ <code>artifact_id</code> NULL 渲染</td><td>裂图标,<b>和「图真的没了」长得一模一样</b></td></tr>
+    <tr><td>④ 大 DXF 回归</td><td>Caddy 413,查的人会去翻 <code>uploads.py</code>,方向全错</td></tr>
+    <tr><td>⑤ <code>.ttc</code> 取错面</td><td>就在那几个生僻姓名上画方块,其它字全对</td></tr>
+    <tr><td>⑥ <code>work_date</code> 随宿主 TZ 漂</td><td><b><code>make test</code> 本机全绿也发现不了</b>(本机也是 UTC+8),只在换机器后暴露</td></tr>
+  </table>
+  <div class="box b-info">
+    <p>其余(限流、<code>/checkin/recent</code>、<code>geo_status</code> 六分支、错误归一、魔数/EXIF/炸弹、
+      经纬度校验、UNIQUE 回查、<code>receipt_no</code> 重试)<b>全部要写,同分支跟上</b>,
+      由 <code>make test</code> + <code>make cov ≥80</code> 兜,但不单独列进闸 ——
+      它们坏了至少有个报错能查,而<b>闸太长会让人在上线当天整段跳过</b>。</p>
+  </div>
+
+  <h3>5.2 测试闸目前是假闸,T7 必须一并解决</h3>
+  <p><code>scripts/frontend-tests/</code> 需要<b>锁文件</b>、<code>make test-frontend</code> 目标、<b>CI 里加一步</b>,
+    并且 <b>CI 要 <code>apt-get install fonts-wqy-microhei</code></b>。
+    否则「上线前 vitest 全绿」无人执行,而水印测试会在 CI 上直接起不来。</p>
+</section>
+
+<section id="r">
+  <h2>7 / Risks</h2>
+  <div class="h">残余风险</div>
+  <table>
+    <tr><th>#</th><th>风险</th><th>状态</th></tr>
+    <tr><td>1</td><td><b>「已登录员工」前提线上不成立。</b>单一共享口令;<code>worker_name</code> 不是主键 —— 同名合并、简繁拆分</td><td>→ <b>TODO-35</b></td></tr>
+    <tr><td>2</td><td><b>权限模型缺失。</b>任何登录者能查所有人;<code>event_id</code> 不是用户作用域;<b><code>artifact_id</code> 现在也进 HTTP 响应了</b></td>
+        <td>→ <b>TODO-36</b>。复审定性为「上线前依赖」,已记下这个不同意见</td></tr>
+    <tr><td>3</td><td><b>PDPO:</b>无同意记录;必要性/适度性/监察政策/查阅更正/负责人信息都欠;<b>姓名仍进模型上下文</b></td><td>→ <b>TODO-37</b></td></tr>
+    <tr><td>4</td><td><b>自拍证明力有限。</b>无实名、无活体、无设备证明、无服务器签名;<b>v4 起还降了分辨率</b></td>
+        <td>设计内已知。<b>定位是班组内部台账,不是防篡改证据</b></td></tr>
+    <tr><td>5</td><td>掉电时仍可能「库有行、图缺失」(无 <code>fsync</code>)</td><td>低频且可人工修复;死链才是高频路径</td></tr>
+    <tr><td>6</td><td>夜班跨午夜的 <code>work_date</code> 语义未定义</td><td>→ <b>TODO-38</b></td></tr>
+    <tr><td>7</td><td><code>src/gyt/checkin_api.py</code> 能否被 <code>http.app</code> 按路径加载<b>未实测</b></td>
+        <td><b>实现第一天验</b>;不通就退回根目录并同步改 dev 挂载</td></tr>
+    <tr><td>8</td><td><b>限流的真天花板只有全局 30/分。</b><code>worker_name</code> 桶可被客户端绕过</td><td>设计内已知,注释写死</td></tr>
+    <tr><td>9</td><td>ARTIFACT_BASE 链断了不报错、无线索</td><td>沿用已知风险。<b>v4 把凭证图也压在这条链上,影响面变大了</b></td></tr>
+    <tr><td>10</td><td><b>线上镜像比 main 少一个提交</b>(TODO-33)</td><td>打卡上线前必须先收掉</td></tr>
+  </table>
+
+  <h3>NOT in scope</h3>
+  <p>上下班两次/工时 · 补卡审批 · 月度统计/导出 · 地理围栏 · 逆地理编码 · 人脸识别/活体 ·
+    真用户体系(TODO-3)· 免登录扫码端点 · 全站简繁转换 · Playwright E2E · 地图展示 ·
+    多项目隔离(<code>project_id</code> 恒 NULL)· <b>原始分辨率凭证图</b></p>
+  <div class="box b-warn"><p>⚠️ <b>「多项目隔离」这条 2026-08-15 合流后变得显眼了</b>:
+    队友的图纸/资料线已按工地隔离(<code>projects</code> 表 + <code>run_context</code> 注入),
+    而考勤没有。仍不在本轮范围,<b>但方向已定并记在 TODO-39</b>:打卡侧<b>不加项目下拉</b>,
+    用已经收着的坐标反查工地(<code>POST /checkin</code> 不需要新增任何 header)——
+    工地上少打一个字就少一个不用它的理由。前置是 <code>projects</code> 表补坐标。
+    两处实测出来的坑同样记在那儿:<b>拿不到坐标不是边缘情况</b>(真机三次就有一次 timeout),
+    以及 <b>±35 米撑不住香港市区相邻地盘</b>。</p></div>
+</section>
+
+<section id="i">
+  <h2>10 / Tasks</h2>
+  <div class="h">实施任务</div>
+  <p class="sub">P1 = 阻塞上线。工时双标:人工 / Claude Code。</p>
+  <table>
+    <tr><th>#</th><th>P</th><th>工时</th><th>内容</th></tr>
+    <tr><td>T1</td><td>P1</td><td>20min / 5min</td><td>冻结表结构与 header 字段契约(<b>含 <code>X-GYT-Digest</code> 与那句「不可信、不落库」</b>)</td></tr>
+    <tr><td>T2</td><td>P1</td><td>1天 / 45min</td><td><code>checkin_api.py</code>:<b>鉴权键 + 两个限流桶 + 流式收 body + 三层幂等</b></td></tr>
+    <tr><td>T3</td><td>P1</td><td>5h / 30min</td><td><code>db/attendance.py</code>:<code>event_id</code>/<code>req_digest</code>/<code>geo_status</code>/<code>artifact_id</code> 可空</td></tr>
+    <tr><td>T4</td><td>P1</td><td>6h / 35min</td><td><code>watermark.py</code>:<b>先缩图</b> + 候选探测 + <b>cmap 缺字校验(含 .ttc 取面)</b> + <code>fonttools</code> 提依赖 + Dockerfile <b>app 阶段</b></td></tr>
+    <tr><td>T5</td><td>P1</td><td>2h / 15min</td><td><code>receipt.py</code>:<b>显式 Asia/Hong_Kong</b> + 单一快照 + 撞库重试。验收:<b>篡改宿主 TZ 后 <code>work_date</code> 不变</b></td></tr>
+    <tr><td>T6</td><td>P1</td><td>1天 / 50min</td><td>前端自拍组件 + 降级 + 定位(<b>含 <code>geo_status</code> 六分支</b>)+ <code>sessionStorage</code> 的 event_id + <b>前端算 sha256</b> + <code>install_new_file()</code></td></tr>
+    <tr><td>T7</td><td>P1</td><td>5h / 30min</td><td>vitest 栈 + <b>锁文件 + <code>make test-frontend</code> + CI 一步 + CI 装字体</b></td></tr>
+    <tr><td>T8</td><td>P1</td><td>6h / 35min</td><td><b><code>attendance/cleanup.py</code></b>:<code>ArtifactKind.ATTENDANCE</code> + 删除 API + 老化窗口 + <b>一次 SELECT 差集</b> + make 目标</td></tr>
+    <tr><td>T9</td><td>P2</td><td>4h / 25min</td><td>查询侧:<code>agents/attendance/{__init__,tools,ranges}.py</code> + <code>prompt.md</code> + <b>LIMIT</b></td></tr>
+    <tr><td>T10</td><td>P2</td><td>2h / 15min</td><td>挂载:<code>langgraph.json</code> + <code>graph.py</code> + eval 三处。
+        <b>⚠️ 不许改 <code>GYT_PROMPT_VERSION</code> / <code>vision_prompt.md</code> / 视觉模型</b> —— 那三样是视觉缓存键(TODO-11)</td></tr>
+    <tr><td>T11</td><td>P2</td><td>3h / 20min</td><td>凭证渲染(<b><code>&lt;img&gt;</code> 走 ARTIFACT_BASE,NULL 时显示「已过期清理」</b>)+ <b><code>GET /checkin/recent</code></b> + 二维码(<b>装 QR 库</b>)</td></tr>
+    <tr><td>T12</td><td>P2</td><td>1h / 10min</td><td>PICS 进 <code>login-page.html</code>(<b>六项齐</b>)</td></tr>
+    <tr><td>T13</td><td>P2</td><td>1h / 10min</td><td><code>Caddyfile</code> <b>新增打卡专用 route;全局 128MB 不动</b>。验收:<b>传 &gt;10MB 的 DXF 仍能成功</b></td></tr>
+    <tr><td>T14</td><td>P2</td><td>1h / 10min</td><td>补 <code>uploads.py</code> 的 <code>photo_max_mb</code>(<b>现存 bug</b>)</td></tr>
+    <tr><td>T15</td><td>P2</td><td>1h / 10min</td><td><code>CLAUDE.md</code> + <code>TODOS.md</code>(<b>含两个前端文件数</b>)</td></tr>
+  </table>
+
+  <h3>并行泳道</h3>
+  <p><b>先做(阻塞,~20 分钟):</b> 冻结 §3.1 表结构 + <code>POST /checkin</code> 的 header 字段契约,
+    写进 <code>checkin_api.py</code> 模块 docstring。<b>这是三条泳道唯一的交汇点。</b></p>
+  <table>
+    <tr><th>泳道</th><th>内容</th></tr>
+    <tr><td><b>A · 接口与台账</b></td><td><code>checkin_api.py</code> + <code>db/attendance.py</code> + <code>receipt.py</code> + <code>messages.py</code> + 测试</td></tr>
+    <tr><td><b>B · 水印/产物/清理/镜像</b></td><td><code>watermark.py</code>(含缩图)+ <code>cleanup.py</code> + <code>artifacts.py</code> + Dockerfile + config</td></tr>
+    <tr><td><b>C · 前端</b></td><td><code>checkin.tsx</code> + <code>checkin-lib.ts</code> + <code>qrcode.tsx</code> + vitest + <code>install_new_file()</code></td></tr>
+  </table>
+  <p>汇合(<b>单人串行</b>):<code>langgraph.json</code> + <code>graph.py</code> + 查询侧 + eval 三处 +
+    <code>Caddyfile</code> + <code>Makefile</code>/<code>ci.yml</code> + <code>CLAUDE.md</code>。</p>
+</section>
+
+<section id="g">
+  <h2>11 / Gates</h2>
+  <div class="h">上线前必须过的闸</div>
+  <ol>
+    <li><code>make test</code> 全绿,<code>make cov</code> ≥ 80。</li>
+    <li><code>make eval SUITE=routing</code> ≥ 0.90(26 行)。<b>没动 <code>GYT_PROMPT_VERSION</code>。</b></li>
+    <li><b><code>make test-frontend</code> 全绿,且它真的在 CI 里跑,且 CI 装了字体。</b></li>
+    <li><b>真机核对表四种组合逐条勾:</b> iOS Safari / 安卓 Chrome / iOS WhatsApp / 安卓 WhatsApp。</li>
+    <li><b>🔴 闸① <code>POST /checkin</code> 鉴权实测:</b>不带令牌必须被拒。
+      <b><code>langgraph.json</code> 里没有 <code>enable_custom_route_auth: true</code> 就是裸奔,而且不会有任何报错。</b></li>
+    <li><b>闸② header digest 造假:</b>传一个和照片对不上的 <code>X-GYT-Digest</code>,库里落的必须是服务端算的那个。</li>
+    <li><b>闸③ 凭证图清理后:</b>把一行的 <code>artifact_id</code> 置 NULL,界面显示「凭证图已过期清理」,<b>不是裂图标</b>。</li>
+    <li><b>闸④ 回归:</b>传一张 &gt;10MB 的 DXF 图纸仍能成功(T13 动了 Caddy)。</li>
+    <li><b>闸⑤ <code>.ttc</code> 取面:</b>用一个双面 ttc,断言缺字检测查的是 Pillow 实际渲染的那一面。</li>
+    <li><b>闸⑥ 时区:</b>篡改宿主 <code>TZ</code> 后 <code>work_date</code> 不变。<b>这条本机全绿也可能是错的,必须显式改 TZ 跑。</b></li>
+    <li><code>scripts/preflight_vps.sh</code> 全组过(第 ⑤ 组:发布端口总数仍为 3)。</li>
+    <li><b>先收掉 TODO-33(线上镜像落后 main 一个提交),再清 VPS 磁盘,再构建。别跑 <code>docker builder prune -af</code>。</b>
+      字体在 app 阶段 —— <b>若发现 models 在重建,立刻停手,说明加错阶段了。</b></li>
+  </ol>
+</section>
+
+<section id="done">
+  <h2>12 / Shipped</h2>
+  <div class="h">落地对账(2026-08-15 实施完成)</div>
+  <p class="sub">T1–T15 全部落地。计划说了什么不算,跑出来什么才算 —— 下面全部是实测值。</p>
+
+  <h3>与计划的偏差(4 条,全部是加法或细化)</h3>
+  <table>
+    <tr><th>偏差</th><th>为什么</th></tr>
+    <tr><td><b>+<code>core/access.py</code></b>(文件 40→42)</td>
+        <td>checkin_api 与 auth.py 都被按文件路径加载,互相 import 不可靠 —— 抽公共件,auth.py 只 re-export(<code>test_auth.py</code> 零改动 63/63,行为不变的证据)</td></tr>
+    <tr><td><b>+<code>agents/attendance/guard.py</code></b></td><td>§4.1 漏列的守卫文件;已进 CLAUDE.md 防假账地图</td></tr>
+    <tr><td>客户端 digest = <b>仅照片 sha256</b></td><td>指纹其余输入本来就全在 header,服务端自己拼 —— 少一个前后端漂移面</td></tr>
+    <tr><td><b>handler 纵深防御自查令牌</b></td><td><code>enable_custom_route_auth</code> 漏配是「无报错的裸奔」,只有自查能被单测钉死(闸①)</td></tr>
+  </table>
+
+  <h3>实测结果</h3>
+  <table>
+    <tr><th>闸</th><th>结果</th></tr>
+    <tr><td>pytest</td><td><b>1107 通过 / 0 失败</b>(4 跳过均为预期)</td></tr>
+    <tr><td>routing</td><td><b>26/26 = 100%</b>(门槛 0.90),新 summary 之后实跑,老 22 条零误伤,<code>GYT_PROMPT_VERSION</code> 未动</td></tr>
+    <tr><td>前端</td><td>vitest <b>61/61</b>;<code>make test-frontend</code> 与 CI job 就位;<code>lint-ci</code> 全过</td></tr>
+    <tr><td>闸①</td><td>单测 + <b>真机</b>:起 <code>langgraph dev</code> 无钥匙 POST → 401(来自 langgraph 层,键生效);带钥匙 → 200</td></tr>
+    <tr><td>闸②–⑥</td><td>全部有对应测试;Caddy 12MB 专用闸经 <code>caddy adapt</code> 路由树核过顺序</td></tr>
+    <tr><td>端到端</td><td>真服务五连:401 → 200 → 重发同编号 → 假 digest 409 → recent;<b>真水印图肉眼验证五行齐</b></td></tr>
+    <tr><td>风险#7</td><td>关闭:dev 日志 <code>Loaded custom app from ./src/gyt/checkin_api.py:app</code> + 复刻加载的守门单测</td></tr>
+  </table>
+
+  <h3>留给上线日的</h3>
+  <ol>
+    <li>真机核对表四种浏览器组合(要真手机)。</li>
+    <li>VPS 部署:先收 TODO-33,再清磁盘再构建(<code>langgraph.json</code>/<code>pyproject</code>/<code>uv.lock</code> 都改了 = 必须重建镜像);preflight 发布端口仍应为 3。</li>
+    <li><code>make test-docker</code> 容器内全量(镜像未重建;本机 .venv 已 1107 全绿)。</li>
+    <li>本机 dev 直连 :2024 的 CORS(x-gyt-* 触发 preflight;公网同源无此事)。</li>
+  </ol>
+</section>
+
+  <h3>12.4 本机联调抓到的一个设计缺陷:首次打卡必然拿不到定位</h3>
+  <div class="box b-bad">
+    <p><b>1107 个单测 + routing 26/26 全绿,都没抓到它</b> —— 因为没有任何自动化测试知道
+      「这台机器拿一次定位要 5.3 秒」。只有真机点一次才看得见。</p>
+    <p>症状:第一次打卡,水印写「定位:超时没取到」,库里 <code>geo_status='timeout'</code>、坐标全 NULL。</p>
+  </div>
+  <table>
+    <tr><th>诊断(量出来的,不是猜的)</th><th>耗时</th><th></th></tr>
+    <tr><td>冷启动首次 fix(权限已授)</td><td><b>5344ms</b></td><td>3 秒预算在 3001ms 准时超时</td></tr>
+    <tr><td>系统缓存热了之后,同样 3 秒参数</td><td><b>2ms</b></td><td>秒回</td></tr>
+    <tr><td>精度</td><td><b>±35 米</b></td><td>分辨地盘绰绰有余</td></tr>
+  </table>
+  <p><b>根因三条叠加:</b>① <code>GEO_TIMEOUT_MS=3000</code> <b>一个数兼了两个职</b>(定位预算 + 提交期限,
+    两者合理取值差一个数量级);② 定位从<b>按快门</b>才起跑,零提前量;
+    ③ 没设 <code>maximumAge</code>(默认 0)= 拒绝一切缓存、每次强制重新定位。</p>
+  <table>
+    <tr><th>改法:拆成三个常量</th><th>值</th><th>管什么</th></tr>
+    <tr><td><code>GEO_ACQUIRE_TIMEOUT_MS</code></td><td>20s</td><td>定位本身的预算(实测 5.3s,留 4 倍余量)</td></tr>
+    <tr><td><code>GEO_SUBMIT_WAIT_MS</code></td><td>1.5s</td><td>提交最多再等多久。<b>「不为定位挡住打卡」改由它保证</b></td></tr>
+    <tr><td><code>GEO_MAX_AGE_MS</code></td><td>60s</td><td>接受一分钟内的缓存位置</td></tr>
+  </table>
+  <p>加上<b>起跑点从「按快门」提到「面板一打开」</b>。一个容易写错的细节:提交超时用
+    <code>Promise.race</code>,<b>不是</b>给 <code>getCurrentPosition</code> 一个短 timeout ——
+    后者会<b>取消</b>那次定位,下次又从冷启动重来;race 只是不再等它,浏览器照跑完进系统缓存,
+    所以第二次打卡是热的。</p>
+  <div class="box b-ok">
+    <p><b>实测验证:</b>同一台机连打三次 —— 第 1 次(改前)<code>timeout</code>;
+      第 2、3 次(改后)<code>ok</code>,坐标真实、精度 ±35 米。回归测试 7 条,
+      其中两条专锁「三个常量不许合回一个数」。</p>
+  </div>
+  <div class="box b-warn">
+    <p><b>对后面的启示:</b>§11.4 的真机核对表原本只列四种浏览器组合,看的是<b>能不能跑通</b>。
+      这次说明还要看<b>数值对不对</b> —— 定位、时间、精度这类「跑通了但值是空的」,
+      自动化测试天然看不见。</p>
+  </div>
+</section>
+
+<footer>
+  docs/W7_打卡Agent_技术方案.md · v4 · 2026-08-15<br>
+  /plan-eng-review 三轮(10 条裁决)+ Codex 两轮独立复审(68 条)· 共 23 条经实测确认是本方案自己的错误
+</footer>
+</main>
+</div>

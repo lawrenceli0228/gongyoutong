@@ -241,9 +241,7 @@ def list_docs(project_id: str | None = None) -> list[DocEntry]:
 # 绝不拿外部传来的路径直接删 —— 删除比落地更怕路径穿越。
 
 
-def delete_doc(
-    scope: str, doc_type: str, filename: str, project_id: str | None = None
-) -> bool:
+def delete_doc(scope: str, doc_type: str, filename: str, project_id: str | None = None) -> bool:
     """删除一份落地文档(规范/任务书镜像)。删掉返回 True;文件本就不在返回 False。
 
     路径由 scope + doc_type + **安全 basename** 重建(同 land_doc 的落地位),不接受外部路径。

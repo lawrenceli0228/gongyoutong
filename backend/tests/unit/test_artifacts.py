@@ -276,3 +276,38 @@ def test_delete删掉正文与sidecar且幂等() -> None:
 def test_delete非法id返回False不抛() -> None:
     assert delete("不是32位hex") is False
     assert delete("a" * 32) is False  # 形状对但查无此物
+
+
+# --- 以下两条来自 W7 打卡分支,2026-08-15 合流时按新签名(-> bool,不抛)重写 ---
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    ["../../etc/passwd", "a" * 31, "A" * 32, "*", "", "3d6f/../../x", "已经删过了"],
+)
+def test_delete_恶意id一律返回False且不碰任何文件(bad_id: str) -> None:
+    """路径穿越/通配符/长度不对的 id,既不该删到别的东西,也不该抛。
+
+    ⚠️ 顺带钉住一个**已知的代价**:格式非法与「查无此物」在这里返回同一个 False,
+    所以「把文件名当 id 传进来」这类调用方 bug 会被静默吞掉(artifacts.py 头注写了)。
+    这条测试是那个取舍的留档 —— 哪天觉得该区分开,先看那段注释再动。
+    """
+    survivor = register(PAYLOAD, kind=ArtifactKind.PHOTO, original_name="留着.jpg")
+
+    assert delete(bad_id) is False
+    assert resolve(survivor).read_bytes() == PAYLOAD
+
+
+def test_delete_只删自己那份_不碰同目录的其它产物() -> None:
+    """同一天登记的产物落在同一个日期目录里,删一份不许波及邻居。
+
+    正文按 id 前缀找,而 id 是 32 位 hex —— 天然不含 glob 通配符,
+    所以「删 A 顺手匹配到 B」在结构上就不可能。这条守住它。
+    """
+    victim = register(PAYLOAD, kind=ArtifactKind.PHOTO, original_name="邻居.jpg")
+    target = register(b"another", kind=ArtifactKind.ATTENDANCE, original_name="打卡凭证.jpg")
+
+    assert delete(target) is True
+
+    assert resolve(victim).read_bytes() == PAYLOAD
+    assert read_meta(victim)["kind"] == "PHOTO"

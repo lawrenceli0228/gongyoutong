@@ -223,6 +223,18 @@ PY
 # =============================================================================
 FROM base AS app
 
+# 中文水印字体(W7 打卡):Debian 的文泉驿微米黑,attendance/watermark.py 候选表首位
+# (/usr/share/fonts/truetype/wqy/wqy-microhei.ttc)。缺了它容器里渲染水印会
+# FontUnavailableError 硬失败 —— 那是故意的,绝不退回 ASCII 位图字体画方块。
+# ⚠️ 只装在 app 阶段,**绝不挪进 base**:阶段 3 是 `FROM base AS models`(:144),
+# base 一动它缓存全失效,2.2GB 的 BGE-M3 权重重下一遍(W7 §3.4 ②,两轮复审确认)。
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+ && apt-get install --no-install-recommends -y \
+        fonts-wqy-microhei \
+ && rm -rf /var/lib/apt/lists/*
+
 # HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE
 #   运行期强制离线:任何试图联网拉模型的代码会立刻报错,
 #   而不是在演示现场悄悄卡住等下载。这就是"冷启动零下载"的运行期保险丝。

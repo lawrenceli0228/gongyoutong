@@ -1284,7 +1284,7 @@ def test_main_verbose_flag_prints_passing_rows(
     assert "R01" in capsys.readouterr().out
 
 
-FILLED_DATASETS: Final[dict[str, int]] = {"safety": 30, "routing": 22, "rag": 20}
+FILLED_DATASETS: Final[dict[str, int]] = {"safety": 30, "routing": 26, "rag": 20}
 """已经填完真数据的套 → 应有的可判分行数。
 
 三套**都已填完**:safety 于 2026-08-07(27 张人工标注 + 3 张自备干扰项)、
@@ -1293,7 +1293,8 @@ routing 与 rag 于 2026-08-09(随 cad / knowledge 落地)。所以下面那条
 将来加第四套时仍有提示,不是说还有谁没填。
 
 数字必须 ≥ config 里的 eval_min_rows_*(20 / 30 / 20),否则跑分脚本会直接判不通过。
-⚠️ **三套都恰好卡在下限上,一条不多**:safety 30=30、rag 20=20、routing 22 只富余 2 条。
+⚠️ **safety 与 rag 卡死在下限上,一条不多**:safety 30=30、rag 20=20;
+routing 26(下限 20,W7 加了 R23-R26 的 attendance 四行后富余 6 条)。
 删数据行、或让某行的备注里蹦出「待替换/请替换」被剔出分母,都会当场把整套打到硬闸以下。
 """
 

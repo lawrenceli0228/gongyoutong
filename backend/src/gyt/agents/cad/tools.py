@@ -216,9 +216,7 @@ async def list_drawings(*, config: RunnableConfig) -> Envelope:
     proj_label = ""
     if project_id:
         proj = await asyncio.to_thread(db.get_project, project_id)
-        proj_label = (
-            f"当前工地「{proj.name}」" if proj else f"当前工地(编号 {project_id})"
-        )
+        proj_label = f"当前工地「{proj.name}」" if proj else f"当前工地(编号 {project_id})"
 
     if not demo_names and not uploaded:
         msg = (
@@ -301,9 +299,7 @@ _DIM_DESCRIPTION = (
 
 @tool("query_dimension", description=_DIM_DESCRIPTION)
 @tool_guard
-async def query_dimension(
-    drawing: str, target: str = "", *, config: RunnableConfig
-) -> Envelope:
+async def query_dimension(drawing: str, target: str = "", *, config: RunnableConfig) -> Envelope:
     """读图纸已有的 DIMENSION 标注(落地文档 6.2:只读标注,不算轴网间距)。"""
     idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:

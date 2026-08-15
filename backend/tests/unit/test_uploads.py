@@ -393,3 +393,44 @@ def test_只传图纸没文字也给一句话(tmp_path) -> None:
     rewritten = ingest_uploads(state)["messages"][1]
     assert "图纸" in rewritten.content
     assert len(_ids_in(rewritten.content)) == 1
+
+
+def test_超大照片在入口就被挡(monkeypatch) -> None:
+    """照 DXF 的写法把上限压到极小 —— 入口就拒、给中文提示、不静默登记。
+
+    这条闸 2026-08-15 才补上(W7 §1.10 记录的现存 bug):此前只有图纸分支查上限,
+    照片分支裸奔,超大图会被原样登记落盘,直到 Safety 工具解码才在链路深处翻车。
+    """
+    from gyt.config import get_settings
+
+    monkeypatch.setenv("GYT_PHOTO_MAX_MB", "0.000001")
+    get_settings.cache_clear()
+
+    state = {
+        "messages": [
+            HumanMessage(
+                content=[{"type": "text", "text": "查安全隐患"}, _image_part(_jpeg())], id="u1"
+            )
+        ]
+    }
+
+    rewritten = ingest_uploads(state)["messages"][1]
+    assert "太大" in rewritten.content
+    assert "照片" in rewritten.content, "提示要说的是照片,不许错拿图纸那句"
+    assert _ids_in(rewritten.content) == []  # 超大不登记,不留编号
+    assert "查安全隐患" in rewritten.content
+
+
+def test_正常大小的照片不受照片上限影响() -> None:
+    """默认上限 10MB,几 KB 的测试图必须照常登记 —— 新闸不许误伤正常路径。"""
+    state = {
+        "messages": [
+            HumanMessage(content=[{"type": "text", "text": "看看"}, _image_part(_jpeg())], id="u1")
+        ]
+    }
+
+    rewritten = ingest_uploads(state)["messages"][1]
+    ids = _ids_in(rewritten.content)
+    assert len(ids) == 1
+    assert "太大" not in rewritten.content
+    assert artifacts.resolve(ids[0]).is_file()

@@ -266,9 +266,7 @@ def test_delete_document全局强制清空project_id() -> None:
 
     ingest.delete_document("GB.pdf", scope="global", project_id="脏值", vectorstore=vs)
 
-    assert vs.get_where == {
-        "$and": [{"source": "GB.pdf"}, {"scope": "global"}, {"project_id": ""}]
-    }
+    assert vs.get_where == {"$and": [{"source": "GB.pdf"}, {"scope": "global"}, {"project_id": ""}]}
 
 
 def test_delete_document无匹配返回0不调delete() -> None:

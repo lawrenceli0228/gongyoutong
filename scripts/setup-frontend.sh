@@ -64,6 +64,12 @@ readonly FRONTEND_PORT=3000
 # 前端基础镜像标签。选 22 是因为上游 package.json 里 @types/node 是 ^22,
 # 且 Next 15 官方支持 Node 20/22;换标签前先确认上游没升 Next 大版本。
 readonly NODE_IMAGE_TAG="22-slim"
+# 打卡二维码库(checkin 的桌面端面板 qrcode.tsx 用,W7 方案 §4.4)。
+# 钉死精确版本、装时 --save-exact:Dockerfile 用 --frozen-lockfile,浮动版本会让
+# 「本机装出的锁」与「新机器重跑装出的锁」不同。4.2.0 = 2026-08-15 从 npm 查到的
+# latest(2024-12-11 发布,此后没动过)。升级前先确认 QRCodeSVG 的 props 没变
+# (v4 把 includeMargin 换成了 marginSize,qrcode.tsx 用的是后者)。
+readonly QRCODE_REACT_VERSION="4.2.0"
 
 # -----------------------------------------------------------------------------
 # 路径解析:一律从脚本自身位置推导,允许在任意工作目录下执行
@@ -383,6 +389,43 @@ apply_override() {
   log_ok "已覆盖 $2"
 }
 
+# install_new_file <本仓文件名> <frontend 内相对路径>
+#
+# apply_override 装不了**新**文件:它在目标不存在时按「上游重构了」处理,
+# warning 跳过(见上面那条分支)—— 对给上游打补丁的文件那是对的,
+# 对本仓自有、上游根本没有的文件就成了「永远装不上」。新文件走这条。
+#
+# 语义(W7 方案 §3.8):
+#   目标不存在        → 拷贝(本仓自有文件,目标不存在是常态,不是上游重构)
+#   存在且内容相同     → 跳过
+#   存在且内容不同     → 覆盖 + 告警
+# 为什么「不同 → 覆盖」而不是拒绝或跳过:这些文件的唯一真相在本仓
+# (scripts/frontend-overrides/ 进 git,frontend/ 不进)。拒绝会让脚本永远
+# 无法更新自己的文件;跳过会留着旧版本且看不出来。覆盖 + 告警是唯一
+# 「既能更新又能发现撞名」的组合 —— 告警就是给「上游哪天真的新增了同名文件」
+# 这种撞名情形留的人工核对入口。
+install_new_file() {
+  local src="${OVERRIDES_DIR}/$1"
+  local dst="${FRONTEND_DIR}/$2"
+
+  # 源文件进 git、与本脚本同仓同步,缺了 = 仓库自身不完整,直接失败让人去查,
+  # 不学 apply_override 的 warning(那是给「上游变了」留的余地,这里没有上游)
+  [[ -f "${src}" ]] || die "缺少本仓文件:scripts/frontend-overrides/$1(它应随本脚本一起提交,先 git status 看看)"
+
+  if [[ ! -f "${dst}" ]]; then
+    mkdir -p -- "$(dirname -- "${dst}")" || die "建目录失败:$2"
+    cp -- "${src}" "${dst}" || die "安装失败:$2"
+    log_ok "已安装 $2"
+    return 0
+  fi
+  if cmp -s "${src}" "${dst}"; then
+    log_skip "$(basename -- "$2") 已是最新"
+    return 0
+  fi
+  cp -- "${src}" "${dst}" || die "安装失败:$2"
+  log_warn "$2 与本仓版本不同,已按本仓版本覆盖。本文件由本仓管理;若是上游新增了同名文件,请人工核对两份内容再定归属。"
+}
+
 apply_override "tool-calls.tsx" "src/components/thread/messages/tool-calls.tsx"
 apply_override "ai.tsx" "src/components/thread/messages/ai.tsx"
 apply_override "markdown-text.tsx" "src/components/thread/markdown-text.tsx"
@@ -417,20 +460,52 @@ apply_override "thread-history.tsx" "src/components/thread/history/index.tsx"
 #    「站点打得开、每次提问 401」。
 apply_override "api-key.tsx" "src/lib/api-key.tsx"
 
-# W7 CAD/knowledge:项目 / 图纸 / 资料上传面板。
-# 这是**新增**组件(上游没有),不能走 apply_override —— 那个函数「目标不存在就跳过」
-# 是给"覆盖上游文件"用的,新文件会被它当成"上游重构了"而跳掉。所以直接拷。
-# 它由 thread-index.tsx 覆盖件挂载(import + <ProjectUploadPanel />),两者必须一起在。
-add_new_file() {
-  local src="${OVERRIDES_DIR}/$1"
-  local dst="${FRONTEND_DIR}/$2"
-  [[ -f "${src}" ]] || { log_warn "覆盖件不存在,跳过:$1"; return 0; }
-  mkdir -p -- "$(dirname -- "${dst}")"
-  cp -- "${src}" "${dst}" || die "拷贝新增组件失败:$2"
-  log_ok "已新增 $2"
-}
-add_new_file "ProjectUploadPanel.tsx" "src/components/thread/ProjectUploadPanel.tsx"
-add_new_file "GytStatusCards.tsx" "src/components/thread/GytStatusCards.tsx"
+# 打卡三件(W7 §4.4):**本仓自有**的新文件,上游没有对应物,走 install_new_file
+# (apply_override 对不存在的目标只会 warning 跳过,永远装不上,见函数头注)。
+#   checkin-lib.ts —— 纯函数库,scripts/frontend-tests/ 的 vitest 直接测它
+#   qrcode.tsx     —— 电脑端二维码面板(依赖下面步骤 2.6 装的 qrcode.react)
+#   checkin.tsx    —— 自拍打卡组件,thread-index.tsx 的动作条里是它的入口
+# ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override 十一件 + install_new_file
+#    三件,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
+#    合并之后数出来永远对不上。
+install_new_file "checkin-lib.ts" "src/lib/checkin-lib.ts"
+install_new_file "qrcode.tsx" "src/components/thread/qrcode.tsx"
+install_new_file "checkin.tsx" "src/components/thread/checkin.tsx"
+
+# -----------------------------------------------------------------------------
+# 步骤 2.6:装二维码库(checkin 三件里唯一的新依赖)
+#
+# 为什么在脚本里装而不是「让人记得手动装」:frontend/ 不进 git,换台机器重跑
+# 本脚本就该得到能编译的前端 —— checkin.tsx import 了 "qrcode.react",
+# 不装的话 clone 出来第一次 `pnpm build` 就 Module not found,查的人会以为
+# 覆盖件坏了。装进 package.json + pnpm-lock.yaml 之后,Dockerfile 的
+# `pnpm install --frozen-lockfile` 一并接住,compose 构建不用任何额外步骤。
+# -----------------------------------------------------------------------------
+log_step "安装二维码库 qrcode.react@${QRCODE_REACT_VERSION}"
+
+if grep -q "\"qrcode.react\": \"${QRCODE_REACT_VERSION}\"" "${FRONTEND_DIR}/package.json"; then
+  log_skip "qrcode.react@${QRCODE_REACT_VERSION} 已在 package.json,无需重装"
+else
+  command -v pnpm >/dev/null 2>&1 || die "没找到 pnpm,装不了 qrcode.react。
+      先执行 corepack enable(Node 自带)或安装 pnpm,再重跑本脚本;
+      或手动执行:cd \"${FRONTEND_DIR}\" && pnpm add --save-exact qrcode.react@${QRCODE_REACT_VERSION}"
+  # COREPACK_ENABLE_DOWNLOAD_PROMPT=0:corepack 首次匹配 frontend/ 钉的 pnpm 版本时
+  # 会交互式问「要不要下载」,脚本里没人按回车,不关掉会卡死在这一步。
+  (cd "${FRONTEND_DIR}" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm add --save-exact "qrcode.react@${QRCODE_REACT_VERSION}") \
+    || die "qrcode.react 安装失败。检查 npm 源与网络后重跑本脚本;
+      package.json 与 pnpm-lock.yaml 必须一起更新,缺一半会拖到 next build 才炸。"
+  log_ok "已装 qrcode.react@${QRCODE_REACT_VERSION}(package.json 与 pnpm-lock.yaml 已同步)"
+fi
+
+# W7 CAD/knowledge(队友分支):项目 / 图纸 / 资料上传面板与状态卡片。
+# 同样是**本仓自有**的新文件,同样不能走 apply_override。
+# ⚠️ 2026-08-15 合流:两条分支各自造了一个「装新文件」的函数
+#    (这边 install_new_file、那边 add_new_file)—— 同一个问题、同一个发现
+#    (「apply_override 对不存在的目标只会跳过」),两个名字。已统一到
+#    install_new_file:它多做两件事 —— 内容相同就跳过(重复跑不吵)、
+#    不同则覆盖并**告警**(上游哪天新增同名文件时看得见)。
+install_new_file "ProjectUploadPanel.tsx" "src/components/thread/ProjectUploadPanel.tsx"
+install_new_file "GytStatusCards.tsx" "src/components/thread/GytStatusCards.tsx"
 
 # -----------------------------------------------------------------------------
 # 步骤 3:收尾提示
