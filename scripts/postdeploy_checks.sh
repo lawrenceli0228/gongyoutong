@@ -741,6 +741,56 @@ else
   fi
 fi
 
+head_ "⑧ 🔴 前端覆盖件真的装进 frontend/ 了吗(2026-08-16 就栽在这条)"
+# ===========================================================================
+# `frontend/` 在 .gitignore 里 → rsync 的 filter **会排除它** → 同步代码**不会更新前端**。
+# 新的覆盖件只到了 scripts/frontend-overrides/,要再跑一次 setup-frontend.sh
+# 才会被装进 frontend/。忘了这一步,构建照样成功、镜像照样换上、
+# **站点照样全绿** —— 只是编的是旧源码。W7 §2.6 早写了这条并注明「很容易忘」,
+# 然后 W8 上线当天原样踩了一次:后端和 login 都真上线了,前端整整两次构建全是空跑,
+# 而所有 HTTP 层的检查(含本脚本前七组)全部通过。
+#
+# 所以这条不验行为、只验**字节**:覆盖件的源与 frontend/ 里的实际文件必须一致。
+# 只能在 VPS 上跑 —— 它要同时看到这两个目录。
+# 仓库根按**本文件的位置**推导,不靠调用者的工作目录 ——
+# 这个脚本别处都只发 HTTP 请求、不碰文件,所以没有现成的根变量,这里就地算一个。
+_OVR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "${MODE}" != "local" ]]; then
+  skip "这条要比对 VPS 上的文件,只能在 VPS 上跑:bash scripts/postdeploy_checks.sh --local"
+elif [[ ! -d "${_OVR_ROOT}/frontend" ]]; then
+  skip "这台机器上没有 frontend/(没在这里构建过前端),跳过。"
+else
+  OV_STALE=0
+  OV_SAME=0
+  OV_MISS=0
+  # 映射关系的唯一真相是 setup-frontend.sh 里的调用处 —— 从那儿抽,别在这儿维护第二份清单。
+  while read -r _kind _src _dst; do
+    [[ -n "${_src}" && -n "${_dst}" ]] || continue
+    _o="${_OVR_ROOT}/scripts/frontend-overrides/${_src}"
+    _t="${_OVR_ROOT}/frontend/${_dst}"
+    [[ -f "${_o}" ]] || continue
+    if [[ ! -f "${_t}" ]]; then
+      OV_MISS=$((OV_MISS + 1))
+      note "缺失:${_dst}"
+    elif cmp -s "${_o}" "${_t}"; then
+      OV_SAME=$((OV_SAME + 1))
+    else
+      OV_STALE=$((OV_STALE + 1))
+      note "内容不同:${_dst}(源 $(wc -c <"${_o}") 字节 / 线上 $(wc -c <"${_t}") 字节)"
+    fi
+  done < <(grep -E '^[[:space:]]*(apply_override|install_new_file) ' \
+             "${_OVR_ROOT}/scripts/setup-frontend.sh" | tr -d '"' | awk '{print $1, $2, $3}')
+
+  if [[ "${OV_STALE}" -eq 0 && "${OV_MISS}" -eq 0 ]]; then
+    ok "${OV_SAME} 个覆盖件与 scripts/frontend-overrides/ 逐字节一致"
+  else
+    fail "有 ${OV_STALE} 个覆盖件是旧的、${OV_MISS} 个缺失 —— **前端镜像编的是旧源码**"
+    note "修法:在 VPS 上重跑 bash scripts/setup-frontend.sh(没有 pnpm 见 W7 §2.7 的一次性容器写法),"
+    note "然后重建 frontend 镜像并 up -d --no-deps --no-build frontend。"
+    note "⚠️ 只重建镜像没用 —— 源码没换,构建一百次也还是旧的。"
+  fi
+fi
+
 # ===========================================================================
 printf '\n'
 if [[ "${FAIL}" -gt 0 ]]; then
