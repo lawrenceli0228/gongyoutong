@@ -453,6 +453,15 @@ apply_override "human.tsx" "src/components/thread/messages/human.tsx"
 # 下次上台要在里面翻找要演的那条;历史里还躺着已经修掉的老问题,评委随手点开就看到。
 apply_override "thread-history.tsx" "src/components/thread/history/index.tsx"
 
+# 历史侧栏的**取数**(上面那件只管渲染)。上游 getThreads() 不带任何字段裁剪,
+# 服务端于是把每条会话的完整 values(整份 messages)都回过来,而侧栏只显示第一句话。
+# 2026-08-15 线上实测:POST /api/threads/search 570ms / 177KB,是整页最慢的一条资源,
+# 而后端本身 0.06s —— 慢的全是传输。这里给 search() 加上 select + extract,
+# 本机实测 493,666 → 19,021 字节(省 96.1%)。
+# ⚠️ 与上面那件同源:标题的键名 first_message_content 两边必须一字不差,
+#    只改一边的症状是「标题全变成 32 位 thread_id」,而且一声不吭。
+apply_override "thread-provider.tsx" "src/providers/Thread.tsx"
+
 # 公网部署:把后端访问令牌从构建期环境变量里读出来(localStorage 优先,本机调试能覆盖)。
 # 上游 getApiKey() 只读 localStorage —— 于是 VPS 上每个测试者都得自己去控制台
 # localStorage.setItem 一遍,而那等于把令牌用聊天工具发给一群人。
@@ -465,12 +474,25 @@ apply_override "api-key.tsx" "src/lib/api-key.tsx"
 #   checkin-lib.ts —— 纯函数库,scripts/frontend-tests/ 的 vitest 直接测它
 #   qrcode.tsx     —— 电脑端二维码面板(依赖下面步骤 2.6 装的 qrcode.react)
 #   checkin.tsx    —— 自拍打卡组件,thread-index.tsx 的动作条里是它的入口
-# ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override 十一件 + install_new_file
-#    三件,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
+# ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override 十二件 + install_new_file
+#    五件,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
 #    合并之后数出来永远对不上。
+#    (2026-08-15 校过:上一版这里写的是「十一件 + 三件」,而 apply_override 那时
+#     确实是十一件、install_new_file 却已经是五件 —— 队友那两件
+#     ProjectUploadPanel/GytStatusCards 合流时没回来改这个数。
+#     数不对的坏处不是难看,是下一个人照着数会以为「剩下的不用管」。)
 install_new_file "checkin-lib.ts" "src/lib/checkin-lib.ts"
 install_new_file "qrcode.tsx" "src/components/thread/qrcode.tsx"
 install_new_file "checkin.tsx" "src/components/thread/checkin.tsx"
+# W7 CAD/knowledge(队友分支):项目 / 图纸 / 资料上传面板与状态卡片。
+# 同样是**本仓自有**的新文件,同样不能走 apply_override。
+# ⚠️ 2026-08-15 合流:两条分支各自造了一个「装新文件」的函数
+#    (这边 install_new_file、那边 add_new_file)—— 同一个问题、同一个发现
+#    (「apply_override 对不存在的目标只会跳过」),两个名字。已统一到
+#    install_new_file:它多做两件事 —— 内容相同就跳过(重复跑不吵)、
+#    不同则覆盖并**告警**(上游哪天新增同名文件时看得见)。
+install_new_file "ProjectUploadPanel.tsx" "src/components/thread/ProjectUploadPanel.tsx"
+install_new_file "GytStatusCards.tsx" "src/components/thread/GytStatusCards.tsx"
 
 # -----------------------------------------------------------------------------
 # 步骤 2.6:装二维码库(checkin 三件里唯一的新依赖)
@@ -481,6 +503,11 @@ install_new_file "checkin.tsx" "src/components/thread/checkin.tsx"
 # 覆盖件坏了。装进 package.json + pnpm-lock.yaml 之后,Dockerfile 的
 # `pnpm install --frozen-lockfile` 一并接住,compose 构建不用任何额外步骤。
 # -----------------------------------------------------------------------------
+# ⚠️⚠️ **所有 install_new_file / apply_override 必须排在本步之前。**
+# 本步在没有 pnpm 的机器上会 die(整脚本终止),排在它后面的拷贝一个都不会执行。
+# 2026-08-15 线上就这么栽过:队友那两个组件被排在本步之后,VPS 没装 pnpm →
+# 脚本在这里退出 → 组件没拷 → 前端构建报 `Module not found: ./GytStatusCards`,
+# 而那个报错看起来像覆盖件坏了,离真因(脚本提前退出)隔着好几层。
 log_step "安装二维码库 qrcode.react@${QRCODE_REACT_VERSION}"
 
 if grep -q "\"qrcode.react\": \"${QRCODE_REACT_VERSION}\"" "${FRONTEND_DIR}/package.json"; then
@@ -497,15 +524,6 @@ else
   log_ok "已装 qrcode.react@${QRCODE_REACT_VERSION}(package.json 与 pnpm-lock.yaml 已同步)"
 fi
 
-# W7 CAD/knowledge(队友分支):项目 / 图纸 / 资料上传面板与状态卡片。
-# 同样是**本仓自有**的新文件,同样不能走 apply_override。
-# ⚠️ 2026-08-15 合流:两条分支各自造了一个「装新文件」的函数
-#    (这边 install_new_file、那边 add_new_file)—— 同一个问题、同一个发现
-#    (「apply_override 对不存在的目标只会跳过」),两个名字。已统一到
-#    install_new_file:它多做两件事 —— 内容相同就跳过(重复跑不吵)、
-#    不同则覆盖并**告警**(上游哪天新增同名文件时看得见)。
-install_new_file "ProjectUploadPanel.tsx" "src/components/thread/ProjectUploadPanel.tsx"
-install_new_file "GytStatusCards.tsx" "src/components/thread/GytStatusCards.tsx"
 
 # -----------------------------------------------------------------------------
 # 步骤 3:收尾提示
