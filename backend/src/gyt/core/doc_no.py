@@ -64,15 +64,23 @@ class DocKind(StrEnum):
     专门给它们开了 UP042 豁免(豁免注释里写着「给 lint 让路,不给契约让路」)。
     本枚举不在那份契约里,照着抄只会白白多一条豁免。别为了"风格统一"改回去。
 
-    取值来自方案 §6.3 的对照表,不许在别处另起简称。成员名刻意与
-    ``hazard_docs.doc_type`` 的受控词表对齐(``kind.name.lower()``,方案 §4.1
-    的 CHECK 约束:notice / suspension / resumption / owner_report /
-    authority_report / reinspect)—— 对齐关系有测试钉着,S4 写端点时直接用,
-    别再发明第二套名字。
+    取值来自方案 §6.3 的对照表,不许在别处另起简称。
 
-    ⚠️ ``reinspect``(复查行)在 §6.3 的编号表里**没有**分配类型段。真要给它
-    编号,回来加一档并同步 ``DOC_TITLE_ZH``,别在调用点就地拼字符串 ——
-    就地拼的那个格式没人给它写正则,将来挂守卫时认不出来。
+    ⚠️ **本枚举与 ``hazard_docs.doc_type`` 的受控词表是「部分重叠」,不是「对齐」**
+    (2026-08-16 复核时订正,原注释写成了对齐,会把 S4 带沟里):
+
+      · ``kind.name.lower()`` 落在 doc_type 词表里的只有五档 —— notice /
+        suspension / resumption / owner_report / authority_report;
+      · ``HAZARD`` **根本不是一种文书**,它是隐患自己的身份号(``hazards.hazard_no``),
+        doc_type 词表里没有也不该有 ``hazard``;
+      · 反过来,doc_type 里的 ``reinspect``(复查记录行)在 §6.3 的编号表里
+        **没有分配类型段** —— 复查行不出文书,``hazard_docs.doc_no`` 那一格
+        目前由调用方给什么就是什么。
+
+    所以 S4 写端点时:文书那五档用 ``DocKind[…].name.lower()`` 当 doc_type 是安全的,
+    但**别写一个"六档一一对应"的循环**去覆盖 doc_type 词表 —— 两头各有一个孤儿。
+    真要给 reinspect 编号,回来加一档并同步 ``DOC_TITLE_ZH``,别在调用点就地拼
+    字符串:就地拼的格式没人给它写正则,将来挂守卫时认不出来。
     """
 
     HAZARD = "H"
