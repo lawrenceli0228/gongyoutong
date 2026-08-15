@@ -764,9 +764,11 @@ missing = [c for c in text if ord(c) not in set(faces[<b>IDX</b>].getBestCmap())
     多项目隔离(<code>project_id</code> 恒 NULL)· <b>原始分辨率凭证图</b></p>
   <div class="box b-warn"><p>⚠️ <b>「多项目隔离」这条 2026-08-15 合流后变得显眼了</b>:
     队友的图纸/资料线已按工地隔离(<code>projects</code> 表 + <code>run_context</code> 注入),
-    而考勤没有 —— 界面上一眼能看出不一致。仍不在本轮范围,已记 <b>TODO-39</b>:
-    两侧「工地」根本不是一个东西(表里的 id vs 手打文本),补的话查询侧约 3 行、
-    写入侧要改产品形态,且<b>越晚做历史数据越难对</b>。</p></div>
+    而考勤没有。仍不在本轮范围,<b>但方向已定并记在 TODO-39</b>:打卡侧<b>不加项目下拉</b>,
+    用已经收着的坐标反查工地(<code>POST /checkin</code> 不需要新增任何 header)——
+    工地上少打一个字就少一个不用它的理由。前置是 <code>projects</code> 表补坐标。
+    两处实测出来的坑同样记在那儿:<b>拿不到坐标不是边缘情况</b>(真机三次就有一次 timeout),
+    以及 <b>±35 米撑不住香港市区相邻地盘</b>。</p></div>
 </section>
 
 <section id="i">
