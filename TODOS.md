@@ -1009,3 +1009,51 @@
   也就是说「张三上个月来了几天」这个数字会在升级后**改变**,得提前跟客户打招呼。
 
 - **Depends on:** 客户的实际班次安排。
+
+## TODO-39 图纸/资料按工地隔离,而考勤不 —— 两条线的「工地」根本不是一个东西
+
+- **What:** 2026-08-15 两条 W7 分支合流后,同一个系统里出现了两套「工地」概念:
+
+  | | 队友那条线(cad / knowledge / 资料) | 打卡这条线 |
+  |---|---|---|
+  | 工地是什么 | `projects` 表里的一行,有 `id` | `attendance.site_name`,**工友手打的自由文本** |
+  | 怎么选 | 顶栏下拉,记 localStorage,submit 时经 `config.configurable.gyt_project_id` 注入 | 打卡面板里一个输入框,记 localStorage |
+  | 数据约束 | `drawings.project_id TEXT NOT NULL REFERENCES projects(id)` | `attendance.project_id` **可空、无外键、写入恒 NULL** |
+  | 查询作用域 | 选了工地就只查那个工地的图纸/规范 | 全组全量,不分工地 |
+
+- **这不是 bug,是范围边界:** W7 方案的「NOT in scope」明确列了「多项目隔离
+  (`project_id` 恒 NULL)」。建表就预留了列,是照 `tasks` 表的老规矩 ——
+  免得将来要加时得写迁移(这仓库没有迁移框架)。
+
+- **Why 仍要记:** 合流后这个不一致**肉眼可见**了。下一个人打开界面会问
+  「为什么资料分工地、考勤不分」;而现在没有任何地方写着这是**刻意**的。
+  更实际的问题是:工友在 A 工地打了卡,班组长在顶栏选着 B 工地问「今天谁到了」,
+  **答出来的是全部人** —— 不报错、不提示,看着就像数据串了。
+
+- **补的话要动哪几处**(查询侧便宜,写入侧才是真活):
+
+  1. **查询侧(便宜,约 3 行/工具):** `agents/attendance/tools.py` 的两个工具加注入参
+     `*, config: RunnableConfig`(⚠️ 注解必须**恰好**是 `RunnableConfig`,写成
+     `RunnableConfig | None` 会让 langchain 判定失败、config 永远拿不到 ——
+     `core/run_context.py` 头注已写明这个坑),再 `project_from_config(config)`
+     取当前工地,传给 `db/attendance.py` 的两条聚合当 WHERE 条件。
+     `core/run_context.py` 是现成的公共件,knowledge 与 cad 已在用,别再造一个键。
+  2. **写入侧(真正的活):** 打卡是直连 HTTP 接口,**没有 LangGraph 的 config 可用**。
+     要么在 `POST /checkin` 的 header 契约里加 `X-GYT-Project`,要么让
+     `site_name` 从自由文本换成项目下拉。后者才是根治 ——
+     否则「工友打的 site_name」与「projects 表里的工地」永远对不上,
+     `project_id` 填了也只是个和显示名无关的第二套真相。
+     前端要读的选中态就在 `ProjectUploadPanel.tsx` 的 `useCurrentProjectId()`
+     (localStorage 键在该文件顶部),`checkin.tsx` 直接复用即可。
+  3. **历史数据:** 已有的考勤行 `project_id` 是 NULL 且 `site_name` 是自由文本,
+     **没有任何办法自动映射回项目**(手打的「尖沙咀工地」对不上 `projects.id`)。
+     所以升级那天要么接受「老数据无工地」,要么人工对一遍。**越晚做这批越大。**
+
+- **⚠️ 别顺手加外键。** `attendance.project_id` 现在没有 `REFERENCES projects(id)`,
+  是对的:加了之后打卡就**依赖 projects 表里先有那个工地**,而打卡要的是
+  「人到了就能记上」—— 工地还没在系统里建档就打不了卡,这个耦合不值得。
+  真要加,先想清楚「工友到了一个没建档的工地」该怎么办。
+
+- **Depends on:** 无技术依赖(两侧机制都现成)。真正的前置是**产品决定**:
+  打卡的「地盤」到底是自由文本还是必须从已建档工地里选。
+  与 TODO-36(权限模型)有关联但不互为前提 —— 那条管「谁能查」,这条管「查哪个工地」。
