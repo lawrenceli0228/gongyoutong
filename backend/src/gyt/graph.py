@@ -144,6 +144,7 @@ from gyt.agents.knowledge import KNOWLEDGE_AGENT_NAME, build_knowledge_agent
 from gyt.agents.report import build_report_agent
 from gyt.agents.safety import SAFETY_AGENT_NAME, build_safety_agent
 from gyt.agents.schedule import SCHEDULE_AGENT_NAME, build_schedule_agent
+from gyt.agents.supervision import SUPERVISION_AGENT_NAME, build_supervision_agent
 from gyt.config import get_settings
 
 # 导入模块而非函数：单测要用 monkeypatch.setattr(llm, "get_chat_model", ...) 把模型换成假的，
@@ -313,6 +314,29 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             # 让「请点界面上的打卡按钮」这句标准答复出自 prompt.md,而不是 supervisor 现编。
         ),
         build=build_attendance_agent,
+    ),
+    AgentSpec(
+        name=SUPERVISION_AGENT_NAME,
+        summary=(
+            "监理隐患台账(只查不办):查还有几条隐患没销、待确认的有几条、超期的有哪些、"
+            "某条隐患复查了没、已经签了哪些文书,并就「这条该怎么处置」给出建议"
+            "(该签通知单还是暂停令、要签哪几份)。"
+            "用户问「隐患还剩几条没销」「这条隐患该怎么处置」「待确认的有几条」"
+            "「那条隐患复查了吗」「通知单/暂停令签了没」这类话时派给它。"
+            "它**只查、只建议**:签发文书、确认隐患、定级、登记复查结论都要人在界面上点,"
+            "它不代办,也不看照片。"
+            "只排个期限、不出文书的,派 schedule —— 给谁排个活、某条任务改期或者干完了,"
+            "是任务台账的活,不归它;它也不答规范条文、不看图纸。"
+            # W9(2026-08-16)落地。隐患的**写入**是直连接口(src/gyt/supervision_api.py,
+            # 方案 §5.1),不经过任何 Agent —— 这里只有查询与建议这一半。
+            # 正域锚在「隐患」这个名词上,与 schedule 的「任务/T 号」分得开:
+            # 两边的宾语不同(隐患号 GYT-H- vs 任务号 T3),免责句照 cad/knowledge 的同款句式,
+            # 不举「记一下…整改…」这类具体反例 —— ping 的三连实锤证明否定句里的 X
+            # 照样吸引词法匹配,而 schedule 的正域天然饱满,不需要这边替它拉客。
+            # ⚠️ 加了这一行 = 改了 supervisor 提示词,routing 26/26 那个数的前提当场失效,
+            # 必须整套重跑(方案 §6.5 原话)。
+        ),
+        build=build_supervision_agent,
     ),
     # W2/W3 在这里往下追加，一个 Agent 一行。改这里就等于改路由能力，
     # 记得同步更新 D18 的路由评测集（backend/eval/datasets/routing.csv，

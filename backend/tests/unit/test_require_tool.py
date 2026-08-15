@@ -1,4 +1,4 @@
-"""RequireToolCall(公共防编造中间件)的单元测试 —— 不联网、不调模型。
+"""RequireToolCall / RequireReceiptSource(公共防编造中间件)的单元测试 —— 不联网、不调模型。
 
 两次真机事故催生了这件结构件(案情见 core/require_tool.py 的 docstring):
 schedule 不调工具就说「销了」(库里没销)、report 不调工具就报巡检记录编号(磁盘上没有)。
@@ -14,6 +14,10 @@ schedule 不调工具就说「销了」(库里没销)、report 不调工具就�
 
 「共用行为」的用例都对两档配置各跑一遍(parametrize),
 免得将来只顾着改一档、把另一档改瘸了。
+
+文件末尾另有一节测 **RequireReceiptSource(编号溯源)** 的判据,包括 2026-08-16
+W9 加的「第三种判据」:出处除了工具结果,也认**用户自己说的话** ——
+理由与 report 侧的零影响证明都写在那一节的分节注释里。
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from gyt.agents.schedule.guard import RequireLedgerTool
-from gyt.core.require_tool import RequireToolCall
+from gyt.core.require_tool import RequireReceiptSource, RequireToolCall
 
 # 两条泳道的配置。report 那档在这里手写死,**不 import agents.report** ——
 # 这是 core 层的测试,不该反向依赖某个 Agent 包;话术改不改跟本文件无关。
@@ -245,3 +249,136 @@ def test_台账挂的还是原来那套参数() -> None:
     assert guard.give_up_message == ""
     assert "做假账" in guard.nudge, "台账口径的系统校验话术不能丢"
     assert "finish_task" in guard.nudge, "话术要点名具体工具,不然模型不知道调哪个"
+
+
+# ===========================================================================
+# RequireReceiptSource(编号溯源)的**第三种判据** —— 出处也认「用户自己说的话」
+#
+# W9 方案 §5.3:supervision 泳道的用户会自己把隐患编号打进来
+# (「GYT-H-… 那条复查了吗」)。原来的 _sourced 只扫 ToolMessage,模型原样带上
+# 这个编号会被判成编造,于是一句完全正确的回答被 give_up 文案顶替掉。
+#
+# 这一节钉三件事:① 用户报的号算出处;② 模型自己编的号仍然拦得住;
+# ③ **report 侧行为不变** —— 那是这次放宽最需要证明的东西。
+# report 的正路测试在 test_report.py(跑的是真 Agent),这里补的是判据本身。
+# ===========================================================================
+
+_HAZARD_NO = "GYT-H-20260816-090000-1a2b"
+"""一个长得像真号的隐患编号。**只出现在测试里** —— 提示词与 nudge 里一个都不许写。"""
+
+_HAZARD_PATTERN = r"GYT-H-\d{8}-\d{6}-[0-9a-f]{4}"
+"""supervision 那条正则的形状(派生真相在 core/doc_no.PATTERNS,这里只抄形状测判据)。"""
+
+_SOURCE_KWARGS: dict[str, Any] = {
+    "agent_name": "supervision",
+    "pattern": _HAZARD_PATTERN,
+    "nudge": "(系统校验)你报的编号找不到出处,先调工具查真实台账。",
+    "give_up_message": "这条隐患我没查着,刚才报的号做不得数。",
+}
+
+
+def _tool_message(text: str) -> ToolMessage:
+    return ToolMessage(content=text, tool_call_id="call-1", name="get_hazard")
+
+
+async def test_用户自己报的编号算出处_模型复述它不算编造() -> None:
+    """**这条是第三种判据的验收断言。**
+
+    用户把编号打进来、模型原样带上 —— 这不是编造,顶替它就是把正确回答吃掉。
+    真查不到的话,工具会如实回「台账里没有这条」,那是另一条路上的事。
+    """
+    reply = f"{_HAZARD_NO} 这条已经签过通知单了,下一步是到期复查。"
+    handler = _ScriptedHandler([_plain(reply)])
+    request = _FakeRequest(messages=[HumanMessage(content=f"{_HAZARD_NO} 这条隐患复查了吗")])
+
+    response = await RequireReceiptSource(**_SOURCE_KWARGS).awrap_model_call(request, handler)
+
+    assert len(handler.seen) == 1, "有出处就该一次过,不许白付一轮重试"
+    assert str(response.result[0].content) == reply
+
+
+async def test_用户没提过的编号照样算编造() -> None:
+    """放宽的是「出处的来源」,不是「可以不要出处」。
+
+    用户问的是 A 号,模型报了个 B 号 —— 那仍然是编的,而监理会拿着 B 号去界面上找。
+    """
+    other = "GYT-H-20260816-101010-ffff"
+    handler = _ScriptedHandler([_plain(f"查到了,{other} 已销项。")] * 2)
+    request = _FakeRequest(messages=[HumanMessage(content=f"{_HAZARD_NO} 这条复查了吗")])
+
+    response = await RequireReceiptSource(**_SOURCE_KWARGS).awrap_model_call(request, handler)
+
+    assert len(handler.seen) == 2, "只重试一次"
+    assert str(response.result[0].content) == _SOURCE_KWARGS["give_up_message"]
+    assert other not in str(response.result[0].content)
+
+
+async def test_工具结果仍然是合法出处() -> None:
+    """老判据不许被改瘸:念真回执照旧放行。"""
+    handler = _ScriptedHandler([_plain(f"{_HAZARD_NO} 现在是已签发通知单。")])
+    request = _FakeRequest(
+        messages=[
+            HumanMessage(content="还有几条隐患没销"),
+            _tool_message(f'{{"hazard_no": "{_HAZARD_NO}", "status": "notified"}}'),
+        ]
+    )
+
+    response = await RequireReceiptSource(**_SOURCE_KWARGS).awrap_model_call(request, handler)
+
+    assert len(handler.seen) == 1
+    assert _HAZARD_NO in str(response.result[0].content)
+
+
+async def test_模型自己上一轮编的号不算出处() -> None:
+    """出处只认工具结果与用户发言,**AIMessage 永远不算**。
+
+    认了的话,模型上一轮编的号就成了这一轮继续编的依据 —— 那正是 few-shot
+    自我模仿那条失效路径,守卫会从第二轮起对同一个假号全面放行。
+    """
+    handler = _ScriptedHandler([_plain(f"{_HAZARD_NO} 已销项。")] * 2)
+    request = _FakeRequest(
+        messages=[
+            HumanMessage(content="还有几条隐患没销"),
+            AIMessage(content=f"查到了,{_HAZARD_NO} 已销项。", name="supervision"),
+            HumanMessage(content="那条现在什么状态"),
+        ]
+    )
+
+    response = await RequireReceiptSource(**_SOURCE_KWARGS).awrap_model_call(request, handler)
+
+    assert str(response.result[0].content) == _SOURCE_KWARGS["give_up_message"]
+
+
+async def test_report侧不受影响_用户不会打巡检记录号() -> None:
+    """**放宽 _sourced 之后,report 的行为必须一个字不变。**
+
+    前提是事实层面的:巡检记录号是 report 调完工具才生成的,工友手上没有 ——
+    他要么发照片、要么说「出巡检记录」,不可能把编号打进聊天框。所以对 report 而言,
+    HumanMessage 这条新出处**恒为空**,判据等价于改动之前。
+
+    (真 Agent 那一侧的回归在 test_report.py:那条用例里用户说的正是
+    「给照片 <32位编号> 出份巡检记录」—— 一个 GYT- 编号都不带。)
+    """
+    report_kwargs: dict[str, Any] = {
+        "agent_name": "report",
+        "pattern": r"GYT-\d{8}-\d{6}",
+        "nudge": "(系统校验)编号只能来自工具返回。",
+        "give_up_message": "这回巡检记录没出成,请再说一次「出巡检记录」。",
+    }
+    fabricated = "巡检记录出好了,编号 GYT-20260809-153739。"
+    handler = _ScriptedHandler([_plain(fabricated)] * 2)
+    # 工友真实会说的那句话:有 32 位照片编号,没有任何 GYT- 编号
+    request = _FakeRequest(messages=[HumanMessage(content=f"给照片 {'d' * 32} 出份巡检记录")])
+
+    response = await RequireReceiptSource(**report_kwargs).awrap_model_call(request, handler)
+
+    assert str(response.result[0].content) == report_kwargs["give_up_message"]
+    assert "GYT-20260809-153739" not in str(response.result[0].content)
+
+
+def test_守卫没配顶替文案_建图期就炸() -> None:
+    """与 RequireToolCall 的 fail 档同款:真抓到编造那一刻,最不能再发现文案没配。"""
+    with pytest.raises(ValueError, match="give_up_message"):
+        RequireReceiptSource(
+            agent_name="supervision", pattern=_HAZARD_PATTERN, nudge="先调工具", give_up_message=" "
+        )

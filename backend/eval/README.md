@@ -48,15 +48,28 @@
 | `id` | R01、R02……唯一即可 |
 | `type` | `positive` 正常请求 / `none` 不该派给任何子 Agent / `ambiguous` 信息不足应追问 |
 | `user_input` | **工人真会说的话**,不是规范书面语。多写几种同义说法 |
-| `expected_agent` | `safety` / `inspection` / `knowledge` / `schedule` / `cad` / `attendance` / `none` |
+| `expected_agent` | `safety` / `inspection` / `knowledge` / `schedule` / `cad` / `attendance` / `supervision` / `none` |
 | `note` | 这条测什么,可空 |
 
 判分:实际派给的 Agent == `expected_agent` 即算对。`none` 表示 supervisor 应自己回答或追问。
 
-> **`expected_agent` 只能填上面那七个词之一,拼错会当场炸**(`scorers.ROUTING_AGENTS`,与本表同源)。
+> **`expected_agent` 只能填上面列出的那几个词之一,拼错会当场炸**(`scorers.ROUTING_AGENTS`,与本表同源。
+> 刻意不在这句话里写个数 —— 写了就会跟着每次加 Agent 过期,而过期的数字比没有更误导人)。
 > `attendance` 是 W7(2026-08-15)加的:**只管查**(来了几天/谁到了/几点打的);
 > 「打卡」这个动作本身走直连接口不经过路由,别造「帮我打个卡→期望某个 Agent 真打卡」的行 ——
 > 正确期望仍是 `attendance`(它答「请点界面上的打卡按钮」),R23-R26 就是这么标的。
+>
+> `supervision` 是 W9(2026-08-16)加的,同一条道理再走一遍:它**只查隐患、只给处置建议**
+> (还剩几条没销、待确认几条、这条复查了吗、该怎么处置),
+> 而确认/定级/签发通知单暂停令复工令/登记复查结论**全部走 `supervision_api.py` 的 HTTP 端点**,
+> 一个 LLM 都不经过(签发是法律行为)。所以别造「帮我签发暂停令→期望它真签」的行 ——
+> 正确期望仍是 `supervision`(它答「请到界面上点签发」),R27-R31 就是这么标的。
+>
+> ⚠️ **R32/R33 是两行「对抗行」,标的是 `schedule` 不是 `supervision`**,别看见「整改」「复检」
+> 就以为标错了:supervision 的正域是**隐患**(GYT-H- 开头的号),schedule 的正域是**任务**(T 号)。
+> 这两行守的是真机验收 A/C 组那几句提问 —— 「记一下…整改…」「复检钢筋那条改到周五」
+> 一旦被 supervision 钓走,`scripts/live_acceptance.py` 会连红一片,而那是演示前唯一的兜底。
+> 它们红了先回去看 `graph.AGENT_REGISTRY` 里 supervision 那条 summary 的免责句,别去改 schedule。
 >
 > ⚠️ **别填 `report`。** 2026-08-11 把它从白名单里删掉了:`report` 不在 `graph.AGENT_REGISTRY`,
 > 它只是英雄链 `inspection` 子图**内部**的第二跳(靠硬边串,`transfer_to_report` 不存在),
