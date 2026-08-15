@@ -8,6 +8,10 @@
  * ⚠️ 别跟 thread-index.tsx 搞混:那个覆盖的是 src/components/thread/index.tsx
  *    (聊天主体),这个覆盖的是 .../thread/history/index.tsx(左边那列历史)。
  *
+ * ⚠️ 这份只管**渲染**;列表的**取数**在另一件覆盖件 thread-provider.tsx
+ *    (覆盖 src/providers/Thread.tsx)。两者靠 FIRST_MESSAGE_EXTRACT_KEY
+ *    这一个键名对接 —— 见下面 getThreadTitle 的头注。
+ *
  * 为什么要覆盖上游:上游的历史列表只能点进去,**没有删除**。一场演示下来会攒出
  * 几十条「测试一下」「aaa」的废线程,下次上台要在里面翻找真正要演的那条;
  * 而且历史里躺着上一轮的错误回答,评委随手点开一条就可能看到已经修掉的老问题。
@@ -22,7 +26,7 @@ import { useThreads } from "@/providers/Thread";
 import { createClient } from "@/providers/client";
 import { getApiKey } from "@/lib/api-key";
 import { cn } from "@/lib/utils";
-import { Thread } from "@langchain/langgraph-sdk";
+import { Message, Thread } from "@langchain/langgraph-sdk";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -141,8 +145,47 @@ function useDeleteThread(): (threadId: string) => Promise<DeleteResult> {
   );
 }
 
-/** 列表项的标题:优先取第一条消息的正文,取不到就退回 thread_id(上游的原逻辑,原样保留)。 */
+/**
+ * 取数那侧(thread-provider.tsx)用 extract 把第一句话单独取出来时,放在返回体
+ * 里的键名。
+ *
+ * ⚠️ 同源:必须与 scripts/frontend-overrides/thread-provider.tsx 的
+ *    `FIRST_MESSAGE_EXTRACT` 一字不差。只改一边的症状是**标题全部退化成
+ *    32 位 thread_id**(这边取不到值就走最后那条兜底),而请求照发、页面照开、
+ *    控制台一声不吭 —— 看起来像后端没返回数据,方向全错。
+ */
+const FIRST_MESSAGE_EXTRACT_KEY = "first_message_content";
+
+/**
+ * 列表项的标题:第一条用户消息的正文,取不到就退回 thread_id。
+ *
+ * 两条取值路径都得留着,不是冗余:
+ *
+ * 1. `extracted[FIRST_MESSAGE_EXTRACT_KEY]` —— 正常路径。thread-provider.tsx 用
+ *    threads.search 的 select + extract 让服务端**只回这一句**,不再回整份
+ *    messages(2026-08-15 线上实测:那一条请求 570ms / 177KB,是整页最慢的资源;
+ *    裁完本机实测 493,666 → 19,021 字节,省 96.1%。完整数据与出处见 provider 那份头注)。
+ *
+ * 2. `t.values.messages[0].content` —— 上游原逻辑,**留作退化路径**。
+ *    实测过服务端对不认识的字段是 HTTP 200 静默忽略(不是报错),所以万一前端先上、
+ *    后端还是不认 select/extract 的老版本,回来的就是没裁过的整行 —— 这时候
+ *    extracted 不存在,靠这条把标题接住。少了它那种情况下**满屏都是 thread_id**。
+ *
+ * 顺序不能反:extract 生效时 values 压根不在返回体里,先看 extracted 才是常态路径。
+ */
 function getThreadTitle(t: Thread): string {
+  // extracted 的值类型是 unknown(SDK 只保证 Record<string, unknown>),
+  // 得自己收窄:字符串直接用;多模态数组交给 getContentString 挑出 text 块
+  // (真出现过 —— 首句带图而 ingest_uploads 还没来得及改写就落了盘)。
+  const extracted = t.extracted?.[FIRST_MESSAGE_EXTRACT_KEY];
+  if (typeof extracted === "string" && extracted.length > 0) {
+    return extracted;
+  }
+  if (Array.isArray(extracted)) {
+    const text = getContentString(extracted as Message["content"]);
+    if (text.length > 0) return text;
+  }
+
   if (
     typeof t.values === "object" &&
     t.values &&
