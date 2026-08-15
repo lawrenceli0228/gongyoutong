@@ -19,6 +19,30 @@
   工具跑在 langgraph 的事件循环里,同步 sqlite3 属阻塞 IO,`langgraph dev`
   的 blockbuster 会直接抛 BlockingError(config.cache_dir 踩过同款坑)。
   丢线程池就地根治,不赖 `--allow-blocking` 这根拐棍。
+
+===========================================================================
+W9 / S7:带 hazard_no 的任务,这里销不了、也改不了期
+---------------------------------------------------------------------------
+台账里有一类活是**隐患整改**(tasks.hazard_no 非空,由 supervision 在签发
+《监理通知单》时同步创建)。对这类活,finish_task / reschedule_task 一律拒绝
+并把人引到 supervision 那条路 —— W9 方案 §5.3 的 D13「销项只有一个出口」。
+
+为什么是**拒绝**,不是「顺手把隐患那边也同步改掉」(这一步想岔了后果很重):
+
+ 1. 销项那一侧根本不该由这里说了算。隐患要转 closed,前提是**挂上复查照片**、
+    并且**由人点确认**(方案 D11/D14)。schedule 这层手里既没有照片也没有人的
+    确认动作 —— 自动同步只能造出一个「没有证据的合格」,而它会被写进留档文书:
+    「隐患已消除」白纸黑字,现场原样没动。这正是方案用红字禁掉的那一条。
+ 2. 改期那一侧同理。隐患的 due_date 是签发通知单时定下的,要进超期升级判定;
+    从聊天里一句「改到周五」单方面改掉它,等于用一句话改了一份已签发文书的整改期限。
+ 3. 两边各改各的会让期限**分叉**,而超期判定读的是隐患那一份。分叉的下场:
+    schedule 这边看着已经销了/已经宽限了,hazards 那边照样超期,系统于是建议
+    签发《监理报告》指控施工方拒不整改 —— 一份建立在我们自己记乱账上的对外指控。
+ 4. 用户走的路没错(TODO-21 认可的「巡检 → 一句话记整改任务」照旧保留),
+    错的是**有两个销项实现**。所以堵掉这一个、把人领到对的那个,
+    而不是让两个出口互相同步 —— 同步只是把分叉从数据挪到了代码里。
+
+普通任务(hazard_no 为空)的行为**一个字都没变**,这是回归面。
 ===========================================================================
 """
 
@@ -90,8 +114,35 @@ def _parse_due_or_fail(phrase: str) -> tuple[date | None, Envelope | None]:
         return None, fail(ErrorCode.INVALID_INPUT, user_msg=str(exc))
 
 
+def _reject_hazard_task(row: db.TaskRow, *, guidance: str) -> Envelope:
+    """带 hazard_no 的任务在这层一律拒绝(W9 D13),理由见文件头「销项只有一个出口」。
+
+    错误码挑 INVALID_INPUT 而**不新增一个**:新增错误码要动 core/errors.py 那份
+    跨泳道共享契约(前端、日志、attendance 直连接口都读它),为一条业务规则去动它不划算。
+    现有码里 INVALID_INPUT 最贴 —— 本文件已有同款先例:「已完成的任务不许改期」
+    也是业务规则拒绝、也用的它。CONFLICT 看着像但不能用:那是 W7 打卡「同幂等键内容
+    对不上」的 409 语义,套过来会让前端和日志误判成重复提交。
+
+    ``hazard_no`` 必须进 user_msg:师傅要拿着这个号去跟监理对,报不出号就对不上账。
+    prompt.md 红线 1 要求模型对 ok=false 原样转述 user_msg,所以这句就是他最终听到的话。
+    """
+    return fail(
+        ErrorCode.INVALID_INPUT,
+        user_msg=(
+            f"{_display_id(row.id)}「{row.title}」是隐患整改的活,{guidance}"
+            f"这条对应的隐患号是 {row.hazard_no},跟监理说的时候报这个号。"
+        ),
+    )
+
+
 def _task_item(row: db.TaskRow, *, today_iso: str) -> dict[str, Any]:
-    """一条任务的对外形态。due_display/overdue 都在这儿算好,模型照抄。"""
+    """一条任务的对外形态。due_display/overdue 都在这儿算好,模型照抄。
+
+    ⚠️ 刻意**不**把 hazard_no 放进来:prompt.md 的清单是固定四列,多一个字段模型就会
+    想办法把它念出来,而隐患号一旦进了模型的嘴,下一步就是凭记忆复述(report 守卫
+    抓到过同款)。查清单不需要它,真要看隐患用 supervision 的列表 —— 那边的编号
+    是从工具结果直读的。顺带:这样 list_tasks 对普通任务的返回形状一个键都没变。
+    """
     return {
         "id": _display_id(row.id),
         "title": row.title,
@@ -198,6 +249,15 @@ async def reschedule_task(task_id: str, due: str) -> Envelope:
             ErrorCode.NOT_FOUND,
             user_msg=f"台账里没有 {_display_id(row_id)} 这条任务。先「查一下任务」核对号码。",
         )
+    # 隐患整改的活拦在最前面,**先于**已销项判断:期限的权威在隐患台账那边,
+    # 这条任务眼下是什么状态都不影响结论 —— 这里不是改它期限的地方。
+    # 摆在前面还顺带保证「不管走哪个分支都拦得住」,不会留下某种状态下反而放行的窗口。
+    if row.hazard_no:
+        return _reject_hazard_task(
+            row,
+            guidance="期限在这儿改不了。要宽限几天,得让监理去改这条隐患的整改期限,"
+            "不然台账和隐患两边的期限对不上。",
+        )
     if row.status == db.STATUS_DONE:
         return fail(
             ErrorCode.INVALID_INPUT,
@@ -246,6 +306,15 @@ async def finish_task(task_id: str) -> Envelope:
         return fail(
             ErrorCode.NOT_FOUND,
             user_msg=f"台账里没有 {_display_id(row_id)} 这条任务。先「查一下任务」核对号码。",
+        )
+    # 隐患整改的活拦在最前面,**先于**幂等分支:这类活的销项要挂复查照片、要人确认,
+    # 出口只有 supervision 那条(W9 D13)。摆在幂等分支前面是为了让拒绝**无条件** ——
+    # 万一库里有一条已经被销掉的带号任务(旧数据,或绕过本层写进去的),
+    # 再销一次也照样拒;否则就会出现「第二次调用反而成功」这种最难查的窗口。
+    if row.hazard_no:
+        return _reject_hazard_task(
+            row,
+            guidance="在这儿销不了。整改完拍一张改好的照片传上来,监理看过点了确认才算销。",
         )
 
     was_done = row.status == db.STATUS_DONE

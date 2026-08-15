@@ -24,6 +24,10 @@ from gyt.db import tasks as db
 TODAY = date(2026, 8, 8)  # 周六
 ENVELOPE_KEYS = {"ok", "data", "user_msg", "error_code"}
 
+HAZARD_NO = "GYT-H-20260816-101500-a1b2"
+"""隐患号样例,形状同 db/hazards.py 的 GYT-H-YYYYMMDD-HHMMSS-4hex。
+带这个号的任务 = 隐患整改的活,销项与改期都只有 supervision 一个出口(W9 D13)。"""
+
 _REAL_TODAY = schedule_tools._today
 """_today 的真身引用,在任何 fixture 打桩之前(import 期)抓住,供真身测试用。"""
 
@@ -307,6 +311,117 @@ async def test_销项_不存在的号报人话() -> None:
     assert result["ok"] is False
     assert result["error_code"] == "NOT_FOUND"
     assert "T5" in result["user_msg"]
+
+
+# ---------------------------------------------------------------------------
+# W9 / S7:带隐患号的活 —— 销项与改期都只有 supervision 一个出口(D13)
+#
+# 为什么是拒绝而不是"顺手把隐患那边也同步改掉":隐患要转 closed,前提是挂上复查照片
+# 并由人点确认(方案 D11/D14),schedule 这层两样都没有,自动同步只能造出一个
+# 「没有证据的合格」,而它会被写进留档文书。两边各改各的则会让期限分叉,
+# 而超期判定读的是隐患那一份 —— 最后系统拿着我们自己记乱的账,建议签发
+# 《监理报告》指控施工方拒不整改。详见 agents/schedule/tools.py 的文件头。
+# ---------------------------------------------------------------------------
+
+
+async def test_销项_隐患整改的活拒绝并报出隐患号() -> None:
+    """拒绝要给出口:告诉他下一步拍照片找监理,并报出隐患号 —— 他要拿着号去对账。"""
+    db.create("补临边护栏", "2026-08-10", hazard_no=HAZARD_NO)
+
+    result = await finish_task.ainvoke({"task_id": "T1"})
+
+    assert set(result) == ENVELOPE_KEYS
+    assert result["ok"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert HAZARD_NO in result["user_msg"]
+    assert "照片" in result["user_msg"]  # 下一步该干什么,得说清
+    assert db.fetch(1).status == "open"  # type: ignore[union-attr]  库里一个字节没动
+
+
+async def test_改期_隐患整改的活拒绝并报出隐患号() -> None:
+    """期限的权威在隐患台账那边:从这儿单方面改,等于用一句聊天改掉一份已签发文书的期限。"""
+    db.create("补临边护栏", "2026-08-10", hazard_no=HAZARD_NO)
+
+    result = await reschedule_task.ainvoke({"task_id": "T1", "due": "周五"})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "INVALID_INPUT"
+    assert HAZARD_NO in result["user_msg"]
+    assert "监理" in result["user_msg"]
+    assert db.fetch(1).due_date == "2026-08-10"  # type: ignore[union-attr]  期限没动
+
+
+async def test_销项_隐患整改的活已经销过了也照样拒() -> None:
+    """拒绝是无条件的,摆在幂等分支**前面**:库里若有一条已被销掉的带号任务
+    (旧数据,或绕过工具层写进去的),再销一次也得拒 ——
+    否则就留下「第二次调用反而成功」这种最难查的窗口。"""
+    db.create("补临边护栏", "2026-08-10", hazard_no=HAZARD_NO)
+    db.set_done(1)
+
+    result = await finish_task.ainvoke({"task_id": "T1"})
+
+    assert result["ok"] is False
+    assert HAZARD_NO in result["user_msg"]
+    assert "本来就" not in result["user_msg"]  # 没落到幂等分支
+
+
+async def test_改期_隐患整改的活已销项时报的是隐患不是已完成() -> None:
+    """守卫排在「已销项不许改期」之前:这条任务眼下什么状态都不影响结论 ——
+    这里就不是改它期限的地方。回错话会把人指到「新记一条任务」那条岔路上。"""
+    db.create("补临边护栏", "2026-08-10", hazard_no=HAZARD_NO)
+    db.set_done(1)
+
+    result = await reschedule_task.ainvoke({"task_id": "T1", "due": "周五"})
+
+    assert result["ok"] is False
+    assert HAZARD_NO in result["user_msg"]
+    assert "不用改期" not in result["user_msg"]
+
+
+async def test_拒绝话术除了编号之外没有一个英文字母() -> None:
+    """面向用户的字符串必须是工地师傅看得懂的人话:不许漏出堆栈、类名、内部路径、英文术语。
+    隐患号和 T 号是他要报出去对账的编号,得留着;把这两个抠掉之后,
+    剩下的应该一个英文字母都没有。"""
+    db.create("补临边护栏", "2026-08-10", hazard_no=HAZARD_NO)
+
+    finished = await finish_task.ainvoke({"task_id": "T1"})
+    rescheduled = await reschedule_task.ainvoke({"task_id": "T1", "due": "周五"})
+
+    for result in (finished, rescheduled):
+        residue = result["user_msg"].replace(HAZARD_NO, "").replace("T1", "")
+        assert not any(ch.isascii() and ch.isalpha() for ch in residue), residue
+
+
+async def test_普通任务不受隐患守卫影响_销项与改期照旧() -> None:
+    """回归面:守卫只认**非空**的隐患号,hazard_no 为空的活行为一个字都没变。
+    同库里放一条带号的活当对照 —— 它必须原封不动。"""
+    db.create("模板验收", "2026-08-10")  # T1 普通任务
+    db.create("补临边护栏", "2026-08-10", hazard_no=HAZARD_NO)  # T2 隐患整改
+
+    rescheduled = await reschedule_task.ainvoke({"task_id": "T1", "due": "周五"})
+    finished = await finish_task.ainvoke({"task_id": "T1"})
+
+    assert rescheduled["ok"] is True
+    assert rescheduled["data"]["new_due"] == "2026-08-14"
+    assert finished["ok"] is True
+    assert finished["data"] == {"task_id": "T1", "title": "模板验收", "was_done": False}
+    assert db.fetch(1).status == "done"  # type: ignore[union-attr]
+    assert db.fetch(2).status == "open"  # type: ignore[union-attr]  隔壁那条没被殃及
+
+
+async def test_查任务_带号的活在清单里与普通活长得完全一样() -> None:
+    """list_tasks 的返回是模型照抄的原料,prompt.md 那张表固定四列。
+    多一个 hazard_no 键,模型就会想办法把隐患号念出来,而念出来的下一步就是
+    凭记忆复述(report 守卫抓到过同款失效)。整个信封里一个字都不许漏出去。"""
+    db.create("模板验收", "2026-08-10")
+    db.create("补临边护栏", "2026-08-11", hazard_no=HAZARD_NO)
+
+    result = await list_tasks.ainvoke({})
+
+    plain, hazard_task = result["data"]["tasks"]
+    assert set(plain) == set(hazard_task)  # 两类任务的键集完全一致
+    assert "hazard_no" not in hazard_task
+    assert HAZARD_NO not in str(result)
 
 
 # ---------------------------------------------------------------------------

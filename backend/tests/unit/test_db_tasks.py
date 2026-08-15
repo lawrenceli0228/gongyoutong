@@ -8,7 +8,10 @@
   · 排序写错(无期限混进有期限中间、或被吞掉)——「下周三之前还有啥」会悄悄漏活,
     评测分数与真机演示都看不出病灶在存储层;
   · SQL 拼值(而非参数化)—— 标题里一个单引号就够炸表,注入用例直接验"表还活着";
-  · CHECK 约束没真建上 —— 脏状态静默入库,要到查询端才爆雷,离病灶隔了一层。
+  · CHECK 约束没真建上 —— 脏状态静默入库,要到查询端才爆雷,离病灶隔了一层;
+  · **迁移没跑到**(W9 §6.6)—— 这是本文件里唯一一条「本机永远复现不出来」的失效:
+    测试库每次都是新建的,只改 DDL 也全绿,而线上那张 W3 建的老表没有 hazard_no,
+    第一条查询就 `no such column`。所以下面专门造一张老库来测。
 """
 
 from __future__ import annotations
@@ -25,10 +28,55 @@ from gyt.db import tasks
 # 手工做旧用的时间戳:一眼假,断言里出现时绝不会与真实当前时间撞车。
 OLD_STAMP = "2000-01-01T00:00:00+00:00"
 
+# 隐患号样例,形状同 db/hazards.py 的 GYT-H-YYYYMMDD-HHMMSS-4hex。
+# 这层不校验形状(存取保真而已),取真形状只是为了断言失败时一眼看出这是隐患号。
+HAZARD_A = "GYT-H-20260816-101500-a1b2"
+HAZARD_B = "GYT-H-20260816-101500-c3d4"
+
+# W3 时代的建表语句 —— **逐字冻结的历史拷贝**,线上 data/gyt.sqlite3 里那张表就长这样。
+# 🔴 故意不从 tasks._DDL 派生:派生的话以后 DDL 一改,这份"老表"就跟着变新,
+#    迁移用例会静默退化成「用新表测新表」—— 表面全绿,而真正要测的那件事
+#    (旧表能不能升上来)一次都没跑过。要加列请改 tasks._MIGRATIONS,别动这份拷贝。
+LEGACY_DDL = """
+CREATE TABLE IF NOT EXISTS tasks (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  title      TEXT NOT NULL,
+  due_date   TEXT,
+  status     TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','done')),
+  project_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+"""
+
 
 def _raw_connect() -> sqlite3.Connection:
     """绕过存储层直连库文件:做旧数据、硬塞脏状态,都需要"上帝视角"。"""
     return sqlite3.connect(get_settings().sqlite_path)
+
+
+def _task_columns() -> list[str]:
+    """库里 tasks 表当前的物理列名(按物理列序)。迁移用例的唯一判据。"""
+    with closing(_raw_connect()) as conn:
+        return [row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()]
+
+
+def _make_legacy_table() -> None:
+    """造一张 W3 时代的老库:没有 hazard_no 列,里面躺着两行真实数据。
+
+    两行是刻意的:一行有期限、一行没有,一行 open、一行 done ——
+    迁移之后这四种取值都要原样还在,才敢说「线上数据没被动过」。
+    """
+    with closing(_raw_connect()) as conn, conn:
+        conn.execute(LEGACY_DDL)
+        conn.executemany(
+            "INSERT INTO tasks (title, due_date, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                ("上线前就记着的活", "2026-08-10", "open", OLD_STAMP, OLD_STAMP),
+                ("上线前就销了的活", None, "done", OLD_STAMP, OLD_STAMP),
+            ],
+        )
 
 
 def _rewind_updated_at(task_id: int, stamp: str) -> None:
@@ -53,6 +101,7 @@ def test_建取往返全字段保真() -> None:
     assert row.due_date == "2026-08-10"
     assert row.status == tasks.STATUS_OPEN
     assert row.project_id is None  # 定案 #11:预留列,MVP 恒 NULL
+    assert row.hazard_no is None  # W9 D13:不传就是普通任务,不是隐患整改的活
     assert row.created_at != ""
     assert row.created_at == row.updated_at  # 生辰两枚时间戳必须同源同值
 
@@ -191,3 +240,138 @@ def test_改期_已销项的行被状态守卫拦住() -> None:
     row = tasks.fetch(task_id)
     assert row is not None
     assert row.due_date == "2026-08-10"  # 一个字节都没被改动
+
+
+# ---------------------------------------------------------------------------
+# W9 / S7:hazard_no 这一列 —— 幂等迁移 + 存取 + 按隐患号取回
+# ---------------------------------------------------------------------------
+
+
+def test_迁移_老库补上隐患号列而旧数据一行不丢() -> None:
+    """本文件最要紧的一条:线上 data/gyt.sqlite3 里有真实台账。
+
+    `CREATE TABLE IF NOT EXISTS` **不会**给已存在的旧表加列(W9 §6.6),
+    只改 DDL 的话新机器一切正常、线上却是「代码认得这列、库里没有」——
+    第一条 SELECT 就 `no such column: hazard_no`,而 `make test` 全绿
+    (测试库每次都是新建的,永远走不到那条路)。所以这里先造老库再走正常路径。
+    """
+    _make_legacy_table()
+    assert "hazard_no" not in _task_columns()  # 前提成立:这确实是一张老表
+
+    rows = tasks.list_rows(include_done=True)  # 随便一次正常调用,进场处顺手迁移
+
+    assert "hazard_no" in _task_columns()
+    # 旧数据原样还在:标题、期限、状态、时间戳一个字节都没动
+    assert [r.title for r in rows] == ["上线前就记着的活", "上线前就销了的活"]
+    assert [r.due_date for r in rows] == ["2026-08-10", None]
+    assert [r.status for r in rows] == [tasks.STATUS_OPEN, tasks.STATUS_DONE]
+    assert [r.created_at for r in rows] == [OLD_STAMP, OLD_STAMP]
+    # 补出来的列对旧行是 NULL —— 老任务都不是隐患整改的活,不许被误判成带号任务
+    assert [r.hazard_no for r in rows] == [None, None]
+
+
+def test_迁移_连开两次不重复加列也不报错() -> None:
+    """幂等:第二次进场必须空转。真去 ALTER 第二遍的话 sqlite 会抛
+    `duplicate column name`,而这一层每次操作都开一次连接 —— 那等于第二条语句起
+    整个台账全废。"""
+    _make_legacy_table()
+
+    tasks.list_rows()  # 第一次:真的执行 ALTER
+    tasks.list_rows()  # 第二次:必须认出列已存在、直接跳过
+    tasks.create("迁移之后照样能记", None)  # 写路径也得好使
+
+    assert _task_columns().count("hazard_no") == 1
+
+
+def test_迁移_新建的库列序与老库升级出来的一致() -> None:
+    """`ALTER TABLE ADD COLUMN` 只能往**末尾**追加,所以 DDL 也把 hazard_no 写在末尾 ——
+    两种来源的库物理列序才一致。不一致的话,任何一句手写的 `SELECT *` 或不带列名的
+    `INSERT` 都只会在其中一种库上出事,而那种 bug 在本机永远复现不出来。"""
+    tasks.create("先把表建出来", None)  # 全新库,走 DDL 这条路
+
+    assert _task_columns()[-1] == "hazard_no"
+
+
+def test_迁移_老库升级后的列序同样把隐患号排在最末() -> None:
+    """与上一条配对:两边都断言"最末",这个不变量才算被钉住。"""
+    _make_legacy_table()
+
+    tasks.list_rows()
+
+    assert _task_columns()[-1] == "hazard_no"
+
+
+def test_建取往返带隐患号() -> None:
+    """带号的任务由 supervision 在签发通知单时创建(W9 §5.3),这层只管存取保真。"""
+    task_id = tasks.create("补临边护栏", "2026-08-10", hazard_no=HAZARD_A)
+
+    row = tasks.fetch(task_id)
+
+    assert row is not None
+    assert row.hazard_no == HAZARD_A
+    assert row.title == "补临边护栏"
+
+
+def test_不传隐患号时存的是None不是空串() -> None:
+    """空串会让 `if row.hazard_no` 判假、而 SQL 的 `hazard_no IS NOT NULL` 判真 ——
+    两处判据当场分家,工具层放行、统计口径却把它算成隐患任务。"""
+    task_id = tasks.create("清理西侧通道", None)
+
+    row = tasks.fetch(task_id)
+
+    assert row is not None
+    assert row.hazard_no is None
+
+
+def test_按隐患号一次取回多条隐患的整改任务() -> None:
+    """supervision 那边一屏就是一堆隐患,逐条查就是 N+1(CLAUDE.md 红线)。
+    排序沿用 list_rows 那一套:有期限的按期限升序。"""
+    late = tasks.create("补临边护栏", "2026-08-10", hazard_no=HAZARD_A)
+    early = tasks.create("配电箱加锁", "2026-08-09", hazard_no=HAZARD_B)
+    tasks.create("普通的活", "2026-08-08")  # 没号,不该被捞进来
+
+    got = tasks.list_by_hazard([HAZARD_A, HAZARD_B])
+
+    assert [r.id for r in got] == [early, late]
+    assert [r.hazard_no for r in got] == [HAZARD_B, HAZARD_A]
+
+
+def test_按隐患号取回_不认得的号与普通任务都不返回() -> None:
+    """普通任务的 hazard_no 是 NULL,而 SQL 的 IN 永远匹配不上 NULL ——
+    这一条把「隐患查询会不会误伤普通任务」钉死。"""
+    tasks.create("普通的活", "2026-08-08")
+    tasks.create("补临边护栏", "2026-08-10", hazard_no=HAZARD_A)
+
+    assert tasks.list_by_hazard([HAZARD_B]) == []
+
+
+def test_按隐患号取回_空入参直接返回空表() -> None:
+    """`IN ()` 是语法错误,空入参必须在打库之前就短路掉。"""
+    tasks.create("补临边护栏", "2026-08-10", hazard_no=HAZARD_A)
+
+    assert tasks.list_by_hazard([]) == []
+
+
+def test_按隐患号取回_已销项的也要在里面() -> None:
+    """刻意不带 include_done 开关:带号的活被 supervision 关掉之后仍是证据链的一环,
+    默认把它藏掉才是真会出事的那种默认值。"""
+    task_id = tasks.create("补临边护栏", "2026-08-10", hazard_no=HAZARD_A)
+    tasks.set_done(task_id)
+
+    got = tasks.list_by_hazard([HAZARD_A])
+
+    assert [r.id for r in got] == [task_id]
+    assert got[0].status == tasks.STATUS_DONE
+
+
+def test_按隐患号取回_注入串当隐患号表安然无恙() -> None:
+    """IN 列表的 `?` 个数由代码算、值一律走占位(方案红线 4)。
+    若有人图省事把编号拼进 SQL 文本,这个号会当场把表炸掉。"""
+    evil = "GYT-H'); DROP TABLE tasks;--"
+    task_id = tasks.create("表还活着的证据", None, hazard_no=evil)
+
+    got = tasks.list_by_hazard([evil])
+
+    assert [r.id for r in got] == [task_id]
+    assert got[0].hazard_no == evil  # 原样进出,不许带转义痕迹
+    assert tasks.fetch(task_id) is not None
