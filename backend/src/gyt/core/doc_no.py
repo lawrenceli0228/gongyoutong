@@ -67,7 +67,9 @@ class DocKind(StrEnum):
     取值来自方案 §6.3 的对照表,不许在别处另起简称。
 
     ⚠️ **本枚举与 ``hazard_docs.doc_type`` 的受控词表是「部分重叠」,不是「对齐」**
-    (2026-08-16 复核时订正,原注释写成了对齐,会把 S4 带沟里):
+    (2026-08-16 复核时把措辞改精确了。关系有测试钉着:
+    ``test_doc_no.py`` 的 ``test_成员名对齐hazard_docs的doc_type词表``,
+    它断言的正是下面这两个孤儿):
 
       · ``kind.name.lower()`` 落在 doc_type 词表里的只有五档 —— notice /
         suspension / resumption / owner_report / authority_report;
