@@ -465,9 +465,12 @@ def test_外键真开着_文书挂到不存在的隐患上被拒() -> None:
     """``PRAGMA foreign_keys = ON`` 漏了的话 sqlite **默认不校验外键**,而且一声不吭:
     文书能挂在一个根本不存在的 ``hazard_no`` 上,要到上报主管部门那天才发现引不出隐患。
 
-    这条测的是"本模块发出去的连接确实开着外键"。⚠️ 它测不出 PRAGMA 的**位置** ——
-    位置错(挪进事务里)才是 no-op,而 Python 的 sqlite3 只在 DML 时才隐式开事务,
-    所以位置要靠 ``_hazard_db`` 的注释与 review 守住,这里守的是"有没有"。
+    这条测的是"本模块发出去的连接确实开着外键"(即 ``_hazard_db`` 有没有传
+    ``foreign_keys=True``)。⚠️ 它测不出 PRAGMA 的**位置** —— 位置错(挪进事务里)才是
+    no-op,而 Python 的 sqlite3 只在 DML 时才隐式开事务。PRAGMA 现在只有一处、在
+    ``core/sqlite_util.open_db`` 里,位置靠那儿的注释与 review 守住
+    (``test_sqlite_util.py`` 有两条用例把"为什么测不出来"与"那颗地雷是真的"钉死);
+    这里守的是"有没有"。
     """
     _register()  # 触发幂等建表
 

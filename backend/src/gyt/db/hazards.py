@@ -13,10 +13,10 @@
 ``agents/*/tools.py`` import,方向严格是 agents → db。反过来放会有循环导入风险,
 且存储层就不能独立使用了。
 
-⚠️ **本模块 import 了 ``gyt.attendance.receipt``,是 db 层第一次 import ``gyt.config`` 之外的东西。**
-理由是 D7:业务时区只有一个权威,``found_at`` / ``closed_at`` 必须与文书编号里的时刻同源。
-``receipt.py`` 是叶子模块(只 import 标准库),没有循环风险;而"db 只 import config"那条约定的
-用意是**防止 db 反向依赖编排层与 Agent 层**,receipt 不在那一侧。
+⚠️ **本模块 import 了 ``gyt.attendance.receipt``**(db 层除 ``gyt.config`` / ``gyt.core`` 之外
+唯一的一条外向 import)。理由是 D7:业务时区只有一个权威,``found_at`` / ``closed_at`` 必须与
+文书编号里的时刻同源。``receipt.py`` 是叶子模块(只 import 标准库),没有循环风险;而
+"db 只 import config"那条约定的用意是**防止 db 反向依赖编排层与 Agent 层**,receipt 不在那一侧。
 **绝不许改回 ``datetime.now(UTC).astimezone()``** —— 那是"靠宿主时区猜":容器是 Shanghai、
 本机可能是任意时区,数值一致纯属巧合(``report/tools.py`` 现在就踩着,已记 TODO-41)。
 
@@ -25,20 +25,19 @@
 —— sqlite3 连接对象本就禁止跨线程共用,不留共享连接就撞不上线程问题。
 与 db/tasks.py、db/projects.py、db/attendance.py 写**同一个 gyt.sqlite3**(单库多表)。
 
-D18:``_hazard_db`` 与 tasks/attendance/projects 三处高度雷同,是**故意**的第四份拷贝。
-抽到 core(D9)是对的,但那件事与监理闭环无关,却要动三个已上线模块(其中 attendance 有线上
-真实打卡数据)—— 风险不该担在核心链的关键路径上。定案:先照抄,重构单开一条泳道,做完四处一起换。
+D9/D18:那套连接样板曾是**故意**的第四份拷贝(先照抄、重构单开一条泳道);W9 S8 已经抽成
+``core/sqlite_util.open_db``,四处共用 —— 连同那颗「PRAGMA 必须在事务外」的地雷一起收在那里。
 """
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator, Sequence
-from contextlib import closing, contextmanager
+from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from typing import Final, NamedTuple
 
 from gyt.attendance.receipt import make_snapshot
-from gyt.config import get_settings
+from gyt.core.sqlite_util import in_clause, insert_sql, open_db, placeholders
 
 # ---------------------------------------------------------------------------
 # 受控词表 —— 与 CHECK 子句同源(拼 CHECK 的手法照搬 db/attendance.py)
@@ -102,16 +101,6 @@ attendance 的与 report 的互不匹配是实测过的,拿错正则会一个都
 DOC_RESULTS: Final[tuple[str, ...]] = ("pass", "fail")
 """复查结论。**由人下**(D11):复查照片角度光线取景都变了,「没拍到那个部位」和
 「问题已消除」在模型眼里一样,而那是往「误判合格」方向错 —— 这一侧会死人。"""
-
-
-def _in_clause(values: Sequence[str]) -> str:
-    """把受控词表拼成 SQL 的 IN 列表。**只拼模块级常量,永远不碰运行期的值。**"""
-    return ", ".join(f"'{v}'" for v in values)
-
-
-def _placeholders(count: int) -> str:
-    """生成 ``?, ?, ?`` —— 个数由代码算,值一律走占位符(方案红线 4)。"""
-    return ", ".join("?" * count)
 
 
 # ---------------------------------------------------------------------------
@@ -212,11 +201,11 @@ CREATE TABLE IF NOT EXISTS hazards (
   photo_id        TEXT NOT NULL,
   item            TEXT NOT NULL,
   severity        TEXT NOT NULL,
-  grade           TEXT NOT NULL CHECK (grade IN ({_in_clause(GRADES)})),
+  grade           TEXT NOT NULL CHECK (grade IN ({in_clause(GRADES)})),
   grading_version TEXT NOT NULL,
   needs_grading   INTEGER NOT NULL DEFAULT 0,
   was_suspended   INTEGER NOT NULL DEFAULT 0,
-  status          TEXT NOT NULL CHECK (status IN ({_in_clause(STATUSES)})),
+  status          TEXT NOT NULL CHECK (status IN ({in_clause(STATUSES)})),
   due_date        TEXT,
   found_at        TEXT NOT NULL,
   confirmed_at    TEXT,
@@ -230,11 +219,11 @@ CREATE INDEX IF NOT EXISTS idx_hazards_proj_status ON hazards(project_id, status
 CREATE TABLE IF NOT EXISTS hazard_docs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   hazard_no   TEXT NOT NULL REFERENCES hazards(hazard_no),
-  doc_type    TEXT NOT NULL CHECK (doc_type IN ({_in_clause(DOC_TYPES)})),
+  doc_type    TEXT NOT NULL CHECK (doc_type IN ({in_clause(DOC_TYPES)})),
   doc_no      TEXT NOT NULL UNIQUE,
   artifact_id TEXT,
   photo_id    TEXT,
-  result      TEXT CHECK (result IS NULL OR result IN ({_in_clause(DOC_RESULTS)})),
+  result      TEXT CHECK (result IS NULL OR result IN ({in_clause(DOC_RESULTS)})),
   created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_hazard_docs_no ON hazard_docs(hazard_no);
@@ -345,29 +334,18 @@ _COLUMNS: Final[str] = ", ".join(HazardRow._fields)
 _DOC_COLUMNS: Final[str] = ", ".join(HazardDocRow._fields)
 _FAILURE_COLUMNS: Final[str] = ", ".join(IngestFailureRow._fields)
 
-# INSERT 的列表同样由 _fields 派生(去掉自增 id),参数元组也从 NamedTuple 切片来:
-# 两边同源,加一列时只要 NamedTuple 与 DDL 一起改,INSERT 不会漏。
-_INSERT_FIELDS: Final[tuple[str, ...]] = HazardRow._fields[1:]
+# INSERT 的列名同样由 _fields 派生(``[1:]`` 去掉自增 id),参数元组也从同一个 NamedTuple
+# 切片来:两边同源,加一列时只要 NamedTuple 与 DDL 一起改,INSERT 不会漏。拼装在
+# ``core/sqlite_util.insert_sql``(与 db/attendance.py 同一件)。
 _INSERT_SQL: Final[str] = (
-    f"INSERT INTO hazards ({', '.join(_INSERT_FIELDS)}) "
-    f"VALUES ({_placeholders(len(_INSERT_FIELDS))}) "
+    f"{insert_sql('hazards', HazardRow._fields[1:])} "
     # 🔴 冲突目标必须写明是那个三元组。写成裸 ``ON CONFLICT DO NOTHING`` 的话,``hazard_no``
     #    撞号也会被静默吞掉 —— 而那正是 §6.3 要求"调用方撞库重试"的信号,吞掉之后 create()
     #    会回一条**别的**隐患行,而调用方以为自己登记成功了。
     "ON CONFLICT (project_id, photo_sha256, item) DO NOTHING"
 )
-
-_DOC_INSERT_FIELDS: Final[tuple[str, ...]] = HazardDocRow._fields[1:]
-_INSERT_DOC_SQL: Final[str] = (
-    f"INSERT INTO hazard_docs ({', '.join(_DOC_INSERT_FIELDS)}) "
-    f"VALUES ({_placeholders(len(_DOC_INSERT_FIELDS))})"
-)
-
-_FAILURE_INSERT_FIELDS: Final[tuple[str, ...]] = IngestFailureRow._fields[1:]
-_INSERT_FAILURE_SQL: Final[str] = (
-    f"INSERT INTO hazard_ingest_failures ({', '.join(_FAILURE_INSERT_FIELDS)}) "
-    f"VALUES ({_placeholders(len(_FAILURE_INSERT_FIELDS))})"
-)
+_INSERT_DOC_SQL: Final[str] = insert_sql("hazard_docs", HazardDocRow._fields[1:])
+_INSERT_FAILURE_SQL: Final[str] = insert_sql("hazard_ingest_failures", IngestFailureRow._fields[1:])
 
 # 排序:有期限在前按期限升序(ISO 文本序 = 日期序),无期限垫底不丢,同期限按 id 先来先排 ——
 # 与 db/tasks.py 同一套理由:两次列表里「第 3 条」要指向同一条隐患。
@@ -407,7 +385,7 @@ def _transition_sql(
     """
     return (
         f"UPDATE hazards SET status = ?, updated_at = ?{extra_set} "
-        f"WHERE hazard_no = ? AND status IN ({_placeholders(len(sources))}){extra_where}"
+        f"WHERE hazard_no = ? AND status IN ({placeholders(len(sources))}){extra_where}"
     )
 
 
@@ -463,27 +441,19 @@ def _now_iso() -> str:
     return make_snapshot().checked_at
 
 
-@contextmanager
-def _hazard_db() -> Iterator[sqlite3.Connection]:
+def _hazard_db() -> AbstractContextManager[sqlite3.Connection]:
     """本次操作专用连接:开外键 → 进场幂等建表 → 离场提交并关闭(中途异常回滚后关闭)。
 
-    ⚠️ **``PRAGMA foreign_keys`` 必须在 ``with conn:`` 之外执行 —— 事务内是 no-op。**
-    (``db/projects.py:137`` 有同一条原注释。)漏了或放错位置的表现是:外键**静默不校验**,
-    ``hazard_docs`` 可以挂在一个根本不存在的 ``hazard_no`` 上,而证据链要到上报主管部门那天
-    才发现引不出隐患。设一次对整条连接的后续操作都生效。
+    连接 / 事务 / 库路径 / 幂等建表全在 ``core/sqlite_util.open_db``,四个 db 模块同一份;
+    ``_DDL`` 五条语句(三表 + 两索引)由它一次 ``executescript`` 跑完,顺序 hazards 在前 ——
+    hazard_docs 的外键引用它。
 
-    建表用 ``executescript`` 而不是 ``execute``:``_DDL`` 含五条语句(三表 + 两索引)。
-    executescript 会先隐式提交 —— 它是进场第一件事,前面没有未提交的东西,安全。
-    建表顺序 hazards 在前:hazard_docs 的外键引用它。
-
-    库路径每次现从 get_settings() 取、不在模块里缓存 —— 测试用 GYT_DATA_DIR + cache_clear()
-    换库时这层自动跟着走,不需要任何补丁点。
+    ⚠️ 外键靠 ``foreign_keys=True`` 开:``PRAGMA foreign_keys`` **必须在事务外执行**
+    (事务内是 no-op、且一声不吭),所以它只能是公共件的参数 —— 这里拿到的连接已经在事务里,
+    自己执行必然放错位置。漏开的表现是外键**静默不校验**:``hazard_docs`` 挂在一个根本不存在
+    的 ``hazard_no`` 上,而证据链要到上报主管部门那天才发现引不出隐患。原委见 ``open_db``。
     """
-    with closing(sqlite3.connect(get_settings().sqlite_path)) as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
-        with conn:
-            conn.executescript(_DDL)
-            yield conn
+    return open_db(_DDL, foreign_keys=True)
 
 
 # --- hazards:登记与读取 ------------------------------------------------------
@@ -567,7 +537,7 @@ def list_rows(
         conditions.append("project_id = ?")
         params.append(project_id)
     if statuses is not None:
-        conditions.append(f"status IN ({_placeholders(len(statuses))})")
+        conditions.append(f"status IN ({placeholders(len(statuses))})")
         params.extend(statuses)
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     query = f"{_LIST_BASE_SQL}{where} {_ORDER_BY}"
@@ -752,7 +722,7 @@ def docs_of(hazard_nos: Sequence[str]) -> list[HazardDocRow]:
     if not hazard_nos:
         return []
     query = (
-        f"{_DOCS_BASE_SQL} WHERE hazard_no IN ({_placeholders(len(hazard_nos))}) {_DOCS_ORDER_BY}"
+        f"{_DOCS_BASE_SQL} WHERE hazard_no IN ({placeholders(len(hazard_nos))}) {_DOCS_ORDER_BY}"
     )
     with _hazard_db() as conn:
         raw_rows = conn.execute(query, tuple(hazard_nos)).fetchall()

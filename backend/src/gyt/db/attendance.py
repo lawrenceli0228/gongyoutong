@@ -18,7 +18,7 @@
 
     Python 常量(本文件)   ←→   SQL 的 CHECK 子句   ←→   前端塞进 header 的值
 
-前两者在这里由 ``_in_clause()`` 从**同一个元组**生成,所以结构上不可能漂。
+前两者在这里由 ``in_clause()``(``core/sqlite_util``)从**同一个元组**生成,结构上不可能漂。
 第三者靠 ``checkin_api.py`` 在入库前校验 —— 那道校验必须存在,理由是:
 **漂了的表现是整条 INSERT 抛 sqlite3.IntegrityError**,报错在数据库层,
 而真正的原因是前端某个分支写了个拼错的字符串。工友看到的是「打卡失败」,
@@ -38,11 +38,11 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator, Sequence
-from contextlib import closing, contextmanager
+from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from typing import Final, NamedTuple
 
-from gyt.config import get_settings
+from gyt.core.sqlite_util import in_clause, insert_sql, open_db, placeholders
 
 # ---------------------------------------------------------------------------
 # 受控词表 —— 与 CHECK 子句同源(见模块头注)
@@ -74,16 +74,6 @@ SOURCES: Final[tuple[str, ...]] = (
 """
 
 
-def _in_clause(values: tuple[str, ...]) -> str:
-    """把受控词表渲染成 SQL 的 IN (...) 片段。
-
-    值全是本模块里写死的 ASCII 字面量,**没有任何运行期输入进来**,
-    所以这里用 f-string 拼 SQL 不违反「全参数化」那条红线 ——
-    那条红线管的是「用户给的值不许进 SQL 文本」。
-    """
-    return ", ".join(f"'{v}'" for v in values)
-
-
 # ---------------------------------------------------------------------------
 # 建表 —— 幂等,每次操作都执行(与 tasks.py 同一姿势)
 # ---------------------------------------------------------------------------
@@ -100,8 +90,8 @@ CREATE TABLE IF NOT EXISTS attendance (
   lat         REAL,
   lon         REAL,
   accuracy_m  REAL,
-  geo_status  TEXT    NOT NULL CHECK (geo_status IN ({_in_clause(GEO_STATUSES)})),
-  source      TEXT    NOT NULL CHECK (source IN ({_in_clause(SOURCES)})),
+  geo_status  TEXT    NOT NULL CHECK (geo_status IN ({in_clause(GEO_STATUSES)})),
+  source      TEXT    NOT NULL CHECK (source IN ({in_clause(SOURCES)})),
   receipt_no  TEXT    NOT NULL UNIQUE,
   artifact_id TEXT,
   photo_purged_at TEXT,
@@ -215,9 +205,9 @@ class DuplicateReceiptError(Exception):
 _COLUMNS: Final[str] = ", ".join(AttendanceRow._fields)
 """SELECT 列序从 ``_fields`` 派生:行元组 → NamedTuple 的对位靠它锁死。"""
 
-_INSERT_COLUMNS: Final[str] = ", ".join(CheckinDraft._fields)
-_INSERT_MARKS: Final[str] = ", ".join("?" for _ in CheckinDraft._fields)
-_INSERT_SQL: Final[str] = f"INSERT INTO attendance ({_INSERT_COLUMNS}) VALUES ({_INSERT_MARKS})"
+_INSERT_SQL: Final[str] = insert_sql("attendance", CheckinDraft._fields)
+"""列名与 ``insert_checkin`` 传进去的 ``tuple(draft)`` 同源于 ``CheckinDraft``:加一列时
+只要 NamedTuple 与 ``_DDL`` 一起改,列名与占位符个数不会对不上(拼装在 core/sqlite_util)。"""
 
 _FETCH_BY_ID_SQL: Final[str] = f"SELECT {_COLUMNS} FROM attendance WHERE id = ?"
 _FETCH_BY_EVENT_SQL: Final[str] = f"SELECT {_COLUMNS} FROM attendance WHERE event_id = ?"
@@ -263,19 +253,15 @@ _EXPIRED_SQL: Final[str] = (
 )
 
 
-@contextmanager
-def _att_db() -> Iterator[sqlite3.Connection]:
+def _att_db() -> AbstractContextManager[sqlite3.Connection]:
     """本次操作专用连接:进场幂等建表,离场提交并关闭(中途异常则回滚后关闭)。
 
-    库路径每次现从 get_settings() 取、不在模块里缓存 —— 测试用 GYT_DATA_DIR +
-    cache_clear() 换库时这层自动跟着走,不需要任何补丁点。
-
-    建表用 ``executescript`` 而不是 ``execute``:``_DDL`` 含三条语句(表 + 两索引)。
-    executescript 会先隐式提交 —— 它是进场第一件事,前面没有未提交的东西,安全。
+    连接 / 事务 / 库路径 / 幂等建表(``_DDL`` 三条语句:表 + 两索引,公共件走
+    ``executescript``)全在 ``core/sqlite_util.open_db``,四个 db 模块同一份。
+    **不开外键**:attendance 表没有外键,与重构前一致 —— 要开是另一件事,
+    而且 PRAGMA 只能由公共件在事务外执行(原委见 ``open_db`` 的 docstring)。
     """
-    with closing(sqlite3.connect(get_settings().sqlite_path)) as conn, conn:
-        conn.executescript(_DDL)
-        yield conn
+    return open_db(_DDL)
 
 
 def _fetch_by_rowid(conn: sqlite3.Connection, row_id: int) -> AttendanceRow:
@@ -385,10 +371,9 @@ def mark_photos_purged(row_ids: Sequence[int], purged_at: str) -> int:
     """
     if not row_ids:
         return 0
-    marks = ", ".join("?" for _ in row_ids)
     sql = (
         "UPDATE attendance SET artifact_id = NULL, photo_purged_at = ? "
-        f"WHERE id IN ({marks}) AND artifact_id IS NOT NULL"
+        f"WHERE id IN ({placeholders(len(row_ids))}) AND artifact_id IS NOT NULL"
     )
     with _att_db() as conn:
         touched = conn.execute(sql, (purged_at, *row_ids)).rowcount

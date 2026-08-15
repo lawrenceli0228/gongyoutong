@@ -19,12 +19,10 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
-from contextlib import closing, contextmanager
-from datetime import UTC, datetime
+from contextlib import AbstractContextManager
 from typing import Final, NamedTuple
 
-from gyt.config import get_settings
+from gyt.core.sqlite_util import in_clause, now_iso, open_db
 
 # 平立剖三视图。上层(webapp / cad 工具)拿它做「传前校验 + 中文提示」,
 # 库层则靠 drawings 表的 CHECK 兜底。两处同一份真相,改这里等于改对外语义。
@@ -46,7 +44,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 # drawings 外键引用 projects,所以建表顺序必须 projects 在前(见 _projects_db)。
 # rel_path 是给人浏览用的项目目录内相对路径(§2);agent 侧永远只认 artifact_id。
-_VIEW_TYPE_CHECK: Final[str] = ", ".join(f"'{v}'" for v in VIEW_TYPES)
+_VIEW_TYPE_CHECK: Final[str] = in_clause(VIEW_TYPES)
 DRAWINGS_DDL: Final[str] = f"""
 CREATE TABLE IF NOT EXISTS drawings (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,28 +120,18 @@ _DELETE_PROJECT_DRAWINGS_SQL: Final[str] = "DELETE FROM drawings WHERE project_i
 _DELETE_PROJECT_SQL: Final[str] = "DELETE FROM projects WHERE id = ?"
 
 
-def _now_iso() -> str:
-    """本地时区、秒级、带 UTC 偏移的 ISO 时间戳(与 db/tasks.py、report/tools.py 同源)。"""
-    return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
-
-
-@contextmanager
-def _projects_db() -> Iterator[sqlite3.Connection]:
+def _projects_db() -> AbstractContextManager[sqlite3.Connection]:
     """本次操作专用连接:开外键 → 进场幂等建表 → 离场提交并关闭(中途异常回滚后关闭)。
 
-    库路径每次现从 get_settings() 取、不在模块里缓存 —— 测试用 GYT_DATA_DIR + cache_clear()
-    换库时这层自动跟着走,不需要任何补丁点。
+    连接 / 事务 / 库路径 / 幂等建表全在 ``core/sqlite_util.open_db``,四个 db 模块同一份。
+    两段 DDL 拼起来交给它一次 ``executescript`` 跑,**顺序 projects 在前** —— drawings 的
+    外键引用它。
 
-    ⚠️ ``PRAGMA foreign_keys`` 必须在**事务外**执行(事务内是 no-op),所以放在
-    ``with conn:`` 之前;设一次对整条连接的后续操作都生效。建表顺序 projects 在前 ——
-    drawings 的外键引用它。
+    ⚠️ 外键靠 ``foreign_keys=True`` 开:``PRAGMA foreign_keys`` **必须在事务外执行**
+    (事务内是 no-op、而且一声不吭),所以它只能是公共件的参数 —— 这里拿到的连接已经在
+    事务里,自己执行必然放错位置。完整原委见 ``open_db`` 的 docstring,别在这儿再抄一份。
     """
-    with closing(sqlite3.connect(get_settings().sqlite_path)) as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
-        with conn:
-            conn.execute(PROJECTS_DDL)
-            conn.execute(DRAWINGS_DDL)
-            yield conn
+    return open_db(PROJECTS_DDL + DRAWINGS_DDL, foreign_keys=True)
 
 
 # --- projects ---------------------------------------------------------------
@@ -156,7 +144,7 @@ def create_project(project_id: str, name: str, code: str | None = None) -> None:
     sqlite3.IntegrityError,交由上层翻成「这个项目已经建过了」。
     """
     with _projects_db() as conn:
-        conn.execute(_INSERT_PROJECT_SQL, (project_id, name, code, _now_iso()))
+        conn.execute(_INSERT_PROJECT_SQL, (project_id, name, code, now_iso()))
 
 
 def get_project(project_id: str) -> ProjectRow | None:
@@ -189,7 +177,7 @@ def add_drawing(
     不做业务校验:project_id 不存在会撞外键、view_type 不在白名单会撞 CHECK,
     两者都抛 sqlite3.IntegrityError,交由上层翻成中文信封。
     """
-    now = _now_iso()
+    now = now_iso()
     with _projects_db() as conn:
         new_id = conn.execute(
             _INSERT_DRAWING_SQL,

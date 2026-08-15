@@ -36,11 +36,10 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator, Sequence
-from contextlib import closing, contextmanager
-from datetime import UTC, datetime
+from contextlib import contextmanager
 from typing import Final, NamedTuple
 
-from gyt.config import get_settings
+from gyt.core.sqlite_util import now_iso, open_db, placeholders
 
 STATUS_OPEN: Final[str] = "open"
 STATUS_DONE: Final[str] = "done"
@@ -123,16 +122,6 @@ _SET_DUE_SQL: Final[str] = (
 _SET_DONE_SQL: Final[str] = "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?"
 
 
-def _now_iso() -> str:
-    """本地时区、秒级、带 UTC 偏移的 ISO 时间戳(与 report/tools.py 的时间写法同源)。
-
-    ⚠️ 带偏移量**不是 bug**,别顺手"修"成 HK 固定时区:ISO 串自带 ``+08:00`` 这类偏移,
-    时刻本身无歧义,换台机器读也不会读错。真正受宿主时区影响的是**不带偏移的日期**
-    (``due_date`` 那种 YYYY-MM-DD),而那一列的值是上层算好传进来的,不在这层生成。
-    """
-    return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
-
-
 def _migrate(conn: sqlite3.Connection) -> None:
     """幂等补列:PRAGMA 问一遍现有列名,_MIGRATIONS 里缺哪列补哪列。
 
@@ -151,13 +140,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _task_db() -> Iterator[sqlite3.Connection]:
-    """本次操作专用连接:进场幂等建表 + 幂等补列,离场提交并关闭(中途异常则回滚后关闭)。
+    """本次操作专用连接:进场幂等建表(公共件)+ 幂等补列(本模块),离场提交并关闭。
 
-    库路径每次现从 get_settings() 取、不在模块里缓存 —— 测试用 GYT_DATA_DIR +
-    cache_clear() 换库时这层自动跟着走,不需要任何补丁点。
+    连接、事务、库路径、幂等建表全在 ``core/sqlite_util.open_db``(四个 db 模块同一份);
+    **本域多出来的只有 ``_migrate``** —— 它必须在同一条连接、建完表之后跑,所以这里仍然
+    是一个 contextmanager 而不是一句 ``return open_db(...)``。不开外键:tasks 表没有外键,
+    与重构前一致(要开是另一件事,见 ``open_db`` 的 ``foreign_keys``)。
     """
-    with closing(sqlite3.connect(get_settings().sqlite_path)) as conn, conn:
-        conn.execute(_DDL)
+    with open_db(_DDL) as conn:
         _migrate(conn)
         yield conn
 
@@ -174,7 +164,7 @@ def create(title: str, due_date: str | None, *, hazard_no: str | None = None) ->
     让模型自己填隐患号,等于给它开了一条「凭记忆编号」的路,而那正是
     report 守卫抓到过的失效形态。
     """
-    now = _now_iso()
+    now = now_iso()
     with _task_db() as conn:
         new_id = conn.execute(
             _INSERT_SQL, (title, due_date, STATUS_OPEN, now, now, hazard_no)
@@ -220,8 +210,7 @@ def list_by_hazard(hazard_nos: Sequence[str]) -> list[TaskRow]:
     """
     if not hazard_nos:
         return []
-    placeholders = ", ".join("?" * len(hazard_nos))
-    query = f"{_LIST_BY_HAZARD_BASE_SQL} ({placeholders}) {_ORDER_BY}"
+    query = f"{_LIST_BY_HAZARD_BASE_SQL} ({placeholders(len(hazard_nos))}) {_ORDER_BY}"
     with _task_db() as conn:
         raw_rows = conn.execute(query, tuple(hazard_nos)).fetchall()
     return [TaskRow(*raw) for raw in raw_rows]
@@ -235,7 +224,7 @@ def set_due(task_id: int, due_date: str) -> bool:
     绕过业务规则(审查 LOW 项)。调用方要靠**返回值**分辨成败,不许信先读的快照。
     """
     with _task_db() as conn:
-        touched = conn.execute(_SET_DUE_SQL, (due_date, _now_iso(), task_id, STATUS_OPEN)).rowcount
+        touched = conn.execute(_SET_DUE_SQL, (due_date, now_iso(), task_id, STATUS_OPEN)).rowcount
     return touched > 0
 
 
@@ -246,7 +235,7 @@ def set_done(task_id: int) -> bool:
     「这条本来就完成了」的判断与话术归工具层,它会先 fetch 再措辞。
     """
     with _task_db() as conn:
-        touched = conn.execute(_SET_DONE_SQL, (STATUS_DONE, _now_iso(), task_id)).rowcount
+        touched = conn.execute(_SET_DONE_SQL, (STATUS_DONE, now_iso(), task_id)).rowcount
     return touched > 0
 
 
