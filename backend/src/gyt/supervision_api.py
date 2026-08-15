@@ -141,17 +141,25 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
   (schedule / cad 都踩过同款坑)。
 
 ===========================================================================
-这个文件有点长 —— 下一刀该切在哪
+文书正文已经切出去了 —— 切在 ``agents/supervision/documents.py``
 ===========================================================================
-本文件比 ``checkin_api.py`` 还大一圈,主要胖在「文书正文写什么」那一段
-(``_hazard_meta`` / ``_evidence_section`` / 五个 ``_sections_*`` / ``_render_doc``,
-约两百行,其中大半是中文正文本身,不是逻辑)。
+2026-08-16 切的。原来「文书正文写什么」那两百行(元信息表 / 证据链表 /
+五种文书各自的节 / 渲染出口)全部搬去了 ``agents/supervision/documents.py``,
+本文件只留「协议 + 判断 + 编排」:
 
-**那一段就是天然的接缝**:它只依赖 ``docgen`` 与一个 ``_DocContext``,与鉴权、
-状态机、原子性一点关系都没有。哪天再加两种文书(F4 的定期汇总、专项报告),
-就把它整段搬去 ``agents/supervision/documents.py``,本文件只留「协议 + 判断 + 编排」。
-现在不搬的理由只有一条:S4 这条泳道说好只碰四个文件,而 ``agents/supervision/``
-另有人在动 —— 为了行数去抢一个并行泳道的目录,不划算。
+    documents.py       每种文书**写什么字**(正文措辞、证据链表的列)
+    docgen.py          文书**长什么样**(标题、表格样式、签字栏、免责句版式)
+    supervision_api.py 鉴权、四道闸、状态机、期限解析、编号重试、落盘顺序、话术
+
+接缝在那儿的判据是**依赖方向**:正文那一段只依赖 ``docgen`` 与一个
+``DocContext``,与鉴权、状态机、原子性一点关系都没有;而且它大半是中文正文
+本身、不是逻辑,读这个文件的人不需要一路翻过它才看到下一个判断。
+再加两种文书(F4 的定期汇总、专项报告)也只动 documents.py,不碰这里。
+
+⚠️ **别把 ``docgen`` 直接 import 回本文件。** 本文件只 import ``documents``,
+经它拿 ``render_doc``。绕过去在这儿再拼一份正文 = 正文有了两个真相,
+而两份文书措辞不一样是**没有任何报错**的事故(免责句串档、编号没印上去,
+都要等有人把两份纸并排看才发现)。
 """
 
 from __future__ import annotations
@@ -171,14 +179,11 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from gyt.agents.schedule.dates import DueParseError, format_display, parse_due
-from gyt.agents.supervision.docgen import (
-    SUPERVISION_DISCLAIMER,
-    SUPERVISION_SIGNATURE_LINES,
-    Section,
-    TableSection,
-    TextSection,
-    render_document,
-)
+
+# 文书正文(每种文书写什么字)整段在 agents/supervision/documents.py,本模块只管
+# 协议 + 判断 + 编排。**别把 docgen 直接 import 回来** —— 那等于在这里再拼一份正文,
+# 而正文的唯一真相只能有一处(免责句串档、编号没印上去,都是不报错的事故)。
+from gyt.agents.supervision.documents import UNASSIGNED_PROJECT_ZH, DocContext, render_doc
 from gyt.attendance.receipt import TimeSnapshot, make_snapshot
 from gyt.core import artifacts
 from gyt.core.access import _api_key_from_headers, effective_access_token
@@ -219,28 +224,10 @@ if _UNNAMED_STATUSES:  # pragma: no cover —— 只在 db 层加了状态而这
         "回给工友的话里冒出一个英文状态词,而那不会有任何报错"
     )
 
-_ISSUING_KINDS: Final[tuple[DocKind, ...]] = (
-    DocKind.NOTICE,
-    DocKind.SUSPENSION,
-    DocKind.RESUMPTION,
-    DocKind.OWNER_REPORT,
-    DocKind.AUTHORITY_REPORT,
-)
-"""本模块会签发的五种文书。``DocKind.HAZARD`` 不在里面 —— 那是隐患自己的身份号,不是文书。
-
-``core/doc_no.py`` 头注写明:这五档 ``kind.name.lower()`` 恰好落在
-``hazards.DOC_TYPES`` 里,**但别写一个"六档一一对应"的循环** —— 两头各有一个孤儿
-(``HAZARD`` 不进 doc_type,``reinspect`` 没有类型段)。下面那条导入时校验只查这五档。
-"""
-
-_UNKNOWN_DOC_TYPES: Final[tuple[str, ...]] = tuple(
-    k.name.lower() for k in _ISSUING_KINDS if k.name.lower() not in hazards.DOC_TYPES
-)
-if _UNKNOWN_DOC_TYPES:  # pragma: no cover —— 两张词表漂了才触发
-    raise RuntimeError(
-        f"文书类型 {_UNKNOWN_DOC_TYPES} 不在 hazards.DOC_TYPES 里 —— "
-        "写库时会撞 CHECK,而那要到真签发那一刻才炸;这里在导入时就拦下"
-    )
+# 会签发的五种文书 ``ISSUING_KINDS`` 与「它们的 doc_type 都在 hazards.DOC_TYPES 里」
+# 那条导入时校验,随正文一起搬去了 ``agents/supervision/documents.py``:那张表同时管着
+# 正文构造函数的完整性和证据链表的中文名反查,跟正文分不开。本模块 import documents,
+# 所以那条校验照样在**导入时**炸,不是等到真签发那一刻。
 
 _GRADABLE_STATUSES: Final[frozenset[str]] = frozenset({hazards.STATUS_PENDING, hazards.STATUS_OPEN})
 """允许人工改级的状态:**还没签过任何文书的那两档**。
@@ -286,10 +273,6 @@ _SIGN_RETRY_MAX: Final[int] = 2
 为什么是 2 而不是「转到成功」:4 位随机尾 + 秒级时刻,连撞多次几乎一定不是运气问题,
 一直转只会把一次可诊断的失败拖成一个挂死的请求(同 ``doc_no.DEFAULT_ATTEMPTS`` 的账)。
 """
-
-_UNASSIGNED_PROJECT_ZH: Final[str] = "(未归属项目)"
-"""``project_id`` 为空串时文书上的写法(D6:未归属是空串,不是 NULL)。
-留白会让人以为这一格漏填了,写明白它就是一条待归属的隐患。"""
 
 _MSG_DOC_NO_EXHAUSTED: Final[str] = (
     "这次没能给文书排上编号,请过几秒再点一次。文书没有出,隐患状态也没变。"
@@ -577,18 +560,8 @@ def _require_photo(after_photo_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 文书正文 —— 版式归 docgen(纯函数、不落盘),这里只管填什么
+# 文书:正文归 documents(写什么字)、版式归 docgen(长什么样),这里只管出口形状
 # ---------------------------------------------------------------------------
-
-
-class _DocContext(NamedTuple):
-    """渲染一次动作的全部素材。一次动作一份,三份文书共用它(时刻、期限必须一致)。"""
-
-    row: hazards.HazardRow
-    project_name: str
-    signed_display: str  # 「2026-08-16 09:30:00」—— 签发时刻,与编号里的时刻同一快照
-    due_display: str  # 「8月20日(周四)」;复工令/监理报告没有新期限,为空串
-    evidence: tuple[hazards.HazardDocRow, ...]  # 已挂在这条隐患上的文书与复查记录
 
 
 class _IssuedDoc(NamedTuple):
@@ -607,197 +580,6 @@ class _IssuedDoc(NamedTuple):
             "artifact_id": self.artifact_id,
             "filename": self.filename,
         }
-
-
-def _hazard_meta(kind: DocKind, doc_no: str, ctx: _DocContext) -> tuple[tuple[str, str], ...]:
-    """五种文书共用的元信息表。
-
-    ⚠️ 「文书编号」必须印在文书上:它是这份纸的对外身份,监理在电话里报它、
-    上报主管部门时按它排证据链。也正因为印在正文里,撞号重试必须连正文一起重渲染
-    (见 ``_SIGN_RETRY_MAX``)。
-    """
-    meta: list[tuple[str, str]] = [
-        (f"{DOC_TITLE_ZH[kind]}编号", doc_no),
-        ("隐患编号", ctx.row.hazard_no),
-        ("工程项目", ctx.project_name),
-        ("隐患事项", ctx.row.item),
-        ("隐患级别", f"{ctx.row.grade}(现场判定:{ctx.row.severity})"),
-        ("签发时间", ctx.signed_display),
-    ]
-    if ctx.due_display:
-        meta.append(("整改期限", ctx.due_display))
-    meta.append(("现场照片编号", ctx.row.photo_id))
-    return tuple(meta)
-
-
-def _evidence_section(ctx: _DocContext) -> TableSection:
-    """证据链表:这条隐患名下已有的文书与复查记录,按发生先后(db 已排好序)。
-
-    《监理报告》靠它举证「我通知过 + 期限到了 + 复查过 + 他没改」。空的时候出一句话
-    而不是一张空表 —— 空表在留档文件里读起来像「这一栏还没填」。
-    """
-    return TableSection(
-        heading="处置经过(已出具的文书与复查记录)",
-        header=("序号", "类型", "编号", "结论", "时间"),
-        rows=tuple(
-            (
-                str(index),
-                _doc_type_zh(doc.doc_type),
-                doc.doc_no,
-                doc.result or "—",
-                doc.created_at,
-            )
-            for index, doc in enumerate(ctx.evidence, start=1)
-        ),
-        empty_note="本条隐患名下暂无已出具的文书或复查记录。",
-    )
-
-
-def _doc_type_zh(doc_type: str) -> str:
-    """``hazard_docs.doc_type`` → 中文。文书五档取自 ``DOC_TITLE_ZH``(唯一那张表),
-    复查行不是文书、``DocKind`` 里没有它,单独给一个名字。"""
-    if doc_type == "reinspect":
-        return "复查记录"
-    for kind in _ISSUING_KINDS:
-        if kind.name.lower() == doc_type:
-            return DOC_TITLE_ZH[kind]
-    return doc_type  # pragma: no cover —— 词表外的类型原样透出,不猜
-
-
-def _find_doc_no(ctx: _DocContext, doc_type: str) -> str:
-    """从证据链里找某类文书的编号(复工令要引用原《工程暂停令》)。找不到给一句话,不留空白。"""
-    for doc in ctx.evidence:
-        if doc.doc_type == doc_type:
-            return doc.doc_no
-    return "(未找到)"
-
-
-def _sections_notice(ctx: _DocContext) -> tuple[Section, ...]:
-    return (
-        TextSection(
-            heading="一、隐患情况",
-            body=f"经现场巡查,发现「{ctx.row.item}」,监理定级为{ctx.row.grade}隐患。"
-            f"该隐患首次发现时间为 {ctx.row.found_at},现场照片编号 {ctx.row.photo_id}。",
-        ),
-        TextSection(
-            heading="二、整改要求",
-            body=f"请施工单位于 {ctx.due_display} 前完成整改,并留存整改后的现场照片备查。"
-            "整改期间应采取临时防护措施,防止事态扩大。",
-        ),
-        TextSection(
-            heading="三、复查安排",
-            body="整改完成后请及时报项目监理机构复查。复查以整改后的现场照片为凭,"
-            "由监理人员判定;复查合格方可销项。逾期未改或复查不合格的,按规定升级处理。",
-        ),
-    )
-
-
-def _sections_suspension(ctx: _DocContext) -> tuple[Section, ...]:
-    return (
-        TextSection(
-            heading="一、暂停理由",
-            body=f"现场存在「{ctx.row.item}」,监理定级为{ctx.row.grade}隐患,"
-            "继续施工可能造成事故,依据监理职责签发本暂停令。",
-        ),
-        TextSection(
-            heading="二、暂停范围",
-            body="与本条隐患相关的作业面暂停施工。暂停期间应保持现场安全状态,不得擅自恢复作业。",
-        ),
-        TextSection(
-            heading="三、复工条件",
-            body=f"请于 {ctx.due_display} 前完成整改。隐患整改完毕并经项目监理机构复查合格后,"
-            "由项目监理机构另行签发《工程复工令》,方可复工。",
-        ),
-    )
-
-
-def _sections_owner_report(ctx: _DocContext) -> tuple[Section, ...]:
-    return (
-        TextSection(
-            heading="一、报告事项",
-            body=f"现场发现「{ctx.row.item}」,监理定级为{ctx.row.grade}隐患。"
-            "项目监理机构已就此签发《监理通知单》与《工程暂停令》,现向建设单位报告。",
-        ),
-        TextSection(
-            heading="二、整改期限",
-            body=f"要求施工单位于 {ctx.due_display} 前完成整改,整改后经复查合格方可复工。",
-        ),
-        TextSection(
-            heading="三、请建设单位配合事项",
-            body="请建设单位督促施工单位落实整改,并协调整改所需的人力与资源;"
-            "施工单位拒不整改的,项目监理机构将按规定报工程所在地建设主管部门。",
-        ),
-        _evidence_section(ctx),
-    )
-
-
-def _sections_resumption(ctx: _DocContext) -> tuple[Section, ...]:
-    return (
-        TextSection(
-            heading="一、复查结论",
-            body=f"「{ctx.row.item}」经复查已整改完毕,现场条件具备复工要求。"
-            f"原《工程暂停令》编号 {_find_doc_no(ctx, DocKind.SUSPENSION.name.lower())}。",
-        ),
-        TextSection(
-            heading="二、复工范围",
-            body="原暂停施工的相关作业面即日起可恢复施工。复工后应加强自检,防止同类隐患再次发生。",
-        ),
-        _evidence_section(ctx),
-    )
-
-
-def _sections_authority_report(ctx: _DocContext) -> tuple[Section, ...]:
-    return (
-        TextSection(
-            heading="一、事由",
-            body=f"现场存在「{ctx.row.item}」,监理定级为{ctx.row.grade}隐患。"
-            "项目监理机构已按规定签发文书要求整改,施工单位逾期未改或复查不合格,"
-            "现依据监理职责报工程所在地建设主管部门。",
-        ),
-        _evidence_section(ctx),
-        TextSection(
-            heading="三、请予处理事项",
-            body="请建设主管部门予以核查处理。项目监理机构将继续跟踪该隐患的整改情况,"
-            "并保存全部影像与文书资料备查。",
-        ),
-    )
-
-
-_SECTION_BUILDERS: Final[dict[DocKind, Callable[[_DocContext], tuple[Section, ...]]]] = {
-    DocKind.NOTICE: _sections_notice,
-    DocKind.SUSPENSION: _sections_suspension,
-    DocKind.OWNER_REPORT: _sections_owner_report,
-    DocKind.RESUMPTION: _sections_resumption,
-    DocKind.AUTHORITY_REPORT: _sections_authority_report,
-}
-"""种类 → 正文各节。**五种文书每种都要有**(下面导入时校验)。
-
-漏一档的表现是签发时 KeyError → 兜底 500,工友只看到「系统开小差」,
-而真正的毛病是这张表少了一行 —— 所以在导入时就拦。
-"""
-
-_MISSING_BUILDERS: Final[tuple[str, ...]] = tuple(
-    k.name for k in _ISSUING_KINDS if k not in _SECTION_BUILDERS
-)
-if _MISSING_BUILDERS:  # pragma: no cover
-    raise RuntimeError(f"文书 {_MISSING_BUILDERS} 没有正文构造函数,_SECTION_BUILDERS 漏了")
-
-
-def _render_doc(kind: DocKind, doc_no: str, ctx: _DocContext) -> bytes:
-    """渲染一份文书,返回字节。**纯函数:不落盘、不改入参**(§6.4 ① 的前提)。
-
-    免责句与签字栏一律用监理那两件 —— ``docgen.render_document`` 的 ``disclaimer``
-    必填无默认值,结构上不可能"漏传一个参数于是悄悄套上了巡检记录那句"。
-    """
-    return render_document(
-        title=f"工程监理{DOC_TITLE_ZH[kind]}"
-        if kind is DocKind.AUTHORITY_REPORT
-        else DOC_TITLE_ZH[kind],
-        meta=_hazard_meta(kind, doc_no, ctx),
-        sections=_SECTION_BUILDERS[kind](ctx),
-        disclaimer=SUPERVISION_DISCLAIMER,
-        signature_lines=SUPERVISION_SIGNATURE_LINES,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -823,7 +605,7 @@ def _draw_doc_no(kind: DocKind, snap: TimeSnapshot, taken: set[str]) -> str:
 
 
 def _issue_documents(
-    kinds: Sequence[DocKind], ctx: _DocContext, snap: TimeSnapshot
+    kinds: Sequence[DocKind], ctx: DocContext, snap: TimeSnapshot
 ) -> list[_IssuedDoc]:
     """① 全部渲染到内存,② 再逐份落盘。**两步严格分开。**
 
@@ -832,7 +614,7 @@ def _issue_documents(
     """
     taken: set[str] = set()
     drafted = [(kind, _draw_doc_no(kind, snap, taken)) for kind in kinds]
-    rendered = [(kind, doc_no, _render_doc(kind, doc_no, ctx)) for kind, doc_no in drafted]
+    rendered = [(kind, doc_no, render_doc(kind, doc_no, ctx)) for kind, doc_no in drafted]
 
     issued: list[_IssuedDoc] = []
     for kind, doc_no, payload in rendered:
@@ -854,7 +636,7 @@ def _issue_documents(
 
 def _sign(
     kinds: Sequence[DocKind],
-    ctx: _DocContext,
+    ctx: DocContext,
     snap: TimeSnapshot,
     apply: Callable[[list[hazards.DocDraft]], bool],
 ) -> list[_IssuedDoc]:
@@ -893,12 +675,12 @@ def _sign(
     )
 
 
-def _context(row: hazards.HazardRow, snap: TimeSnapshot, due_display: str) -> _DocContext:
+def _context(row: hazards.HazardRow, snap: TimeSnapshot, due_display: str) -> DocContext:
     """凑齐渲染素材:项目名 + 证据链。两次查询,不在循环里逐条查。"""
     project = projects_db.get_project(row.project_id) if row.project_id else None
-    return _DocContext(
+    return DocContext(
         row=row,
-        project_name=project.name if project is not None else _UNASSIGNED_PROJECT_ZH,
+        project_name=project.name if project is not None else UNASSIGNED_PROJECT_ZH,
         signed_display=snap.display,
         due_display=due_display,
         evidence=tuple(hazards.docs_of([row.hazard_no])),
