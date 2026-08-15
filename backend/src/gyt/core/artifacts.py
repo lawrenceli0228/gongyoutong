@@ -35,9 +35,14 @@
 artifact_id 先过 ARTIFACT_ID_RE(纯 32 位 hex,天然不含 "/" "." ".." 与 glob 通配符),
 再用 glob 在日期分目录里找 sidecar,拿到 ext 后才拼出真实文件路径。
 
-删除(delete)是 W7 打卡清理器(attendance/cleanup.py)的前提,除清理器外
-没有第二个调用方;业务代码不许拿它删非 ATTENDANCE 的产物(约定,详见 delete 的
-docstring)。它同样只收 artifact_id、所有路径从 id 派生,不收任何外部路径。
+删除(delete)有两拨调用方,2026-08-15 合流后并存 —— 别再照旧版注释以为只有一个:
+  · webapp.py 的项目/图纸/资料删除编排(6 处);
+  · attendance/cleanup.py 的凭证图留存清理。
+两边语义要求不同却能共用一个函数,靠的是它**任何情况都不抛**:
+编排那侧「一步找不到不该拖垮整体」,清理那侧「文件本来就没了 = 目标已达成」。
+⚠️ 代价写明白:**格式非法的 id 也只是返回 False** —— 把文件名当 id 传进来这类
+调用方 bug 会被静默吞掉。真要查这种,去看调用方日志,别指望这里报。
+它同样只收 artifact_id、所有路径从 id 派生,不收任何外部路径。
 =============================================================================
 """
 
@@ -239,39 +244,26 @@ def read_meta(artifact_id: str) -> dict[str, Any]:
     return _read_sidecar(_sidecar_path(artifact_id))
 
 
-def delete(artifact_id: str, *, missing_ok: bool = False) -> None:
-    """删除一份产物:正文文件 + 元数据 sidecar。
+def delete(artifact_id: str) -> bool:
+    """删除一份产物(正文 blob + sidecar)。删除是幂等的:id 不合法 / 找不到都返回 False,不抛。
 
-    这个 API 是 W7 打卡清理器(attendance/cleanup.py)的前提,也是它**唯一**的
-    调用方 —— 业务代码不许拿它删非 ATTENDANCE 的产物。这是约定、不做运行时强制:
-    kind 只是 sidecar 里的一个字段,在这儿强查会把「sidecar 读坏了但文件还在」
-    这种最该清的残局变成删不掉的死户。
-
-    ``missing_ok=True`` 只放过「整份产物已不存在」(清理器重跑的幂等靠它);
-    **格式非法的 id 任何情况下都抛 ArtifactNotFound** —— 垃圾输入不是
-    「已经删过了」,静默吞掉会把调用方的 bug(比如把文件名当 id 传进来)藏死。
-
-    删除顺序:先正文、后 sidecar。中途挂掉(掉电/权限)时两种残局命运不同:
-      · 正文已删、sidecar 还在 → 清理器按 sidecar 扫孤儿,下一轮还能看到它,重删即可;
-      · 反过来 sidecar 先没了 → 正文成了没有任何索引的裸文件,**永远**不会再被扫到。
+    删图纸 / 删项目时清理注册表里那份字节副本用。故意不抛异常 —— 删除编排里一步找不到
+    不该拖垮整体(库行已删、文件已删,产物副本残留只是占点盘,不是错误)。
     """
     if not isinstance(artifact_id, str) or not ARTIFACT_ID_RE.fullmatch(artifact_id):
-        raise ArtifactNotFound(f"产物编号不合法:{_echo(artifact_id)}")
+        return False
     try:
         sidecar = _sidecar_path(artifact_id)
     except ArtifactNotFound:
-        if missing_ok:
-            return
-        raise
-    # id 已确认 32 位 hex,glob 安全(同 _sidecar_path 的论证);且所有 id 等长 32 字符,
-    # f"{id}*" 不可能匹配到别的产物。刻意不从 sidecar 的 ext 反推正文名:
-    # ext 被篡改成非法值时 resolve 会拒(_validate_stored_ext),
-    # 而删除恰恰要在这种残局下也能把文件清干净 —— 按前缀找,不信元数据。
-    body_files = [p for p in sorted(sidecar.parent.glob(f"{artifact_id}*")) if p != sidecar]
-    for body in body_files:
-        body.unlink(missing_ok=True)  # glob 到 unlink 之间被别人删了也不算错
+        return False
+    try:
+        ext = _validate_stored_ext(str(_read_sidecar(sidecar).get("ext", "")))
+    except ArtifactNotFound:
+        ext = ""
+    (sidecar.parent / f"{artifact_id}{ext}").unlink(missing_ok=True)
     sidecar.unlink(missing_ok=True)
-    logger.info("已删除产物 %s(正文 %d 个文件 + sidecar)", artifact_id, len(body_files))
+    logger.info("已删除产物 %s", artifact_id)
+    return True
 
 
 __all__ = [

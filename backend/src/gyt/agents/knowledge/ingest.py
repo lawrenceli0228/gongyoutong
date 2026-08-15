@@ -33,6 +33,7 @@ from pypdf import PdfReader
 
 from gyt.agents.knowledge.store import get_vectorstore
 from gyt.config import get_settings
+from gyt.core.project_fs import DOC_REGULATION, DOC_TYPES, SCOPE_GLOBAL, SCOPE_PROJECT, SCOPES
 
 logger = logging.getLogger(__name__)
 
@@ -122,29 +123,116 @@ def pdf_to_documents(pdf_path: Path) -> list[Document]:
     return docs
 
 
-def _chunk_ids(docs: list[Document]) -> list[str]:
-    """确定化的 chunk id:source#p<页>#c<序>。重跑同一文件 → 同 id → upsert 不产重复。"""
-    return [f"{d.metadata['source']}#p{d.metadata['page']}#c{i}" for i, d in enumerate(docs)]
+def pdf_has_text(pdf_path: Path) -> bool:
+    """快速判断 PDF 有没有可提取的文字层(**不做 embedding,秒级**;任一页有字即 True,逐页早退)。
 
-
-def ingest_pdf(pdf_path: Path, vectorstore=None) -> int:
-    """把一部 PDF 入库(先删同 source 旧块,再加新块)。返回入库块数。阻塞。
-
-    先删后加,是为了「同名文件内容变了」也能干净替换,不留旧块。
+    上传时先同步过这一道:一段文字都抽不到(扫描件 / 图片版 PDF)当场拒、给「需要 OCR」的人话,
+    不必等几分钟的 embedding 白跑一场。文件打不开(加密/损坏)让 pypdf 的异常向上抛给调用方处理。
     """
+    reader = PdfReader(str(pdf_path))
+    for page in reader.pages:
+        if _normalize_cjk_spaces((page.extract_text() or "").strip()):
+            return True
+    return False
+
+
+def _chunk_ids(docs: list[Document]) -> list[str]:
+    """确定化 chunk id:``<scope>:<project_id>/<source>#p<页>#c<序>``。带作用域防跨库/跨项目撞号。
+
+    要求 docs 的 metadata 已由 ingest_document 补上 scope/project_id(全局时 project_id="")。
+    重跑同一文件 → 同 id → upsert 不产重复。
+    """
+    return [
+        f"{d.metadata['scope']}:{d.metadata['project_id']}/"
+        f"{d.metadata['source']}#p{d.metadata['page']}#c{i}"
+        for i, d in enumerate(docs)
+    ]
+
+
+def ingest_document(
+    pdf_path: Path,
+    *,
+    scope: str,
+    doc_type: str,
+    project_id: str = "",
+    vectorstore=None,
+) -> int:
+    """把一部 PDF 按作用域入库(先删同 source+scope+project 的旧块,再加新块)。返回入库块数。阻塞。
+
+    作用域(与 core/project_fs 同一套取值):
+      · scope=global —— 全局规范,对所有项目通用,project_id 恒 ""(强制清空,别让脏值进 metadata);
+      · scope=project —— 项目规范 / 任务书,必须给 project_id。
+    每个 chunk 的 metadata 带 source/page/scope/project_id/doc_type;chunk id 带作用域前缀。
+    「先删后加」限定在**同 source + 同作用域 + 同项目**内 —— 同名文件跨作用域/跨项目互不误删。
+    """
+    if scope not in SCOPES:
+        raise ValueError(f"scope 不合法(只认 {SCOPES}):{scope!r}")
+    if doc_type not in DOC_TYPES:
+        raise ValueError(f"doc_type 不合法(只认 {DOC_TYPES}):{doc_type!r}")
+    if scope == SCOPE_PROJECT and not project_id:
+        raise ValueError("项目作用域必须给 project_id")
+    if scope == SCOPE_GLOBAL:
+        project_id = ""
+
     vs = vectorstore or get_vectorstore()
     source = pdf_path.name
-    existing = vs.get(where={"source": source})
-    stale_ids = (existing or {}).get("ids") or []
-    if stale_ids:
-        vs.delete(ids=stale_ids)
+    # 先删同 source + 同作用域 + 同项目 的旧块(同名文件跨作用域/跨项目互不误删),再加新块。
+    delete_document(source, scope=scope, project_id=project_id, vectorstore=vs)
     docs = pdf_to_documents(pdf_path)
     if not docs:
-        logger.warning("规范 %s 一个 chunk 都没抽出来(可能是扫描件?要 OCR)", source)
+        logger.warning("文档 %s 一个 chunk 都没抽出来(可能是扫描件?要 OCR)", source)
         return 0
+    for doc in docs:
+        doc.metadata["scope"] = scope
+        doc.metadata["project_id"] = project_id
+        doc.metadata["doc_type"] = doc_type
     vs.add_documents(docs, ids=_chunk_ids(docs))
-    logger.info("已入库 %s:%d 个 chunk", source, len(docs))
+    logger.info(
+        "已入库 %s(scope=%s project=%s type=%s):%d 个 chunk",
+        source,
+        scope,
+        project_id or "-",
+        doc_type,
+        len(docs),
+    )
     return len(docs)
+
+
+def delete_document(source: str, *, scope: str, project_id: str = "", vectorstore=None) -> int:
+    """删除某份文档在向量库里的所有 chunk。返回删除块数。阻塞。
+
+    按 source + scope + project_id 精确匹配。
+    与 ingest_document 的「先删」同一条件,单独拿出来给「删资料」端点复用:
+    删掉一份规范/任务书时,它在 Chroma 里的块必须一起清掉,否则**删了还能被检索到**
+    —— 那正是「删了规范问答里还答得出来」的静默 bug。scope=global 时 project_id 恒 ""。
+    """
+    if scope not in SCOPES:
+        raise ValueError(f"scope 不合法(只认 {SCOPES}):{scope!r}")
+    if scope == SCOPE_GLOBAL:
+        project_id = ""
+    vs = vectorstore or get_vectorstore()
+    existing = vs.get(
+        where={"$and": [{"source": source}, {"scope": scope}, {"project_id": project_id}]}
+    )
+    ids = (existing or {}).get("ids") or []
+    if ids:
+        vs.delete(ids=ids)
+    return len(ids)
+
+
+def delete_project_documents(project_id: str, *, vectorstore=None) -> int:
+    """删除某项目**所有项目作用域**文档(规范 + 任务书)的向量块。返回删除块数。阻塞。
+
+    项目删除时用:全局规范(project_id="")不受影响,只清 scope=project 且属该项目的块。
+    """
+    if not project_id:
+        raise ValueError("项目作用域必须给 project_id")
+    vs = vectorstore or get_vectorstore()
+    existing = vs.get(where={"$and": [{"scope": SCOPE_PROJECT}, {"project_id": project_id}]})
+    ids = (existing or {}).get("ids") or []
+    if ids:
+        vs.delete(ids=ids)
+    return len(ids)
 
 
 def _manifest_path() -> Path:
@@ -192,7 +280,10 @@ def build_index(docs_dir: Path | None = None, *, rebuild: bool = False) -> dict[
         if not rebuild and manifest.get(pdf.name) == sha:
             logger.info("跳过(已入库、未改动):%s", pdf.name)
             continue
-        result[pdf.name] = ingest_pdf(pdf, vs)
+        # 预置规范一律归**全局**作用域(国标/通用规范,对所有项目通用)。
+        result[pdf.name] = ingest_document(
+            pdf, scope=SCOPE_GLOBAL, doc_type=DOC_REGULATION, vectorstore=vs
+        )
         manifest[pdf.name] = sha
     _save_manifest(manifest)
     logger.info("建库完成:%s", result or "(无新增,全部已入库)")
@@ -279,7 +370,10 @@ if __name__ == "__main__":
 # 要拿默认目录请调 _default_docs_dir() —— 常量会在 import 时把配置定死,那正是这次的病根。
 __all__ = [
     "build_index",
+    "delete_document",
+    "delete_project_documents",
     "ensure_index_built",
-    "ingest_pdf",
+    "ingest_document",
+    "pdf_has_text",
     "pdf_to_documents",
 ]

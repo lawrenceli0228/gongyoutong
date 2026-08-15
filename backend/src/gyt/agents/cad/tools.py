@@ -25,6 +25,7 @@ import logging
 from typing import Any, Final
 
 import ezdxf
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 from gyt.agents.cad import index, render
@@ -33,11 +34,16 @@ from gyt.config import ALLOWED_CAD_EXT, get_settings
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind, ArtifactNotFound
 from gyt.core.errors import Envelope, ErrorCode, fail, ok, tool_guard
+from gyt.core.run_context import project_from_config
+from gyt.db import projects as db
 
 logger = logging.getLogger(__name__)
 
 _BYTES_PER_MB: Final[int] = 1024 * 1024
 _PREVIEW_NAME: Final[str] = "preview.png"
+
+# 视图类型的人话标签(drawings.view_type ∈ plan/elevation/section)。
+_VIEW_CN: Final[dict[str, str]] = {"plan": "平面图", "elevation": "立面图", "section": "剖面图"}
 
 
 # --- 图名解析与展示名 ---------------------------------------------------------
@@ -90,16 +96,32 @@ def _display_name(drawing_id: str) -> str:
     return "这张图纸"
 
 
-async def _load_index(drawing: str) -> tuple[dict[str, Any] | None, str, Envelope | None]:
+async def _load_index(
+    drawing: str, project_id: str = ""
+) -> tuple[dict[str, Any] | None, str, Envelope | None]:
     """所有查询工具的第一步:名字→id→(格式/大小闸)→ensure_index。
 
     返回 (索引, drawing_id, 失败信封)。成功时失败信封为 None;失败时索引为 None。
+
+    作用域(与 knowledge 同一套「当前工地」):demo 图纸视同全局、任何时候都认;按**图名**找
+    上传入库的项目图时,给了 project_id 就**只在该项目内**找(选了工地就不串到别的项目),
+    没给才跨项目找(旧行为)。用户直接给 id 的一律照认,不受作用域限制。
     """
     await _ensure_registered()  # 首次预注册的阻塞 IO 挪进线程池,防 blockbuster
     resolved = _resolve_drawing(drawing)
-    if isinstance(resolved, dict):  # 已经是 Envelope(NOT_FOUND)
-        return None, "", resolved
-    drawing_id = resolved
+    if isinstance(resolved, dict):
+        # id / demo 名都没命中 → 再查上传入库的项目图纸(按展示名)。选了工地就限定在该项目内,
+        # 否则跨项目。同步 sqlite 属阻塞 IO,必须 to_thread,否则 blockbuster 抛 BlockingError。
+        title = (drawing or "").strip()
+        if project_id:
+            row = await asyncio.to_thread(db.resolve_by_title, project_id, title)
+        else:
+            row = await asyncio.to_thread(db.find_drawing_by_title, title)
+        if row is None:
+            return None, "", resolved  # demo/id/项目图都没有 → 原样返回 NOT_FOUND
+        drawing_id = row.artifact_id
+    else:
+        drawing_id = resolved
 
     try:
         meta = await asyncio.to_thread(artifacts.read_meta, drawing_id)
@@ -175,18 +197,60 @@ _LIST_DESCRIPTION = (
 
 @tool("list_drawings", description=_LIST_DESCRIPTION)
 @tool_guard
-async def list_drawings() -> Envelope:
-    """返回当前预注册的演示图纸名字清单。"""
+async def list_drawings(*, config: RunnableConfig) -> Envelope:
+    """返回能看的图纸:演示预注册的 + 上传入库的项目图纸(按项目 + 视图分组)。
+
+    ⚠️ 选了当前工地时**只列该项目的图纸**(不掺 demo、更不列别的项目)—— 修「问项目2的图层
+    却报出项目1的图」:根源就是这里把所有项目的图都端出来,LLM 顺手挑了别项目的。
+    没选工地才回到「demo + 全部项目」的旧行为。用户直接报图名的仍按名字找(_resolve_drawing)。
+    """
     await _ensure_registered()  # 首次预注册的阻塞 IO 挪进线程池,防 blockbuster
-    names = _available_names()
-    if not names:
-        return fail(
-            ErrorCode.EMPTY_RESULT,
-            user_msg="现在系统里一张图纸都没有,演示前先重启后端把图纸预注册进来。",
+    project_id = project_from_config(config)
+    logger.info("list_drawings 作用域 project_id=%r", project_id)
+    # 选了工地:只查该项目的图;没选:查全部。同步 sqlite → to_thread。
+    uploaded = await asyncio.to_thread(db.list_drawings, project_id=project_id or None)
+    # 选了工地就不掺 demo(那是全局样例,会把 LLM 从「本项目的图」上带偏)。
+    demo_names = [] if project_id else _available_names()
+
+    # 选了工地就把工地名报出来 —— 让答复**锚定当前项目**,别再来回串(名字比编号好记)。
+    proj_label = ""
+    if project_id:
+        proj = await asyncio.to_thread(db.get_project, project_id)
+        proj_label = f"当前工地「{proj.name}」" if proj else f"当前工地(编号 {project_id})"
+
+    if not demo_names and not uploaded:
+        msg = (
+            f"{proj_label}现在还没有图纸,先在上传面板把图纸传到这个工地下。"
+            if project_id
+            else "现在一张图纸都没有 —— 演示图先重启后端预注册,项目图先在上传面板传进来。"
         )
+        return fail(ErrorCode.EMPTY_RESULT, user_msg=msg)
+
+    if project_id:
+        # 作用域只剩当前工地:直接「当前工地『X』的图纸:…」,一句话锚死是谁的图。
+        titles = [f"{r.title}({_VIEW_CN.get(r.view_type, r.view_type)})" for r in uploaded]
+        user_msg = f"{proj_label}的图纸:{'、'.join(titles)}。想看哪张就说名字。"
+    else:
+        parts: list[str] = []
+        if demo_names:
+            parts.append(f"演示图纸:{'、'.join(demo_names)}")
+        by_project: dict[str, list[str]] = {}
+        for row in uploaded:
+            label = _VIEW_CN.get(row.view_type, row.view_type)
+            by_project.setdefault(row.project_id, []).append(f"{row.title}({label})")
+        for pid, titles in by_project.items():
+            parts.append(f"项目 {pid}:{'、'.join(titles)}")
+        user_msg = "；".join(parts) + "。想看哪张就说名字。"
+
     return ok(
-        data={"drawings": names},
-        user_msg=f"现在能看的图纸有:{'、'.join(names)}。想看哪张就说名字。",
+        data={
+            "demo": demo_names,
+            "uploaded": [
+                {"project_id": r.project_id, "title": r.title, "view_type": r.view_type}
+                for r in uploaded
+            ],
+        },
+        user_msg=user_msg,
     )
 
 
@@ -199,9 +263,9 @@ _PARSE_DESCRIPTION = (
 
 @tool("parse_drawing", description=_PARSE_DESCRIPTION)
 @tool_guard
-async def parse_drawing(drawing: str) -> Envelope:
-    """整体概览一张图纸。"""
-    idx, drawing_id, error = await _load_index(drawing)
+async def parse_drawing(drawing: str, *, config: RunnableConfig) -> Envelope:
+    """整体概览一张图纸。选中工地时按当前项目找图(见 _load_index)。"""
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
     assert idx is not None
@@ -235,9 +299,9 @@ _DIM_DESCRIPTION = (
 
 @tool("query_dimension", description=_DIM_DESCRIPTION)
 @tool_guard
-async def query_dimension(drawing: str, target: str = "") -> Envelope:
+async def query_dimension(drawing: str, target: str = "", *, config: RunnableConfig) -> Envelope:
     """读图纸已有的 DIMENSION 标注(落地文档 6.2:只读标注,不算轴网间距)。"""
-    idx, drawing_id, error = await _load_index(drawing)
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
     assert idx is not None
@@ -290,9 +354,11 @@ _COMPONENTS_DESCRIPTION = (
 
 @tool("list_components", description=_COMPONENTS_DESCRIPTION)
 @tool_guard
-async def list_components(drawing: str, kind: str = "", layer: str = "") -> Envelope:
+async def list_components(
+    drawing: str, kind: str = "", layer: str = "", *, config: RunnableConfig
+) -> Envelope:
     """数构件/图元,可按图层或类型/块名筛(落地文档 6.3)。"""
-    idx, drawing_id, error = await _load_index(drawing)
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
     assert idx is not None
@@ -362,9 +428,9 @@ _LAYERS_DESCRIPTION = (
 
 @tool("layer_stats", description=_LAYERS_DESCRIPTION)
 @tool_guard
-async def layer_stats(drawing: str) -> Envelope:
+async def layer_stats(drawing: str, *, config: RunnableConfig) -> Envelope:
     """图层清单与各层图元数(落地文档 6.4)。"""
-    idx, drawing_id, error = await _load_index(drawing)
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
     assert idx is not None
@@ -389,9 +455,9 @@ _PREVIEW_DESCRIPTION = (
 
 @tool("render_preview", description=_PREVIEW_DESCRIPTION)
 @tool_guard
-async def render_preview(drawing: str) -> Envelope:
+async def render_preview(drawing: str, *, config: RunnableConfig) -> Envelope:
     """渲染整图 PNG,落盘为产物,返回 png_id(落地文档 6.5;MVP 只出图不接视觉问答)。"""
-    idx, drawing_id, error = await _load_index(drawing)
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
     assert idx is not None
@@ -434,12 +500,87 @@ async def render_preview(drawing: str) -> Envelope:
     )
 
 
+_PROJECTS_DESCRIPTION = (
+    "列出系统里有哪些工地/项目。用户问「有哪些项目」「哪些工地」,或要按项目找图纸时,先调它。"
+)
+
+
+@tool("list_projects", description=_PROJECTS_DESCRIPTION)
+@tool_guard
+async def list_projects() -> Envelope:
+    """列出已建项目(供用户按项目找图)。"""
+    rows = await asyncio.to_thread(db.list_projects)  # 同步 sqlite → to_thread
+    if not rows:
+        return fail(
+            ErrorCode.EMPTY_RESULT,
+            user_msg="现在还没有建任何项目。在上传面板新建项目、把图纸传进来就能看了。",
+        )
+    listed = "、".join(f"{r.name}({r.id})" for r in rows)
+    return ok(
+        data={"projects": [{"id": r.id, "name": r.name} for r in rows]},
+        user_msg=f"现在有这些项目:{listed}。",
+    )
+
+
+_VIEW_PARAMS_DESCRIPTION = (
+    "读一张图的**平立剖参数**:图上已标注的尺寸 + 图上写的文字(标高、层高、房间名等常是文字)。"
+    "用户问「这张立面图的标高」「层高多少」「这图上标了哪些尺寸和文字」时调它。"
+    "drawing 填图纸名字或编号。注意:它只报图上**已经标/写**的,图上没有的它答不了,会如实说 ——"
+    "不要拿它去估一个没标的参数。"
+)
+
+
+@tool("read_view_params", description=_VIEW_PARAMS_DESCRIPTION)
+@tool_guard
+async def read_view_params(drawing: str, *, config: RunnableConfig) -> Envelope:
+    """读平立剖参数:复用索引的 dimensions(标注)+ annotations(图上文字),带上视图类型。"""
+    idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
+    if error is not None:
+        return error
+    assert idx is not None
+
+    # 若是上传入库的项目图,回头取它的 view_type 与展示名(demo 图没有 view_type)。
+    row = await asyncio.to_thread(db.find_drawing_by_artifact, drawing_id)
+    view_type = row.view_type if row is not None else None
+    name = row.title if row is not None else _display_name(drawing_id)
+    view_label = _VIEW_CN.get(view_type or "", "图纸")
+
+    dims: list[dict[str, Any]] = idx["dimensions"]
+    annotations: list[dict[str, Any]] = idx.get("annotations", [])
+    units = idx["units_label"]
+
+    if not dims and not annotations:
+        # 图上既没标注也没文字 → 如实说做不了,别硬编(同 query_dimension 的红线)。
+        return fail(
+            ErrorCode.EMPTY_RESULT,
+            user_msg=f"{name}上没读到任何标注尺寸或文字 —— 图上没标/没写的参数我量不了。",
+        )
+
+    dim_shown = "、".join(f"{d['text']}{units}" for d in dims[:6]) or "(没有标注尺寸)"
+    ann_shown = "、".join(a["text"] for a in annotations[:8]) or "(没有图上文字)"
+    return ok(
+        data={
+            "view_type": view_type,
+            "dimensions": dims,
+            "annotations": annotations,
+            "units_label": units,
+        },
+        user_msg=(
+            f"{name}({view_label})读到:标注尺寸 {len(dims)} 处、图上文字 {len(annotations)} 条。"
+            f"标注:{dim_shown}。文字(含标高/层高等):{ann_shown}。"
+            "这些都是图上已经标/写的,没标的量不了。"
+        ),
+    )
+
+
 CAD_TOOLS: list = [
     list_drawings,
+    list_projects,
     parse_drawing,
     query_dimension,
     list_components,
     layer_stats,
+    read_view_params,
     render_preview,
 ]
 """供 gyt.agents.cad 组装时使用。拿去用之前先 list(...) 复制一份,别原地 append。"""
@@ -449,7 +590,9 @@ __all__ = [
     "layer_stats",
     "list_components",
     "list_drawings",
+    "list_projects",
     "parse_drawing",
     "query_dimension",
+    "read_view_params",
     "render_preview",
 ]

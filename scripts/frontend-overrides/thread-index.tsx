@@ -12,7 +12,6 @@ import {
   DO_NOT_RENDER_ID_PREFIX,
   ensureToolCallsHaveResponses,
 } from "@/lib/ensure-tool-responses";
-import { LangGraphLogoSVG } from "../icons/langgraph";
 import { TooltipIconButton } from "./tooltip-icon-button";
 import {
   ArrowDown,
@@ -26,17 +25,16 @@ import {
 import { useQueryState, parseAsBoolean } from "nuqs";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 import ThreadHistory from "./history";
+import {
+  ArchiveProvider,
+  ArchiveHeaderControls,
+  useCurrentProjectId,
+} from "./ProjectUploadPanel";
+import { GytStatusCards } from "./GytStatusCards";
 import { toast } from "sonner";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { Label } from "../ui/label";
 import { Switch } from "../ui/switch";
-import { GitHubSVG } from "../icons/github";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "../ui/tooltip";
 import { useFileUpload } from "@/hooks/use-file-upload";
 import { CheckinEntry } from "./checkin";
 import { ContentBlocksPreview } from "./ContentBlocksPreview";
@@ -88,31 +86,35 @@ function ScrollToBottom(props: { className?: string }) {
   );
 }
 
-function OpenGitHubRepo() {
+/** 工友通品牌标识:绿色圆角「工」+ 名称(方案 B「清爽卡片」顶栏)。 */
+function GytBrand({ onClick }: { onClick?: () => void }) {
   return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <a
-            href="https://github.com/langchain-ai/agent-chat-ui"
-            target="_blank"
-            className="flex items-center justify-center"
-          >
-            <GitHubSVG
-              width="24"
-              height="24"
-            />
-          </a>
-        </TooltipTrigger>
-        <TooltipContent side="left">
-          <p>Open GitHub repo</p>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex cursor-pointer items-center gap-2.5"
+    >
+      <span className="flex h-9 w-9 items-center justify-center rounded-[11px] bg-[#0E9F6E] text-lg font-black text-white">
+        工
+      </span>
+      <span className="text-xl font-black tracking-tight text-[#1B2420]">
+        工友通
+      </span>
+    </button>
   );
 }
 
+/** 外壳:把整棵 Thread 包进 <ArchiveProvider>,让内部能读到「当前工地」并注入提交配置。 */
 export function Thread() {
+  return (
+    <ArchiveProvider>
+      <ThreadInner />
+    </ArchiveProvider>
+  );
+}
+
+function ThreadInner() {
+  const currentProjectId = useCurrentProjectId();
   const [artifactContext, setArtifactContext] = useArtifactContext();
   const [artifactOpen, closeArtifact] = useArtifactOpen();
 
@@ -221,6 +223,11 @@ export function Thread() {
         streamMode: ["values"],
         streamSubgraphs: true,
         streamResumable: true,
+        // W7 §3:把界面选中的「当前工地」经 config.configurable 带给后端,
+        // 让规范问答自动限定到「全局 + 该项目」——没选项目就不带,后端只查全局。
+        config: currentProjectId
+          ? { configurable: { gyt_project_id: currentProjectId } }
+          : undefined,
         optimisticValues: (prev) => ({
           ...prev,
           context,
@@ -248,6 +255,9 @@ export function Thread() {
       streamMode: ["values"],
       streamSubgraphs: true,
       streamResumable: true,
+      config: currentProjectId
+        ? { configurable: { gyt_project_id: currentProjectId } }
+        : undefined,
     });
   };
 
@@ -257,7 +267,8 @@ export function Thread() {
   );
 
   return (
-    <div className="flex h-screen w-full overflow-hidden">
+    <div className="flex h-screen w-full overflow-hidden bg-[#EEF1F0]">
+      {/* W7 CAD/knowledge:归档入口已上移到顶栏(<ArchiveHeaderControls />);抽屉由 <ArchiveProvider> 自挂 */}
       <div className="relative hidden lg:flex">
         <motion.div
           className="absolute z-20 h-full overflow-hidden border-r bg-white"
@@ -310,24 +321,23 @@ export function Thread() {
           }
         >
           {!chatStarted && (
-            <div className="absolute top-0 left-0 z-10 flex w-full items-center justify-between gap-3 p-2 pl-4">
-              <div>
-                {(!chatHistoryOpen || !isLargeScreen) && (
-                  <Button
-                    className="hover:bg-gray-100"
-                    variant="ghost"
-                    onClick={() => setChatHistoryOpen((p) => !p)}
-                  >
-                    {chatHistoryOpen ? (
-                      <PanelRightOpen className="size-5" />
-                    ) : (
-                      <PanelRightClose className="size-5" />
-                    )}
-                  </Button>
-                )}
-              </div>
-              <div className="absolute top-2 right-4 flex items-center">
-                <OpenGitHubRepo />
+            <div className="absolute top-0 left-0 z-10 flex w-full items-center gap-2 border-b border-[#EAEDEB] bg-white/80 p-2.5 pl-3 backdrop-blur">
+              {(!chatHistoryOpen || !isLargeScreen) && (
+                <Button
+                  className="hover:bg-black/5"
+                  variant="ghost"
+                  onClick={() => setChatHistoryOpen((p) => !p)}
+                >
+                  {chatHistoryOpen ? (
+                    <PanelRightOpen className="size-5" />
+                  ) : (
+                    <PanelRightClose className="size-5" />
+                  )}
+                </Button>
+              )}
+              <GytBrand onClick={() => setThreadId(null)} />
+              <div className="ml-auto">
+                <ArchiveHeaderControls />
               </div>
             </div>
           )}
@@ -349,9 +359,7 @@ export function Thread() {
                     </Button>
                   )}
                 </div>
-                <motion.button
-                  className="flex cursor-pointer items-center gap-2"
-                  onClick={() => setThreadId(null)}
+                <motion.div
                   animate={{
                     marginLeft: !chatHistoryOpen ? 48 : 0,
                   }}
@@ -361,24 +369,16 @@ export function Thread() {
                     damping: 30,
                   }}
                 >
-                  <LangGraphLogoSVG
-                    width={32}
-                    height={32}
-                  />
-                  <span className="text-xl font-semibold tracking-tight">
-                    Agent Chat
-                  </span>
-                </motion.button>
+                  <GytBrand onClick={() => setThreadId(null)} />
+                </motion.div>
               </div>
 
-              <div className="flex items-center gap-4">
-                <div className="flex items-center">
-                  <OpenGitHubRepo />
-                </div>
+              <div className="flex items-center gap-3">
+                <ArchiveHeaderControls />
                 <TooltipIconButton
                   size="lg"
                   className="p-4"
-                  tooltip="New thread"
+                  tooltip="新对话"
                   variant="ghost"
                   onClick={() => setThreadId(null)}
                 >
@@ -389,6 +389,12 @@ export function Thread() {
               <div className="from-background to-background/0 absolute inset-x-0 top-full h-5 bg-gradient-to-b" />
             </div>
           )}
+
+          {/* W7 首页重设计:4 张能力状态卡片(常驻,派活时对应卡片发亮)。
+              首页顶栏是 absolute 覆盖,给卡片留出顶栏高度避免被挡;进入对话后顶栏在流内,无需留白。 */}
+          <div className={cn(!chatStarted && "pt-16")}>
+            <GytStatusCards />
+          </div>
 
           <StickToBottom className="relative flex-1 overflow-hidden">
             <StickyToBottomContent
@@ -434,13 +440,15 @@ export function Thread() {
                 </>
               }
               footer={
-                <div className="sticky bottom-0 flex flex-col items-center gap-8 bg-white">
+                <div className="sticky bottom-0 flex flex-col items-center gap-8 bg-[#EEF1F0]">
                   {!chatStarted && (
-                    <div className="flex items-center gap-3">
-                      <LangGraphLogoSVG className="h-8 flex-shrink-0" />
-                      <h1 className="text-2xl font-semibold tracking-tight">
-                        Agent Chat
+                    <div className="flex flex-col items-center text-center">
+                      <h1 className="text-[44px] leading-tight font-black tracking-tight text-[#1B2420]">
+                        有事就问工友通
                       </h1>
+                      <p className="mt-3 text-[18px] text-[#6B7772]">
+                        说一句话、拍张照,或者传个文件,我来帮你派活
+                      </p>
                     </div>
                   )}
 
@@ -449,10 +457,10 @@ export function Thread() {
                   <div
                     ref={dropRef}
                     className={cn(
-                      "bg-muted relative z-10 mx-auto mb-8 w-full max-w-3xl rounded-2xl shadow-xs transition-all",
+                      "relative z-10 mx-auto mb-8 w-full max-w-3xl overflow-hidden rounded-[22px] bg-white shadow-[0_12px_40px_rgba(27,36,32,0.10)] transition-all",
                       dragOver
-                        ? "border-primary border-2 border-dotted"
-                        : "border border-solid",
+                        ? "border-2 border-dotted border-[#0E9F6E]"
+                        : "border border-solid border-[#E4E8E6]",
                     )}
                   >
                     <form
@@ -480,11 +488,11 @@ export function Thread() {
                             form?.requestSubmit();
                           }
                         }}
-                        placeholder="Type your message..."
-                        className="field-sizing-content resize-none border-none bg-transparent p-3.5 pb-0 shadow-none ring-0 outline-none focus:ring-0 focus:outline-none"
+                        placeholder="对着我说话、拍张照,或问一句…"
+                        className="field-sizing-content resize-none border-none bg-transparent p-5 pb-2 text-[17px] text-[#33403A] shadow-none ring-0 outline-none placeholder:text-[#A2ABA6] focus:ring-0 focus:outline-none"
                       />
 
-                      <div className="flex items-center gap-6 p-2 pt-4">
+                      <div className="flex items-center gap-6 border-t border-[#EEF1F0] bg-[#FAFBFB] p-3 px-4">
                         <div>
                           <div className="flex items-center space-x-2">
                             <Switch
@@ -494,20 +502,18 @@ export function Thread() {
                             />
                             <Label
                               htmlFor="render-tool-calls"
-                              className="text-sm text-gray-600"
+                              className="text-sm text-[#6B7772]"
                             >
-                              Hide Tool Calls
+                              隐藏中间步骤
                             </Label>
                           </div>
                         </div>
                         <Label
                           htmlFor="file-input"
-                          className="flex cursor-pointer items-center gap-2"
+                          className="flex cursor-pointer items-center gap-1.5 rounded-[12px] border border-[#E4E8E6] bg-white px-3 py-2 text-sm font-bold text-[#33403A] transition hover:border-[#7FCDAE]"
                         >
-                          <Plus className="size-5 text-gray-600" />
-                          <span className="text-sm text-gray-600">
-                            上传 图纸/PDF/图片
-                          </span>
+                          <Plus className="size-4 text-[#0E9F6E]" />
+                          <span>上传图纸·资料</span>
                         </Label>
                         <input
                           id="file-input"
@@ -526,21 +532,21 @@ export function Thread() {
                           <Button
                             key="stop"
                             onClick={() => stream.stop()}
-                            className="ml-auto"
+                            className="ml-auto rounded-[14px]"
                           >
                             <LoaderCircle className="h-4 w-4 animate-spin" />
-                            Cancel
+                            停止
                           </Button>
                         ) : (
                           <Button
                             type="submit"
-                            className="ml-auto shadow-md transition-all"
+                            className="ml-auto rounded-[14px] bg-[#0E9F6E] px-7 text-[16px] font-black text-white shadow-md transition-all hover:bg-[#0b7f58]"
                             disabled={
                               isLoading ||
                               (!input.trim() && contentBlocks.length === 0)
                             }
                           >
-                            Send
+                            发送
                           </Button>
                         )}
                       </div>

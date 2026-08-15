@@ -236,7 +236,9 @@ config.HTTP_CONFIG and config.HTTP_CONFIG.get("middleware_order") == "auth_first
 class MultiPartParser:
     spool_max_size = <i>1024 * 1024</i>   # 1MB</pre>
   <p>照片上限 10MB,超过 1MB 的 multipart 上传会自动滚到 <code>/tmp</code>。
-    而且 <code>python-multipart</code> <b>根本不在依赖里</b>(实测 <code>import multipart</code> → ImportError)。</p>
+    而且 <code>python-multipart</code> 当时<b>不在依赖里</b>(实测 <code>import multipart</code> → ImportError)。</p>
+  <div class="box b-warn"><p>⚠️ <b>这一条 2026-08-15 合流后已失效</b>:队友为 <code>webapp.py</code> 的图纸上传把它加成了正式依赖。
+    <b>但另外三条理由不受影响</b>(落 /tmp、短路不了幂等、大小检查太晚),raw body 的选择不变。</p></div>
   <div class="box b-ok">
     <p><b>解法不是打补丁,是换协议:元数据走 header,照片走 raw body。</b>
       <code>Request.stream()</code> 实测是真流式,一次解掉四条:不要 multipart 依赖、不落临时盘、
@@ -381,7 +383,7 @@ ImageFont.truetype("Courier New.ttf", 40).getmask("张").getbbox()
   <h3>2.1 为什么用 raw body 而不是 multipart</h3>
   <table>
     <tr><th>multipart(v2)</th><th>raw body(v3 起)</th></tr>
-    <tr><td>需要 <code>python-multipart</code> —— <b>不在依赖里</b></td><td>零新增依赖</td></tr>
+    <tr><td><s>需要 <code>python-multipart</code> —— 不在依赖里</s>(合流后已成正式依赖,此条失效)</td><td>零新增依赖</td></tr>
     <tr><td><code>spool_max_size=1MB</code>,4MB 照片<b>落 /tmp</b></td><td><code>Request.stream()</code> 真流式,<b>不落盘</b></td></tr>
     <tr><td><code>event_id</code> 和文件在同一个 body 里,<b>必须先解析完整请求</b></td>
         <td><code>event_id</code> + <code>digest</code> 在 header,<b>读第一个字节前就能短路</b></td></tr>

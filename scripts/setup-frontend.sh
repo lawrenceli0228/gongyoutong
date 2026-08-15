@@ -497,6 +497,16 @@ else
   log_ok "已装 qrcode.react@${QRCODE_REACT_VERSION}(package.json 与 pnpm-lock.yaml 已同步)"
 fi
 
+# W7 CAD/knowledge(队友分支):项目 / 图纸 / 资料上传面板与状态卡片。
+# 同样是**本仓自有**的新文件,同样不能走 apply_override。
+# ⚠️ 2026-08-15 合流:两条分支各自造了一个「装新文件」的函数
+#    (这边 install_new_file、那边 add_new_file)—— 同一个问题、同一个发现
+#    (「apply_override 对不存在的目标只会跳过」),两个名字。已统一到
+#    install_new_file:它多做两件事 —— 内容相同就跳过(重复跑不吵)、
+#    不同则覆盖并**告警**(上游哪天新增同名文件时看得见)。
+install_new_file "ProjectUploadPanel.tsx" "src/components/thread/ProjectUploadPanel.tsx"
+install_new_file "GytStatusCards.tsx" "src/components/thread/GytStatusCards.tsx"
+
 # -----------------------------------------------------------------------------
 # 步骤 3:收尾提示
 # -----------------------------------------------------------------------------

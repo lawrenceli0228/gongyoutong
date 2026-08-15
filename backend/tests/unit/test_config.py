@@ -97,7 +97,7 @@ def test_default_runtime_knobs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.llm_max_retries == 3
     assert settings.llm_retry_base_delay_s == 1.0
     assert settings.llm_cache_enabled is True
-    assert settings.prompt_version == "v1"
+    assert settings.prompt_version == "v2"
 
 
 def test_default_file_limits_and_thresholds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -105,8 +105,8 @@ def test_default_file_limits_and_thresholds(monkeypatch: pytest.MonkeyPatch) -> 
     settings = _pristine_settings(monkeypatch)
 
     # Assert
-    assert settings.drawing_max_mb == 64.0
-    assert settings.document_max_mb == 10.0
+    assert settings.drawing_max_mb == 100.0
+    assert settings.document_max_mb == 100.0
     assert settings.photo_max_mb == 10.0
     assert settings.photo_compress_target_mb == 4.0
     assert settings.photo_compress_max_edge_px == 2048
@@ -334,6 +334,26 @@ def test_derived_dir_access_is_idempotent(tmp_path: Path, monkeypatch: pytest.Mo
     # Assert
     assert first == second
     assert (second / "占位.txt").exists(), "重复访问不能清空已有内容"
+
+
+def test_projects_and_global_dirs_are_created_on_first_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange:W7 CAD 泳道新增的两个运行期可写目录
+    data_root = tmp_path / "gyt-data"
+    monkeypatch.setenv("GYT_DATA_DIR", str(data_root))
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    # Act
+    proj = settings.projects_dir
+    glob = settings.global_dir
+
+    # Assert:访问即创建,落在 data_dir 下(项目图纸/资料镜像 + 全局规范)
+    assert proj == data_root / "projects"
+    assert glob == data_root / "global"
+    assert proj.is_dir()
+    assert glob.is_dir()
 
 
 def test_sqlite_path_creates_parent_but_not_the_file(

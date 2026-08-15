@@ -344,7 +344,8 @@ async def test_提示词版本变了旧缓存全部失效(
     await _ask(_build_agent())
     assert len(fake_model.generate_calls) == SINGLE_CALL
 
-    monkeypatch.setenv("GYT_PROMPT_VERSION", "v2")
+    # 换成与默认必然不同的版本(固定哨兵,不耦合默认值具体是 v1/v2/…)
+    monkeypatch.setenv("GYT_PROMPT_VERSION", "v-test-bump")
     get_settings.cache_clear()
     await _ask(_build_agent())
 

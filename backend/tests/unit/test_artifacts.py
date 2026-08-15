@@ -259,74 +259,55 @@ def test_产物类型也接受字符串写法():
     assert read_meta(artifact_id)["kind"] == "PHOTO"
 
 
-# --- 删除 API(W7 清理器的前提;除清理器外没有第二个调用方)---------------------
+# --- 删除 --------------------------------------------------------------------
 
 
-def test_delete_正常删掉正文与sidecar():
-    artifact_id = register(PAYLOAD, kind=ArtifactKind.ATTENDANCE, original_name="打卡.jpg")
-    body = resolve(artifact_id)
+def test_delete删掉正文与sidecar且幂等() -> None:
+    artifact_id = register(PAYLOAD, kind=ArtifactKind.DRAWING, original_name="a.dxf")
+    assert resolve(artifact_id).exists()
 
-    delete(artifact_id)
-
-    assert not body.exists()
-    assert list(get_settings().artifacts_dir.glob(f"*/{artifact_id}*")) == [], "sidecar 也要没"
+    assert delete(artifact_id) is True
     with pytest.raises(ArtifactNotFound):
         resolve(artifact_id)
-    with pytest.raises(ArtifactNotFound):
-        read_meta(artifact_id)
+    # 幂等:再删返回 False(已经不在),不抛
+    assert delete(artifact_id) is False
 
 
-def test_delete_无扩展名的正文也能删干净():
-    # 原名不带白名单扩展名 → 正文落盘无后缀,删除按 id 前缀找,不靠 ext
-    artifact_id = register(PAYLOAD, kind=ArtifactKind.ATTENDANCE, original_name="没有扩展名")
-
-    delete(artifact_id)
-
-    assert list(get_settings().artifacts_dir.glob(f"*/{artifact_id}*")) == []
+def test_delete非法id返回False不抛() -> None:
+    assert delete("不是32位hex") is False
+    assert delete("a" * 32) is False  # 形状对但查无此物
 
 
-def test_delete_不存在时默认抛_missing_ok放过():
-    ghost = "0" * 32  # 格式合法但从未登记
-
-    with pytest.raises(ArtifactNotFound):
-        delete(ghost)
-    delete(ghost, missing_ok=True)  # 不抛 —— 清理器重跑的幂等靠它
-
-
-def test_delete_重复删时missing_ok幂等():
-    artifact_id = register(PAYLOAD, kind=ArtifactKind.ATTENDANCE, original_name="a.jpg")
-
-    delete(artifact_id)
-    delete(artifact_id, missing_ok=True)  # 第二次不抛
-
-    with pytest.raises(ArtifactNotFound):
-        delete(artifact_id)  # 不带 missing_ok 的第二次照样抛
+# --- 以下两条来自 W7 打卡分支,2026-08-15 合流时按新签名(-> bool,不抛)重写 ---
 
 
 @pytest.mark.parametrize(
     "bad_id",
-    [
-        "../../evil",  # 路径穿越
-        "/etc/passwd",  # 绝对路径
-        "*" * 32,  # glob 通配符
-        "0" * 31,  # 太短
-        None,  # 非字符串
-    ],
+    ["../../etc/passwd", "a" * 31, "A" * 32, "*", "", "3d6f/../../x", "已经删过了"],
 )
-def test_delete_恶意id不越界_missing_ok也不放过格式非法(bad_id):
-    """missing_ok 放过的是「已经删过了」,不是「垃圾输入」——
-    静默吞掉会把调用方把文件名当 id 传进来这类 bug 藏死。"""
-    with pytest.raises(ArtifactNotFound):
-        delete(bad_id)
-    with pytest.raises(ArtifactNotFound):
-        delete(bad_id, missing_ok=True)
+def test_delete_恶意id一律返回False且不碰任何文件(bad_id: str) -> None:
+    """路径穿越/通配符/长度不对的 id,既不该删到别的东西,也不该抛。
+
+    ⚠️ 顺带钉住一个**已知的代价**:格式非法与「查无此物」在这里返回同一个 False,
+    所以「把文件名当 id 传进来」这类调用方 bug 会被静默吞掉(artifacts.py 头注写了)。
+    这条测试是那个取舍的留档 —— 哪天觉得该区分开,先看那段注释再动。
+    """
+    survivor = register(PAYLOAD, kind=ArtifactKind.PHOTO, original_name="留着.jpg")
+
+    assert delete(bad_id) is False
+    assert resolve(survivor).read_bytes() == PAYLOAD
 
 
-def test_delete_只删自己的_不碰同目录的其它产物():
-    victim = register(PAYLOAD, kind=ArtifactKind.PHOTO, original_name="别人的.jpg")
-    doomed = register(PAYLOAD, kind=ArtifactKind.ATTENDANCE, original_name="自己的.jpg")
+def test_delete_只删自己那份_不碰同目录的其它产物() -> None:
+    """同一天登记的产物落在同一个日期目录里,删一份不许波及邻居。
 
-    delete(doomed)
+    正文按 id 前缀找,而 id 是 32 位 hex —— 天然不含 glob 通配符,
+    所以「删 A 顺手匹配到 B」在结构上就不可能。这条守住它。
+    """
+    victim = register(PAYLOAD, kind=ArtifactKind.PHOTO, original_name="邻居.jpg")
+    target = register(b"another", kind=ArtifactKind.ATTENDANCE, original_name="打卡凭证.jpg")
+
+    assert delete(target) is True
 
     assert resolve(victim).read_bytes() == PAYLOAD
     assert read_meta(victim)["kind"] == "PHOTO"

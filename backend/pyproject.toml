@@ -43,6 +43,11 @@ dependencies = [
     # 镜像用 `uv sync --no-dev` 安装,而容器的启动命令就是 `langgraph dev`,
     # 放进 dev 组的话 --no-dev 会把它剥掉,镜像构建期的守卫会直接 exit 1。
     "langgraph-cli[inmem]>=0.4.31,<0.5",
+    # python-multipart:webapp.py 的图纸上传端点靠 Starlette request.form() 解析 multipart,
+    # 而 Starlette 把 multipart 解析做成可选依赖(缺了会在解析时抛 AssertionError)。
+    # 主依赖而非 dev:容器里 langgraph dev 挂 http.app 提供上传端点,`uv sync --no-dev` 也要装它。
+    # Starlette 先 `import python_multipart`,该版本已提供这个新模块名(旧名 multipart 会有弃用警告)。
+    "python-multipart>=0.0.18,<0.1",
     # Pillow:Safety Agent 喂图给视觉模型之前要做三件事,每件都只能靠解码图片本身 ——
     # ① 降采样(视觉 token 按**像素面积**计,手机原图 4000×3000 贴着 4K 线,
     #    实测这类图端到端 59.7 秒,而 1600px 的同类只要 10 秒);

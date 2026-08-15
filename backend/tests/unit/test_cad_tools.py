@@ -14,6 +14,7 @@ import pytest
 from gyt.agents.cad import tools
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind
+from gyt.db import projects as db
 from tests.unit._dxf_fixtures import make_broken_dxf, make_gbk_dxf
 
 
@@ -35,7 +36,8 @@ def cad_env(tmp_path, monkeypatch):
 async def test_list_drawings列出名字(cad_env):
     result = await tools.list_drawings.ainvoke({})
     assert result["ok"] is True
-    assert result["data"]["drawings"] == ["首层平面图"]
+    assert result["data"]["demo"] == ["首层平面图"]
+    assert result["data"]["uploaded"] == []  # 没上传项目图时,这块为空
 
 
 async def test_list_drawings空表时EMPTY_RESULT(monkeypatch):
@@ -198,3 +200,142 @@ async def test_render_preview图元过多时如实拒绝(cad_env, monkeypatch):
     assert "图元太多" in result["user_msg"]
     # 关键:失败信封里没有 png_id,模型无从编造「预览出好了」。
     assert result["data"] is None
+
+
+# --- list_projects / 上传的项目图 / read_view_params(W7 §5)--------------------
+
+
+@pytest.fixture
+def uploaded_env(tmp_path, monkeypatch):
+    """把 GBK 图当作**上传入库的项目图**:注册产物 + 建 drawings 行(view=立面),demo 置空。"""
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)  # demo 空,只留项目图
+    make_gbk_dxf(tmp_path / "gbk.dxf")
+    aid = artifacts.register(
+        tmp_path / "gbk.dxf", kind=ArtifactKind.DRAWING, original_name="ele.dxf"
+    )
+    db.create_project("gyt-a3", "A3栋", "A3")
+    db.add_drawing("gyt-a3", aid, "elevation", "南立面图", floor="1F")
+    return {"aid": aid}
+
+
+async def test_list_projects列出项目(monkeypatch):
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)
+    db.create_project("gyt-a3", "幸福小区A3栋", "A3")
+    result = await tools.list_projects.ainvoke({})
+    assert result["ok"] is True
+    assert result["data"]["projects"] == [{"id": "gyt-a3", "name": "幸福小区A3栋"}]
+
+
+async def test_list_projects没项目时EMPTY(monkeypatch):
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)
+    result = await tools.list_projects.ainvoke({})
+    assert result["ok"] is False
+    assert result["error_code"] == "EMPTY_RESULT"
+
+
+async def test_按展示名解析到上传的项目图(uploaded_env):
+    # 不是 demo、不是 id,而是 drawings 表里的展示名 → 也能查到
+    result = await tools.parse_drawing.ainvoke({"drawing": "南立面图"})
+    assert result["ok"] is True
+    assert result["data"]["encoding"] == "gbk"
+
+
+async def test_list_drawings含上传的项目图(uploaded_env):
+    result = await tools.list_drawings.ainvoke({})
+    assert result["ok"] is True
+    assert {
+        "project_id": "gyt-a3",
+        "title": "南立面图",
+        "view_type": "elevation",
+    } in result["data"]["uploaded"]
+    assert "南立面图" in result["user_msg"]
+    assert "立面" in result["user_msg"]
+
+
+async def test_read_view_params读出视图类型标注与文字(uploaded_env):
+    result = await tools.read_view_params.ainvoke({"drawing": "南立面图"})
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["view_type"] == "elevation"  # 从 drawings 行取
+    ann = [a["text"] for a in data["annotations"]]
+    assert "首层平面图" in ann  # 图上 TEXT 文字被抽出(标高/层高走这条)
+    assert any(d["text"] == "6000" for d in data["dimensions"])  # 标注也在
+    assert "立面图" in result["user_msg"]
+
+
+async def test_read_view_params对demo图无view_type也能读(cad_env):
+    # demo 图不在 drawings 表 → view_type=None,但标注/文字照读
+    result = await tools.read_view_params.ainvoke({"drawing": "首层平面图"})
+    assert result["ok"] is True
+    assert result["data"]["view_type"] is None
+
+
+async def test_read_view_params图上没标没写时EMPTY(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)
+    doc = ezdxf.new("R2010")
+    doc.layers.add("WALL")
+    doc.modelspace().add_line((0, 0), (1, 0), dxfattribs={"layer": "WALL"})
+    doc.saveas(tmp_path / "blank.dxf")
+    aid = artifacts.register(
+        tmp_path / "blank.dxf", kind=ArtifactKind.DRAWING, original_name="blank.dxf"
+    )
+    db.create_project("gyt-a3", "A3栋")
+    db.add_drawing("gyt-a3", aid, "plan", "白图")
+
+    result = await tools.read_view_params.ainvoke({"drawing": "白图"})
+    assert result["ok"] is False
+    assert result["error_code"] == "EMPTY_RESULT"
+
+
+# --- 当前工地作用域(选了项目就只在该项目内按图名找图)-------------------------
+
+
+async def test_图纸解析按当前工地作用域(tmp_path, monkeypatch):
+    """选了工地:按图名找图只在该项目内;别的项目的同名请求不串过来;不选则跨项目(旧行为)。"""
+    make_gbk_dxf(tmp_path / "a.dxf")
+    aid = artifacts.register(tmp_path / "a.dxf", kind=ArtifactKind.DRAWING, original_name="a.dxf")
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)  # 没有 demo,强制走 db 标题解析
+    db.create_project("pa", "项目A", "A")
+    db.create_project("pb", "项目B", "B")
+    db.add_drawing("pa", aid, "plan", "现场图")  # 只有 pa 有「现场图」
+
+    # 选中 pa → 在本项目内找到,解析成功
+    r = await tools.parse_drawing.ainvoke(
+        {"drawing": "现场图"}, config={"configurable": {"gyt_project_id": "pa"}}
+    )
+    assert r["ok"] is True
+
+    # 选中 pb → pb 没有「现场图」,不串到 pa → NOT_FOUND
+    r2 = await tools.parse_drawing.ainvoke(
+        {"drawing": "现场图"}, config={"configurable": {"gyt_project_id": "pb"}}
+    )
+    assert r2["ok"] is False
+    assert r2["error_code"] == "NOT_FOUND"
+
+    # 不选工地 → 跨项目仍找得到(旧行为不变)
+    r3 = await tools.parse_drawing.ainvoke({"drawing": "现场图"})
+    assert r3["ok"] is True
+
+
+async def test_list_drawings选了工地只列本项目图(tmp_path, monkeypatch):
+    """选了工地:list_drawings 只列该项目的图,不掺 demo、不列别的项目。断「问项目2报项目1的图」。"""
+    make_gbk_dxf(tmp_path / "a.dxf")
+    a = artifacts.register(tmp_path / "a.dxf", kind=ArtifactKind.DRAWING, original_name="a.dxf")
+    make_gbk_dxf(tmp_path / "b.dxf")
+    b = artifacts.register(tmp_path / "b.dxf", kind=ArtifactKind.DRAWING, original_name="b.dxf")
+    monkeypatch.setattr(tools, "get_demo_drawings", lambda: {"演示图": "0" * 32})
+    db.create_project("pa", "A", "A")
+    db.create_project("pb", "B", "B")
+    db.add_drawing("pa", a, "plan", "甲图")
+    db.add_drawing("pb", b, "plan", "乙图")
+
+    # 选 pa → 只有甲图,没有 demo、没有乙图
+    r = await tools.list_drawings.ainvoke({}, config={"configurable": {"gyt_project_id": "pa"}})
+    assert r["ok"] is True
+    assert [u["title"] for u in r["data"]["uploaded"]] == ["甲图"]
+    assert r["data"]["demo"] == []
+
+    # 不选工地 → demo + 全部项目(旧行为)
+    r2 = await tools.list_drawings.ainvoke({})
+    assert {u["title"] for u in r2["data"]["uploaded"]} == {"甲图", "乙图"}
+    assert r2["data"]["demo"] == ["演示图"]

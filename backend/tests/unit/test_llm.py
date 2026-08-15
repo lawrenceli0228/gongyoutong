@@ -243,7 +243,7 @@ def test_cache_key_shape_and_dimensions(monkeypatch: pytest.MonkeyPatch) -> None
     assert base != llm.cache_key("model-a", OTHER_QUESTION)
     assert base != llm.cache_key("model-a", QUESTION, "safety-agent")
     # D18 硬要求:改了提示词版本,旧缓存必须全部失效。
-    _reset_settings(monkeypatch, GYT_PROMPT_VERSION="v2")
+    _reset_settings(monkeypatch, GYT_PROMPT_VERSION="v-test-bump")
     assert llm.cache_key("model-a", QUESTION) != base
 
 
@@ -282,7 +282,7 @@ async def test_cache_is_separated_by_version_and_caller(
     await llm.ainvoke(by_extra, QUESTION, cache_extra="safety-agent")
     assert by_extra.calls == 1
 
-    _reset_settings(monkeypatch, GYT_PROMPT_VERSION="v2")
+    _reset_settings(monkeypatch, GYT_PROMPT_VERSION="v-test-bump")
     by_version = _FakeModel([fake_ai_message])
     await llm.ainvoke(by_version, QUESTION)
     assert by_version.calls == 1
@@ -335,13 +335,13 @@ async def test_cache_entry_bound_to_prompt_version(
     monkeypatch: pytest.MonkeyPatch, fake_ai_message: AIMessage
 ) -> None:
     """缓存正文自带 prompt_version,改了提示词版本就绝不会复用旧答案。"""
-    # Arrange:先在 v1 下写一条缓存
+    # Arrange:先在**默认**提示词版本下写一条缓存
     model = _FakeModel([fake_ai_message, fake_ai_message])
     await llm.ainvoke(model, QUESTION)
     assert model.calls == 1
 
-    # Act:换提示词版本后再问一次
-    _reset_settings(monkeypatch, GYT_PROMPT_VERSION="v2")
+    # Act:换成一个与默认必然不同的版本再问一次(用固定哨兵,不耦合默认值具体是 v1/v2/…)
+    _reset_settings(monkeypatch, GYT_PROMPT_VERSION="v-test-bump")
     await llm.ainvoke(model, QUESTION)
 
     # Assert:键本身就变了,必须重新问模型

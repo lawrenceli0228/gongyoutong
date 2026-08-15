@@ -98,10 +98,13 @@ def _purge_expired(*, apply: bool, snap: TimeSnapshot) -> tuple[int, int, int]:
     failed = 0
     for cand in candidates:
         try:
-            # missing_ok=True:图可能上一轮删了一半(删图成功、置空失败)——
-            # 重跑要能把这种行补上,而不是在「文件已经没了」上翻车。
-            artifacts.delete(cand.artifact_id, missing_ok=True)
-        except (artifacts.ArtifactNotFound, OSError) as exc:
+            # 返回值**故意不看**:True(真删了)与 False(本来就没有)对我们是
+            # 同一件事 —— 目标都是「这个 id 不再指向任何文件」,达成即可置空。
+            # 上一轮删了一半(删图成功、置空失败)的行,重跑走的正是 False 这条路。
+            # 2026-08-15 合流:artifacts.delete 统一成队友那版(6 个调用方 vs 我 2 个),
+            # 不再有 missing_ok 参数、也不再抛 ArtifactNotFound,只剩 OSError 要防。
+            artifacts.delete(cand.artifact_id)
+        except OSError as exc:
             # 删不掉就**不置空**:行上的 id 留着,下一轮还会再试。
             # 顺序铁律(先文件后行)就是为了保住这个重试机会。
             print(f"  [失败] 行 {cand.row_id} 的图 {cand.artifact_id} 删不掉:{exc}")
@@ -152,8 +155,8 @@ def _sweep_orphans(*, apply: bool, snap: TimeSnapshot) -> tuple[int, int, int]:
             print(f"  [将删] 孤儿凭证图 {artifact_id}(已 {age.total_seconds() / 3600:.1f} 小时)")
             continue
         try:
-            artifacts.delete(artifact_id, missing_ok=True)
-        except (artifacts.ArtifactNotFound, OSError) as exc:
+            artifacts.delete(artifact_id)  # 返回值不看,理由同上面那处
+        except OSError as exc:
             print(f"  [失败] 孤儿 {artifact_id} 删不掉:{exc}")
             failed += 1
             continue

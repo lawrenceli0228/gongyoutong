@@ -34,7 +34,10 @@
 ---------------------------------------------------------------------------
 为什么是 raw body 而不是 multipart
 ---------------------------------------------------------------------------
-- ``python-multipart`` **根本不在依赖里**,``request.form()`` 直接抛 ImportError。
+- ``python-multipart`` 当时**不在依赖里**,``request.form()`` 直接抛 ImportError。
+  ⚠️ **2026-08-15 合流后这条不再成立** —— 队友为 webapp.py 的图纸上传把它加成了
+  正式依赖(pyproject.toml)。但下面三条不受影响,raw body 的选择不变;
+  留着这条是因为它解释了当初为什么连试都没试 multipart。
 - ``starlette/formparsers.py:146`` 的 ``spool_max_size = 1MB``:
   **超过 1MB 的 multipart 上传会自动滚到 /tmp**,「原图从不落盘」当场是假话。
 - ``event_id`` 和文件在同一个 body 里,**必须先解析完整请求**才拿得到,幂等短路不了。
@@ -849,12 +852,27 @@ async def get_checkin_recent(request: Request) -> JSONResponse:
 # 注意模块 import 期**不碰 get_settings()**:令牌、限流参数、大小上限全都在
 # 请求期现取 —— 这是「不许 import 时缓存令牌」那条要求的结构保证。
 # ---------------------------------------------------------------------------
-app = Starlette(
-    routes=[
-        Route("/checkin", post_checkin, methods=["POST"]),
-        Route("/checkin/recent", get_checkin_recent, methods=["GET"]),
-    ]
-)
+CHECKIN_ROUTES: Final[list[Route]] = [
+    Route("/checkin", post_checkin, methods=["POST"]),
+    Route("/checkin/recent", get_checkin_recent, methods=["GET"]),
+]
+"""打卡这两条路由。**真正挂上去的入口是 backend/webapp.py**,不是下面那个 app。
+
+为什么要把路由单拎出来:``langgraph.json`` 的 ``http.app`` **只能有一个**,
+而这个项目现在有两拨自定义路由 —— 队友的项目/图纸/资料管理(webapp.py)与
+这里的打卡。2026-08-15 合流时撞上,解法是 webapp.py 把本列表铺进它的 routes。
+
+⚠️ 所以**改这里的路径要去 webapp.py 确认它确实收了**;反过来,
+webapp.py 那侧删掉这一铺,打卡端点就整个消失 —— 而现象是 404,
+不是启动报错(langgraph 不知道有谁本该在)。
+"""
+
+app = Starlette(routes=list(CHECKIN_ROUTES))
+"""只给本模块的单元测试用(``TestClient(app)``),**线上不走它**。
+
+留着的理由:测试要能脱离 webapp.py 单独验打卡的鉴权/限流/幂等 ——
+webapp.py 在 backend/ 根、不属于 gyt 包,把它拖进单测会连带整个项目管理栈。
+"""
 
 
 __all__ = [

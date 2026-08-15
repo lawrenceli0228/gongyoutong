@@ -86,8 +86,13 @@ class MultiPartParser:
 ```
 
 照片上限 10MB,**超过 1MB 的 multipart 上传会自动滚到 `/tmp`**。
-而且 `python-multipart` **根本不在依赖里**(实测 `import multipart` → ImportError),
+而且 `python-multipart` 当时**不在依赖里**(实测 `import multipart` → ImportError),
 `request.form()` 直接跑不起来。
+
+> ⚠️ **这一条 2026-08-15 合流后已失效**:队友为 `webapp.py` 的图纸上传把
+> `python-multipart` 加成了正式依赖。**但另外三条理由不受影响**(落 `/tmp`、
+> 短路不了幂等、大小检查太晚),raw body 的选择不变 —— 留着这条是为了说明
+> 当初为什么连试都没试。
 
 > **v3 的解法不是打补丁,是换协议:元数据走 header,照片走 raw body。** 见 §2.1。
 > `Request.stream()` 实测是真流式(逐 ASGI 事件 yield,不预缓冲),
@@ -279,7 +284,7 @@ Pillow 原生无替代 —— 实测 `FreeTypeFont` 不暴露任何 glyph/char �
 
 | multipart(v2) | raw body(v3 起) |
 |---|---|
-| 需要 `python-multipart` —— **不在依赖里** | 零新增依赖 |
+| ~~需要 `python-multipart` —— 不在依赖里~~(合流后已成正式依赖,此条失效) | 零新增依赖 |
 | `spool_max_size=1MB`,4MB 照片**落 `/tmp`** | `Request.stream()` 真流式,**不落盘** |
 | `event_id` 和文件在同一个 body 里,**必须先解析完整请求**才拿得到 | `event_id` + `digest` 在 header,**读第一个字节前就能短路** |
 | 大小检查在解析完之后 | **边读边数,超限当场 disconnect** |

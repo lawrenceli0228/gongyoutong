@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
+
+import pytest
 
 from gyt.agents.knowledge import ingest
 from gyt.config import get_settings
@@ -50,12 +53,96 @@ def test_逐页切块每块带完整文件名与页码(monkeypatch, tmp_path):
     assert "消防车道" in docs[0].page_content
 
 
-def test_chunk_id确定化(monkeypatch, tmp_path):
+def test_chunk_id确定化带作用域前缀(monkeypatch, tmp_path):
     monkeypatch.setattr(ingest, "PdfReader", _FakeReader)
     docs = ingest.pdf_to_documents(tmp_path / "x.pdf")
+    # _chunk_ids 要求 metadata 已带作用域(ingest_document 会补,这里手动补上再算)。
+    for d in docs:
+        d.metadata["scope"] = "global"
+        d.metadata["project_id"] = ""
     ids = ingest._chunk_ids(docs)
-    assert ids[0].startswith("x.pdf#p1#c0")
+    assert ids[0].startswith("global:/x.pdf#p1#c0")
     assert len(ids) == len(set(ids)), "id 必须唯一"
+
+
+class _FakeVectorStore:
+    """假向量库:记下 get 的 where、delete 的 ids、add 的 (docs, ids),不加载任何模型。"""
+
+    def __init__(self) -> None:
+        self.get_where: dict | None = None
+        self.deleted: list[str] = []
+        self.added: list[tuple[list, list[str]]] = []
+        self._existing: dict = {"ids": []}
+
+    def get(self, where=None):
+        self.get_where = where
+        return self._existing
+
+    def delete(self, ids):
+        self.deleted = list(ids)
+
+    def add_documents(self, docs, ids):
+        self.added.append((list(docs), list(ids)))
+
+
+def test_ingest_document补作用域metadata并按作用域算chunkid(monkeypatch, tmp_path):
+    monkeypatch.setattr(ingest, "PdfReader", _FakeReader)
+    vs = _FakeVectorStore()
+
+    n = ingest.ingest_document(
+        tmp_path / "任务书.pdf",
+        scope="project",
+        doc_type="task_book",
+        project_id="gyt-a3",
+        vectorstore=vs,
+    )
+
+    assert n == 1
+    docs, ids = vs.added[0]
+    assert docs[0].metadata["scope"] == "project"
+    assert docs[0].metadata["project_id"] == "gyt-a3"
+    assert docs[0].metadata["doc_type"] == "task_book"
+    assert ids[0].startswith("project:gyt-a3/任务书.pdf#p1#c0")
+    # 先删限定在 同 source + 同作用域 + 同项目 内,跨作用域/跨项目互不误删
+    assert vs.get_where == {
+        "$and": [{"source": "任务书.pdf"}, {"scope": "project"}, {"project_id": "gyt-a3"}]
+    }
+
+
+def test_ingest_document全局强制清空project_id(monkeypatch, tmp_path):
+    monkeypatch.setattr(ingest, "PdfReader", _FakeReader)
+    vs = _FakeVectorStore()
+
+    ingest.ingest_document(
+        tmp_path / "GB50016.pdf",
+        scope="global",
+        doc_type="regulation",
+        project_id="不该有的脏值",
+        vectorstore=vs,
+    )
+
+    docs, ids = vs.added[0]
+    assert docs[0].metadata["project_id"] == ""  # 全局恒空
+    assert ids[0].startswith("global:/GB50016.pdf")
+
+
+@pytest.mark.parametrize(
+    ("scope", "doc_type", "project_id"),
+    [
+        ("nowhere", "regulation", ""),  # 非法 scope
+        ("global", "manual", ""),  # 非法 doc_type
+        ("project", "task_book", ""),  # 项目作用域缺 project_id
+    ],
+)
+def test_ingest_document非法参数抛ValueError(scope, doc_type, project_id):
+    with pytest.raises(ValueError):
+        ingest.ingest_document(
+            Path("x.pdf"),
+            scope=scope,
+            doc_type=doc_type,
+            project_id=project_id,
+            vectorstore=_FakeVectorStore(),
+        )
 
 
 def test_manifest落盘复读一致(tmp_path):
@@ -155,3 +242,68 @@ def test_CLI在目录里一份PDF都没有时报错并退出码1(tmp_path, monke
     # Assert:在调 build_index(会拉 2.2GB 模型)之前就判掉了
     assert code == 1
     assert "一份 PDF 都没有" in capsys.readouterr().out
+
+
+# --- 删除向量块(删资料 / 删项目端点复用)------------------------------------
+
+
+def test_delete_document按source作用域项目精确删块() -> None:
+    vs = _FakeVectorStore()
+    vs._existing = {"ids": ["project:gyt-a3/任务书.pdf#p1#c0", "project:gyt-a3/任务书.pdf#p1#c1"]}
+
+    n = ingest.delete_document("任务书.pdf", scope="project", project_id="gyt-a3", vectorstore=vs)
+
+    assert n == 2
+    assert vs.deleted == vs._existing["ids"]
+    assert vs.get_where == {
+        "$and": [{"source": "任务书.pdf"}, {"scope": "project"}, {"project_id": "gyt-a3"}]
+    }
+
+
+def test_delete_document全局强制清空project_id() -> None:
+    vs = _FakeVectorStore()
+    vs._existing = {"ids": ["global:/GB.pdf#p1#c0"]}
+
+    ingest.delete_document("GB.pdf", scope="global", project_id="脏值", vectorstore=vs)
+
+    assert vs.get_where == {"$and": [{"source": "GB.pdf"}, {"scope": "global"}, {"project_id": ""}]}
+
+
+def test_delete_document无匹配返回0不调delete() -> None:
+    vs = _FakeVectorStore()  # _existing ids 为空
+    n = ingest.delete_document("没有.pdf", scope="global", vectorstore=vs)
+    assert n == 0
+    assert vs.deleted == []
+
+
+def test_delete_project_documents按项目清所有块() -> None:
+    vs = _FakeVectorStore()
+    vs._existing = {"ids": ["project:gyt-a3/a.pdf#p1#c0", "project:gyt-a3/b.pdf#p1#c0"]}
+
+    n = ingest.delete_project_documents("gyt-a3", vectorstore=vs)
+
+    assert n == 2
+    assert vs.get_where == {"$and": [{"scope": "project"}, {"project_id": "gyt-a3"}]}
+    assert vs.deleted == vs._existing["ids"]
+
+
+def test_delete_project_documents缺project_id抛() -> None:
+    with pytest.raises(ValueError):
+        ingest.delete_project_documents("", vectorstore=_FakeVectorStore())
+
+
+# --- pdf_has_text:上传前的秒级文字预检 ----------------------------------------
+
+
+def test_pdf_has_text有文字层为True(monkeypatch, tmp_path):
+    monkeypatch.setattr(ingest, "PdfReader", _FakeReader)  # 第 1 页有字
+    assert ingest.pdf_has_text(tmp_path / "x.pdf") is True
+
+
+def test_pdf_has_text全空页为False(monkeypatch, tmp_path):
+    class _EmptyReader:
+        def __init__(self, _path: str) -> None:
+            self.pages = [_FakePage(""), _FakePage("   ")]
+
+    monkeypatch.setattr(ingest, "PdfReader", _EmptyReader)
+    assert ingest.pdf_has_text(tmp_path / "scan.pdf") is False

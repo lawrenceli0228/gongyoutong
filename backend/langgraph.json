@@ -4,7 +4,7 @@
     "gyt": "./src/gyt/graph.py:graph"
   },
   "http": {
-    "app": "./src/gyt/checkin_api.py:app",
+    "app": "./webapp.py:app",
     "enable_custom_route_auth": true,
     "middleware_order": "auth_first"
   },
