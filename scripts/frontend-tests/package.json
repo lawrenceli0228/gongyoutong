@@ -1,0 +1,15 @@
+{
+  "name": "gyt-frontend-tests",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "checkin-lib.ts 的独立 vitest 包。独立的原因:frontend/ 不进 git(由 setup-frontend.sh 生成),测试不能指望它存在 —— 本包按相对路径直接 import scripts/frontend-overrides/checkin-lib.ts,后者因此必须保持零依赖。跑法:pnpm install && pnpm test(CI 同两步)。",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.18",
+    "typescript": "~5.8.3",
+    "vitest": "4.1.10"
+  }
+}

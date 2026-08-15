@@ -38,6 +38,7 @@ import {
   TooltipTrigger,
 } from "../ui/tooltip";
 import { useFileUpload } from "@/hooks/use-file-upload";
+import { CheckinEntry } from "./checkin";
 import { ContentBlocksPreview } from "./ContentBlocksPreview";
 import {
   useArtifactOpen,
@@ -516,6 +517,11 @@ export function Thread() {
                           accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,.dxf,image/vnd.dxf"
                           className="hidden"
                         />
+                        {/* 打卡入口(W7 · D15):点开是直连 POST /checkin 的自拍面板,
+                            不进对话、不产生消息 —— 所以放在动作条而不是消息区
+                            (tool-calls.tsx 只消费 ToolMessage,直连打卡根本不产生它,
+                            W7 §1.5)。组件自带 type="button",不会误触本 form 的提交。 */}
+                        <CheckinEntry />
                         {stream.isLoading ? (
                           <Button
                             key="stop"

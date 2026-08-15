@@ -98,7 +98,7 @@ const REPORT_TOOL_NAME = "render_inspection_report";
  * **公网部署**必须换成同源路径,否则 127.0.0.1 指的是测试者自己的电脑(下载链接是死的),
  * 而且 https 页面拉 http 资源会被浏览器按 mixed content 直接拦掉。
  * 由 docker-compose.vps.yml 的 build args 传 `${GYT_PUBLIC_ORIGIN}/artifacts`。
- * **与 human.tsx 的 ARTIFACT_BASE 同源,要改一起改。**
+ * **与 human.tsx、checkin.tsx(W7 打卡凭证图)的 ARTIFACT_BASE 同源,三处要改一起改。**
  *
  * ⚠️ NEXT_PUBLIC_* 是**编译期**变量:改了要重建前端镜像。
  */

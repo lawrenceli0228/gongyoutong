@@ -41,11 +41,13 @@ import { File as FileIcon, ImageOff } from "lucide-react";
 /**
  * 产物的静态出口。**与 scripts/frontend-overrides/tool-calls.tsx 的 ARTIFACT_BASE 同源。**
  *
- * 改一处必须改多处 —— 端口 8788 现在有三份真相:
+ * 改一处必须改多处 —— 端口 8788 现在有**四份**真相:
  *   · Makefile 的 `ARTIFACTS_PORT`(起服务的那一处)
  *   · scripts/frontend-overrides/tool-calls.tsx 的 `ARTIFACT_BASE`(巡检记录卡片)
+ *   · scripts/frontend-overrides/checkin.tsx 的 `ARTIFACT_BASE`(打卡凭证图,W7 2026-08-15 加)
  *   · 本文件的 `ARTIFACT_BASE`(历史里的照片 / 图纸)
  * 漏改的现象是「不报错,只是打不开」,属于最难发现的那一类。
+ * (这行以前写的是「三份」,checkin.tsx 加进来时差点没登记 —— 数错了下一个人就漏改。)
  *
  * **本机开发**默认 `http://127.0.0.1:8788`(`make serve-artifacts` 起的那份,只绑回环)。
  *
