@@ -9,11 +9,18 @@
   ⚠️ **不许加注册入口。** 这是内测,口令由人手工发放;
      一个"注册"按钮等于把门直接拆了。
 
-  服务端契约(serve_login.py 的 _read_page 会硬校验这两条,缺了直接拒绝启动):
+  服务端契约(serve_login.py 的 _read_page 会硬校验这三条,缺了直接拒绝启动):
     · 表单必须是 action="/login" method="post"
     · 口令输入框必须 name="pw"
+    · 必须有一个 hidden 的 name="next"(2026-08-15 / W8 扫码配对新增)
   错误态**不做服务端模板**,靠 URL 上的 ?e=1 在前端切换 —— 服务端一个字节的
   用户输入都不回显,连一个反射面都不留。
+
+  ⚠️ next 这个字段只**搬运**,不判断。它的白名单校验唯一一处在
+     serve_login.py 的 safe_next_path():这一页上的 JS 对着一个手工构造的
+     POST 一点作用都没有,在这儿再写一遍校验只会多一份会跟服务端漂移的规则。
+     本页把它写进 input.value(**绝不用 innerHTML / 字符串拼 HTML**),
+     所以即使 next 里塞的是 `"><script>`,它也只是一个 input 的值,不是标签。
 
   视觉方向:安全标识牌。刻意**不做深色** —— 工地师傅是在户外太阳底下看手机的,
   深色屏在强光下读不了。所以是高对比浅色 + 安全警示黄 + 45° 警示斜纹。
@@ -232,6 +239,9 @@
       <p class="err" id="err" role="alert">口令不对,再试一次。<br>注意区分大小写。</p>
 
       <form action="/login" method="post" novalidate>
+        <!-- 登录成功后要去的地方。空着就是回首页 —— 与加这个字段之前的行为一致。
+             值由下面那段 JS 从当前 URL 的 ?next= 里取,服务端不做模板渲染。 -->
+        <input type="hidden" id="next" name="next" value="">
         <label for="pw">访问口令</label>
         <div class="field">
           <input id="pw" name="pw" type="password"
@@ -270,11 +280,28 @@
   </main>
 
 <script>
+  var params = new URLSearchParams(location.search);
+
   // 错误态由 URL 上的 ?e=1 驱动。服务端一个字节的用户输入都不回显。
-  if (new URLSearchParams(location.search).has('e')) {
+  if (params.has('e')) {
     document.body.classList.add('has-error');
     // 让屏幕阅读器和键盘用户都落到输入框上,不用自己找
     document.getElementById('pw').focus();
+  }
+
+  // 把登录后的去向从 URL 搬到表单里。URLSearchParams.get() 已经做过一次
+  // 百分号解码,拿到的就是服务端当初 urlencode 进来的那个原串,原样回传即可。
+  //
+  // ⚠️ 只用 .value 赋值。**绝不能**写成 innerHTML / insertAdjacentHTML /
+  //    模板字符串拼 <input value="…"> —— next 是任何人都能塞的东西,
+  //    那样写等于把一个反射型 XSS 直接开在登录页上(而登录页是全站唯一
+  //    不需要会话就能访问的页面,谁都打得到)。.value 赋的是字符串,不是标签。
+  //
+  // 这里**故意不做合法性判断**:唯一判据在 serve_login.py 的 safe_next_path,
+  // 在这儿再抄一份只会多一处会跟服务端漂移的规则,而且对手工构造的 POST 无效。
+  var nextField = document.getElementById('next');
+  if (nextField) {
+    nextField.value = params.get('next') || '';
   }
 
   // 显示 / 隐藏口令
