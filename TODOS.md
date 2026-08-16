@@ -1156,11 +1156,12 @@
   R32 的注释原话是「被钓走 = 真机验收 C3 翻车的预演」,它绿了说明 C3 那句改的措辞方向是对的。
   留档已写进 CLAUDE.md 取代作废的 26/26。⚠️ 判分噪声:routing 判的是首跳 Agent 名、
   不过外部 LLM 裁决,不像 safety 有 ±1 行固有噪声 —— 这个数比 safety 的可复现。
-- **🔴 后端没有「否决」端点。** 方案 §4.2 的状态机画了 pending 的否决支(删除/标为误报),
-  S4 的七个端点里没有。前端没有伪造一个会 404 的调用,而是把「否决」做成仅从本次清单
-  划掉,并在面板底部写明那条隐患**仍以 pending 留在库里**,而 pending 不算整改率、
-  不进超期清单、不会被升级。这个处理是诚实的,但缺口是真的 —— 补一个
-  `POST /supervision/reject` 即可,状态机里 `pending` 那一行加个出边。
+- ~~**🔴 后端没有「否决」端点。**~~ ✅ **2026-08-16 W10 已补** `POST /supervision/reject`,
+  前端那颗按钮接的是真端点。原始记录留着,因为它写明了当时那个**诚实处理**的形状:
+  方案 §4.2 的状态机画了 pending 的否决支(删除/标为误报),S4 的七个端点里没有;
+  前端没有伪造一个会 404 的调用,而是把「否决」做成仅从本次清单划掉,并在面板底部写明
+  那条隐患**仍以 pending 留在库里**,而 pending 不算整改率、不进超期清单、不会被升级。
+  处理是诚实的,缺口是真的。
 - **两个 api 模块都超 800 行:** `supervision_api.py` 1139(代码行 867)、
   `checkin_api.py` 1131(859)。W9 已经切过一刀(文书正文 → `agents/supervision/documents.py`,
   1357→1139,docx 字节等价验过 540 条指纹)。**再切要动的是那七个 `_work_*`,
@@ -1169,10 +1170,11 @@
 - **`supervision.tsx` 1003 行超 800**(仓内先例:`checkin.tsx` 1046、`ProjectUploadPanel.tsx` 1047)。
   天然接缝是 `SupervisionDocCards` 单独成件,但那会让覆盖件计数从 12+7 变 12+8,
   而计数是同源清单里的一项,值得一起动而不是顺手动。
-- **`_STATUS_ZH`(隐患状态八档中文名)现在有两份逐字拷贝**:`db/hazards.py` 与
-  `supervision_api.py`。暂时收敛不掉 —— 后者被 langgraph 按**文件路径**加载、
-  且反向 import `agents/supervision/docgen`,让它再 import `tools` 就成环。
-  两处都有导入期硬失败兜底,已登记进 CLAUDE.md 同源表。
+- ~~**`_STATUS_ZH`(隐患状态八档中文名)现在有两份逐字拷贝**~~ ✅ **2026-08-16 W10·S1 已收敛**
+  到 `agents/supervision/scoping.py` 的 `STATUS_ZH`(零依赖叶子模块,两边都能 import
+  而不成环)。当年那句「暂时收敛不掉」的理由 —— 「让 supervision_api 再 import tools 就成环」
+  —— **只对 tools.py 成立**,对一个叶子模块不成立。这是本条留档的价值:
+  「收敛不掉」的结论往往绑在一个具体实现上,换个落点就没了。
 - **CLAUDE.md 的同源表进不了 git。** 它被 `/CLAUDE.md` 忽略(文件自己头一句就写着)。
   W9 往里加了 4 行、改了 3 行,又补了四处旧数字(前端覆盖件 5→7 件、vitest 68→163 条、
   被测物一个 lib→两个、`make eval SUITE=routing` 22→33 条)—— **这些队友一条都拿不到**。
@@ -1284,10 +1286,16 @@
   `supervision_api.py:480` 的四道闸各写一遍;`test_supervision_tools.py` 零 import api。
   端点是权威且守住了,所以这是**体验漂移不是安全漏洞** —— 但后端改了闸、Agent 还按旧规则
   发话,监理照着做一直被拒,而两边测试都绿。
-- **`_STATUS_ZH` 三份拷贝**(`supervision_api.py:203` / `supervision/tools.py:70` /
-  `supervision-lib.ts:76`)。导入期守卫是 `s for s in hazards.STATUSES if s not in _STATUS_ZH`
-  —— **只数键,不比值**。其中「已出具暂停令」不许写成「已责令停工」是方案 §4.1 的红线
-  (前者只证明文书出了稿),漂了 Agent 就会对外声称一件没发生的事。
+- ~~**`_STATUS_ZH` 三份拷贝**~~ —— **Python 侧两份已于 2026-08-16(W10·S1/S2)收敛**,
+  唯一真相在 `agents/supervision/scoping.py` 的 `STATUS_ZH`。收敛的前提是 scoping.py
+  是**零依赖叶子模块**,`supervision_api` 与 `tools` 都能 import 它而不成环 ——
+  老注释里那句「让 supervision_api 再 import tools 就成了环」只对 tools.py 成立。
+  `test_supervision_api.py` 有一条 `not hasattr(supervision_api, "_STATUS_ZH")` 钉着**别抄回来**。
+  **剩下的跨语言那一份仍在**(`supervision-lib.ts` 的 `HAZARD_STATUS_ZH`),它收敛不掉,
+  仍归 A 组的同源向量方案。
+  ⚠️ 顺带补一句当时没写清的:导入期守卫**只数键、不比值**,所以「已出具暂停令」被改成
+  「已责令停工」它一声不吭 —— `test_supervision_scoping.py` 现在有一条专门盯这句话
+  (W10·S1 的变异测试②b 证明了守卫对这种漂移全程沉默)。
 - **前端 `availableActions` 是闸门的第三份实现**(`supervision-lib.ts:440/446`)。
   🔴 **方向不对称**:多显一个按钮 → 点了被拒,用户看得见;**少显**一个按钮 → 合法动作
   做不了,**一句报错都没有**。后者是本仓反复吃亏的那类静默失败。
@@ -1300,9 +1308,11 @@
 - **[高] `supervision_api.py:986`** 升级报告的证据快照与状态迁移不在同一事务,
   而 `reinspect_failed` 允许自环 → 并发新增一次复查仍不改状态,升级照样成功但
   「完整证据链」漏掉最新那条记录。
-- **[中] `supervision.tsx:422`** 「否决」只删本地数组,`db/hazards.py` 的 `delete_pending()`
-  **零生产调用入口** → 状态图那条否决分支不可达,误报会永久滞留并反复出现在待确认清单里。
-  (S6 当时如实写了「后端没有否决端点」,没伪造一个会 404 的调用 —— 处理是对的,缺口是真的。)
+- ~~**[中] `supervision.tsx:422`** 「否决」只删本地数组~~ —— **2026-08-16(W10)已修**:
+  加了 `POST /supervision/reject`,前端那颗按钮接的是真端点(成功后 `removeHazard`)。
+  容器里实测过全套:pending 否决 → 200 且直查 sqlite 确认真删了;
+  已确认的 → 409 且直查确认**那条还在**。`delete_pending()` 不再是零调用。
+  (S6 当时如实写了「后端没有否决端点」、没伪造一个会 404 的调用 —— 处理是对的,缺口是真的。)
 - **[中] `agents/safety/tools.py:657`** 编号预查与 `hazards.create()` 之间撞唯一键时
   直接进 `failed_items`,没按 `core/doc_no.generate_unique` 的契约重摇号 → 并发撞号会**漏登记一条真实隐患**。
 - **[低] `supervision_api.py:755`** 单条确认不存在的隐患返 `409/CONFLICT`,
@@ -1316,3 +1326,67 @@
   (`_OVERDUE_STATUSES` 已经是超期那一侧的先例)。
 
 **Depends:** A 组三条共用同一份向量,建议一起做;B 组四条互相独立,先核实再动手。
+
+## TODO-46(原始记录)本机容器**从来没服务过任何一条自定义 HTTP 路由**
+2026-08-16 W10 的 S4 手工验之前发现的。**已修**,但形状值得单独留档 ——
+它和 W10 本身是同一类洞,而且是在查另一个洞的路上撞见的。
+
+**怎么发现的:** 手工验之前先 curl 一下已有的端点当基线,期望 400(空 body):
+```
+curl -X POST http://127.0.0.1:2024/supervision/confirm -d '{}'   → HTTP 404
+docker exec gyt-backend ls /app/webapp.py                        → No such file or directory
+docker exec gyt-backend cat /app/langgraph.json                  → **连 http 块都没有**
+```
+镜像 `gyt-backend:dev` 是 5 天前(≈08-11)烤的,而 `webapp.py` 与 `langgraph.json` 的
+`http` 块是 **W7(08-15)** 才加的。也就是说:**打卡、项目管理、监理处置,本机一条都没跑起来过。**
+在这之前所有"本地验过"的结论,都只覆盖了聊天那条路。
+
+**根因不是文档写错。** `docker-compose.dev.yml` 那段「为什么挂 /app/src 就够了」写得很准,
+它列的重建触发项里就有 `langgraph.json`。错在**没人意识到 `webapp.py` 与 `auth.py`
+也在 `src/` 外面** —— 它们是 `.py`,看着就该跟着热重载,于是没人去想「这一条要重建镜像吗」。
+
+**修法**(已落):把这三份也挂进 dev 覆盖件。`webapp.py` / `auth.py` 是 `.py`,
+跟着 watchfiles 热重载;`langgraph.json` 不是 `.py`,改它仍要 `restart`,
+但**不用再重建镜像**(分钟级 → 秒级)。生产档不许照抄这三条(线上必须跑烤进镜像那份)。
+
+**为什么留档:** 这个洞的形状 = **后端代码是对的、测试全绿、端点 404 而零报错**。
+与 W10 完全同构。`test_supervision_api.py` 里那条路由挂载用例**当时也是绿的** ——
+它在宿主的 Python 进程里直接 import,根本不经过容器。那条用例的 docstring 里现在写了这一段。
+
+## TODO-47 W10 落地后的残余欠账
+四条泳道落地。以下是**明知留下**的,每条都写了为什么现在不做。
+
+- **`unassigned` 与当前 scope 口径错位。** 后端给的 `unassigned` 是「未归属**一共**几条」,
+  **不过 scope 筛子**(刻意的:它回答「有没有一批隐患没人看得见」,筛过反而藏起来)。
+  但界面只能在一屏之内说它 —— 筛「超期」时也会显示「另外还有 N 条没归到任何工地」,
+  而那 N 条里可能一条超期的都没有。措辞上已经回避(只说「没归到任何工地」),
+  语义上仍然错位。要真准,后端得另给一个「当前 scope 下未归属几条」。
+- **🔴 `failedItems`(D10 / Codex#10)现在没有任何地方在履行「必须显示」。**
+  它挂在 `HazardIntakeCard` 上,而**整张卡不可达**(W10 §1 的根因)。也就是说:
+  一条真实存在、后端已经落了 `hazard_ingest_failures` 一行的隐患,
+  **工友在界面上一个字都看不到**,而识别回执照常报了这一项。
+  不是 W10 引入的(卡本来就没显示过),但 W10 之后它是**已知**的洞了。
+  修法多半是把它并进常驻操作台(那里已经有数据源了),不是去救那张卡。
+- **巡检记录卡(W3/W5)仍不可达。** 同一根因,W10 §4 明确不在范围:
+  它牵扯 `report` 与 `hazards` 的关系(docx 在 `artifacts` 里,不在 `hazard_docs` 里,
+  现有详情接口捞不到),该单独想清楚。**在它修好之前,整条 `ARTIFACT_BASE` 同源链
+  只有监理这一半是活的。**
+- **四个前端覆盖件超 800 行**:`supervision.tsx` 1402、`supervision-lib.ts` ~1230、
+  `checkin.tsx` 1046、`ProjectUploadPanel.tsx` 1047、`checkin-lib.ts` 914。
+  **一起拆,别只拆一个** —— 只拆一个是 churn 而不是原则;而且拆错的失败模式
+  (`setup-frontend.sh` 漏注册 → 界面静默不生效)正是 W10 这个洞本身。
+  拆的时候两个计数(`apply_override` / `install_new_file`)必须一起改,它们过期过两次了。
+- **`scoping.py` 的「零 langchain」只在文件级成立。** `import gyt.agents.supervision.scoping`
+  照样会拉起 langchain —— Python 先执行父包 `__init__.py`,而那里 import 了
+  `tools.SUPERVISION_TOOLS`。这笔账是既成事实(`supervision_api` 早就 import `documents`),
+  不是搬迁带来的。真要摘干净得把包 `__init__.py` 里建 Agent 那段延迟到函数里
+  (`graph.py:147` 从包名 import `build_supervision_agent`)。
+  兑现之后 scoping 才真的能被一个不想要 langchain 的调用方用上。
+- **CLAUDE.md 的同源清单又欠了几行,而它进不了 git**(`/CLAUDE.md` 被忽略)。
+  W10 要加/改的:`ARTIFACT_BASE` 读者三 → **四**(加 `supervision-entry.tsx`)、
+  scope 受控词表跨语言镜像(`scoping.SCOPES` ↔ `supervision-lib.HAZARD_SCOPES`)、
+  隐患状态中文名那一行(两份拷贝 → 收敛到 `scoping.STATUS_ZH`,前端那份仍是镜像)、
+  前端覆盖件计数(`install_new_file` 七 → **八**)。**队友一条都拿不到** ——
+  这是 W6「队友接入」那次就存在的洞,W10 只是又往里塞了一批。
+
+**Depends:** 前三条互相独立;拆文件那条建议和 CLAUDE.md 计数一起做(它们本来就同源)。
