@@ -1,4 +1,4 @@
-"""监理处置直连接口。**本模块头注是 ``POST /supervision/*`` 请求与响应契约的唯一真相。**
+"""监理处置直连接口。**本模块头注是 ``/supervision/*`` 请求与响应契约的唯一真相。**
 
 隐患台账与状态机的唯一真相在 ``gyt/db/hazards.py``,不在这里 —— 那边是存储与状态合法性,
 这边是协议与业务判断(该走哪条路、期限算不算得出来、话怎么说给工地上的人听)。
@@ -26,10 +26,45 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
 ===========================================================================
 端点一览(路径不含 ``/api``:那一段由 Caddy 剥掉,与打卡链同规矩)
 ===========================================================================
-全部 ``POST``、``Content-Type: application/json``、请求体是一个 JSON 对象::
+**查询两条**(W10),``GET``,没有请求体 —— 参数走查询串与路径::
+
+    GET /supervision/hazards?scope=…&project_id=…
+        隐患清单。它是界面上那块**常驻操作台**的数据源:面板不再从聊天流里取数
+        (supervisor 的 ``output_mode="last_message"`` 会把子 Agent 的工具返回整个丢掉,
+        于是三张卡一次都没渲染出来过 —— 完整根因在
+        ``docs/W10_界面取不到工具返回_方案.md``)。
+
+        · ``scope``:``在办`` / ``待确认`` / ``超期`` / ``全部`` **四选一**,缺省「在办」。
+          词表外一律 **400**,不许静默回落到某一档 —— 少给的清单在界面上看不出来少了
+          (同 ``agents/supervision/scoping.SCOPES`` 头注:``in_scope`` 认不出的词会
+          静默落在「在办」,所以拦野词是**调用方的责任**,别指望它替你报错)。
+
+        · ``project_id`` **三态,一态都不许丢**(D6:未归属是空串,不是 NULL)::
+
+              参数不出现                → 不筛工地(全部工地) → list_rows(project_id=None)
+              ?project_id=(有键无值)   → 只看未归属          → list_rows(project_id="")
+              ?project_id=P-xxx         → 只看这个工地        → list_rows(project_id="P-xxx")
+
+          三态与 ``db/hazards.list_rows`` 的 ``project_id: str | None`` **1:1 对上**
+          (那边的 docstring:None 是不筛项目,"" 是只看未归属,两者语义完全不同)。
+          starlette 里"键在不在"天然分得开,**中间任何一处写 ``or ""`` 都会把两态合并**,
+          表现是「全部工地」悄悄变成「只有未归属」,而界面上看不出少了什么。
+
+    GET /supervision/hazards/{hazard_no}
+        单条详情 + **证据链**:每份文书的下载信息(``artifact_id`` / ``filename``)、
+        每次复查的照片编号与结论。查不到编号回 404。
+
+**写入八条**,全部 ``POST``、``Content-Type: application/json``、请求体是一个 JSON 对象::
 
     POST /supervision/confirm            {"hazard_nos": ["GYT-H-…", …]}   ← 也收单条 hazard_no
         pending → open(D17 的人工确认闸)。**支持批量,每条一个事务、互不牵连。**
+
+    POST /supervision/reject             {"hazard_no": …}
+        否决一条**待确认**的隐患(状态机图里 pending 那条否决支),整行从库里删掉。
+        已经确认过的一律拒(409):留档与证据链不能因为一次误点消失 ——
+        ``db.delete_pending`` 的 ``WHERE status='pending'`` 是硬守卫,这里只是先说人话。
+        🔴 回执里的 ``status`` 是 ``"deleted"``,**全项目唯一一个不属于 ``db.STATUSES``
+        八档的状态值** —— 那一行已经从库里删掉了,没有状态可报(见 ``_STATUS_DELETED``)。
 
     POST /supervision/grade              {"hazard_no": …, "grade": "一般"|"严重"}
         人工定级,清 needs_grading。**只允许在还没签过任何文书时改**
@@ -55,13 +90,17 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
     POST /supervision/escalate           {"hazard_no": …}
         《监理报告》报主管部门,正文附 hazard_docs 完整证据链。只从 reinspect_failed 进。
 
-响应码:
+响应码(十条端点同一套,**GET 也一样**):
 
     200  ok=True
-    400  INVALID_INPUT   缺字段 / 级别或结论不在词表 / **期限解析不出** / 照片编号不对
-    401  UNAUTHORIZED    handler 自查令牌不过(纵深防御,同 checkin_api)
+    400  INVALID_INPUT   缺字段 / 级别或结论不在词表 / **筛子不在四个词里** /
+                         **期限解析不出** / 照片编号不对
+    401  UNAUTHORIZED    handler 自查令牌不过(纵深防御,同 checkin_api)。
+                         **两条 GET 同样过这道闸** —— 隐患清单里有工地、有违规项、
+                         有照片编号,是要登录才看得到的东西,不是公开数据。
     404  NOT_FOUND       隐患编号查不到 / 复查照片查不到
-    409  CONFLICT        三条硬拦、状态机不允许、并发把状态改掉了
+    409  CONFLICT        三条硬拦、状态机不允许、并发把状态改掉了、
+                         否决一条已经确认过的隐患
     500  INTERNAL        兜底;编号摇不出来也落这里。user_msg 是人话,细节只进日志
 
 ===========================================================================
@@ -104,10 +143,26 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
 定死数组形状是为了**避免静默丢件**:三份文书里少出一份,若形状是三个独立的键,
 前端少渲一张卡没有任何异常;是数组的话「N 张卡」与「N 份文书」天然对齐。
 
-两处例外,都在下面写明:
+三处例外,都在下面写明:
   · ``confirm`` 是批量动作,``data`` = ``{"confirmed": [...], "failed": [{…}]}``;
   · ``grade`` 与 ``reinspect-result`` 不出文书,``documents`` 恒为 ``[]``。
     **复查记录不进 ``documents``** —— 它没有 artifact_id,进去就是一张点不开的卡。
+  · ``reject`` **属于这一类**(不出文书,``documents`` 恒为 ``[]``),但 ``status``
+    是那个 ``"deleted"``:三个键一个不少,前端那套归一化照旧能用,只是它拿到的
+    「状态」不在八档里 —— 该刷新列表、把这一条划掉,而不是去查这个状态怎么处置。
+
+**两条 GET 不在这份冻结形状里**,它们各有自己的 ``data``(清单是
+``{scope, project_id, today, hazards[], total, pending, overdue, unassigned, truncated}``,
+详情是「清单那一行的全部字段 + found_at / closed_at / reinspected / documents[]」)。
+理由:冻结那份形状是为了「N 张下载卡对齐 N 份文书」,而查询回的是**表格**,
+硬套一个 ``documents`` 恒空的壳只会让前端多一层拆包。两者共同的只有四键信封。
+
+🔴 **详情里 ``documents[*].filename`` 与签发那条路给的必须一模一样。**
+两处都走 ``_filename()``,谁也不许现拼第二份 —— 不同源的表现是界面上下载卡的文件名
+和实际落盘的对不上,**而不会有任何报错**。
+🔴 **``documents[*].photo_id`` 是 ``hazard_docs.photo_id``(这一次复查那张),
+不是 ``hazards.photo_id``(首次发现那张)。** 混起来 = 拿发现时的照片当"整改后"的
+证据,而「复查必须挂照片」这条红线的全部意义就是事后追责时分得清这两张。
 
 ===========================================================================
 🔴 文件先落盘、库后写(方案 §6.4,Codex#7)
@@ -169,7 +224,7 @@ import hmac
 import logging
 import secrets
 import sqlite3
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from datetime import date
 from typing import Any, Final, NamedTuple
 
@@ -181,11 +236,20 @@ from starlette.routing import Route
 
 from gyt.agents.schedule.dates import DueParseError, format_display, parse_due
 
+# 筛子四词、超期判定、八档状态中文名、``hazard_item()`` 的对外形状 —— 全部在 scoping.py,
+# **对话链(agents/supervision/tools.py)与本模块共用同一份判据**。判据抄第二份的表现是
+# 端点筛出来的清单与对话里报的条数悄悄对不上,而两边测试都绿(TODO-45 A 组那类漂移)。
+# ⚠️ **按模块名 import,调用点写 ``scoping.xxx()``,不许 ``from … import today_hk``**:
+#    测试把「今天」钉死靠的是 monkeypatch ``scoping.today_hk`` 这一个点,按名 import
+#    会在导入那一刻把函数对象绑死,桩打不进去(理由原文在那个函数的 docstring)。
+from gyt.agents.supervision import scoping
+
 # 文书正文(每种文书写什么字)整段在 agents/supervision/documents.py,本模块只管
 # 协议 + 判断 + 编排。**别把 docgen 直接 import 回来** —— 那等于在这里再拼一份正文,
 # 而正文的唯一真相只能有一处(免责句串档、编号没印上去,都是不报错的事故)。
 from gyt.agents.supervision.documents import UNASSIGNED_PROJECT_ZH, DocContext, render_doc
 from gyt.attendance.receipt import TimeSnapshot, make_snapshot
+from gyt.config import get_settings
 from gyt.core import artifacts
 from gyt.core.access import _api_key_from_headers, effective_access_token
 from gyt.core.artifacts import ArtifactKind, ArtifactNotFound
@@ -201,28 +265,80 @@ logger = logging.getLogger(__name__)
 # 受控词表与常量(禁止在函数体里散落字面量)
 # ---------------------------------------------------------------------------
 
-_STATUS_ZH: Final[dict[str, str]] = {
-    hazards.STATUS_PENDING: "待确认",
-    hazards.STATUS_OPEN: "已确认待处置",
-    hazards.STATUS_NOTIFIED: "已签发通知单",
-    # 🔴 「已出具暂停令」不是「已责令停工」(db/hazards.py 的 STATUSES 头注):
-    # suspended 只证明文书出了稿,不证明工地真停了工。对外措辞不许升级。
-    hazards.STATUS_SUSPENDED: "已出具暂停令",
-    hazards.STATUS_REINSPECT_FAILED: "复查不合格",
-    hazards.STATUS_RESUMING: "待签发复工令",
-    hazards.STATUS_CLOSED: "已销项",
-    hazards.STATUS_ESCALATED: "已上报主管部门",
-}
-"""状态 → 给工地上的人看的中文。八个状态每个都要有名字。"""
+# 八档状态的中文名**曾经在这里有一份拷贝**(``_STATUS_ZH``),2026-08-16(W10 S2)删掉了,
+# 改用 ``scoping.STATUS_ZH``。删之前 AST 逐条比对过:两份的键、值、顺序、内嵌注释**逐字相同**。
+#
+# 🔴 为什么原来非有两份不可、而现在这个理由不成立了 —— 这一段是给下一个想"顺手再抄一份"的人看的:
+#   旧理由是「本模块被 langgraph 按**文件路径**加载,而它反过来 import 本包的 docgen /
+#   documents,让它再 import ``agents/supervision/tools.py`` 就成环」。那个理由**只对
+#   tools.py 成立**:tools.py 会拉起 langchain,并且它自己就在这条依赖链上。
+#   而 ``scoping.py`` 是 2026-08-16(S1)专门切出来的**零依赖叶子模块** —— 它只 import
+#   ``db.hazards`` / ``schedule.dates`` / ``attendance.receipt`` 与标准库,一个包内模块都不 import
+#   (那条约束由 ``tests/unit/test_supervision_scoping.py`` 用 AST 扫 import 语句钉着)。
+#   现有的边全是向下的:``supervision_api → scoping``、``supervision_api → documents → scoping``、
+#   ``tools → scoping``,谁都到不了本模块,成不了环。
+#
+#   拷贝少一份买到的是什么:那道导入期守卫**只数键、不比值**,它拦得住「db 加了一档而这里漏配」,
+#   拦不住「两份拷贝的中文名漂开」—— 后者只能靠拷贝数量本身减少来防(TODO-45 A 组)。
+#   ⚠️ 剩下的那份跨语言镜像 ``scripts/frontend-overrides/supervision-lib.ts`` 收敛不掉,
+#   改中文名要手工带上它(CLAUDE.md 同源清单有登记)。
+#
+# 导入期「八档都有名字」那道硬失败守卫随中文名一起搬去了 scoping.py,不在本模块再写一遍。
 
-_UNNAMED_STATUSES: Final[tuple[str, ...]] = tuple(
-    s for s in hazards.STATUSES if s not in _STATUS_ZH
+_REINSPECT_DOC_TYPE: Final[str] = "reinspect"
+"""``hazard_docs`` 里那条**不是文书**的行:复查留痕,没有 artifact_id,也没有编号类型段。"""
+
+_DOC_TYPE_ZH: Final[dict[str, str]] = {
+    **{kind.name.lower(): DOC_TITLE_ZH[kind] for kind in DocKind if kind is not DocKind.HAZARD},
+    _REINSPECT_DOC_TYPE: "复查记录",
+}
+"""``hazard_docs.doc_type`` → 中文名。详情端点拿它填 ``doc_type_display``,
+``_filename()`` 拿它拼文件名。
+
+**文书那五档是从 ``core/doc_no.DOC_TITLE_ZH`` 派生的,不是手抄** —— 那边改了名字这边自动跟上。
+两个孤儿在 ``doc_no.DocKind`` 的头注里写明,这里正好对上:
+  · ``DocKind.HAZARD`` 是隐患自己的身份号、不是文书,所以从派生里剔掉;
+  · ``reinspect`` 在方案 §6.3 的编号表里没有类型段,所以 ``DocKind`` 里没有它,单独补一行。
+**别写成"六档一一对应"的循环** —— 两头各有一个孤儿,循环写出来必错一头。
+
+⚠️ ``agents/supervision/tools.py`` 有一份**同样派生**的表(``_DOC_TYPE_ZH``),
+两份唯一手写的格子是「reinspect → 复查记录」这一行。为什么没收敛成一份:
+  · 不能 import tools.py —— 它拉 langchain,而本模块是被 langgraph 按文件路径加载的 HTTP 层;
+  · 也不能下沉到 ``scoping.py`` —— 那个模块的 import 白名单里**没有** ``core/doc_no``,
+    而白名单是被 ``test_supervision_scoping.py`` 用 AST 钉死的(见那边头注)。
+真要收敛,该动的是 ``core/doc_no.py``(给它一档 reinspect 并同步 ``DOC_TITLE_ZH``),
+那是另一件事。在那之前,``test_supervision_api.py`` 有一条断言把两份钉成逐字相同。
+"""
+
+_UNNAMED_DOC_TYPES: Final[tuple[str, ...]] = tuple(
+    t for t in hazards.DOC_TYPES if t not in _DOC_TYPE_ZH
 )
-if _UNNAMED_STATUSES:  # pragma: no cover —— 只在 db 层加了状态而这里漏配时触发
+if _UNNAMED_DOC_TYPES:  # pragma: no cover —— 只在两张词表漂了时触发
     raise RuntimeError(
-        f"状态 {_UNNAMED_STATUSES} 没有中文名 —— db/hazards.py 的 STATUSES 加了档,"
-        "本模块的 _STATUS_ZH 要跟上。做成导入时硬失败是刻意的:漏配的表现是"
-        "回给工友的话里冒出一个英文状态词,而那不会有任何报错"
+        f"文书类型 {_UNNAMED_DOC_TYPES} 没有中文名 —— db/hazards.py 的 DOC_TYPES 加了档,"
+        "supervision_api.py 的 _DOC_TYPE_ZH 要跟上。做成导入时硬失败是刻意的:漏配的表现是"
+        "详情面板上冒出一个英文类型词,而那不会有任何报错"
+    )
+
+_STATUS_DELETED: Final[str] = "deleted"
+"""``POST /supervision/reject`` 回执里的 ``status``。
+
+🔴 **全项目唯一一个不属于 ``db.STATUSES`` 八档的状态值。** 它不是状态机里新加的一档 ——
+那一行已经从库里**删掉**了,压根没有状态可报,而回执的形状又是冻结的(``status`` 这个键
+必须在)。做成命名常量而不是就地写字面量,理由同 ``_REINSPECT_NO_MARK``:
+将来有人给状态机加档时,能一眼看见这个值是**刻意**在八档之外的。
+
+下面那道导入期硬失败守着「哪天真有人往 ``STATUSES`` 里加一档叫 deleted」——
+撞上了的表现是前端分不清「这条被否决了」和「这条处于 deleted 状态」,
+而两种情况该做的事完全相反(刷新划掉 vs 继续处置)。
+``test_supervision_api.py`` 里另有一条把这个约束写成人看得见的形式。
+"""
+
+if _STATUS_DELETED in hazards.STATUSES:  # pragma: no cover —— 只在有人加了同名状态时触发
+    raise RuntimeError(
+        f"db/hazards.py 的 STATUSES 里出现了 {_STATUS_DELETED!r},"
+        "它和 supervision_api.py 用来表示「这条已被否决删除」的哨兵值撞了 —— "
+        "换一个状态名,或者给 reject 的回执另挑一个哨兵值"
     )
 
 # 会签发的五种文书 ``ISSUING_KINDS`` 与「它们的 doc_type 都在 hazards.DOC_TYPES 里」
@@ -383,8 +499,25 @@ def _respond(env: Envelope, status: int) -> JSONResponse:
 
 
 def _zh(status: str) -> str:
-    """状态 → 中文。词表在导入时已校验齐全,这里的兜底只为不让展示层炸掉。"""
-    return _STATUS_ZH.get(status, status)
+    """状态 → 中文。词表(``scoping.STATUS_ZH``)在导入时已校验覆盖八档,
+    这里的 ``.get`` 兜底只为不让展示层炸掉 —— **不是**允许漏配的意思。"""
+    return scoping.STATUS_ZH.get(status, status)
+
+
+def _filename(doc_type: str, doc_no: str) -> str:
+    """一份文书落盘时的文件名:``<中文名>_<编号>.docx``。
+
+    🔴 **签发那条路(``_issue_documents``)与详情那条路(``_hazard_doc_payload``)共用它,
+    谁都不许现拼第二份。** 不同源的后果是界面上下载卡的文件名和实际落盘的对不上 ——
+    **而且不会有任何报错**:卡片照渲、文件照下,只是名字换了一个,
+    等有人拿着文件名去盘上对账那天才发现。``test_supervision_api.py`` 有一条
+    真去比对两条路产出的文件名。
+
+    只接**已签发的五种文书**的 doc_type。复查记录行不走这里(它没有文件,
+    ``filename`` 给 None)—— 硬喂进来会拼出「复查记录_GYT-H-…#FC-….docx」这种
+    并不存在的文件名。判据写在调用点:**有没有 artifact_id**,不是看 doc_type。
+    """
+    return f"{_DOC_TYPE_ZH[doc_type]}_{doc_no}.docx"
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +591,13 @@ def _text(body: dict[str, Any], key: str) -> str:
 
 
 def _require_hazard(hazard_no: str) -> hazards.HazardRow:
-    """取隐患行;编号为空或查不到都在这里拦下。"""
+    """取隐患行;编号为空或查不到都在这里拦下。**写入那八条端点共用它。**
+
+    ⚠️ 查询那条路(``_work_get_hazard``)刻意**不走这里**,它的 404 那句抄的是
+    ``agents/supervision/tools.get_hazard``:面板上点开一条隐患和在对话里问同一条,
+    是同一个动作,两处说法不一样会让人以为查的是两个台账。这里这句在"动作"的语境里说
+    (「签发时没找到这条隐患」),两句都是人话,不是漏改。
+    """
     if not hazard_no:
         raise _refuse(400, ErrorCode.INVALID_INPUT, "没说是哪条隐患(缺隐患编号)。")
     row = hazards.fetch(hazard_no)
@@ -658,14 +797,20 @@ def _issue_documents(
 
     issued: list[_IssuedDoc] = []
     for kind, doc_no, payload in rendered:
-        filename = f"{DOC_TITLE_ZH[kind]}_{doc_no}.docx"
+        # ``kind.name.lower()`` 就是 hazard_docs 的 doc_type(``doc_no.DocKind`` 头注),
+        # 而文件名从**同一个** doc_type 经 ``_filename`` 拼 —— 详情端点回头拿库里那一列
+        # 也走这条路,两边才咬得死。五种签发文书必在 ``_DOC_TYPE_ZH`` 里:
+        # ``documents.ISSUING_KINDS`` 有一条导入期校验盯着「它们的 doc_type 都在
+        # hazards.DOC_TYPES 里」,而本模块的 ``_UNNAMED_DOC_TYPES`` 盯着「DOC_TYPES 都有中文名」。
+        doc_type = kind.name.lower()
+        filename = _filename(doc_type, doc_no)
         # kind=REPORT:与巡检记录同类(系统生成的 docx 产物)。**不用 DOCUMENT** ——
         # 那一档在 webapp.py 里是"用户上传的规范/任务书",混进去资料库会把监理文书
         # 列成规范。也不用 ATTENDANCE:清理器只删那一类,文书要长期留档。
         artifact_id = artifacts.register(payload, kind=ArtifactKind.REPORT, original_name=filename)
         issued.append(
             _IssuedDoc(
-                doc_type=kind.name.lower(),
+                doc_type=doc_type,
                 doc_no=doc_no,
                 artifact_id=artifact_id,
                 filename=filename,
@@ -749,7 +894,8 @@ def _issued_payload(
 
 
 # ---------------------------------------------------------------------------
-# 七个动作的同步实现(全部在线程池里跑)
+# W9 那七个写入动作的同步实现(全部在线程池里跑)。
+# W10 的三条(两条查询 + 否决)在下面自己一节,理由与判据都不一样,别混着读。
 # ---------------------------------------------------------------------------
 
 
@@ -1046,10 +1192,325 @@ def _work_escalate(body: dict[str, Any]) -> _Result:
 
 
 # ---------------------------------------------------------------------------
-# handler 外壳 —— 七个端点共用
+# 查询两条 + 否决一条(W10)—— 同样全部在线程池里跑
+#
+# 为什么会有这三条:界面上那块处置面板原先挂在**聊天流里的工具返回**上,而 supervisor 的
+# ``output_mode="last_message"`` 会把子 Agent 的工具返回整个丢掉 —— 于是面板一次都没打开过
+# (连 W3/W5 的巡检记录卡也一样)。修法是照 W7 打卡面板的先例:面板改成界面上的**常驻操作台**,
+# 数据自己直连 HTTP,一个字不经过聊天流。完整根因在 ``docs/W10_界面取不到工具返回_方案.md``。
+#
+# 🔴 **筛子与超期判据一个字都不许在这儿重写**,全部走 ``scoping``(与对话链同一份)——
+#    方案 §3.1 标红的那条:同一套判据已经有三份实现,别再制造第四份。
+# ---------------------------------------------------------------------------
+
+_PROJECT_ID_KEY: Final[str] = "project_id"
+"""清单端点那个**三态**查询参数的键名。三态里有两态靠"这个键在不在"分辨,所以它得有个名字。"""
+
+
+def _optional_project_id(params: dict[str, Any]) -> str | None:
+    """三态取值,返回值**直接喂给 ``db.list_rows(project_id=…)``,语义 1:1**::
+
+        参数不出现             → None  不筛工地(全部工地)
+        ?project_id=(有键无值)→ ""    只看未归属(D6:未归属是空串,不是 NULL)
+        ?project_id=P-xxx      → "…"  只看这个工地
+
+    🔴 **不许写成 ``params.get(key, "")``,也不许在后面接 ``or ""``。** 那样「参数不出现」
+    会塌成空串,于是「全部工地」悄悄变成「只有未归属」—— 界面上少了一大半隐患,
+    **而没有任何报错**。``db.list_rows`` 的 docstring 有原话:None 是不筛项目,
+    "" 是只看未归属,两者语义完全不同,别混用。
+
+    首尾空白照 ``_text`` 的规矩去掉:``?project_id=%20`` 是个打错的参数,当成「未归属」
+    比拿一个带空格的工地号去查(必然一条都查不到、还看不出为什么)更接近人的本意。
+    """
+    raw = params.get(_PROJECT_ID_KEY)
+    return raw.strip() if isinstance(raw, str) else None
+
+
+def _row_payload(row: hazards.HazardRow, *, today_iso: str) -> dict[str, Any]:
+    """清单/详情里的一行 = ``scoping.hazard_item()`` 那九个键,**再加两个**。
+
+    加的两个都是"表格要、对话不要"的东西,这个差别是刻意的:
+      · ``severity`` —— **未定级的隐患对人念的是它,不是 ``grade``**(那时 grade 是映射表
+        给的默认档「一般」,不是有人判过的结论;照着念就是「这条是一般隐患」,
+        而硬拦③ ``_require_graded`` 拦的正是这句话);
+      · ``project_id`` —— 操作台会跨工地看(``?project_id`` 不出现 = 全部工地),
+        不给这一格就分不出哪条属于谁。
+
+    为什么 ``scoping.hazard_item()`` 自己不给这两个键:它那份**每一行都要进模型上下文**,
+    少给少错(它的 docstring 里点名剔掉了 ``project_id``);这边是一张表格,多两列不花钱。
+    ⚠️ 反过来也成立:**别把这两个键加回 ``hazard_item`` 去** —— 那会让对话链的每一行凭空变长,
+    而且那个函数的键集合被 ``test_supervision_scoping.py`` 整个钉死了。
+    """
+    return {
+        **scoping.hazard_item(row, today_iso=today_iso),
+        "severity": row.severity,
+        "project_id": row.project_id,
+    }
+
+
+def _work_list_hazards(params: dict[str, Any]) -> _Result:
+    """GET /supervision/hazards —— 隐患清单。一次取全后在内存里筛(禁在循环里逐条查)。"""
+    scope = _text(params, "scope") or scoping.SCOPE_ACTIVE
+    if scope not in scoping.SCOPES:
+        # 🔴 明确拒绝,**不许静默回落到某一档**:``scoping.in_scope`` 认不出的词会落在
+        #    「在办」而且一声不吭(它的 docstring 点名要求调用方自己拦野词),
+        #    而少给的清单在界面上看不出来少了。措辞与 ``tools.list_hazards`` 那句同款 ——
+        #    同一件事在面板上和在对话里得是同一句话。
+        raise _refuse(
+            400,
+            ErrorCode.INVALID_INPUT,
+            f"查隐患只能按这几种来:{'、'.join(scoping.SCOPES)}。你说的「{scope}」我这儿没有。",
+        )
+
+    project_id = _optional_project_id(params)
+    rows = hazards.list_rows(project_id=project_id)
+
+    # 未归属一共几条(D6)。**它不过筛子** —— 回答的是「有没有一批隐患没人看得见」,
+    # 拿筛子筛过反而会把它藏起来(口径与 ``tools.list_hazards`` 一致)。
+    # 三态各有各的算法,但答的是同一个数:
+    #   None    → rows 就是全部,**在内存里数,不再打第二次库**:同一份快照数出来的数
+    #             不会和上面那次查询之间被人插一条,而且省一次 IO;
+    #   ""      → rows 本身就是未归属那一堆;
+    #   具体工地 → 它们不在 rows 里,只能另查一次(**只数条数**,不把明细混进本工地清单)。
+    if project_id is None:
+        unassigned = sum(1 for r in rows if not r.project_id)
+    elif not project_id:
+        unassigned = len(rows)
+    else:
+        unassigned = len(hazards.list_rows(project_id=""))
+
+    today_iso = scoping.today_hk().isoformat()
+    matched = [r for r in rows if scoping.in_scope(r, scope=scope, today_iso=today_iso)]
+    # **与对话链共用同一个旋钮**(``supervision_list_max_rows``,当前 50)。
+    # 嫌小是改环境变量的事,不是在这儿加第二个常量 —— 加了之后面板与对话会在
+    # 不同的条数上截断,而两边都显示"就这么多"。
+    limit = get_settings().supervision_list_max_rows
+    shown = [_row_payload(r, today_iso=today_iso) for r in matched[:limit]]
+    truncated = len(matched) > limit
+
+    # 三个计数都在**本次筛出来的全部行**上算(不是截断后那批):监理要的是「一共还有几条」,
+    # 截断只影响列出来几行。口径照抄 ``tools.list_hazards``,两边的数才对得上。
+    pending_count = sum(1 for r in matched if r.status == hazards.STATUS_PENDING)
+    overdue_count = sum(1 for r in matched if scoping.is_overdue(r, today_iso))
+
+    data: dict[str, Any] = {
+        "scope": scope,
+        "project_id": project_id,
+        # 「今天」原样给出去:超期是按它算的,前端要能解释「为什么这条标了超期」。
+        "today": today_iso,
+        "hazards": shown,
+        "total": len(matched),
+        "pending": pending_count,
+        "overdue": overdue_count,
+        "unassigned": unassigned,
+        "truncated": truncated,
+    }
+    return _Result(
+        200,
+        ok(
+            data,
+            _list_user_msg(
+                scope,
+                project_id=project_id,
+                total=len(matched),
+                pending=pending_count,
+                overdue=overdue_count,
+                unassigned=unassigned,
+                truncated=truncated,
+                limit=limit,
+            ),
+        ),
+    )
+
+
+def _list_user_msg(
+    scope: str,
+    *,
+    project_id: str | None,
+    total: int,
+    pending: int,
+    overdue: int,
+    unassigned: int,
+    truncated: bool,
+    limit: int,
+) -> str:
+    """清单的一句概览:几条、其中待确认/超期几条、未归属几条、截断没有。
+
+    **刻意不照抄 ``tools._list_summary``。** 那一份是念给模型听的,带着逐行清单 ——
+    对话里没有表格,不逐行念工友就看不见;而操作台自己会把 ``data.hazards`` 渲成表格,
+    这里再念一遍就是同一份数据在屏幕上出现两次。
+
+    两个计数**只在非零时**出现(这一点与 tools 那份同一个取舍):恒定带上「超期 0 条」
+    会让人把它读成一句套话,真有超期那天反而看不见。
+    """
+    if not total:
+        head = f"{scope}的隐患一条都没有。"
+    else:
+        extras = []
+        if scope != scoping.SCOPE_PENDING and pending:
+            extras.append(f"待确认 {pending} 条")
+        if scope != scoping.SCOPE_OVERDUE and overdue:
+            extras.append(f"超期 {overdue} 条")
+        middle = f"(其中{'、'.join(extras)})" if extras else ""
+        head = f"{scope}的隐患 {total} 条{middle}。"
+        if truncated:
+            head += f"条数太多,这次只给了前 {limit} 条。"
+    if not unassigned:
+        return head
+    if project_id:
+        # 看的是某个具体工地:未归属那批**不在**这份清单里,不专门说一句就永远没人看见(D6)。
+        return head + f"另外还有 {unassigned} 条隐患没归到任何工地,不在本工地清单里,别漏了。"
+    # project_id 是 None(全部工地)或空串(看的就是未归属那一堆):那批**在**本次取数
+    # 范围内,说「另外还有」就成了假话,只点明它们的存在与来历。
+    return head + f"未归属(界面上没选工地时拍的)隐患共 {unassigned} 条。"
+
+
+def _hazard_doc_payload(doc: hazards.HazardDocRow) -> dict[str, Any]:
+    """证据链里的一项:一份**文书**,或一条**复查记录**。
+
+    两种形状共用这一个函数,差别只在哪几格有值 —— 拆成两个函数各拼各的,前端就得先猜
+    自己拿到的是哪一种,而漏判的表现是少渲一块、不报错。
+    """
+    return {
+        "doc_type": doc.doc_type,
+        "doc_type_display": _DOC_TYPE_ZH[doc.doc_type],  # 键必存在:导入期已校验覆盖 DOC_TYPES
+        "doc_no": doc.doc_no,
+        "artifact_id": doc.artifact_id,
+        # 文件名与签发那条路**同源**(见 ``_filename``)。判据是**有没有 artifact_id**,
+        # 不是看 doc_type:复查行没有文件;而一份 doc_type=notice 却没落上盘的行
+        # (§6.4 认下的那种事故)也应当照实说"没有文件",不给一个点开就 404 的名字。
+        "filename": _filename(doc.doc_type, doc.doc_no) if doc.artifact_id else None,
+        # 🔴 这是 ``hazard_docs.photo_id`` —— **这一次复查**拍的那张(一次复查一张),
+        #    **不是** ``hazards.photo_id``(首次发现那张,一条隐患只有一张)。
+        #    两者混起来 = 拿发现时的照片当"整改后"的证据,而「复查必须挂照片」这条红线
+        #    (方案 §5.2)的全部意义就是事后追责时分得清这两张。文书行没有,是 None。
+        "photo_id": doc.photo_id,
+        "result": doc.result,
+        # 中文名走 ``scoping.RESULT_ZH``(全仓唯一那张表),不许在这儿写
+        # ``"合格" if … else "不合格"`` —— 那正是 S1 刚收敛掉的拷贝。
+        # **没结论就是 None,不给「—」**:那个占位符是留档文书表格里"这格本来就空"的
+        # 写法(空单元格在纸上读起来像漏填),而 JSON 里 null 才是诚实的"没有值",
+        # 空格渲成什么由前端决定。
+        "result_display": scoping.result_zh(doc.result) if doc.result else None,
+        "created_at": doc.created_at,
+    }
+
+
+def _work_get_hazard(params: dict[str, Any]) -> _Result:
+    """GET /supervision/hazards/{hazard_no} —— 单条详情 + 证据链。
+
+    证据链一次取回(``docs_of`` 收的是编号列表),不在循环里逐条查 —— 这条与
+    「上报主管部门时要一次举证」是同一个 SQL,别在这层退化成 N+1。
+    """
+    hazard_no = _text(params, "hazard_no")
+    if not hazard_no:  # pragma: no cover —— 路由的路径段不可能是空的,纯防御
+        raise _refuse(400, ErrorCode.INVALID_INPUT, "没说是哪条隐患(缺隐患编号)。")
+    row = hazards.fetch(hazard_no)
+    if row is None:
+        # 措辞与 ``tools.get_hazard`` 那句**一字不差**,与 ``_require_hazard`` 那句
+        # 刻意不同:查询这条路面板与对话是同一个动作(「看看这条隐患」),两处说法不一样
+        # 会让人以为查的是两个台账;写入那条路是另一回事(那句在动作的语境里说)。
+        raise _refuse(404, ErrorCode.NOT_FOUND, f"台账里没有「{hazard_no}」这条隐患,核对一下编号。")
+
+    docs = hazards.docs_of([row.hazard_no])
+    documents = [_hazard_doc_payload(d) for d in docs]
+    reinspections = [d for d in documents if d["doc_type"] == _REINSPECT_DOC_TYPE]
+    issued = [d for d in documents if d["doc_type"] != _REINSPECT_DOC_TYPE]
+    data: dict[str, Any] = {
+        **_row_payload(row, today_iso=scoping.today_hk().isoformat()),
+        "found_at": row.found_at,
+        "closed_at": row.closed_at,
+        # 复查过没有 = 证据链里有没有 reinspect 行。**别拿 status 推**:复查不合格之后
+        # 还能再复查,而 closed 也可能是复工令签出来的 —— 状态答不了这个问题。
+        "reinspected": bool(reinspections),
+        "documents": documents,
+    }
+    return _Result(200, ok(data, _detail_user_msg(row, issued=issued, reinspections=reinspections)))
+
+
+def _detail_user_msg(
+    row: hazards.HazardRow,
+    *,
+    issued: list[dict[str, Any]],
+    reinspections: list[dict[str, Any]],
+) -> str:
+    """详情的一句人话:现在什么状态、签了几份文书、复查过没有。
+
+    **「这条复查了吗」要能被一眼答上** —— 那是监理翻这一页最常问的一句,
+    只把它埋进 ``documents`` 里让人自己数,等于没答。
+    """
+    parts = [f"隐患「{row.item}」现在是「{_zh(row.status)}」"]
+    parts.append(f",已签 {len(issued)} 份文书" if issued else ",还没签过任何文书")
+    if not reinspections:
+        parts.append(",还没复查过。")
+    else:
+        last = reinspections[-1]  # docs_of 按 id 升序,最后一条就是最近一次
+        # 没结论就如实说没结论:``hazard_docs.result`` 的 CHECK 是 ``IS NULL OR IN (…)``,
+        # 历史行 / 补录行真的可能没有结论,而念成「不合格」= 在没有结论的情况下对外
+        # 声称施工方复查没过(tools 那边修过一模一样的一处)。
+        verdict = last["result_display"] or "没记结论"
+        parts.append(f",复查过 {len(reinspections)} 次,最近一次{verdict}。")
+    return "".join(parts)
+
+
+def _work_reject(body: dict[str, Any]) -> _Result:
+    """POST /supervision/reject —— 否决一条**待确认**的隐患(状态机图里 pending 那条否决支)。
+
+    这是 ``db.delete_pending`` 唯一的调用入口(TODO-45 B 组:W9 落地时它零调用点,
+    界面上的「否决」只是把那一行本地划掉,刷新就回来了)。
+
+    🔴 **已经确认过的隐患一律拒。** ``delete_pending`` 的 ``WHERE status='pending'`` 是硬守卫;
+    这里这道先读**只为说人话**(它能说清「这条现在是已签发通知单」)—— 真正说了算的是它的
+    返回值,**拿到 False 一律 409,绝不信先读的那份快照**(与 ``_work_grade`` 同一条规矩:
+    先读与写之间有并发窗口,那一格里另一个人可能刚把它确认掉)。
+    """
+    hazard_no = _text(body, "hazard_no")
+    row = _require_hazard(hazard_no)  # 缺编号 400、查不到 404 都在这里拦下
+    if row.status != hazards.STATUS_PENDING:
+        raise _refuse(
+            409,
+            ErrorCode.CONFLICT,
+            f"隐患「{hazard_no}」现在是「{_zh(row.status)}」,不能否决 —— "
+            "只有还没人确认过的隐患才能否掉。确认过的隐患挂着留档和证据链,"
+            "不该因为一次误点就消失;确实不用再管了,走复查或上报那条路收尾。",
+        )
+    try:
+        deleted = hazards.delete_pending(hazard_no)
+    except sqlite3.IntegrityError as exc:
+        # ``hazard_docs`` 有外键指着 ``hazards``。pending 的行理论上不该挂着任何文书
+        # (所有签发都要求 open 起步),但真撞上了得收敛成人话:让它变成 500 的话,
+        # 工友看到的是「系统开小差」,而这其实是一句明确的「这条已经有留档了,删不得」。
+        raise _refuse(
+            409,
+            ErrorCode.CONFLICT,
+            f"隐患「{hazard_no}」上面已经挂了留档材料,不能否决。刷新看看它现在到哪一步了。",
+            detail=f"delete_pending({hazard_no!r}) 撞外键:{exc}",
+        ) from exc
+    if not deleted:
+        raise _refuse(409, ErrorCode.CONFLICT, _MSG_RACED)
+
+    logger.info("隐患 %s 被否决删除(工地 %s,违规项 %s)", hazard_no, row.project_id or "-", row.item)
+    return _Result(
+        200,
+        ok(
+            {
+                "hazard_no": hazard_no,
+                # 🔴 ``"deleted"`` **不在 db.STATUSES 八档里** —— 那一行已经从库里删掉了,
+                #    没有状态可报(理由与守卫都在 ``_STATUS_DELETED``)。
+                "status": _STATUS_DELETED,
+                "documents": [],  # 否决不出文书,但形状保持一致,前端不用分叉
+            },
+            f"已否决隐患「{row.item}」({hazard_no}),它从台账里删掉了,不会再出现在清单上。",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# handler 外壳 —— 十个端点共用
 # ---------------------------------------------------------------------------
 
 _Work = Callable[[dict[str, Any]], _Result]
+_Params = Callable[[Request], Awaitable[dict[str, Any]]]
 
 
 def _guarded(work: _Work) -> _Work:
@@ -1077,36 +1538,83 @@ def _guarded(work: _Work) -> _Work:
     return _run
 
 
-async def _handle(request: Request, work: _Work) -> JSONResponse:
-    """七个端点共用的外壳:令牌自查 → 收 JSON → 阻塞活挪进线程池 → 兜底 500。
+async def _get_params(request: Request) -> dict[str, Any]:
+    """GET 的入参:查询串 + 路径段,合成一个 dict,喂给与 POST 同一套 ``_Work`` 签名。
+
+    🔴 用整个查询串摊平、**不是逐个 ``.get()`` 出来再拼**:``?project_id=``(有键无值)
+    与「压根没这个参数」必须是两种不同的东西(D6 的三态,推演在 ``_optional_project_id``)。
+    dict 里"键在不在"天然分得开,而 ``.get()`` 把前者给成空串、后者给成 None,
+    中间只要有人接一个 ``or ""`` 两态就合并了。
+
+    路径段放在后面覆盖查询串:``/hazards/{hazard_no}?hazard_no=别的`` 这种请求里,
+    真正指定隐患的是**路径**,查询串里那个是噪音(或者干脆是想试探点什么)。
+    """
+    return {**request.query_params, **request.path_params}
+
+
+async def _serve(request: Request, work: _Work, params: _Params) -> JSONResponse:
+    """十个端点真正共用的那条链:令牌自查 → 取参数 → 阻塞活挪进线程池 → 兜底 500。
 
     ⚠️ 阻塞活(sqlite、docx 渲染、落盘)一步都不许留在事件循环里:这些路由和图跑在
     同一个循环上,langgraph 的 blockbuster 会抛 BlockingError(schedule/cad 都踩过)。
+    **两条 GET 一样要走线程池** —— 它们照样读 sqlite,"只是查一下"不是豁免理由。
     """
     try:
         denied = _deny_if_token_bad(request)
         if denied is not None:
             return denied
-        body = await _json_body(request)
-        result = await run_in_threadpool(_guarded(work), body)
+        collected = await params(request)
+        result = await run_in_threadpool(_guarded(work), collected)
         return _respond(result.envelope, result.status)
     except _Refused as refused:
-        # 只有 _json_body 会在线程池之外抛它(body 解析在 async 侧)。
+        # 只有取参数那一步会在线程池之外抛它(``_json_body`` 的请求体解析在 async 侧)。
         return _respond(refused.envelope, refused.status)
     except Exception:
         # 兜底:任何没料到的炸都收敛成 500 信封。堆栈只进日志;user_msg 走
         # DEFAULT_USER_MSG[INTERNAL](已是人话),不在这里另造第二句。
-        logger.exception("监理处置请求处理失败:%s", request.url.path)
+        logger.exception("监理请求处理失败:%s", request.url.path)
         return _respond(fail(ErrorCode.INTERNAL), 500)
 
 
-# 七个 handler。首行都不用反引号:starlette 生成 /docs 时把 docstring 喂给 yaml,
+async def _handle(request: Request, work: _Work) -> JSONResponse:
+    """八个 POST 端点的外壳 —— 参数来自 JSON 请求体。"""
+    return await _serve(request, work, _json_body)
+
+
+async def _handle_get(request: Request, work: _Work) -> JSONResponse:
+    """两条 GET 端点的外壳 —— 参数来自查询串与路径段,**没有请求体**。
+
+    🔴 **不许给 GET 硬塞一个空 body 去走 ``_handle``。** GET 本来就可以不带 body,
+    ``await request.json()`` 会当场抛,于是它要么被 ``_json_body`` 翻译成
+    「这次提交的内容后台没读懂,刷新一下页面再试一次」(工友照着刷新,而根本没有
+    任何东西读不懂),要么得在那个只该管解析请求体的函数里加一条「GET 就跳过」的分支。
+    两个外壳共用 ``_serve``,差的只有"参数从哪儿来"这一件事,别让它们再分叉出第二处。
+    """
+    return await _serve(request, work, _get_params)
+
+
+# 十个 handler。首行都不用反引号:starlette 生成 /docs 时把 docstring 喂给 yaml,
 # ` 开头必炸(无害,但每次启动打两条 traceback,查日志的人会被带偏 —— 同 checkin_api)。
+
+
+async def get_hazards(request: Request) -> JSONResponse:
+    """GET /supervision/hazards —— 隐患清单(scope 四选一;project_id 三态,见模块头注)。"""
+    return await _handle_get(request, _work_list_hazards)
+
+
+async def get_hazard_detail(request: Request) -> JSONResponse:
+    """GET /supervision/hazards/{hazard_no} —— 单条详情 + 证据链(文书下载信息、复查照片)。"""
+    return await _handle_get(request, _work_get_hazard)
 
 
 async def post_confirm(request: Request) -> JSONResponse:
     """POST /supervision/confirm —— 监理确认(pending → open),支持批量。"""
     return await _handle(request, _work_confirm)
+
+
+async def post_reject(request: Request) -> JSONResponse:
+    """POST /supervision/reject —— 否决一条待确认的隐患(只删 pending,确认过的拒)。"""
+    return await _handle(request, _work_reject)
 
 
 async def post_grade(request: Request) -> JSONResponse:
@@ -1144,7 +1652,13 @@ async def post_escalate(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 SUPERVISION_ROUTES: Final[list[Route]] = [
+    # 查询两条(W10)。两条路径长相不同(``/hazards`` 与 ``/hazards/{…}``),
+    # starlette 不会拿一条去遮另一条,这里的先后只为好读:先清单、后详情。
+    Route("/supervision/hazards", get_hazards, methods=["GET"]),
+    Route("/supervision/hazards/{hazard_no}", get_hazard_detail, methods=["GET"]),
+    # 写入八条(W9 七条 + W10 的 reject)。
     Route("/supervision/confirm", post_confirm, methods=["POST"]),
+    Route("/supervision/reject", post_reject, methods=["POST"]),
     Route("/supervision/grade", post_grade, methods=["POST"]),
     Route("/supervision/notice", post_notice, methods=["POST"]),
     Route("/supervision/suspend", post_suspend, methods=["POST"]),
@@ -1152,21 +1666,28 @@ SUPERVISION_ROUTES: Final[list[Route]] = [
     Route("/supervision/resume", post_resume, methods=["POST"]),
     Route("/supervision/escalate", post_escalate, methods=["POST"]),
 ]
-"""监理处置这七条路由。**必须被 ``backend/webapp.py`` 铺进它的 routes**。
+"""监理这十条路由(查询 2 + 写入 8)。**必须被 ``backend/webapp.py`` 铺进它的 routes**。
 
 ``langgraph.json`` 的 ``http.app`` 只能有一个(现在指 webapp.py),所以本项目所有
 自定义路由都在那里汇合:项目/图纸/资料管理是它自己的,打卡链是 ``CHECKIN_ROUTES``,
-监理处置是这一份。
+监理这一摊是这一份。
 
 ⚠️ webapp.py 那侧删掉这一铺,监理端点就整个消失 —— 而现象是 **404,不是启动报错**
 (langgraph 不知道有谁本该在)。改这里的路径同样要去 webapp.py 与 ``Caddyfile``
 的 ``/api/supervision*`` 那条 route 一起确认。
+
+W10 加的三条**不用动 Caddyfile**(2026-08-16 实测 ``caddy adapt``):那条 route 的匹配器
+是 ``@supervision path /api/supervision /api/supervision/*``,``path`` 只看路径、
+**不限制方法**,新加的 GET 与新路径都落在它下面;而且它在展开后的 route 表里仍排在
+``handle_path /api/*`` **之前**(handle 系列按书写顺序择一,排后面 = 永不生效且无报错)。
+⚠️ 那条 route 上的 ``request_body max_size 1MB`` 也照样套在新端点上 —— GET 没有 body,
+reject 的 body 是一个隐患编号,都够用;哪天有端点要收大 body,先回去看那一段。
 """
 
 app = Starlette(routes=list(SUPERVISION_ROUTES))
 """只给本模块的单元测试用(``TestClient(app)``),**线上不走它**。
 
-留着的理由与 ``checkin_api.app`` 一样:测试要能脱开 webapp.py 单独验鉴权与七个动作,
+留着的理由与 ``checkin_api.app`` 一样:测试要能脱开 webapp.py 单独验鉴权与这十个动作,
 而 webapp.py 在 backend/ 根、不属于 gyt 包,把它拖进单测会连带整个项目管理栈。
 """
 
@@ -1174,11 +1695,14 @@ app = Starlette(routes=list(SUPERVISION_ROUTES))
 __all__ = [
     "SUPERVISION_ROUTES",
     "app",
+    "get_hazard_detail",
+    "get_hazards",
     "post_confirm",
     "post_escalate",
     "post_grade",
     "post_notice",
     "post_reinspect_result",
+    "post_reject",
     "post_resume",
     "post_suspend",
 ]

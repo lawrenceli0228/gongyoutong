@@ -552,9 +552,14 @@ app = Starlette(
         # 且要能被 docker-compose.dev.yml 的 src 挂载热重载覆盖到)。
         # ⚠️ 删掉这一行 = 打卡端点整个消失,而现象是 404、**不是启动报错**。
         *CHECKIN_ROUTES,
-        # 监理处置(gyt/supervision_api.py 的 SUPERVISION_ROUTES)—— W9 七条:
-        # 确认 / 定级 / 通知单 / 暂停令三文书 / 复查结论 / 复工令 / 上报主管部门。
-        # **别在这儿数条数**,同上:以那个列表为准。
+        # 监理这一摊(gyt/supervision_api.py 的 SUPERVISION_ROUTES)—— 合计十条。
+        # W9 七条**写入**:确认 / 定级 / 通知单 / 暂停令三文书 / 复查结论 / 复工令 /
+        # 上报主管部门;W10 又加三条,因为界面上那块处置面板改成了**常驻操作台**、
+        # 数据不再从聊天流里取(根因见 docs/W10_界面取不到工具返回_方案.md):
+        #   GET  /supervision/hazards              隐患清单(scope 四选一、project_id 三态)
+        #   GET  /supervision/hazards/{hazard_no}  单条详情 + 证据链
+        #   POST /supervision/reject               否决一条待确认的隐患
+        # **别在这儿数条数**,同上:以那个列表为准 —— 这行数字已经跟着改过一次。
         #
         # 挂在这里的理由与打卡那一铺一字不差:``langgraph.json`` 的 ``http.app``
         # 只能有一个,这里是三拨自定义路由唯一的汇合点。实现同样住在 gyt 包里
