@@ -59,7 +59,7 @@ from gyt import supervision_api
 from gyt.agents.supervision import scoping
 from gyt.agents.supervision import tools as supervision_tools
 from gyt.agents.supervision.docgen import SUPERVISION_DISCLAIMER
-from gyt.config import get_settings
+from gyt.config import ALLOWED_IMAGE_EXT, get_settings
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind
 from gyt.core.doc_no import DocKind, DocNoExhaustedError, generate_unique
@@ -73,6 +73,31 @@ DUE_PHRASE = "下周三"
 """合法的期限原话。解析归 agents/schedule/dates.py,这里只要是它认得的写法就行。"""
 
 FAKE_JPEG = b"\xff\xd8\xff\xe0fake-photo-bytes"
+
+# --- 照片直传那条端点的样本字节 ------------------------------------------------
+# 全是**只有文件头**的假图:上传端点按魔数判类型、不解码(它只存字节,不渲染),
+# 所以文件头对了就该收下。⚠️ 这也是那条端点的能力边界 —— 它挡得住"拿别的文件冒充
+# 照片",挡不住"坏图"(``_sniff_image_ext`` 的 docstring 把这笔账写明了)。
+
+FAKE_PNG: Final[bytes] = b"\x89PNG\r\n\x1a\n" + b"fake-png-bytes"
+"""PNG 的 8 字节完整签名。**别只写前四位 ``\\x89PNG``** —— 那样这条用例在
+"实现只比前四位"时照样绿,而真正要钉的是它比完整签名。"""
+
+FAKE_WEBP: Final[bytes] = b"RIFF" + b"\x24\x00\x00\x00" + b"WEBP" + b"VP8 fake"
+"""WebP:``RIFF`` + 4 字节长度 + ``WEBP``。中间那四个字节是文件长度,内容随文件变 ——
+所以判据必须是"第 8-12 字节等于 WEBP",不能拿一条 12 字节的前缀去比。"""
+
+FAKE_WAV: Final[bytes] = b"RIFF" + b"\x24\x00\x00\x00" + b"WAVEfmt "
+"""一段 WAV。**它和 WebP 一样以 ``RIFF`` 开头** —— 只认 ``RIFF`` 的实现会把它当照片收下。
+这条样本存在的唯一意义就是钉住"两段都要比"。"""
+
+FAKE_DOCX: Final[bytes] = b"PK\x03\x04" + b"fake-zip-bytes"
+"""一份 docx(zip 容器,魔数 ``PK\\x03\\x04``)。挑它当反例是因为它是这条链上**真会出现**
+的文件:监理签发的五种文书就是 docx,界面上那些下载卡随手点开一份存下来再传回复查那一栏,
+是完全可能发生的误操作。"""
+
+FAKE_TEXT: Final[bytes] = "这是一段纯文本,不是照片。".encode()
+"""一段纯文本。它连魔数都没有,是"随手传了个 .txt"的样子。"""
 
 # --- W10 那三条端点的共用常量 -------------------------------------------------
 # 放在这里(而不是贴着用例)是因为 ``_new_hazard`` / ``_arrive`` 这两个搭台函数要用到。
@@ -235,12 +260,25 @@ def _docx_files() -> list[Path]:
     return sorted(get_settings().artifacts_dir.glob("*/*.docx"))
 
 
+def _产物文件() -> set[Path]:
+    """产物目录里现有的**全部**文件(正文 blob + sidecar)。
+
+    上传那条端点的几条"被拒"用例拿它前后对比:被拒的请求**一个字节都不许落盘**。
+    只断状态码是不够的 —— 「400 拒了」和「400 拒了但也把那份垃圾存下来了」在回执上
+    长得一模一样,而后者会让产物目录被随手一传就撑大,且没有任何报错。
+
+    ⚠️ 断"集合相等"而不是"数量没变":同一秒里另一份文件恰好被删又被建的话,
+    数量能对上而内容已经变了(这条链上真会同时有几份产物在动)。
+    """
+    return {p for p in get_settings().artifacts_dir.rglob("*") if p.is_file()}
+
+
 # ---------------------------------------------------------------------------
 # 挂载与词表:漏了都不报错
 # ---------------------------------------------------------------------------
 
 
-def test_十条路由都挂进了webapp() -> None:
+def test_十一条路由都挂进了webapp() -> None:
     """webapp.py 是自定义路由唯一的挂载点,漏铺 = 全部 404 且**没有任何启动报错**。
 
     ⚠️ 2026-08-16(W10·S4)实测到这条用例守不住的那一半,别把它当成全部保障:
@@ -255,13 +293,14 @@ def test_十条路由都挂进了webapp() -> None:
     declared = {route.path for route in supervision_api.SUPERVISION_ROUTES}
 
     assert declared <= mounted, f"这些路由没挂进 webapp.py:{sorted(declared - mounted)}"
-    # 八条 POST(W9 七条 + W10 的 reject)+ 两条 GET(W10)
-    assert len(declared) == 10, "加了路由要连同这个数一起改 —— 它是「有没有漏铺」的对账锚"
-    # 逐条点名 W10 那三条:只对总数会在「删一条旧的、加一条新的」时对上而失效。
+    # 八条 POST(W9 七条 + W10 的 reject)+ 两条 GET(W10)+ 一条上传(照片直传)
+    assert len(declared) == 11, "加了路由要连同这个数一起改 —— 它是「有没有漏铺」的对账锚"
+    # 逐条点名 W10 那三条与上传那条:只对总数会在「删一条旧的、加一条新的」时对上而失效。
     for 新路径 in (
         "/supervision/hazards",
         "/supervision/hazards/{hazard_no}",
         "/supervision/reject",
+        "/supervision/photo",
     ):
         assert 新路径 in declared and 新路径 in mounted, f"{新路径} 没挂上"
 
@@ -337,6 +376,28 @@ class Test鉴权:
 
         assert resp.status_code == 401
         assert resp.json()["error_code"] == "UNAUTHORIZED"
+
+    def test_上传照片也得过令牌闸(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """🔴 上传口不拦 = 给任何路过的人一个**往这台机器写文件**的入口。
+
+        单列一条而不是并进上面那张表:它的请求体是**原始字节**,``client.post(json=...)``
+        套不上(那正是它要另开一个外壳的原因)。
+
+        断言里那句「盘上一个字节都没多」是关键的另一半:401 与「401 但已经把 10MB
+        收进来落了盘」在回执上长得一模一样,只有产物目录分得开 ——
+        ``_serve`` 里令牌自查排在读 body 之前,钉的就是这个顺序。
+        """
+        monkeypatch.setenv("GYT_ACCESS_TOKEN", REAL_TOKEN)
+        get_settings.cache_clear()
+        之前 = _产物文件()
+
+        resp = client.post("/supervision/photo", content=FAKE_JPEG)
+
+        assert resp.status_code == 401
+        assert resp.json()["error_code"] == "UNAUTHORIZED"
+        assert _产物文件() == 之前, "被拒的请求不许在盘上留下任何东西"
 
     def test_GET带对令牌就放行到业务层(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
@@ -1843,3 +1904,217 @@ class Test否决:
         ⚠️ 拿常量断,**别手写 ``"deleted"``** —— 手写的那份在有人换了哨兵值时会照绿。
         """
         assert supervision_api._STATUS_DELETED not in hazards.STATUSES
+
+
+# ---------------------------------------------------------------------------
+# POST /supervision/photo —— 直传复查照片,换一个 photo_id
+# ---------------------------------------------------------------------------
+#
+# 这条端点存在的理由:「登记复查结论」要填一串 32 位十六进制,而后端此前**没有任何
+# 通用的传图口子** —— PHOTO 产物只能经由聊天的 core/uploads.py 产生。于是做复查的人
+# 手机里刚拍完那张照片,却得先发进聊天框、再把图底下那串 hex 抄回表单。
+# 真人测试的反馈原话是「照片不能是编号意义不明」。
+#
+# 这一组要钉死的静默错误:
+#   · **只信 Content-Type** —— 这张照片接下来会被 ``_require_photo`` 当成复查证据,
+#     而复查合格是**销项**的唯一通道。只信自述的话,一个 .txt 改个头就能把隐患销掉,
+#     而留档文书上写着「隐患已消除」。魔数那道闸没了,现有用例**一条都不会红**
+#     (它们传的本来就是合法图),所以这一组必须自己造反例。
+#   · **只认 RIFF 就当 WebP** —— WAV / AVI 同为 RIFF 容器,会被当照片收下。
+#   · **被拒的请求也落盘** —— 400/413/401 在回执上和"拒了但也存了"长得一模一样。
+#   · **两个端点各自绿却接不上** —— 上传回的 photo_id 若过不了 ``_require_photo``
+#     的三道校验(kind=PHOTO、sidecar 在、正文文件在),这条链就是断的,
+#     而单独验任一端都看不出来。下面 ``test_换回来的编号复查端点真的认`` 串起来验。
+
+
+def _传照片(client: TestClient, payload: bytes, **kwargs: Any) -> Any:
+    """打上传端点。``content=`` 发的是**原始字节**(不是 multipart、不是 JSON)。"""
+    return client.post("/supervision/photo", content=payload, **kwargs)
+
+
+class Test照片直传:
+    def test_传一张JPEG换回一个照片编号(self, client: TestClient) -> None:
+        """快乐路径,把回执形状整个钉住。
+
+        ``filename`` 要是**人话**(不是内部路径、不是 32 位 hex):它会原样进产物 sidecar,
+        将来下载卡上显示的就是它。扩展名由**魔数**决定,不是客户端说了算。
+        """
+        resp = _传照片(client, FAKE_JPEG)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["error_code"] is None
+        assert body["user_msg"], "得给工友一句话,不能空着"
+        photo_id = body["data"]["photo_id"]
+        assert re.fullmatch(r"[0-9a-f]{32}", photo_id), f"照片编号不是 32 位小写 hex:{photo_id!r}"
+        assert body["data"]["filename"] == "复查照片.jpg"
+        # 落盘的是 PHOTO 产物,而且正文字节一个不差 —— register 收的是原始 body。
+        assert artifacts.read_meta(photo_id)["kind"] == ArtifactKind.PHOTO.value
+        assert artifacts.resolve(photo_id).read_bytes() == FAKE_JPEG
+        assert artifacts.resolve(photo_id).suffix == ".jpg", "没有后缀的照片浏览器打不开"
+
+    def test_换回来的编号复查端点真的认(self, client: TestClient) -> None:
+        """🔴 **这条是这一组里最强的一条** —— 它把上传与复查两个端点串起来验。
+
+        单独验任一个都可能各自绿而接不上:``_require_photo`` 有三道校验
+        (kind 必须是 PHOTO、sidecar 取得到、正文文件真的在),上传那边只要漏配一样
+        (比如 kind 写成 DOCUMENT、或者扩展名被剥成空串导致正文落在另一个名字上),
+        表现就是**上传成功、复查却说"没找到这张复查照片"** —— 而两边的用例各自都绿。
+
+        走完整条真实动线:传照片 → 拿编号去登记复查合格 → 隐患销项,
+        并且证据链里那条 reinspect 记录挂的正是这个编号。
+        """
+        hazard_no = _arrive(hazards.STATUS_NOTIFIED)
+
+        上传 = _传照片(client, FAKE_JPEG)
+        assert 上传.status_code == 200
+        photo_id = 上传.json()["data"]["photo_id"]
+
+        复查 = client.post(
+            "/supervision/reinspect-result",
+            json={"hazard_no": hazard_no, "result": "pass", "after_photo_id": photo_id},
+        )
+
+        assert 复查.status_code == 200, f"上传换来的编号复查端点不认:{复查.json()}"
+        assert 复查.json()["data"]["status"] == hazards.STATUS_CLOSED
+        assert [(r.doc_type, r.photo_id) for r in hazards.docs_of([hazard_no])] == [
+            ("reinspect", photo_id)
+        ]
+
+    @pytest.mark.parametrize(
+        ("样本", "扩展名"),
+        [(FAKE_JPEG, ".jpg"), (FAKE_PNG, ".png"), (FAKE_WEBP, ".webp")],
+        ids=["jpeg", "png", "webp"],
+    )
+    def test_三种格式都认而且落盘扩展名跟着魔数走(
+        self, client: TestClient, 样本: bytes, 扩展名: str
+    ) -> None:
+        """JPG / PNG / WebP 三种。扩展名必须落在 ``config.ALLOWED_IMAGE_EXT`` 里,
+        否则 ``artifacts._safe_ext`` 会把它剥成空串 —— 文件落盘没有后缀、浏览器打不开,
+        而 ``_require_photo`` 只查 kind 和文件在不在,**照样放行**。
+        """
+        resp = _传照片(client, 样本)
+
+        assert resp.status_code == 200, resp.json()
+        photo_id = resp.json()["data"]["photo_id"]
+        assert resp.json()["data"]["filename"].endswith(扩展名)
+        assert artifacts.resolve(photo_id).suffix == 扩展名
+
+    @pytest.mark.parametrize(
+        ("样本", "叫什么"),
+        [(FAKE_DOCX, "docx"), (FAKE_TEXT, "纯文本"), (FAKE_WAV, "WAV(同为RIFF容器)")],
+    )
+    def test_不是图片的一律拒而且盘上不留东西(
+        self, client: TestClient, 样本: bytes, 叫什么: str
+    ) -> None:
+        """🔴 复查合格是**销项**的唯一通道 —— 放一个非图片文件进去,等于让人拿一个 .txt 销项。
+
+        WAV 那一档单独存在:它和 WebP 一样以 ``RIFF`` 开头,只比前四个字节的实现会把它
+        当照片收下(``_WEBP_TAG_AT`` 那段注释说的就是这件事)。
+
+        「盘上不留东西」是另一半:被拒的请求先落盘再报 400 的话,产物目录会被随手一传
+        就撑大,而回执看起来完全正常。这也钉住了实现里"先判类型、再落盘"的顺序。
+        """
+        之前 = _产物文件()
+
+        resp = _传照片(client, 样本)
+
+        assert resp.status_code == 400, f"{叫什么}被当成照片收下了:{resp.json()}"
+        assert resp.json()["error_code"] == "INVALID_INPUT"
+        assert "照片" in resp.json()["user_msg"]
+        assert _产物文件() == 之前, f"{叫什么}被拒了,但盘上多了东西"
+
+    def test_Content_Type说是图片也不算数(self, client: TestClient) -> None:
+        """🔴 **判据是魔数,不是客户端自述的 Content-Type。**
+
+        这条与上面那组的区别:上面传的反例不带任何声明,而**真正的攻击面是带着
+        ``image/jpeg`` 头的非图片** —— 只信 header 的实现在上面那组里会红一部分
+        (httpx 默认不给 content= 加 Content-Type),但在这一条上必红。
+        「浏览器给的 MIME 不可靠」本仓在 DXF 那条线上已经证过一次。
+
+        另断一句:回执里**不许复述**客户端报的那个 MIME —— 念出来只会让人以为
+        "我明明填的是 image/jpeg 啊",而那个值正是我们不信的东西(它走 detail 进日志)。
+        """
+        之前 = _产物文件()
+
+        resp = _传照片(client, FAKE_DOCX, headers={"Content-Type": "image/jpeg"})
+
+        assert resp.status_code == 400
+        assert "image/jpeg" not in resp.json()["user_msg"]
+        assert _产物文件() == 之前
+
+    def test_超过上限的照片回413而且盘上不留东西(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """上限走 ``settings.photo_max_mb``(**与打卡同一个旋钮**,禁止硬编码)——
+        「环境变量能改到它」本身就是断言的一半:改不到就说明有人把上限写死了。
+
+        把上限压到 ~100 字节来测,免得真造 10MB(判据抄 ``test_checkin_api``
+        的 ``test_超限body当场413且一步不往下走``)。
+        """
+        monkeypatch.setenv("GYT_PHOTO_MAX_MB", "0.0001")  # ≈104 字节
+        get_settings.cache_clear()
+        之前 = _产物文件()
+
+        resp = _传照片(client, FAKE_JPEG + b"x" * 4096)
+
+        assert resp.status_code == 413
+        assert resp.json()["error_code"] == "FILE_TOO_LARGE"
+        assert "10" not in resp.json()["user_msg"], "兆数得跟着 settings 走,不是写死的 10"
+        assert _产物文件() == 之前, "超限的照片不许落盘"
+
+    def test_没超上限的照片照收(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """上一条的反面。没有它的话,「上限调成 0 字节」这种改法也能让上一条绿,
+        而那等于所有照片都传不上来。"""
+        monkeypatch.setenv("GYT_PHOTO_MAX_MB", "0.0001")  # ≈104 字节
+        get_settings.cache_clear()
+
+        resp = _传照片(client, FAKE_JPEG)  # 20 字节,稳在上限之内
+
+        assert resp.status_code == 200, resp.json()
+
+    def test_空body是400(self, client: TestClient) -> None:
+        """前端拼请求时把文件漏了。**不许被当成"传了张空照片"收下** ——
+        收下的话产物库里会多一份 0 字节的"照片",而复查那一栏点开是空的。"""
+        之前 = _产物文件()
+
+        resp = _传照片(client, b"")
+
+        assert resp.status_code == 400
+        assert resp.json()["error_code"] == "INVALID_INPUT"
+        assert "照片" in resp.json()["user_msg"]
+        assert _产物文件() == 之前
+
+    def test_回执里没有documents键(self, client: TestClient) -> None:
+        """它**不是动作端点、不出文书**,所以不在那份冻结的 ``data`` 形状里
+        (模块头注「Envelope 的 data 形状是冻结的」那一节写明了这条例外)。
+
+        钉死它是为了防"顺手补齐" —— 补一个恒空的 ``documents`` 上去,前端就会多渲
+        一块永远空着的下载卡位;而 ``hazard_no`` / ``status`` 更不该有:
+        这条端点压根不认识任何一条隐患,只是把字节存下来。
+        """
+        resp = _传照片(client, FAKE_JPEG)
+
+        assert resp.status_code == 200
+        assert set(resp.json()["data"]) == {"photo_id", "filename"}
+
+    def test_魔数认出来的扩展名全在白名单里(self) -> None:
+        """把那道导入期硬失败写成人看得见的形式(同 ``_deleted这个哨兵值`` 那条的手法)。
+
+        漏配的表现:照片落盘没有后缀,而 ``_require_photo`` 只查 kind 与文件在不在、
+        照样放行 —— 证据链里挂着一张**浏览器打不开**的照片,不会有任何报错。
+        """
+        assert set(supervision_api._SNIFFED_EXTS) <= ALLOWED_IMAGE_EXT
+
+    def test_同一张照片传两次是两个编号(self, client: TestClient) -> None:
+        """**刻意不做去重、不做幂等**(实现的 docstring 记了这笔账)。
+
+        写成用例是为了让下一个人看见这是**决定**而不是遗漏:哪天真要上幂等,
+        得先想清楚是加客户端 event_id(打卡那条链的账)还是按内容 hash 建索引,
+        而不是看到"传两次两条"就当 bug 修。
+        """
+        第一次 = _传照片(client, FAKE_JPEG).json()["data"]["photo_id"]
+        第二次 = _传照片(client, FAKE_JPEG).json()["data"]["photo_id"]
+
+        assert 第一次 != 第二次

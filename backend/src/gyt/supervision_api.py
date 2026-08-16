@@ -81,6 +81,8 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
                                           "after_photo_id": "<32位hex>"}
         复查结论。**结论由人下**(D11),``after_photo_id`` 必填,而且必须是
         **真实存在的一张照片**:kind=PHOTO + 正文文件还在(三道校验见 ``_require_photo``)。
+        那个编号从下面 ``POST /supervision/photo`` 换来 —— 别让人去聊天记录里
+        抄一串 hex(真人测试的原话:「照片不能是编号意义不明」)。
         它**不出文书**:只往 hazard_docs 挂一条 ``reinspect`` 记录
         (那一行的 ``doc_no`` 长相刻意不像文书编号,见 ``_REINSPECT_NO_MARK``)。
 
@@ -90,17 +92,57 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
     POST /supervision/escalate           {"hazard_no": …}
         《监理报告》报主管部门,正文附 hazard_docs 完整证据链。只从 reinspect_failed 进。
 
-响应码(十条端点同一套,**GET 也一样**):
+**上传一条**,``POST``,请求体是**原始图片字节** —— 不是 multipart、不是 JSON::
+
+    POST /supervision/photo
+      X-Api-Key:    <与其余十条同一把锁>
+      Content-Type: 随便填(``image/jpeg`` 之类)—— **服务端一个字都不信它**
+      body:         图片原始字节
+
+      → 200 {"ok": true,
+             "data": {"photo_id": "<32位hex>", "filename": "复查照片.jpg"},
+             "user_msg": "照片收到了。", "error_code": null}
+
+        把一张照片登记成 ``ArtifactKind.PHOTO`` 产物,回一个 ``photo_id``,
+        给上面 ``reinspect-result`` 的 ``after_photo_id`` 用。
+
+        **为什么非有这条不可:** 「登记复查结论」要填一个 32 位十六进制编号,
+        而后端此前**没有任何通用的传图口子** —— PHOTO 产物只能经由聊天的
+        ``core/uploads.py`` 产生。于是做复查的人手机里刚拍完那张照片,却得先发进
+        聊天框、再把图底下那串 hex 抄回表单。真人测试的反馈原话是
+        「照片不能是编号意义不明」,这条端点就是那句话的解法。
+
+        协议手法整套照抄 ``checkin_api.post_checkin``(它已经跑通过一整轮上线,
+        连 Caddy 的请求体闸都是按它调的),**别自己发明第二套**:
+          · **raw body 而不是 multipart** —— starlette 的 multipart 解析器
+            ``spool_max_size = 1MB``,超过就自动滚去 /tmp(原图落盘),而且要
+            解析完整请求才知道多大、掐不住流(理由原文在 checkin_api 头注);
+          · 大小上限取 ``settings.photo_max_mb``(**与打卡同一个旋钮**,当前 10MB),
+            边收边数、超限当场断,回 **413**(码与打卡那条一字不差);
+          · 🔴 **类型按魔数判,不信 ``Content-Type``** —— 那是客户端自述的。
+            认 JPEG / PNG / WebP 三种(见 ``_sniff_image_ext``),认不出回 400。
+            这一道不是洁癖:这张照片接下来会被 ``_require_photo`` 当成**复查证据**,
+            而复查合格是**销项**的唯一通道 —— 只信 Content-Type 的话,一个 .txt
+            改个头就能把隐患销掉,留档文书上写着「隐患已消除」。
+
+        ⚠️ 它**不是动作端点、不出文书**,所以 ``data`` 里**没有** ``documents`` 键 ——
+        那不是漏了,见下面「Envelope 的 data 形状是冻结的」一节的说明。
+
+响应码(十一条端点同一套,**GET 与上传也一样**):
 
     200  ok=True
     400  INVALID_INPUT   缺字段 / 级别或结论不在词表 / **筛子不在四个词里** /
-                         **期限解析不出** / 照片编号不对
+                         **期限解析不出** / 照片编号不对 /
+                         **传上来的 body 是空的、或者魔数认不出是图片**
     401  UNAUTHORIZED    handler 自查令牌不过(纵深防御,同 checkin_api)。
-                         **两条 GET 同样过这道闸** —— 隐患清单里有工地、有违规项、
-                         有照片编号,是要登录才看得到的东西,不是公开数据。
+                         **两条 GET 与上传那条同样过这道闸** —— 隐患清单里有工地、
+                         有违规项、有照片编号,是要登录才看得到的东西,不是公开数据;
+                         而上传口不拦就是给全网一个往这台机器写文件的入口。
     404  NOT_FOUND       隐患编号查不到 / 复查照片查不到
     409  CONFLICT        三条硬拦、状态机不允许、并发把状态改掉了、
                          否决一条已经确认过的隐患
+    413  FILE_TOO_LARGE  **只有 ``POST /supervision/photo``**:流式读到超过
+                         ``photo_max_mb`` 就当场断,不等收完
     500  INTERNAL        兜底;编号摇不出来也落这里。user_msg 是人话,细节只进日志
 
 ===========================================================================
@@ -151,11 +193,19 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
     是那个 ``"deleted"``:三个键一个不少,前端那套归一化照旧能用,只是它拿到的
     「状态」不在八档里 —— 该刷新列表、把这一条划掉,而不是去查这个状态怎么处置。
 
-**两条 GET 不在这份冻结形状里**,它们各有自己的 ``data``(清单是
-``{scope, project_id, today, hazards[], total, pending, overdue, unassigned, truncated}``,
-详情是「清单那一行的全部字段 + found_at / closed_at / reinspected / documents[]」)。
-理由:冻结那份形状是为了「N 张下载卡对齐 N 份文书」,而查询回的是**表格**,
-硬套一个 ``documents`` 恒空的壳只会让前端多一层拆包。两者共同的只有四键信封。
+**两条 GET 与上传那条不在这份冻结形状里**,它们各有自己的 ``data``:
+
+  · 清单 = ``{scope, project_id, today, hazards[], total, pending, overdue,
+    unassigned, truncated}``;
+  · 详情 = 「清单那一行的全部字段 + found_at / closed_at / reinspected / documents[]」;
+  · **上传 = ``{photo_id, filename}``,就两个键,没有 ``documents``、也没有
+    ``hazard_no`` / ``status``**(它压根不认识任何一条隐患,只是把字节存下来)。
+
+理由:冻结那份形状是为了「N 张下载卡对齐 N 份文书」,只对**动作**成立 ——
+查询回的是**表格**,上传回的是**一个编号**,硬套一个 ``documents`` 恒空的壳
+只会让前端多一层拆包。三者与那八条动作共同的只有四键信封。
+⚠️ 所以下一个人看到 ``POST /supervision/photo`` 的 ``data`` 里没有 ``documents``
+**不是漏了**,别"顺手补齐" —— 补上去等于在界面上多一块恒空的下载卡位。
 
 🔴 **详情里 ``documents[*].filename`` 与签发那条路给的必须一模一样。**
 两处都走 ``_filename()``,谁也不许现拼第二份 —— 不同源的表现是界面上下载卡的文件名
@@ -189,6 +239,14 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
 - **不设限流桶。** 与打卡不同:这些端点在登录闸 + ``X-Api-Key`` 之后,而且状态机本身
   就是闸(同一条隐患签过一次,第二次会被迁移守卫拒掉),刷不出量来。
   哪天要加,照抄 ``checkin_api.get_global_limiter`` 那只桶的写法,连测试夹具一起抄。
+
+  ⚠️ **``POST /supervision/photo`` 让这条理由缺了一角,写在这儿免得下一个人照着"反正
+  有状态机兜着"往下推。** 上传口**不经过任何状态机** —— 一个已登录的人循环传 10MB
+  照片,每次都真落一份产物到盘上,量只由 Caddy 的请求体闸和磁盘决定。
+  暂时接受的账:① 它在登录闸之后,不是公网敞开的口;② 落的是定长的 ``photo_max_mb``,
+  不是无界流;③ 本批要的是"能传照片"而不是"抗刷"。
+  真要收紧,该加的是**一只按字节计的全局桶**(不是按次数),而且 checkin 那边已经有
+  同型的先例可抄。**别把这条理由继续当成"整个 supervision 都不用限流"的结论。**
 - **并发**:「先读一次做判断」与「写」之间有窗口,真正说了算的是 db 层
   ``UPDATE … WHERE status IN (…)`` 的 rowcount —— 本模块拿到 False 一律回 409
   「状态刚被改过」,**绝不信先读的那份快照**。
@@ -249,7 +307,7 @@ from gyt.agents.supervision import scoping
 # 而正文的唯一真相只能有一处(免责句串档、编号没印上去,都是不报错的事故)。
 from gyt.agents.supervision.documents import UNASSIGNED_PROJECT_ZH, DocContext, render_doc
 from gyt.attendance.receipt import TimeSnapshot, make_snapshot
-from gyt.config import get_settings
+from gyt.config import ALLOWED_IMAGE_EXT, get_settings
 from gyt.core import artifacts
 from gyt.core.access import _api_key_from_headers, effective_access_token
 from gyt.core.artifacts import ArtifactKind, ArtifactNotFound
@@ -1506,7 +1564,166 @@ def _work_reject(body: dict[str, Any]) -> _Result:
 
 
 # ---------------------------------------------------------------------------
-# handler 外壳 —— 十个端点共用
+# 照片直传(``POST /supervision/photo``)—— 后端此前唯一的 PHOTO 产出口在聊天链
+#
+# 它既不是查询也不是动作:不认识任何一条隐患,只把字节存下来换一个编号。
+# 协议整套照 ``checkin_api`` 那条走(raw body + 边收边数 + 魔数判类型),理由见模块头注。
+# ---------------------------------------------------------------------------
+
+_BYTES_PER_MB: Final[int] = 1024 * 1024
+"""MB → 字节。与 ``checkin_api`` / ``core/uploads.py`` 同一换算,别另起一套。
+
+刻意在本模块再写一份而不是从那两处 import:本模块与 ``checkin_api`` 都是被 langgraph
+**按文件路径**加载的 HTTP 层,互相 import 不可靠(``core/access.py`` 的头注写明了这件事:
+两者唯一的共同地面是 gyt 包)。为一个 1024×1024 去 core 里开一个新模块不划算。
+"""
+
+_PHOTO_BODY_KEY: Final[str] = "payload"
+"""``_raw_body`` 把收到的字节塞进 params dict 的键名。
+
+这么绕一道是为了让上传这条端点**共用 ``_serve``** —— 三个外壳的差别只有"参数从哪儿来"
+这一件事(见 ``_handle`` / ``_handle_get`` / ``_handle_body`` 三兄弟),
+而 ``_Work`` 的签名收的是 ``dict[str, Any]``。
+"""
+
+_PHOTO_NAME_STEM: Final[str] = "复查照片"
+"""落盘产物的 ``original_name`` 词干,拼上魔数认出来的扩展名。
+
+**给人话名字、不给内部路径**:这个名字会原样出现在回执的 ``filename`` 里,
+也会进产物 sidecar,将来下载卡上显示的就是它。
+"""
+
+_JPEG_MAGIC: Final[bytes] = b"\xff\xd8\xff"
+"""JPEG 文件头(SOI + 下一个 marker 的 0xFF)。与 ``checkin_api.JPEG_MAGIC`` 同一串。"""
+
+_PNG_MAGIC: Final[bytes] = b"\x89PNG\r\n\x1a\n"
+"""PNG 的 8 字节签名(含那两组 CRLF/EOF 探测字节,规范 §5.2 的完整签名,不是只认前四位)。"""
+
+_WEBP_RIFF: Final[bytes] = b"RIFF"
+_WEBP_TAG: Final[bytes] = b"WEBP"
+_WEBP_TAG_AT: Final[int] = 8
+"""WebP 是 RIFF 容器:前 4 字节 ``RIFF``、第 4-8 字节是文件长度(内容随文件变)、
+第 8-12 字节才是 ``WEBP``。**必须两段都比** —— 只认 ``RIFF`` 的话,WAV / AVI 这些
+同为 RIFF 容器的文件会被当成图片收下。"""
+
+_IMAGE_MAGICS: Final[tuple[tuple[bytes, str], ...]] = (
+    (_JPEG_MAGIC, ".jpg"),
+    (_PNG_MAGIC, ".png"),
+)
+"""「前缀魔数 → 落盘扩展名」两条。WebP 不在这张表里,因为它要比两段(见 ``_WEBP_TAG_AT``)。
+
+🔴 **扩展名必须落在 ``config.ALLOWED_IMAGE_EXT`` 里**,否则 ``artifacts._safe_ext``
+会把它剥成空串、文件落盘时没有后缀 —— 而 ``_require_photo`` 只查 kind 与文件在不在,
+照样放行,于是证据链里挂着一张**浏览器打不开**的"照片"。下面有导入期硬失败守着
+(同 ``core/uploads.py`` 末尾那道,理由一字不差)。
+"""
+
+_WEBP_EXT: Final[str] = ".webp"
+
+_MSG_PHOTO_OK: Final[str] = "照片收到了。"
+"""上传成功那句。刻意短:这一步不是终点,工友接着要在界面上点「登记复查结论」。"""
+
+_MSG_PHOTO_EMPTY: Final[str] = "没收到照片,重新拍一张再传一次。"
+"""body 是空的。多半是前端拼请求时把文件漏了,但对工友只说"重拍一张"这件他能做的事。"""
+
+_MSG_PHOTO_NOT_IMAGE: Final[str] = (
+    "传上来的这个文件不是照片(只认 JPG、PNG、WebP 三种)。用手机拍一张,"
+    "或者从相册里选一张照片再传一次。"
+)
+"""魔数认不出。**点名认哪三种** —— 只说"不是照片"的话,传 HEIC 的人会一直重传同一张。
+
+⚠️ 不许把客户端报的 ``Content-Type`` 复述进这句话:它正是我们不信的那个东西,
+念出来只会让人以为"我明明填的是 image/jpeg 啊"。那个值走 ``detail=`` 进日志。
+"""
+
+
+def _msg_photo_too_large(max_mb: float) -> str:
+    """413 那句人话。带上具体兆数 —— 「太大」必须能回答「多大才行」
+    (判据同 ``attendance/messages.photo_too_large``,那边是打卡链的文案,不跨用)。"""
+    return f"照片太大了(超过 {max_mb:.0f}MB),压缩一下,或者直接用手机重拍一张再传。"
+
+
+def _sniff_image_ext(payload: bytes) -> str | None:
+    """按**魔数**认图片,认出来返回落盘扩展名,认不出返回 ``None``。
+
+    🔴 **判据是文件头字节,不是 ``Content-Type``。** 后者是客户端自述的,任何人都能填
+    ``image/jpeg`` 再传一份 docx 上来 —— 而这张照片接下来会被 ``_require_photo`` 当成
+    **复查证据**,复查合格是**销项**的唯一通道(方案 §5.2)。只信自述 = 拿一个 .txt
+    就能把隐患销掉,而留档文书上写着「隐患已消除」。
+    「浏览器给的 MIME 不可靠」这件事本仓在 DXF 那条线上已经证过一次(前端只能按后缀认)。
+
+    只认三种够用:JPG / PNG 是手机与截图的常态,WebP 是部分安卓相机与网页另存的默认。
+    ⚠️ **HEIC 刻意不认**(iPhone 原生格式):后端没有解码它的依赖,收下来等于存一份
+    大多数浏览器打不开的文件,而 ``_require_photo`` 只查"文件在不在"、照样放行 ——
+    那正是"证据链里挂着一张点不开的照片"。真要支持,得先有解码/转码那一步。
+
+    ⚠️ 这只是**文件头**校验,不是"这张图解得开"。截断的 JPEG 照样过。再往下(真解码)
+    要拉 Pillow,而那是打卡链画水印时才付的成本 —— 这条端点只存字节,不渲染,
+    不值得为它把解码搬进来。取舍写明白:能挡住"拿别的文件冒充照片",挡不住"坏图"。
+    """
+    for magic, ext in _IMAGE_MAGICS:
+        if payload.startswith(magic):
+            return ext
+    if (
+        payload.startswith(_WEBP_RIFF)
+        and payload[_WEBP_TAG_AT : _WEBP_TAG_AT + len(_WEBP_TAG)] == _WEBP_TAG
+    ):
+        return _WEBP_EXT
+    return None
+
+
+_SNIFFED_EXTS: Final[tuple[str, ...]] = (*(e for _, e in _IMAGE_MAGICS), _WEBP_EXT)
+"""``_sniff_image_ext`` 可能返回的全部扩展名 —— 下面那道导入期守卫拿它对白名单。"""
+
+_UNKNOWN_EXTS: Final[tuple[str, ...]] = tuple(
+    ext for ext in _SNIFFED_EXTS if ext not in ALLOWED_IMAGE_EXT
+)
+if _UNKNOWN_EXTS:  # pragma: no cover —— 只在有人动了白名单时触发
+    raise RuntimeError(
+        f"_sniff_image_ext 会返回 {_UNKNOWN_EXTS},而它们不在 config.ALLOWED_IMAGE_EXT 里 —— "
+        "artifacts._safe_ext 会把扩展名剥成空串,复查照片落盘后没有后缀、浏览器打不开,"
+        "而 _require_photo 只查 kind 和文件在不在,照样放行。做成导入时硬失败是刻意的:"
+        "漏配的表现是证据链里挂着一张点不开的照片,不会有任何报错"
+    )
+
+
+def _work_upload_photo(params: dict[str, Any]) -> _Result:
+    """把一张照片登记成 ``ArtifactKind.PHOTO`` 产物,回它的编号。**落盘是阻塞活,在线程池里跑。**
+
+    两道闸的顺序是**先判类型、再落盘**,不许颠倒:反过来的话每一次"传错文件"都会先在盘上
+    留一份垃圾,而回执说的是 400。测试里那条「非图片 → 400 **且没有产物落盘**」钉的就是这个。
+
+    ⚠️ **不做去重、不做幂等。** 同一张照片传两次 = 两个 photo_id、盘上两份字节。
+    理由:复查这件事本来就是"一次复查挂一张照片"(``hazard_docs.photo_id``),
+    重复上传的成本是几百 KB,而给它上幂等要么多一个客户端要维护的 event_id
+    (打卡那条链的账),要么按内容 hash 建索引 —— 两条都比这个问题本身贵。
+    """
+    payload = params.get(_PHOTO_BODY_KEY)
+    # isinstance 这一半是纯防御:喂进来的只可能是 ``_raw_body`` 拼的那个 dict。
+    # ``not payload`` 才是真正会发生的那种 —— 前端拼请求时把文件漏了,body 是空的。
+    if not isinstance(payload, bytes) or not payload:
+        raise _refuse(400, ErrorCode.INVALID_INPUT, _MSG_PHOTO_EMPTY)
+
+    ext = _sniff_image_ext(payload)
+    if ext is None:
+        raise _refuse(
+            400,
+            ErrorCode.INVALID_INPUT,
+            _MSG_PHOTO_NOT_IMAGE,
+            # 只回显前 8 字节的十六进制:够认出"这其实是个 docx(PK\x03\x04)",
+            # 又不会把一整个文件灌进日志。
+            detail=f"魔数认不出是图片:前 8 字节 {payload[:8].hex()},共 {len(payload)} 字节",
+        )
+
+    filename = f"{_PHOTO_NAME_STEM}{ext}"
+    photo_id = artifacts.register(payload, kind=ArtifactKind.PHOTO, original_name=filename)
+    logger.info("监理复查照片已登记:%s(%s,%d 字节)", photo_id, ext, len(payload))
+    # data 只有两个键,**没有 documents** —— 它不是动作端点、不出文书(模块头注那一节)。
+    return _Result(200, ok({"photo_id": photo_id, "filename": filename}, _MSG_PHOTO_OK))
+
+
+# ---------------------------------------------------------------------------
+# handler 外壳 —— 十一个端点共用
 # ---------------------------------------------------------------------------
 
 _Work = Callable[[dict[str, Any]], _Result]
@@ -1553,11 +1770,16 @@ async def _get_params(request: Request) -> dict[str, Any]:
 
 
 async def _serve(request: Request, work: _Work, params: _Params) -> JSONResponse:
-    """十个端点真正共用的那条链:令牌自查 → 取参数 → 阻塞活挪进线程池 → 兜底 500。
+    """十一个端点真正共用的那条链:令牌自查 → 取参数 → 阻塞活挪进线程池 → 兜底 500。
 
     ⚠️ 阻塞活(sqlite、docx 渲染、落盘)一步都不许留在事件循环里:这些路由和图跑在
     同一个循环上,langgraph 的 blockbuster 会抛 BlockingError(schedule/cad 都踩过)。
-    **两条 GET 一样要走线程池** —— 它们照样读 sqlite,"只是查一下"不是豁免理由。
+    **两条 GET 一样要走线程池** —— 它们照样读 sqlite,"只是查一下"不是豁免理由;
+    **上传那条也一样** —— ``artifacts.register`` 是两次真写盘。
+
+    🔴 **令牌自查排在取参数之前,不许调换。** 上传那条端点的"取参数"= 把最多
+    ``photo_max_mb`` 的 body 读进内存;放到鉴权之前就等于让没钥匙的人也能把
+    这台机器的内存喂满,而回执照样是 401。
     """
     try:
         denied = _deny_if_token_bad(request)
@@ -1567,7 +1789,8 @@ async def _serve(request: Request, work: _Work, params: _Params) -> JSONResponse
         result = await run_in_threadpool(_guarded(work), collected)
         return _respond(result.envelope, result.status)
     except _Refused as refused:
-        # 只有取参数那一步会在线程池之外抛它(``_json_body`` 的请求体解析在 async 侧)。
+        # 只有取参数那一步会在线程池之外抛它:``_json_body`` 的请求体解析、
+        # 以及 ``_raw_body`` 的流式大小闸(413),两处都在 async 侧。
         return _respond(refused.envelope, refused.status)
     except Exception:
         # 兜底:任何没料到的炸都收敛成 500 信封。堆栈只进日志;user_msg 走
@@ -1588,12 +1811,56 @@ async def _handle_get(request: Request, work: _Work) -> JSONResponse:
     ``await request.json()`` 会当场抛,于是它要么被 ``_json_body`` 翻译成
     「这次提交的内容后台没读懂,刷新一下页面再试一次」(工友照着刷新,而根本没有
     任何东西读不懂),要么得在那个只该管解析请求体的函数里加一条「GET 就跳过」的分支。
-    两个外壳共用 ``_serve``,差的只有"参数从哪儿来"这一件事,别让它们再分叉出第二处。
+    三个外壳共用 ``_serve``,差的只有"参数从哪儿来"这一件事,别让它们再分叉出第二处。
     """
     return await _serve(request, work, _get_params)
 
 
-# 十个 handler。首行都不用反引号:starlette 生成 /docs 时把 docstring 喂给 yaml,
+async def _raw_body(request: Request) -> dict[str, Any]:
+    """收**原始字节**请求体,边收边数,超上限**当场**断 —— 不等收完。
+
+    这正是 raw body 协议的意义(模块头注,判据整套抄自 ``checkin_api._read_photo``):
+    multipart 要解析完整请求才知道多大,而 ``Request.stream()`` 是真流式
+    (逐 ASGI 事件 yield,不预缓冲),读到哪算到哪,超了就不再往内存里攒。
+
+    上限取 ``settings.photo_max_mb``(**与打卡同一个旋钮**)。⚠️ **每次请求现取** ——
+    读成模块常量的话测试换环境变量测不到,生产改上限要重启才生效。
+
+    ⚠️ 这里只管"多大",**不管"是不是图片"** —— 那一道在 ``_work_upload_photo`` 里,
+    与落盘挨着(先判类型再落盘,顺序不许颠倒)。同理,本函数也不判空:
+    空 body 是业务上的"没收到照片",人话归那边说。
+    """
+    max_mb = get_settings().photo_max_mb
+    limit = int(max_mb * _BYTES_PER_MB)
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > limit:
+            raise _refuse(
+                413,
+                ErrorCode.FILE_TOO_LARGE,
+                _msg_photo_too_large(max_mb),
+                detail=f"请求体已收 {received} 字节,超过上限 {limit}",
+            )
+        chunks.append(chunk)
+    return {_PHOTO_BODY_KEY: b"".join(chunks)}
+
+
+async def _handle_body(request: Request, work: _Work) -> JSONResponse:
+    """上传那条端点的外壳 —— 请求体是**原始字节**,不是 JSON。
+
+    🔴 **套不上 ``_handle``**:那条外壳一进来就 ``await request.json()``,
+    而图片字节喂给 JSON 解析器必然抛,于是一张完全正常的照片会被
+    ``_json_body`` 翻译成「这次提交的内容后台没读懂,刷新一下页面再试一次」——
+    工友照着刷新一百次也没用,而日志里只有一行"请求体不是合法 JSON"。
+    分法与 ``_handle_get`` 一模一样:三个外壳共用 ``_serve``,
+    差别只有"参数从哪儿来"这一件事(``_json_body`` / ``_get_params`` / ``_raw_body``)。
+    """
+    return await _serve(request, work, _raw_body)
+
+
+# 十一个 handler。首行都不用反引号:starlette 生成 /docs 时把 docstring 喂给 yaml,
 # ` 开头必炸(无害,但每次启动打两条 traceback,查日志的人会被带偏 —— 同 checkin_api)。
 
 
@@ -1647,6 +1914,15 @@ async def post_escalate(request: Request) -> JSONResponse:
     return await _handle(request, _work_escalate)
 
 
+async def post_photo(request: Request) -> JSONResponse:
+    """POST /supervision/photo —— 直传一张复查照片,换一个 photo_id(契约见模块头注)。
+
+    请求体是**原始图片字节**(不是 multipart、不是 JSON),所以走 ``_handle_body``
+    这个外壳而不是 ``_handle``;类型按魔数判、不信 Content-Type。
+    """
+    return await _handle_body(request, _work_upload_photo)
+
+
 # ---------------------------------------------------------------------------
 # 路由表 —— 真正挂上去的入口是 backend/webapp.py,不是下面那个 app
 # ---------------------------------------------------------------------------
@@ -1665,8 +1941,12 @@ SUPERVISION_ROUTES: Final[list[Route]] = [
     Route("/supervision/reinspect-result", post_reinspect_result, methods=["POST"]),
     Route("/supervision/resume", post_resume, methods=["POST"]),
     Route("/supervision/escalate", post_escalate, methods=["POST"]),
+    # 上传一条。单列一组是因为它**既不是查询也不是动作**:不认识任何一条隐患,
+    # 只把字节存下来换一个编号(所以回执里没有 hazard_no / status / documents)。
+    # 路径是静态的,与上面 ``/hazards/{hazard_no}`` 那条带路径段的不会互相遮挡。
+    Route("/supervision/photo", post_photo, methods=["POST"]),
 ]
-"""监理这十条路由(查询 2 + 写入 8)。**必须被 ``backend/webapp.py`` 铺进它的 routes**。
+"""监理这十一条路由(查询 2 + 写入 8 + 上传 1)。**必须被 ``backend/webapp.py`` 铺进它的 routes**。
 
 ``langgraph.json`` 的 ``http.app`` 只能有一个(现在指 webapp.py),所以本项目所有
 自定义路由都在那里汇合:项目/图纸/资料管理是它自己的,打卡链是 ``CHECKIN_ROUTES``,
@@ -1680,8 +1960,31 @@ W10 加的三条**不用动 Caddyfile**(2026-08-16 实测 ``caddy adapt``):那�
 是 ``@supervision path /api/supervision /api/supervision/*``,``path`` 只看路径、
 **不限制方法**,新加的 GET 与新路径都落在它下面;而且它在展开后的 route 表里仍排在
 ``handle_path /api/*`` **之前**(handle 系列按书写顺序择一,排后面 = 永不生效且无报错)。
-⚠️ 那条 route 上的 ``request_body max_size 1MB`` 也照样套在新端点上 —— GET 没有 body,
-reject 的 body 是一个隐患编号,都够用;哪天有端点要收大 body,先回去看那一段。
+
+🔴 **``POST /supervision/photo`` 是"哪天有端点要收大 body"的那一天,Caddyfile 必须动。**
+那条 route 上挂着 ``request_body { max_size 1MB }``(当初按"只收一个小 JSON"定的),
+而这条端点收的是最多 ``photo_max_mb``(10MB)的照片 —— **不改的结果是公网上传照片
+一律失败**,而且报错来自 Caddy 的 413(不是信封,更不是那句写好的中文),
+查的人会去翻本模块的大小闸,方向全错。本机与 ``make dev`` 不过 Caddy,**照样全绿**。
+
+要加的是**一条更靠前的专用 route**(不是把 ``@supervision`` 整块放宽到 12MB ——
+那样其余十条也跟着敞开,而它们本来就只该收一个小 JSON)::
+
+    @supervision_photo path /api/supervision/photo
+    handle @supervision_photo {
+        request_body {
+            max_size 12MB
+        }
+        uri strip_prefix /api
+        reverse_proxy backend:2024
+    }
+
+12MB 这个数与 ``/api/checkin*`` 那条同一笔账:``GYT_PHOTO_MAX_MB=10``,走 **raw body**
+不过 base64(体积不膨胀),留 2MB 给 header 与误差。**改照片上限要回来重算这一行。**
+⚠️ 它**必须排在 ``@supervision`` 之前**(而 ``@supervision`` 又排在 ``handle_path /api/*``
+之前):``route{}`` 里 handle 系列按书写顺序择一匹配,写到后面 = 永远不生效,
+且没有任何报错 —— ``/api/supervision/photo`` 会先被 ``@supervision`` 吃掉,
+照样卡在 1MB,而 ``caddy validate`` 说 Valid。
 """
 
 app = Starlette(routes=list(SUPERVISION_ROUTES))
@@ -1701,6 +2004,7 @@ __all__ = [
     "post_escalate",
     "post_grade",
     "post_notice",
+    "post_photo",
     "post_reinspect_result",
     "post_reject",
     "post_resume",

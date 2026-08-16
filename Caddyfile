@@ -225,6 +225,31 @@
 		# ⚠️ 位置必须在下面 handle_path /api/* **之前**:route{} 里 handle 系列按书写
 		#    顺序择一匹配,写到后面 = 永远不生效,而且没有任何报错
 		#    (与上面 /api/checkin* 和下面 /artifacts/* 说的是同一个坑)。
+		# ── 例外一条:/api/supervision/photo 收的是照片,1MB 装不下(W10)──────────
+		# 复查照片直传端点。**必须排在下面 @supervision 之前** —— route{} 里 handle
+		# 系列按书写顺序择一匹配,写到后面就会先被 @supervision 吃掉、照样卡在 1MB,
+		# 而 `caddy validate` 说 Valid、`caddy adapt` 也不报错。
+		#
+		# 为什么不把 @supervision 整块放宽到 12MB:其余十条本来就只该收小 JSON,
+		# 放宽等于把「拿一个大 body 打后端」这道闸对它们一起撤了。
+		#
+		# 12MB 这个数的账与 /api/checkin* 那条一模一样:GYT_PHOTO_MAX_MB=10,
+		# raw body 不过 base64(不膨胀),留 2MB 给 header 与误差。
+		# **改照片上限要回来重算这一行。**
+		#
+		# 🔴 这一条是 2026-08-16 补的,补之前的状态是:公网上传照片必被 Caddy 在
+		#    到达后端之前 413 掉,回的**不是信封**、不是后端写好的那句中文;
+		#    而本机与 make dev 都不过 Caddy,**1794 条测试全绿、一点征兆都没有**。
+		#    这是「链断在任何一环都不报错」那一类里最难查的形态之一。
+		@supervision_photo path /api/supervision/photo
+		handle @supervision_photo {
+			request_body {
+				max_size 12MB
+			}
+			uri strip_prefix /api
+			reverse_proxy backend:2024
+		}
+
 		@supervision path /api/supervision /api/supervision/*
 		handle @supervision {
 			request_body {
