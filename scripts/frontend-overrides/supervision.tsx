@@ -515,6 +515,20 @@ function ReinspectionLine({
   return (
     <div className={`flex items-start gap-2.5 rounded-xl border px-3 py-2.5 ${tone}`}>
       {icon}
+      {/* 🔴 缩略图。2026-08-17 真人反馈「没有图片还需要图片预览」——
+          在这之前这一行只有一串 32 位十六进制 + 一颗「打开」,而**那串编号对人
+          不说明任何事**,跟上一轮修掉的「照片不能是编号意义不明」是同一件事:
+          那次修的是**上传**那半边(拍完就出缩略图),证据链这半边漏了。
+
+          这里为什么可以直接拿产物出口取件、而上传那一格坚持用本地 objectURL:
+          上传那三态里前两态**压根还没有编号**,取不了件;而这一行的照片是台账里
+          已经挂住的一张,编号一定有。
+          ⚠️ 代价是它吃 ARTIFACT_BASE 那条链:链断了(本机没起
+          `make serve-artifacts`、或者公网 mixed content)这儿会变成「预览不出来」
+          的占位框 —— `PhotoThumb` 的 onError 兜着,不会留一个破图。
+          旁边那颗「打开」与编号本身都留着:预览是**多一道**,不是替代 ——
+          追责时要报的是编号,要看原图大小的是那颗按钮。 */}
+      {photoUrl && <PhotoThumb src={photoUrl} alt={`第 ${ordinal} 次复查的照片`} />}
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[13px]">
           <span className="font-medium text-gray-900">第 {ordinal} 次复查</span>
