@@ -264,6 +264,87 @@ S4 端到端手工验(含<b>刷新</b>那一条)                      —       
 S1 → S2 → S3 → S4      <i>基本串行:契约不定死,前端没法写</i></pre>
 </section>
 
+<section>
+  <h2>7 / Landed</h2>
+  <div class="h">落地实录(2026-08-16 当天)</div>
+  <p>六个提交,<code>1967688</code> → <code>a062271</code>。
+     <b>方案里写的都做了,另外挖出三件方案没预料到的。</b></p>
+
+  <h3>7.1 比方案多做的一件</h3>
+  <p><b>详情端点接进了界面。</b>§3.1 只说要有这个端点、§3.2 只说清单 ——
+     不接的话「刷新之后昨天签的文书取不回来」这条<b>根本没解决</b>,
+     而那正是 §2 里否掉「订阅 subgraphs」方案的理由。所以它不是加菜,是方案自己漏了一环。</p>
+
+  <h3>7.2 挖出一个比 W10 更早、形状完全相同的洞</h3>
+  <div class="box b-bad">
+    <span class="hd">本机容器从来没服务过任何一条自定义 HTTP 路由</span>
+    <p>S4 开始前先 curl 已有端点当基线,期望 400(空 body),<b>实际 404</b>:</p>
+<pre>docker exec gyt-backend ls /app/webapp.py        → No such file or directory
+docker exec gyt-backend cat /app/langgraph.json  → 连 http 块都没有</pre>
+    <p>镜像比 <code>webapp.py</code> 早四天。<b>打卡、项目管理、监理处置,本机一条都没跑起来过</b> ——
+       在这之前所有「本地验过」的结论,只覆盖了聊天那条路。</p>
+    <p>根因不是文档写错:dev 覆盖件那段「为什么挂 /app/src 就够了」列的重建触发项里就有
+       <code>langgraph.json</code>。错在<b>没人意识到 <code>webapp.py</code> 与
+       <code>auth.py</code> 也在 <code>src/</code> 外面</b> —— 它们是 <code>.py</code>,
+       看着就该跟着热重载。已把三份都挂进 dev 覆盖件。</p>
+    <p>⚠️ 那条「十条路由都挂进了 webapp」的单元测试<b>当时也是绿的</b> ——
+       它在宿主 Python 进程里直接 import,根本不经过容器。详见 TODO-46。</p>
+  </div>
+
+  <h3>7.3 手工验当场抓到的两个 bug(单测全绿时它们都在)</h3>
+  <p>两个是同一类:<b>「点了,但屏幕上还写着旧的」</b>。</p>
+  <ol>
+    <li><b>确认之后徽章还写「待确认」</b> —— <code>patchHazard</code> 改了 <code>status</code>,
+        而渲染用的是 <code>status_display</code>(后端按<b>旧状态</b>拼好的那句中文)。
+        工友会以为没点成、再点一次,而下一颗按钮是签发法律文书。</li>
+    <li><b>签发之后那一行还写「还没下过整改期限」</b> —— 动作回执的 <code>data</code>
+        形状是冻结的,带不回 <code>due_date</code>。改成动作成功后从详情端点回填权威值
+        (那份数据本来就要拉)。</li>
+  </ol>
+  <div class="box b-warn">
+    <span class="hd">这两条正是 §5 那句「不许只看测试绿」要防的东西</span>
+    <p>它们不在任何断言的射程里:后端对、库里对、类型对、213 条纯函数测试全绿 ——
+       <b>只有人眼看得见</b>。</p>
+  </div>
+
+  <h3>7.4 一次真实的数据丢失</h3>
+  <p>实现途中,某条泳道跑变异测试还原时执行了
+     <code>git checkout -- src/gyt/supervision_api.py</code> ——
+     而那个文件当时<b>从未提交</b>,610 行实现整个被抹掉。</p>
+  <p>从该泳道的 transcript 回放它的 20 次 Edit 恢复了(<code>.pyc</code> 已被重编译,那条路是死的)。
+     <b>恢复件通过了另一个泳道独立写成的 923 行行为测试</b> —— 这是这次恢复最强的交叉验证。</p>
+  <div class="box b-info">
+    <span class="hd">教训是编排上的,不是谁的手误</span>
+    <p>「所有泳道不要 commit」导致<b>没有任何东西受 git 保护</b>。
+       并行开工时应当尽早提交(哪怕是 WIP),让 <code>git checkout</code> 有东西可回滚。</p>
+  </div>
+
+  <h3>7.5 验证做到哪一步</h3>
+  <ul>
+    <li><b>端到端手工</b>:传→确认→定级→签发→三份下载卡→<b>点开真下到 37615 字节的合法 docx</b>,
+        正文里编号、级别、整改期限「8月19日(周三)」、照片编号全对</li>
+    <li><b>刷新页面再来一遍</b>:刷新后徽章仍在、面板重开、
+        <b>证据链里昨天签的文书照样取得回来</b> —— 这条是 W10 的全部意义</li>
+    <li><b>库级对照</b>:每一步直查 <code>data/gyt.sqlite3</code>。否决那条尤其要紧:
+        成功时那一行<b>真没了</b>,被 409 拒时那一行<b>还在</b> ——
+        「拒了」和「拒了但也删了」在回执上长得一模一样</li>
+    <li><b>鉴权</b>:两条 GET 各一条单测。<b>没做</b>活体令牌翻转(本机没配令牌),如实记账</li>
+  </ul>
+  <p>顺带活体验证了 D7:新建隐患编号是 <code>GYT-H-20260816-<b>1845</b>07</code>,
+     而本机时钟是 20:45 —— 这台机器在 AEST(UTC+10),编号用的是香港时间(UTC+8)。
+     <b>用宿主时区的话会写成 <code>2045</code>。</b></p>
+
+  <h3>7.6 仍然没做(TODO-47)</h3>
+  <ul>
+    <li><code>unassigned</code> 与当前 scope 口径错位</li>
+    <li><code>failedItems</code>(D10 / Codex#10 要求必须显示)<b>没有任何地方在履行</b> ——
+        它挂在不可达的 <code>HazardIntakeCard</code> 上</li>
+    <li><b>巡检记录卡仍不可达</b>,整条 <code>ARTIFACT_BASE</code> 链现在只有监理这一半是活的</li>
+    <li>四个前端覆盖件超 800 行,要一起拆</li>
+    <li><code>scoping.py</code> 的「零 langchain」只在文件级成立</li>
+  </ul>
+</section>
+
 <footer>
   docs/W10_界面取不到工具返回_方案.md · 2026-08-16 · 工友通 GYT<br>
   本方案的每一条证据都是实测,没有推理项。
