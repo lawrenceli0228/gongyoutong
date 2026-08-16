@@ -10,16 +10,34 @@
  * frontend/ 不进 git,**别直接改那边** —— 换台机器就没了。
  *
  * ── 契约的唯一真相 ────────────────────────────────────────────────────
- * `backend/src/gyt/supervision_api.py` 的**模块 docstring**。七个端点的路径、
- * 请求体字段、Envelope 里 `documents` 数组的四个键,全以那份为准,本文件只是镜像。
+ * `backend/src/gyt/supervision_api.py` 的**模块 docstring**。端点的路径、
+ * 请求体字段、Envelope 里 `documents` 数组的键,全以那份为准,本文件只是镜像
+ * (W10 之后是 **8 个 POST 动作端点 + 2 个 GET 查询端点**)。
  * 状态与级别那两张受控词表的真相在 `backend/src/gyt/db/hazards.py`
- * (`STATUSES` / `GRADES`),中文名的真相在 `supervision_api._STATUS_ZH`。
+ * (`STATUSES` / `GRADES`),中文名的真相在 `supervision_api._STATUS_ZH`,
+ * scope 那张在 `agents/supervision/scoping.py` 的 `SCOPES`。
  * 任一处改名 = **前端静默少一个字段 / 界面上冒出一个英文状态词**,没有报错。
  *
  * ── 为什么这一层值得存在(方案 §5.3 Codex#18)────────────────────────
  * 最终用户回复由 supervisor 汇总,而 supervisor 只有提示词约束 —— 它转述的
  * 文书编号是**赌模型配合度**。结构性修法是「把编号的权威显示面放到前端卡片上」:
  * 卡片直读端点返回的 `doc_no` / `artifact_id`,那段话只是陪衬。用户点的是卡片。
+ *
+ * ── W10:面板为什么从聊天流里搬出来 ───────────────────────────────────
+ * 原先处置面板的入口挂在「聊天流里那条工具返回」上,而 supervisor 的
+ * `output_mode="last_message"` **会把子 Agent 的工具返回丢掉** —— 于是那个面板
+ * 一次都没打开过(不是没人点,是根本没渲染出来)。修法照 W7 打卡面板的先例:
+ * 面板改成界面上的**常驻操作台**,清单/详情直读两个 GET 端点,
+ * **一个字都不经过聊天流**。
+ *
+ * 这条改动在本文件里的落点是三件:`hazardListUrl` / `hazardDetailUrl`(自己去取数,
+ * 不等模型给)、`parseHazardListEnvelope` / `parseHazardDetailEnvelope`(把端点的
+ * Envelope 解析成界面要的形状),以及 `reject` 这个新动作(误报的隐患得能删掉 ——
+ * 原先只能靠 `removeHazard` 在本地视图里划掉,刷新一下它又回来了)。
+ * 老的 `hazardsFromToolData` / `documentsFromToolData` **一件都不删**:哪条链路的
+ * 工具返回会被裁掉、哪条不会,是编排层的事,前端不该赌 —— 聊天里真出现了工具返回,
+ * 那两件照旧把卡片渲出来。它们只是不再是唯一入口(以前是,所以面板才会全程没露过面)。
+ * 两条路共用下面同一个行解析器 `toHazardBrief`,形状不会分叉。
  */
 
 // ---------------------------------------------------------------------------
@@ -27,7 +45,11 @@
 // ---------------------------------------------------------------------------
 
 /**
- * 七个端点的路径段(不含 `/api`:那一段由 Caddy 剥掉,与打卡链同规矩)。
+ * 八个 **POST 动作**端点的路径段(不含 `/api`:那一段由 Caddy 剥掉,与打卡链同规矩)。
+ *
+ * ⚠️ 两个 **GET 查询**端点**不在这张表里** —— 它们要拼 query / 路径参数,
+ * 各有专门的构造函数(`hazardListUrl` / `hazardDetailUrl`)。想「统一」成一张表的话,
+ * 那两个的三态与转义规则就会被 `supervisionUrl` 这种裸拼接吃掉。
  *
  * ⚠️ `reinspect-result` 中间是**连字符**,不是下划线。写错的表现是 404,
  * 而 404 在这里会被 normalizeError 说成「监理接口还没开通」—— 方向全错。
@@ -40,6 +62,9 @@ export const SUPERVISION_ENDPOINTS = [
   "reinspect-result",
   "resume",
   "escalate",
+  // W10 新增:否决一条**待确认**的隐患(自动识别的误报)。它是删除,不是状态流转 ——
+  // 所以它不在 db/hazards.py 的状态机里,回执报的 status 也不是八档里的词(见 ActionResult)。
+  "reject",
 ] as const;
 export type SupervisionEndpoint = (typeof SUPERVISION_ENDPOINTS)[number];
 
@@ -53,6 +78,57 @@ function stripTrailingSlash(base: string): string {
  */
 export function supervisionUrl(apiBase: string, endpoint: SupervisionEndpoint): string {
   return `${stripTrailingSlash(apiBase)}/supervision/${endpoint}`;
+}
+
+/**
+ * `GET /supervision/hazards` 的地址 —— 常驻操作台开机就打这一条(W10)。
+ *
+ * ── 🔴 `projectId` 是**三态**,不是两态 ──────────────────────────────
+ * 它 1:1 映射后端 `db/hazards.py` 的 `list_rows(project_id: str | None)`:
+ *
+ * | 传什么                    | 拼出来的 query      | 后端拿到      | 意思             |
+ * |---------------------------|---------------------|---------------|------------------|
+ * | 不传 / `undefined` / `null` | (这个键**不出现**) | `None`        | 不筛工地(全部) |
+ * | `""`(空串)              | `project_id=`       | `""`          | **只看未归属**   |
+ * | `"P-xxx"`                 | `project_id=P-xxx`  | `"P-xxx"`     | 只看这个工地     |
+ *
+ * 「键不出现」和「有键无值」是两码事,而 `URLSearchParams` 最容易在这儿写错:
+ * `params.set("project_id", projectId ?? "")` 看着人畜无害,实际把「全部工地」
+ * 变成了「只看未归属」—— 屏幕上是一张短得多的清单,没有任何报错,而监理会以为
+ * 台账里就这么几条。反过来把空串吞掉(`if (projectId) …`)则是「未归属那一堆
+ * 永远筛不出来」,D6 那批没人认领的隐患从此看不见。两种写法都会静默出错,
+ * 所以下面那一行的判据只能是 `!= null`,不许用真值判断。
+ *
+ * `scope` 不在这儿拦词表外的词:界面上它是四颗按钮出来的,拦了也拦不住别的调用方,
+ * 而真正拦得住的是后端那句 400 人话(`normalizeError` 会原样上屏)。
+ * 空 scope 干脆不写这个键 —— 让后端用它自己的缺省(「在办」),别在前端复制一份缺省。
+ */
+export function hazardListUrl(
+  apiBase: string,
+  opts: { scope?: string; projectId?: string | null } = {},
+): string {
+  const params = new URLSearchParams();
+  const scope = (opts.scope ?? "").trim();
+  if (scope) params.set("scope", scope);
+  // 🔴 三态就靠这一行:只有 undefined / null 才「不写这个键」,空串必须写成有键无值。
+  if (opts.projectId != null) params.set("project_id", opts.projectId);
+  const query = params.toString();
+  const base = `${stripTrailingSlash(apiBase)}/supervision/hazards`;
+  return query ? `${base}?${query}` : base;
+}
+
+/**
+ * `GET /supervision/hazards/{hazard_no}` 的地址 —— 详情 + 证据链。
+ *
+ * 编号一律 `encodeURIComponent`。今天的编号(`GYT-H-日期-时刻-4hex`)全是安全字符,
+ * 转义与不转义拼出来一模一样 —— 但这是「今天」:编号格式归 `core/doc_no.py` 管,
+ * 哪天多一段带斜杠或中文的东西,不转义就是路径注入点,而且**不会有任何报错**
+ * (`/` 会被当成路径分隔符,打到一个不存在的路由上,404 又被说成「接口还没开通」)。
+ * 顺手 trim:从聊天记录里复制编号常带一个尾空格,不 trim 就变成 `%20` 然后 404。
+ */
+export function hazardDetailUrl(apiBase: string, hazardNo: string): string {
+  const encoded = encodeURIComponent(hazardNo.trim());
+  return `${stripTrailingSlash(apiBase)}/supervision/hazards/${encoded}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,11 +171,48 @@ export function hazardStatusZh(status: string): string {
   return (HAZARD_STATUS_ZH as Record<string, string>)[status] ?? status;
 }
 
+/**
+ * `POST /supervision/reject` 成功后回执里那个 `status` 的值(W10)。
+ *
+ * 🔴 它**故意不在 `HAZARD_STATUSES` 里、也不给中文名**:那八档是 db 的状态机,
+ * 而这一行已经被删掉了,它没有状态。混进那张表的下场是「已删除」出现在状态徽章的
+ * 候选里,而库里永远查不到这么一条 —— 前端凭空多出一档后端不认的状态。
+ *
+ * 界面上的正确用法是拿它**判断**、不拿它**显示**:
+ * `if (result.status === REJECTED_STATUS) setList(removeHazard(list, no))`。
+ * 直接把它当状态渲染的话,屏幕上会冒出一个英文词 deleted(违反「不许有英文枚举值」)。
+ */
+export const REJECTED_STATUS = "deleted";
+
 /** 镜像 db/hazards.py 的 GRADE_NORMAL / GRADE_SEVERE —— 监理口径的二分。 */
 export const GRADE_NORMAL = "一般";
 export const GRADE_SEVERE = "严重";
 export const HAZARD_GRADES = [GRADE_NORMAL, GRADE_SEVERE] as const;
 export type HazardGrade = (typeof HAZARD_GRADES)[number];
+
+/**
+ * 清单筛子 —— 镜像 `agents/supervision/scoping.py` 的 `SCOPES`
+ * (W10 从 `agents/supervision/tools.py` 拆出去的那张表,四个词一个字没变;
+ *  在拆完之前它就在 tools.py 里,两处指的是同一张表)。
+ *
+ * **顺序就是界面上四颗按钮的顺序**,「在办」在最前面 —— 它是缺省档,也是监理
+ * 一睁眼要看的那一屏(没销项也没上报的全部)。
+ *
+ * 🔴 这是**受控词表**,词表外后端直接回 400(它刻意不做模糊匹配:模型/前端自己
+ * 发明筛子「严重的」「这周的」时,静默按「全部」处理会让监理以为清单就这么长)。
+ * 所以界面上只许从这四个词里选,不许出自由输入框。
+ */
+export const HAZARD_SCOPE_ACTIVE = "在办";
+export const HAZARD_SCOPE_PENDING = "待确认";
+export const HAZARD_SCOPE_OVERDUE = "超期";
+export const HAZARD_SCOPE_ALL = "全部";
+export const HAZARD_SCOPES = [
+  HAZARD_SCOPE_ACTIVE,
+  HAZARD_SCOPE_PENDING,
+  HAZARD_SCOPE_OVERDUE,
+  HAZARD_SCOPE_ALL,
+] as const;
+export type HazardScope = (typeof HAZARD_SCOPES)[number];
 
 /**
  * 文书类型 → 中文名。前五档镜像 `core/doc_no.DOC_TITLE_ZH`,
@@ -248,8 +361,16 @@ export function normalizeError(
 // ---------------------------------------------------------------------------
 
 /**
- * 隐患摘要 —— 镜像 `agents/safety/tools.py` 的 `_ingest_hazards` 返回的那五个键
- * (`data.hazards[]`),也是 W9 的 supervision Agent 只读工具会返回的同一形状。
+ * 隐患摘要 —— 前五个键镜像 `agents/safety/tools.py` 的 `_ingest_hazards` 返回值
+ * (`data.hazards[]`),也是 supervision Agent 只读工具返回的同一形状。
+ *
+ * ── 为什么后面几个是**可选**的(W10)────────────────────────────────
+ * 它们只有 `GET /supervision/hazards` 这条新路会给,老路(工具结果,
+ * `hazardsFromToolData`)产出的对象里压根没有这几个键。改成必填的话:
+ * 老路那边要么当场类型不过,要么被迫编几个假值填进去(`overdue: false`、
+ * `due_date: ""`)—— 后者更坏,那是**拿缺省冒充事实**:界面会理直气壮地
+ * 显示「没超期」,而真相只是这条路没带这个字段回来。
+ * 所以判据是「拿不到就是 undefined」,渲染层据此显示「—」而不是「否」。
  */
 export interface HazardBrief {
   hazard_no: string;
@@ -257,6 +378,26 @@ export interface HazardBrief {
   grade: string;
   status: string;
   needs_grading: boolean;
+  /**
+   * 现场判的那一档(重大/较大/一般/**待定级**)—— safety 直出、后端原样透传,
+   * 与 `grade` 不是一回事:`grade` 只有一般/严重两档,`needs_grading=1` 时它是
+   * 映射表给的默认值(一般),**不是有人判过的结论**。
+   *
+   * 🔴 所以界面上那一格念的是 `severity`,不是 `grade`(与后端 `_hazard_line`
+   * 同一条规矩)。念错的后果是屏幕上写着「一般隐患」,而它其实还没人定过级 ——
+   * 人会照着这句去签文书,然后被服务端硬拦③拒掉,却不知道该去定级。
+   */
+  severity?: string;
+  /** 状态的中文名,后端算好的。前端也有 `hazardStatusZh` 兜底,两边同一张表。 */
+  status_display?: string;
+  /** 整改期限(香港日历日 `YYYY-MM-DD`)。null = 还没下过期限,不是「没超期」。 */
+  due_date?: string | null;
+  /** 期限的人话(「明天」「后天」之类),后端算的 —— 前端一行日期换算都不写。 */
+  due_display?: string | null;
+  /** 超期与否由后端按业务口径算(pending 与未定级的不算超期,D17 + Codex#11)。 */
+  overdue?: boolean;
+  /** 归属工地。**空串 = 未归属**(D6),不是「缺失」—— 两者在界面上要分开说。 */
+  project_id?: string;
 }
 
 /**
@@ -285,13 +426,61 @@ function textOf(rec: Record<string, unknown>, key: string): string {
 }
 
 /**
- * 从工具结果的 `data` 里取隐患清单。**认不出就返回空数组,一个错都不抛** ——
- * 这是渲染路径上的函数,抛出去就是整条消息渲染不出来(而它只是一张附加卡片)。
+ * 取一个「可能是 null 的字符串」字段。**空串一律归成 null**:这几个字段
+ * (期限、销项时刻、复查照片编号)在后端就是「有值 / 没有」的二态,
+ * 空串与 null 说的是同一件事,前端多一种表示法就多一个 if 会漏。
+ *
+ * ⚠️ 别拿它去读 `project_id` —— 那个字段的空串是**有意义的值**(未归属),
+ * 归成 null 就把「没人认领的一批」变成了「不知道归属」。
+ */
+function nullableTextOf(rec: Record<string, unknown>, key: string): string | null {
+  return textOf(rec, key) || null;
+}
+
+/**
+ * 一条隐患 → `HazardBrief`;**认不出返回 null,一个错都不抛**(调用方跳过它)。
+ *
+ * 两条路共用这一个解析器(工具结果 / GET 端点),形状才不会分叉 ——
+ * 分叉的表现是「聊天里那张卡能点复查、操作台上那张不能」,而两处看着一模一样。
  *
  * 只有 `hazard_no` 是**不能兜底**的字段:没有编号的条目在界面上什么也做不了
- * (七个端点全靠它定位),所以那种条目直接跳过。其余字段给保守缺省:
+ * (八个动作端点 + 详情端点全靠它定位),所以那种条目直接跳过。其余给保守缺省:
  * 事项空着按「(未写明事项)」显示,状态空着按 pending —— pending 是权限最小的一档
  * (不算整改率、不进超期清单、不能被升级),猜错也不会让人去点一个不该点的按钮。
+ *
+ * ⚠️ 扩展字段**只在源里真有这个键时才挂上去**(下面那串条件展开),不是无脑
+ * 填 undefined:老路那五个键的对象形状因此**一个字节不变**,下游做深比较的地方
+ * (单测的 toEqual、React 的 memo 比较)不用跟着改。少一处要同步的地方就少一处会漏。
+ */
+function toHazardBrief(entry: unknown): HazardBrief | null {
+  const rec = asRecord(entry);
+  if (!rec) return null;
+  const hazardNo = textOf(rec, "hazard_no");
+  if (!hazardNo) return null;
+  return {
+    hazard_no: hazardNo,
+    item: textOf(rec, "item") || "(未写明事项)",
+    grade: textOf(rec, "grade"),
+    status: textOf(rec, "status") || "pending",
+    needs_grading: rec.needs_grading === true,
+    ...(typeof rec.severity === "string" ? { severity: rec.severity.trim() } : {}),
+    ...(typeof rec.status_display === "string"
+      ? { status_display: rec.status_display.trim() }
+      : {}),
+    ...("due_date" in rec ? { due_date: nullableTextOf(rec, "due_date") } : {}),
+    ...("due_display" in rec ? { due_display: nullableTextOf(rec, "due_display") } : {}),
+    // overdue 只认真布尔(同 needs_grading 那条规矩):字符串 "false" 是真值,
+    // 松一点就等于给每一条隐患都挂上「已超期」的红标。
+    ...(typeof rec.overdue === "boolean" ? { overdue: rec.overdue } : {}),
+    // project_id 走 typeof 判断而不是 textOf:空串是「未归属」这个**值**,不是缺失。
+    ...(typeof rec.project_id === "string" ? { project_id: rec.project_id.trim() } : {}),
+  };
+}
+
+/**
+ * 从工具结果的 `data` 里取隐患清单。**认不出就返回空数组,一个错都不抛** ——
+ * 这是渲染路径上的函数,抛出去就是整条消息渲染不出来(而它只是一张附加卡片)。
+ * 逐条的判据与缺省见 `toHazardBrief`。
  */
 export function hazardsFromToolData(data: unknown): HazardBrief[] {
   const rec = asRecord(data);
@@ -302,21 +491,10 @@ export function hazardsFromToolData(data: unknown): HazardBrief[] {
   // 认第二种的用处很实在:它是**处置更早那条隐患的唯一入口** —— 对话里问一句
   // 「GYT-H-… 复查了吗」,回复底下就会出现同一张卡、点开就是同一个面板。
   const raw = Array.isArray(rec.hazards) ? rec.hazards : [rec];
-  const out: HazardBrief[] = [];
-  for (const entry of raw) {
-    const item = asRecord(entry);
-    if (!item) continue;
-    const hazardNo = textOf(item, "hazard_no");
-    if (!hazardNo) continue;
-    out.push({
-      hazard_no: hazardNo,
-      item: textOf(item, "item") || "(未写明事项)",
-      grade: textOf(item, "grade"),
-      status: textOf(item, "status") || "pending",
-      needs_grading: item.needs_grading === true,
-    });
-  }
-  return out;
+  return raw.flatMap((entry) => {
+    const brief = toHazardBrief(entry);
+    return brief ? [brief] : [];
+  });
 }
 
 /**
@@ -383,8 +561,12 @@ export function toggleSelected(selected: readonly string[], hazardNo: string): s
 // ---------------------------------------------------------------------------
 
 /**
- * 界面上的处置动作。与端点**不是一一对应**:`reinspect` 打的是
- * `reinspect-result`(它一个动作两种结论),所以下面留了一张映射表。
+ * 界面上的**单条**处置动作(批量确认 `confirm` 不在这儿,它走勾选那条路)。
+ * 与端点**不是一一对应**:`reinspect` 打的是 `reinspect-result`
+ * (它一个动作两种结论),所以下面留了一张映射表。
+ *
+ * 这张表的顺序只是枚举顺序,**不是按钮顺序** —— 按钮顺序由 `availableActions`
+ * 逐档给,主要动作排第一(手最先够到的那颗要是对的那颗)。
  */
 export const DISPOSAL_ACTIONS = [
   "grade",
@@ -393,6 +575,7 @@ export const DISPOSAL_ACTIONS = [
   "reinspect",
   "resume",
   "escalate",
+  "reject",
 ] as const;
 export type DisposalAction = (typeof DISPOSAL_ACTIONS)[number];
 
@@ -405,9 +588,16 @@ export const ACTION_ENDPOINT: Readonly<Record<DisposalAction, SupervisionEndpoin
     reinspect: "reinspect-result",
     resume: "resume",
     escalate: "escalate",
+    reject: "reject",
   });
 
-/** 按钮上的字。用「签发」而不是「生成」—— 这几份是要拿去签字盖章的法律文书。 */
+/**
+ * 按钮上的字。用「签发」而不是「生成」—— 这几份是要拿去签字盖章的法律文书。
+ *
+ * `reject` 那句刻意把**什么时候用它**和**会发生什么**都写在按钮上:
+ * 它治的是自动识图的误报(照片里那顶帽子其实戴着),而它是**真删**不是标记 ——
+ * 只写「否决」的话,人会以为跟「驳回」一样还能翻出来看。
+ */
 export const ACTION_LABEL: Readonly<Record<DisposalAction, string>> = Object.freeze({
   grade: "人工定级",
   notice: "签发监理通知单",
@@ -415,6 +605,7 @@ export const ACTION_LABEL: Readonly<Record<DisposalAction, string>> = Object.fre
   reinspect: "登记复查结论",
   resume: "签发工程复工令",
   escalate: "上报主管部门",
+  reject: "否决(误报,删掉)",
 });
 
 /**
@@ -428,20 +619,37 @@ export const ACTION_LABEL: Readonly<Record<DisposalAction, string>> = Object.fre
  * 按钮,而工友会以为是系统坏了。
  *
  * 三条硬拦在这里的投影:
- *   · `needs_grading=1` → **只剩定级一件事**(Codex#11:未知风险不许按一般隐患
- *     走完闭环。硬拦③排在级别方向那两道之前,这里也一样);
+ *   · `needs_grading=1` → **签发那几件一件都不给**(Codex#11:未知风险不许按一般隐患
+ *     走完闭环。硬拦③排在级别方向那两道之前,这里也一样)。留下的是定级;
+ *     pending 时还留一个「否决」,理由见函数体里那段;
  *   · grade=严重 的 open → 只给 `suspend`,不给 `notice`(硬拦①);
  *   · grade=一般 的 open → 只给 `notice`,不给 `suspend`(硬拦②)。
  *
  * `grade` 在 pending / open 都给:`_GRADABLE_STATUSES` 就是这两档,而且
  * 「确实要停工,先把它改定为严重隐患」正是硬拦②那句拒绝话给出的出路。
+ *
+ * `reject`(W10)**只在 pending 一档**:服务端硬拦「已经确认过的不许删」(409),
+ * 别处给出来就是一颗点下去必挨骂的按钮。
  */
 export function availableActions(hazard: HazardBrief): DisposalAction[] {
-  if (hazard.needs_grading) return ["grade"];
+  if (hazard.needs_grading) {
+    // 未定级这一档只剩定级一件事(Codex#11:未知风险不许按一般隐患走完闭环)——
+    // 但 **pending 时「否决」要一起给**。
+    //
+    // 🔴 这一条是 2026-08-16 W10 定的,方向跟直觉相反,别再"顺手收窄"回去:
+    //    误报**恰恰最常落在这一档** —— safety 认出一个受控词表外的违规项,就是
+    //    needs_grading=1 + pending。逼人先给一个「根本不是隐患」的东西定级才准删,
+    //    等于往台账里留一条判过级的假隐患,而定级是要进法律文书的动作。
+    //    服务端 `delete_pending` 只看 `status='pending'`,压根不关心 needs_grading;
+    //    所以这里给出来仍然**比服务端窄**(非 pending 的 needs_grading 一律不给),
+    //    没有破坏本函数头注那条「只许更窄、不许更宽」的红线。
+    return hazard.status === "pending" ? ["grade", "reject"] : ["grade"];
+  }
   switch (hazard.status) {
     case "pending":
       // 确认(pending → open)走批量勾选那条路,不在单条动作里 —— 它是个批量端点。
-      return ["grade"];
+      // 「否决」跟它是同一个岔路口的另一条:确认 = 这确实是隐患,否决 = 识错了,删掉。
+      return ["grade", "reject"];
     case "open":
       return hazard.grade === GRADE_SEVERE ? ["suspend", "grade"] : ["notice", "grade"];
     case "notified":
@@ -470,21 +678,34 @@ export function actionNeedsPhoto(action: DisposalAction): boolean {
 }
 
 /**
- * 要不要二次确认。**判据是「这一下是不是法律行为」**,不是「会不会写库」:
+ * 要不要二次确认。**判据是「这一下能不能反悔」**,不是「会不会写库」:
  *   · `suspend` —— 一次停掉一片人的工;
- *   · `escalate` —— 对施工单位的正式指控,报到建设主管部门。
- * 两者都无法在系统里撤销(本批不做重签,见 `_GRADABLE_STATUSES` 头注),
+ *   · `escalate` —— 对施工单位的正式指控,报到建设主管部门;
+ *   · `reject`(W10)—— 那一行从库里**删掉**,连同它的登记时刻、照片关联一起没了。
+ * 三者都无法在系统里撤销(本批不做重签,见 `_GRADABLE_STATUSES` 头注),
  * 手滑一下的代价落在真实工地上,所以必须多问一句。
  *
+ * `reject` 这一颗还多一层理由:它跟「人工定级」并排长在同一条 pending 隐患上,
+ * 两颗按钮隔着一格 —— 手指点偏一格的代价是一条真实存在的隐患从台账上消失,
+ * 而屏幕上只会少一行,没有任何提示。
+ *
  * `notice` 不问:它是监理日常动作,而且期限那一格本来就要动手打字 ——
- * 每一颗按钮都弹确认框的下场是人闭着眼点「确定」,那时真正该拦的两颗也就废了。
+ * 每一颗按钮都弹确认框的下场是人闭着眼点「确定」,那时真正该拦的三颗也就废了。
  */
 export function actionNeedsConfirm(action: DisposalAction): boolean {
-  return action === "suspend" || action === "escalate";
+  return action === "suspend" || action === "escalate" || action === "reject";
 }
 
 /** 二次确认框里那句话。写清楚**后果**和**不可撤销**,不写「确定吗?」。 */
 export function confirmPrompt(action: DisposalAction, hazard: HazardBrief): string {
+  if (action === "reject") {
+    return (
+      // 这句话是拿去弹框的,里面不许写 markdown 记号(** 会原样显示成星号)。
+      `要把隐患「${hazard.item}」(${hazard.hazard_no})从台账里删掉吗?\n\n` +
+      "这一条会整行删掉,不是标记成已处理 —— 删了就找不回来了。\n" +
+      "只有还没确认的隐患能这么删;确实是隐患的,请改用「确认」。"
+    );
+  }
   if (action === "suspend") {
     return (
       `要为隐患「${hazard.item}」(${hazard.hazard_no})一次签发三份文书吗?\n` +
@@ -580,7 +801,8 @@ export function actionBody(action: DisposalAction, input: ActionInput): Record<s
     return body;
   }
 
-  // resume / escalate 只要编号
+  // resume / escalate / reject 只要编号(reject 的「只有 pending 能删」由服务端拦,
+  // 前端这边靠 availableActions 不把按钮给出去 —— 两道都不能省)。
   return body;
 }
 
@@ -588,18 +810,45 @@ export function actionBody(action: DisposalAction, input: ActionInput): Record<s
 // 响应解析
 // ---------------------------------------------------------------------------
 
-/** `documents` 数组里的一项 —— 镜像 supervision_api._IssuedDoc.as_payload()。 */
+/**
+ * `documents` 数组里的一项 —— 前四个键镜像 supervision_api._IssuedDoc.as_payload()。
+ *
+ * 后面几个是**可选**的:只有 `GET /supervision/hazards/{no}`(证据链)那条路会给,
+ * 六个动作端点的回执里没有。可选的理由同 `HazardBrief` —— 拿不到就是 undefined,
+ * 不许拿缺省冒充事实。
+ */
 export interface SupervisionDoc {
   doc_type: string;
   doc_no: string;
   /** 取件编号。**为 null 时绝不渲染下载链接**,见 documentUrl。 */
   artifact_id: string | null;
   filename: string;
+  /** 文书类型的中文名,后端算好的;前端也有 `docTypeZh` 兜底,两边同一张表。 */
+  doc_type_display?: string;
+  /**
+   * 🔴 **这一次复查拍的那张照片**,只有 `doc_type=reinspect` 的行才有。
+   *
+   * **不是**隐患首次发现那张(那张在 `hazards.photo_id` 里,压根不在这个数组)。
+   * 混起来的后果是拿发现时的照片当「整改后」的证据摆在证据链里 —— 界面上一切正常,
+   * 而那正是复查合格能把隐患销项的凭据。所以这个字段只从复查行读,别处一律没有。
+   */
+  photo_id?: string | null;
+  /** 复查结论 `pass` / `fail`,只有复查行有。中文名走 `result_display`。 */
+  result?: string;
+  /** 复查结论的中文:pass=合格、fail=不合格。**英文枚举值不许上屏。** */
+  result_display?: string;
+  /** 这一行是什么时候挂上去的(证据链按它排先后)。 */
+  created_at?: string;
 }
 
 export interface ActionResult {
   hazard_no: string;
-  /** 动作完成后**库里的真实状态**(不是前端猜的)。 */
+  /**
+   * 动作完成后**库里的真实状态**(不是前端猜的)。
+   *
+   * ⚠️ `reject` 回的是 `REJECTED_STATUS`(见上面那条:唯一一个不在八档词表里的值)。
+   * 别拿它去点亮状态徽章 —— `reject` 成功之后该做的是把这条 `removeHazard` 掉。
+   */
   status: string;
   /** 顺序固定,一份一张卡。`grade` / `reinspect-result` 不出文书,恒为空数组。 */
   documents: SupervisionDoc[];
@@ -610,6 +859,28 @@ export interface ActionResult {
   needsGrading: boolean | null;
   /** 只有 `reinspect-result` 端点带。 */
   result: string | null;
+}
+
+/**
+ * 证据链那几个只有详情端点才给的键。同 `toHazardBrief` 的规矩:
+ * **源里没有这个键就不挂上去**,不填 undefined —— 动作端点回执的四键形状因此不变。
+ *
+ * 严格版(`toDoc`)与宽松版(`documentsFromToolData`)共用这一份:两条路的
+ * **严格度**不同(见 documentsFromToolData 的注释),但同一个字段该怎么读是一样的,
+ * 抄两份迟早分叉成「详情页显示复查结论、动作回执不显示」这种说不清的差别。
+ */
+function docExtras(rec: Record<string, unknown>): Partial<SupervisionDoc> {
+  return {
+    ...(typeof rec.doc_type_display === "string"
+      ? { doc_type_display: rec.doc_type_display.trim() }
+      : {}),
+    ...("photo_id" in rec ? { photo_id: nullableTextOf(rec, "photo_id") } : {}),
+    ...(typeof rec.result === "string" ? { result: rec.result.trim() } : {}),
+    ...(typeof rec.result_display === "string"
+      ? { result_display: rec.result_display.trim() }
+      : {}),
+    ...(typeof rec.created_at === "string" ? { created_at: rec.created_at.trim() } : {}),
+  };
 }
 
 function toDoc(raw: unknown): SupervisionDoc {
@@ -628,11 +899,14 @@ function toDoc(raw: unknown): SupervisionDoc {
     // 只是取不了件。丢掉的话界面上少一张卡,而工友以为那份文书没出 —— 反了。
     artifact_id: artifactId || null,
     filename: textOf(rec, "filename") || `${docTypeZh(docType)}_${docNo}.docx`,
+    ...docExtras(rec),
   };
 }
 
 /**
- * 解析六个单条端点的 200 响应(confirm 另有一份,它的 data 形状不同)。
+ * 解析**单条**动作端点的 200 响应 —— 除 `confirm` 之外的七个(它是批量端点,
+ * data 形状不同,另有 `parseConfirmEnvelope`)。`reject` 也走这一份:
+ * 它的 `documents` 是空数组、`status` 是 `REJECTED_STATUS`,判据一个字都不用改。
  *
  * 🔴 `documents` **必须是数组,缺了就抛**。这正是 Codex#16 要冻结形状的理由:
  * 三份文书里少出一份,若形状是三个独立的键,前端少渲一张卡没有任何异常;
@@ -712,6 +986,245 @@ export function parseConfirmEnvelope(bodyText: string): ConfirmResult {
 }
 
 // ---------------------------------------------------------------------------
+// 两个 GET 查询端点的解析(W10)—— 宽松那一档,**一个错都不许抛**
+// ---------------------------------------------------------------------------
+//
+// 为什么与上面那两个动作解析器反着来:动作那条路是「人刚点了签发」,契约破了必须
+// 响亮地失败;查询这条路是**面板每次打开、每次刷新都在走**,抛出去就是整个操作台白屏
+// —— 而白屏之后连「重试」按钮都没有,监理只能刷浏览器。所以这里一律给保守缺省,
+// 认不出的条目跳过,`ok` 字段留给调用方决定要不要提示。
+//
+// ⚠️ 保守缺省的方向是「少说」不是「乱说」:计数拿不到就报 0(而不是编一个),
+// `truncated` 拿不到就当没截断。唯一例外是 `total` —— 见下面那条注释。
+
+/** `GET /supervision/hazards` 解析出来的一屏。 */
+export interface HazardListResult {
+  /** 信封是不是 `ok:true` 且形状认得出。false 时下面全是缺省值。 */
+  ok: boolean;
+  /** 后端回声的筛子。缺了按「在办」算 —— 与后端缺省同一档。 */
+  scope: string;
+  /**
+   * 归属回声的**三态**,与 `hazardListUrl` 的入参一一对应:
+   * `null` = 全部工地 / `""` = 只看未归属 / `"P-x"` = 某个工地。
+   *
+   * 它只是回声:界面上显示「现在看的是哪一批」该信自己发出去的那份状态,
+   * 这个字段用来**核对**(对不上说明请求和响应不是一回事,通常是 URL 拼错了)。
+   */
+  projectId: string | null;
+  /** 后端那一侧的「今天」(香港日历日)。超期是按它算的,别用浏览器的本地日期。 */
+  today: string;
+  hazards: HazardBrief[];
+  /** 台账里一共几条(过了 scope 筛子之后)。 */
+  total: number;
+  /** 待确认几条 —— 它是「有活要干」的红点。 */
+  pending: number;
+  /** 超期几条。 */
+  overdue: number;
+  /**
+   * 未归属**一共**几条。🔴 **它不过 scope 筛子** —— 它回答的不是「这一屏里有几条」,
+   * 而是「有没有一批隐患没人看得见」(D6:未归属是空串不是 NULL,不选工地就永远筛不到)。
+   * 界面上要单独说这一句,混进上面那三个计数里就等于没说。
+   */
+  unassigned: number;
+  /**
+   * 条数超过后端上限(`config.supervision_list_max_rows`,当前 50)被截断了。
+   *
+   * 🔴 **界面必须显示这件事。** 不显示的话,屏幕上是一张看起来完整的清单,
+   * 而监理据此说「就剩这些了」—— 少掉的那些一条都不会有任何提示。
+   */
+  truncated: boolean;
+  /** 后端写好的人话,原样透传(不重新包装)。 */
+  userMsg: string;
+}
+
+/** 数一个计数字段;不是有限的非负数就用兜底值(**不编数**)。 */
+function countOf(rec: Record<string, unknown>, key: string, fallback: number): number {
+  const value = rec[key];
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return fallback;
+  return Math.trunc(value);
+}
+
+/**
+ * 读不出清单时的那一份:全是缺省值、`ok:false`,只把后端那句人话留着。
+ *
+ * 做成函数而不是模块级常量 —— 它里面有个 `hazards` 数组,调用方会拿去 setState、
+ * 拿去 `mergeHazards`。共享同一份的话两块面板会互相串,而这种 bug 查起来极费劲。
+ */
+function unreadableList(userMsg: string): HazardListResult {
+  return {
+    ok: false,
+    scope: HAZARD_SCOPE_ACTIVE,
+    projectId: null,
+    today: "",
+    hazards: [],
+    total: 0,
+    pending: 0,
+    overdue: 0,
+    unassigned: 0,
+    truncated: false,
+    userMsg,
+  };
+}
+
+/**
+ * 解析 `GET /supervision/hazards` 的响应体。**一个错都不抛**(理由见本节开头)。
+ *
+ * `ok:false` / 不是 JSON / `data` 不是对象 / **`hazards` 不是数组** —— 一律退化成
+ * 「空清单 + `ok:false`」,而 `userMsg` **照旧解析出来**:非 200 的那几种错误
+ * (401/404/429/500)由 `normalizeError` 说话,但 200 带 `ok:false` 这种
+ * 「进了 handler 又没成」的情形,后端写好的那句人话是屏幕上唯一的线索。
+ *
+ * 🔴 `hazards` 不是数组时**不许回 `ok:true` + 空清单**:那样屏幕上写的是
+ * 「台账里没有隐患」,而真相是「这一屏读不出来」—— 两句话在界面上长得一模一样,
+ * 而前一句会让监理直接收工。`ok:false` 才能让面板说「读不出来,刷新试试」。
+ * (同一件事在动作那条路上是直接抛,见 `parseActionEnvelope` 的 documents 判据:
+ *  两条路的代价不对称,所以一个抛、一个回 false,但都不许静默当成「就是空的」。)
+ */
+export function parseHazardListEnvelope(bodyText: string): HazardListResult {
+  const parsed = tryParseJsonObject(bodyText);
+  // 连 JSON 都不是的时候 parsed 是 null,`?? {}` 让下面这行不必再分一次支。
+  const userMsg = textOf(parsed ?? {}, "user_msg");
+  const data = parsed && parsed.ok === true ? asRecord(parsed.data) : null;
+  if (!data || !Array.isArray(data.hazards)) return unreadableList(userMsg);
+  const hazards = data.hazards.flatMap((entry) => {
+    const brief = toHazardBrief(entry);
+    return brief ? [brief] : [];
+  });
+  return {
+    ok: true,
+    scope: textOf(data, "scope") || HAZARD_SCOPE_ACTIVE,
+    // 🔴 三态回声,判据只能是 typeof:空串是「只看未归属」这个**值**,
+    //    用 `textOf(...) || null` 会把它压成 null,于是界面显示「全部工地」。
+    projectId: typeof data.project_id === "string" ? data.project_id.trim() : null,
+    today: textOf(data, "today"),
+    hazards,
+    // total 的兜底是**手上真有的行数**,不是 0:清单里明明列着 12 条而表头写「共 0 条」
+    // 是自相矛盾,人会以为界面坏了。它是个诚实的下界(截断时本来就比真值小)。
+    total: countOf(data, "total", hazards.length),
+    // 这三个的兜底是 0 —— 「不知道有几条」只能说 0,凭空编一个数就是吓唬人 / 骗人。
+    pending: countOf(data, "pending", 0),
+    overdue: countOf(data, "overdue", 0),
+    unassigned: countOf(data, "unassigned", 0),
+    truncated: data.truncated === true,
+    userMsg,
+  };
+}
+
+/** 一条隐患的详情 = 清单里那一行 + 证据链。 */
+export interface HazardDetail extends HazardBrief {
+  /** 证据链:五种文书 + 复查记录行,后端按时间排好。空数组 = 还没签过任何东西。 */
+  documents: SupervisionDoc[];
+  /** 复查过没有(哪怕不合格也算复查过)—— 升级上报的举证链要这一条。 */
+  reinspected: boolean;
+  /** 首次发现的时刻(带时区的 ISO 串,香港时间)。 */
+  foundAt: string;
+  /** 销项时刻;null = 还没销项。 */
+  closedAt: string | null;
+}
+
+export interface HazardDetailResult {
+  ok: boolean;
+  /** 认不出就是 null(含 404 那种)。调用方据此显示 `userMsg`,别渲染半张空卡。 */
+  hazard: HazardDetail | null;
+  userMsg: string;
+}
+
+/**
+ * 解析 `GET /supervision/hazards/{hazard_no}` 的响应体。**一个错都不抛。**
+ *
+ * 404(编号查不到)的形状是 `{ok:false, data:null, user_msg:"没找到隐患…"}` ——
+ * 这里回 `{ok:false, hazard:null, userMsg:"没找到隐患…"}`,那句人话得留着:
+ * 它把人带回去核对编号,而按状态码说话会变成「监理接口还没开通」,方向全错
+ * (同 `normalizeError` 里那条「Envelope 分支必须优先」)。
+ *
+ * `hazard_no` 认不出时即便信封说 `ok:true` 也当失败:没有编号的详情页上,
+ * 每一颗按钮都不知道该打给谁 —— 与其画一张点不动的卡,不如老实说这条读不出来。
+ */
+export function parseHazardDetailEnvelope(bodyText: string): HazardDetailResult {
+  const parsed = tryParseJsonObject(bodyText);
+  // 连 JSON 都不是的时候 parsed 是 null,`?? {}` 让下面这行不必再分一次支。
+  const userMsg = textOf(parsed ?? {}, "user_msg");
+  const data = parsed && parsed.ok === true ? asRecord(parsed.data) : null;
+  const brief = data ? toHazardBrief(data) : null;
+  if (!data || !brief) return { ok: false, hazard: null, userMsg };
+  return {
+    ok: true,
+    hazard: {
+      ...brief,
+      // 复用宽松版:证据链里认不出的行跳过,不因为一行坏数据丢掉整条隐患。
+      documents: documentsFromToolData(data),
+      reinspected: data.reinspected === true,
+      foundAt: textOf(data, "found_at"),
+      closedAt: nullableTextOf(data, "closed_at"),
+    },
+    userMsg,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 证据链的排版素材(W10 · 详情面板)
+// ---------------------------------------------------------------------------
+
+/** 证据链里的一行:那条记录本身 + 它是**第几次复查**。 */
+export interface EvidenceRow {
+  doc: SupervisionDoc;
+  /**
+   * 复查行是第几次复查(从 1 起数);**文书行恒为 null**。
+   *
+   * 为什么要这个序号:复查可以反复做(不合格 → 再整改 → 再复查),证据链里就会有
+   * 好几条长得一模一样的复查记录。不编号的话屏幕上是三行「复查:不合格」,
+   * 人分不出哪一行是最近那次 —— 而「最近一次复查什么结论」正是监理翻这一页最想知道的。
+   */
+  reinspectionNo: number | null;
+}
+
+/**
+ * 给证据链的每一行标上「第几次复查」。**顺序原样保留,不排序、不分组。**
+ *
+ * 🔴 **不许按类型分成「文书一堆、复查一堆」再渲染。** 后端 `docs_of` 是按挂进台账的
+ * 先后给的,而证据链的意义就是这个先后:上报主管部门那条举证链是
+ * 「通知过 + 期限到了 + 复查过 + 仍未整改」—— 按类型分组等于把时间轴拆了,
+ * 剩下的只是两张清单,答不了「先通知还是先复查」这种事后会被问到的问题。
+ *
+ * 判据用 `isDownloadableDoc`(**别自己比 doc_type**):它按的是「这一档本来有没有文件」,
+ * 所以一份 artifact_id 为空的通知单仍然算文书行 —— 那是**事故**(纸签了取不了件),
+ * 要走文书那张卡去显眼地说,不能被误编进复查序号里。
+ *
+ * ⚠️ 传进来的必须是**整条**证据链。喂半截进来序号就是错的(第 2 次会被数成第 1 次),
+ * 而屏幕上看不出任何异常 —— 今天唯一的来源是详情端点的 `documents`,它本来就是整条。
+ */
+export function evidenceRows(docs: readonly SupervisionDoc[]): EvidenceRow[] {
+  let seen = 0;
+  return docs.map((doc) => {
+    if (isDownloadableDoc(doc)) return { doc, reinspectionNo: null };
+    seen += 1;
+    return { doc, reinspectionNo: seen };
+  });
+}
+
+/** 后端时刻串的形状:`2026-08-16T09:50:08+08:00`。只取到分,秒对监理没有意义。 */
+const ISO_MOMENT_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/;
+
+/**
+ * 把后端给的时刻串排成「2026-08-16 09:50」。**纯截字符串,一点换算都不做。**
+ *
+ * 🔴 **绝对不许写成 `new Date(iso).toLocaleString()`。** 那会按**浏览器所在时区**
+ * 重排:监理的笔记本设成 UTC 时,一条 09:50 发现的隐患在屏幕上就成了 01:50 ——
+ * 而这是要拿去追责的时刻,差八小时能把「下班后违规作业」说成「上班前」。
+ * 后端给的串里时区偏移已经写死(全仓唯一时间权威是 `attendance/receipt.py` 的
+ * 香港时间快照),照抄前面那截就是原样保留。
+ * 这与「日期换算一律交后端 `dates.py`」是同一条红线的两半:那半禁止**算**,
+ * 这半禁止**转**。
+ *
+ * 认不出形状返回空串,调用方据此干脆不显示这一格 —— 宁可少一格,
+ * 也不许把半截串或者 `Invalid Date` 摆到屏幕上。
+ */
+export function formatHkMoment(iso: string): string {
+  const matched = ISO_MOMENT_PATTERN.exec(iso.trim());
+  return matched ? `${matched[1]} ${matched[2]}` : "";
+}
+
+// ---------------------------------------------------------------------------
 // 文书取件地址
 // ---------------------------------------------------------------------------
 
@@ -723,10 +1236,16 @@ export function parseConfirmEnvelope(bodyText: string): ConfirmResult {
  * 长得一模一样,分不开就等于没告诉人。
  *
  * `base` **由调用方传进来,本文件不读 `process.env`**:
- * `NEXT_PUBLIC_ARTIFACT_BASE` 那条链(CLAUDE.md 同源清单)现在有三个读者
- * (human.tsx / tool-calls.tsx / checkin.tsx),链断在任何一环都不报错 ——
- * 而且 https 页面拉 http 资源属于 mixed content,浏览器**连请求都不发**。
- * 少一个读者就少一处能断的地方,所以监理这条链复用 tool-calls.tsx 手里那一份。
+ * `NEXT_PUBLIC_ARTIFACT_BASE` 那条链(CLAUDE.md 同源清单)现在有**四个**读者
+ * (human.tsx / tool-calls.tsx / checkin.tsx / **supervision-entry.tsx**),
+ * 链断在任何一环都不报错 —— 而且 https 页面拉 http 资源属于 mixed content,
+ * 浏览器**连请求都不发**,界面上一点线索都没有。
+ *
+ * 少一个读者就少一处能断的地方,所以本文件与面板一律收 props、自己不读。
+ * 第四个读者是 2026-08-16(W10)加的:处置面板改成常驻操作台之后多出一条链路,
+ * 而**那条链路的根不再是 tool-calls.tsx**(它挂的卡片压根不可达,见 W10 §1)。
+ * 规矩因此定成:**每条链路的根各读一次,面板与卡片一律收 props** ——
+ * 两条链路对称,谁也不用去 import 另一条的私有常量。
  */
 export function documentUrl(
   doc: Pick<SupervisionDoc, "artifact_id">,
@@ -762,7 +1281,11 @@ export function documentsFromToolData(data: unknown): SupervisionDoc[] {
       doc_type: docType,
       doc_no: docNo,
       artifact_id: artifactId || null,
+      // ⚠️ 复查记录行后端给的 filename 是 null,于是这里兜底拼出一个
+      //「复查记录_….docx」—— 它**不是真文件名,那一行根本没有文件**。
+      // 渲染前一律先过 `isDownloadableDoc`,别照着这个名字去画一个下载按钮。
       filename: textOf(rec, "filename") || `${docTypeZh(docType)}_${docNo}.docx`,
+      ...docExtras(rec),
     });
   }
   return out;

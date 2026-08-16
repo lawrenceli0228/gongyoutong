@@ -475,13 +475,15 @@ apply_override "api-key.tsx" "src/lib/api-key.tsx"
 #   qrcode.tsx     —— 电脑端二维码面板(依赖下面步骤 2.6 装的 qrcode.react)
 #   checkin.tsx    —— 自拍打卡组件,thread-index.tsx 的动作条里是它的入口
 # ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override 十二件 + install_new_file
-#    **七件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
+#    **八件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
 #    合并之后数出来永远对不上。
 #    (2026-08-15 校过:上一版这里写的是「十一件 + 三件」,而 apply_override 那时
 #     确实是十一件、install_new_file 却已经是五件 —— 队友那两件
 #     ProjectUploadPanel/GytStatusCards 合流时没回来改这个数。
 #     数不对的坏处不是难看,是下一个人照着数会以为「剩下的不用管」。)
 #    (2026-08-16 W9·S6:install_new_file 五 → 七,加了监理那两件。)
+#    (2026-08-16 W10·S3:install_new_file 七 → 八,加了 supervision-entry.tsx
+#     那个常驻入口。apply_override 仍是十二 —— 那次只改了已有的 thread-index.tsx。)
 #    数法:grep -cE '^\s*apply_override ' scripts/setup-frontend.sh
 #          grep -cE '^\s*install_new_file ' scripts/setup-frontend.sh
 install_new_file "checkin-lib.ts" "src/lib/checkin-lib.ts"
@@ -497,19 +499,25 @@ install_new_file "checkin.tsx" "src/components/thread/checkin.tsx"
 install_new_file "ProjectUploadPanel.tsx" "src/components/thread/ProjectUploadPanel.tsx"
 install_new_file "GytStatusCards.tsx" "src/components/thread/GytStatusCards.tsx"
 
-# W9 监理业务闭环(S6 泳道):监理确认与处置界面 + 文书下载出口。
+# W9 监理业务闭环(S6 泳道)+ W10 常驻入口(S3 泳道):监理确认与处置界面、
+# 文书下载出口、动作条上那颗带待确认计数的按钮。
 # 同样是**本仓自有**的新文件,上游没有对应物,同样不能走 apply_override。
-#   supervision-lib.ts —— 纯函数库(端点地址、Envelope 解析、状态中文名、
-#                          「这条隐患现在能做什么」),scripts/frontend-tests/ 的
-#                          vitest 直接测它,所以必须保持零依赖
-#   supervision.tsx    —— 确认面板 + 处置动作 + 文书下载卡;入口在
-#                          tool-calls.tsx 的「隐患台账」卡片上(不在动作条)
-# ⚠️ 漏了这两件 = 监理那六种文书在界面上一个出口都没有:演示时说「暂停令已签发」,
+#   supervision-lib.ts    —— 纯函数库(端点地址、Envelope 解析、状态中文名、
+#                             「这条隐患现在能做什么」),scripts/frontend-tests/ 的
+#                             vitest 直接测它,所以必须保持零依赖
+#   supervision.tsx       —— 确认面板 + 处置动作 + 文书下载卡;面板自己去打两个
+#                             GET 端点取数(W10 之前是从聊天流里那张卡拿的)
+#   supervision-entry.tsx —— 动作条上的常驻入口(W10)。**它才是面板今天唯一的入口**
+# ⚠️ 漏了前两件 = 监理那六种文书在界面上一个出口都没有:演示时说「暂停令已签发」,
 #    而屏幕上只有一行灰色折叠,点不开、下不到、**不报错**(方案 §6.5 那一行)。
 #    tool-calls.tsx(上面 apply_override 第一件)会 import 它们两个,
 #    少装任何一件,前端构建直接 Module not found。
+# ⚠️ 漏了第三件 = **面板一次都打不开**,而且同样不报错(thread-index.tsx import 它,
+#    所以真漏了是构建期 Module not found —— 但 W9→W10 之间的病状正是「构建没问题、
+#    界面上就是没有入口」,别把「构建过了」当成入口通了。W10 方案 §1 记了全过程)。
 install_new_file "supervision-lib.ts" "src/lib/supervision-lib.ts"
 install_new_file "supervision.tsx" "src/components/thread/supervision.tsx"
+install_new_file "supervision-entry.tsx" "src/components/thread/supervision-entry.tsx"
 
 # -----------------------------------------------------------------------------
 # 步骤 2.6:装二维码库(checkin 三件里唯一的新依赖)

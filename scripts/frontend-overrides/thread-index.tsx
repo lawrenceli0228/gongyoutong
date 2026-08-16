@@ -37,6 +37,7 @@ import { Label } from "../ui/label";
 import { Switch } from "../ui/switch";
 import { useFileUpload } from "@/hooks/use-file-upload";
 import { CheckinEntry } from "./checkin";
+import { SupervisionEntry } from "./supervision-entry";
 import { ContentBlocksPreview } from "./ContentBlocksPreview";
 import {
   useArtifactOpen,
@@ -591,6 +592,14 @@ function ThreadInner() {
                             (tool-calls.tsx 只消费 ToolMessage,直连打卡根本不产生它,
                             W7 §1.5)。组件自带 type="button",不会误触本 form 的提交。 */}
                         <CheckinEntry />
+                        {/* 监理处置入口(W10):同样是**直连 HTTP 的操作台**,不进对话、
+                            不产生消息 —— 所以和打卡并排放在动作条,不放消息区。
+                            W9 当初就是放错了地方:它挂在 tool-calls.tsx 那张「隐患台账」卡上,
+                            而那张卡的判据是「子 Agent 的工具返回里有 hazards 数组」,
+                            supervisor 的 output_mode="last_message" 把那份返回整个丢掉了 ——
+                            结果是面板一次都没打开过,而且不报错(方案 docs/W10_界面取不到工具返回_方案.md)。
+                            按钮自带 type="button" 与待确认计数徽章,不会误触本 form 的提交。 */}
+                        <SupervisionEntry />
                         {stream.isLoading ? (
                           <Button
                             key="stop"
