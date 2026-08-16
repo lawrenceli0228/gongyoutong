@@ -1,0 +1,271 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>界面拿不到任何工具返回 · 工友通 W10</title>
+<style>
+:root{
+  --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5;
+  --accent:#c2410c; --accent-soft:#fff1e8;
+  --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec;
+  --warn:#b45309; --warn-soft:#fdf3e2;
+  --bad:#a52a2a; --bad-soft:#fbeceb;
+  --sans:"PingFang SC","Hiragino Sans GB","Noto Sans SC",system-ui,-apple-system,sans-serif;
+  --mono:"SF Mono","JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme:dark){
+  :root{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+    --line:#37332c; --line-soft:#2a2620; --accent:#f97b3d; --accent-soft:#2e1c10;
+    --blue:#6aa5d8; --blue-soft:#152433; --ok:#6fbf8f; --ok-soft:#12271a;
+    --warn:#e0a34e; --warn-soft:#2b2010; --bad:#e97a70; --bad-soft:#2c1614; }
+}
+:root[data-theme="light"]{ --paper:#faf8f4; --card:#fffefb; --ink:#1c1a17; --ink-soft:#57534b; --ink-faint:#8a8478;
+  --line:#e4e0d8; --line-soft:#efece5; --accent:#c2410c; --accent-soft:#fff1e8; --blue:#1e5a8a; --blue-soft:#eaf2f8;
+  --ok:#2f7d4f; --ok-soft:#e9f4ec; --warn:#b45309; --warn-soft:#fdf3e2; --bad:#a52a2a; --bad-soft:#fbeceb; }
+:root[data-theme="dark"]{ --paper:#191714; --card:#211e1a; --ink:#ece8e1; --ink-soft:#a49e93; --ink-faint:#7d766b;
+  --line:#37332c; --line-soft:#2a2620; --accent:#f97b3d; --accent-soft:#2e1c10; --blue:#6aa5d8; --blue-soft:#152433;
+  --ok:#6fbf8f; --ok-soft:#12271a; --warn:#e0a34e; --warn-soft:#2b2010; --bad:#e97a70; --bad-soft:#2c1614; }
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.75;-webkit-font-smoothing:antialiased;font-feature-settings:"tnum"}
+.wrap{max-width:1000px;margin:0 auto;padding:0 24px 96px}
+header{padding:70px 0 0}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--accent);margin-bottom:16px}
+h1{font-size:clamp(29px,4.2vw,44px);line-height:1.15;letter-spacing:-.022em;font-weight:680;
+  margin:0 0 16px;text-wrap:balance;max-width:17em}
+.lede{font-size:clamp(15.5px,1.5vw,18px);color:var(--ink-soft);max-width:45em;margin:0 0 28px;line-height:1.72}
+.lede b{color:var(--ink);font-weight:600}
+.meta{font-family:var(--mono);font-size:11px;color:var(--ink-faint);padding-bottom:8px}
+.verdict{border:1.5px solid var(--bad);background:var(--bad-soft);border-radius:var(--r);
+  padding:20px 24px;margin-bottom:14px}
+.verdict .t{font-size:19px;font-weight:650;margin-bottom:8px;letter-spacing:-.01em}
+.verdict p{margin:0 0 10px;color:var(--ink-soft);font-size:15px;max-width:none}
+.verdict p:last-child{margin:0}
+section{padding-top:54px;scroll-margin-top:24px}
+h2{font-size:12px;font-family:var(--mono);letter-spacing:.15em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 8px;font-weight:600}
+h2 + .h{font-size:clamp(21px,2.3vw,26px);font-weight:640;letter-spacing:-.016em;margin:0 0 8px;line-height:1.3;text-wrap:balance}
+.sub{color:var(--ink-soft);max-width:44em;margin:0 0 24px;font-size:15.5px}
+h3{font-size:17px;font-weight:640;margin:32px 0 10px;letter-spacing:-.01em}
+p{max-width:46em;margin:0 0 14px}
+ul,ol{max-width:46em;padding-left:22px;margin:0 0 16px}
+li{margin-bottom:7px}
+code{font-family:var(--mono);font-size:.875em;background:var(--line-soft);
+  padding:1.5px 5px;border-radius:4px;color:var(--ink)}
+pre{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;
+  line-height:1.62;margin:0 0 20px;color:var(--ink-soft)}
+pre b{color:var(--accent);font-weight:600}
+pre i{color:var(--bad);font-style:normal;font-weight:600}
+pre u{color:var(--ok);text-decoration:none;font-weight:600}
+table{width:100%;border-collapse:collapse;margin:0 0 22px;font-size:14px;display:block;overflow-x:auto}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+th{font-size:11.5px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:600;border-bottom:1.5px solid var(--line);white-space:nowrap}
+tr:last-child td{border-bottom:none}
+.box{border-radius:var(--r);padding:15px 18px;margin:0 0 20px;font-size:14.5px;border-left:3px solid}
+.box p{margin:0 0 9px;max-width:none;font-size:14.5px}
+.box p:last-child{margin:0}
+.box .hd{display:block;font-weight:650;font-size:15px;margin-bottom:7px;color:var(--ink)}
+.b-bad{border-color:var(--bad);background:var(--bad-soft);color:var(--ink-soft)}
+.b-warn{border-color:var(--warn);background:var(--warn-soft);color:var(--ink-soft)}
+.b-ok{border-color:var(--ok);background:var(--ok-soft);color:var(--ink-soft)}
+.b-info{border-color:var(--blue);background:var(--blue-soft);color:var(--ink-soft)}
+.no{color:var(--bad);font-weight:650}
+footer{margin-top:70px;padding-top:26px;border-top:1px solid var(--line);
+  font-size:13px;color:var(--ink-faint);font-family:var(--mono)}
+.toggle{position:fixed;top:16px;right:16px;z-index:9;background:var(--card);border:1px solid var(--line);
+  color:var(--ink-soft);border-radius:20px;padding:6px 13px;font-size:11.5px;font-family:var(--mono);cursor:pointer}
+</style>
+
+<button class="toggle" onclick="(function(){var r=document.documentElement;var d=r.getAttribute('data-theme');
+  var isDark=d?d==='dark':matchMedia('(prefers-color-scheme:dark)').matches;
+  r.setAttribute('data-theme',isDark?'light':'dark')})()">明 / 暗</button>
+
+<div class="wrap">
+<header>
+  <div class="meta">2026-08-16 · 手工点界面时发现 · docs/W10_界面取不到工具返回_方案.md</div>
+  <div class="eyebrow">工友通 W10 · 根因与修法</div>
+  <h1>界面拿不到<br>任何工具返回</h1>
+  <p class="lede"><b>不是 W9 引入的</b>,W9 只是又往这个洞里放了一件东西。
+    影响面比看上去大:<b>巡检记录卡也从来没显示过</b>,而 CLAUDE.md 把它当成在用的功能写着。</p>
+
+  <div class="verdict">
+    <div class="t">supervisor 的 <code>output_mode="last_message"</code> 把子 Agent 的工具返回丢掉了</div>
+    <p>而前端所有「从工具返回渲染出来的卡片」都挂在那份返回上 —— 于是它们<b>一张都渲染不出来</b>。</p>
+    <p>不是代码写错,是<b>入口挂在了架构会丢弃的东西上</b>。</p>
+  </div>
+</header>
+
+<section>
+  <h2>1 / Evidence</h2>
+  <div class="h">证据(全部实测,不是推理)</div>
+
+  <h3>后端干完了活</h3>
+  <p>传一张工地照片,safety 正常判读、隐患正常入库:</p>
+<pre>GYT-H-20260816-171404-7194  未穿反光衣   现场「一般」→ 监理「一般」  <u>pending</u>
+GYT-H-20260816-171404-f95e  临边无防护   现场「较大」→ 监理「严重」  <u>pending</u></pre>
+  <p><code>pending</code>(D17)、<code>project_id=''</code>(D6,没选工地)—— 全对。</p>
+
+  <h3>而线程状态里没有那条工具返回</h3>
+<pre>[human ]
+[ai    ] supervisor   → transfer_to_safety
+[tool  ] transfer_to_safety
+[ai    ] safety                      ← <i>只剩这条纯文本</i>
+[ai    ] safety       → transfer_back_to_supervisor
+[tool  ] transfer_back_to_supervisor
+[ai    ] supervisor</pre>
+  <p><b>7 条消息,没有 <code>analyze_site_photo</code>。</b>
+    而隐患卡的判据是「工具名在白名单 <b>且</b> <code>data.hazards</code> 存在」。</p>
+
+  <h3>三条路全堵</h3>
+  <table>
+    <thead><tr><th>取数路径</th><th>实测结果</th></tr></thead>
+    <tbody>
+      <tr><td>线程状态 <code>/threads/{id}/state</code></td><td>9 条线程,业务工具返回 <span class="no">0</span></td></tr>
+      <tr><td>历史检查点 <code>/threads/{id}/history</code></td><td>全部检查点,业务工具返回 <span class="no">0</span></td></tr>
+      <tr><td>实时流 <code>useStream</code></td><td><code>Stream.tsx:86</code> <span class="no">没有 subgraphs 选项</span></td></tr>
+    </tbody>
+  </table>
+  <p>子 Agent 是编译后的子图,它内部的 <code>ToolMessage</code> 属于子图命名空间 ——
+    不订阅 <code>subgraphs</code> 就不会流出来;而 <code>output_mode="last_message"</code>
+    决定了它也不进状态。</p>
+
+  <h3>所以这不只是 W9 的问题</h3>
+  <table>
+    <thead><tr><th>卡</th><th>判据</th><th>能否命中</th></tr></thead>
+    <tbody>
+      <tr><td>巡检记录(W3/W5 就有)</td><td>工具名 <code>=== render_inspection_report</code></td><td><span class="no">❌ 从来没有</span></td></tr>
+      <tr><td>监理文书(W9)</td><td>信封 <code>data.documents</code> 是数组</td><td><span class="no">❌</span></td></tr>
+      <tr><td>隐患台账(W9)</td><td>工具名在白名单 <b>且</b> <code>data.hazards</code></td><td><span class="no">❌</span></td></tr>
+    </tbody>
+  </table>
+  <div class="box b-bad">
+    <span class="hd">整条 ARTIFACT_BASE 同源链一直是死的</span>
+    <p>CLAUDE.md 的「前端覆盖件」一节把巡检记录卡写成在用的功能,而那条同源清单
+      (<code>human.tsx</code> + <code>tool-calls.tsx</code> + <code>checkin.tsx</code> +
+      Dockerfile ARG + compose + Caddy)<b>就是为了让那张卡能取件而建的</b>。</p>
+    <p>⚠️ 这条洞<b>仓库自己记过</b>:验收 dump 的头部和 <code>read_backend_today</code> 的
+      docstring 都写着「轨迹看不见子 Agent 的工具调用和工具返回 —— 那是
+      <code>output_mode=last_message</code> 砍掉的」。知道归知道,前端还是照着
+      「工具返回会到界面上」写了三张卡。</p>
+  </div>
+</section>
+
+<section>
+  <h2>2 / Why not</h2>
+  <div class="h">为什么不能靠改 output_mode 解决</div>
+  <div class="box b-warn">
+    <p><code>graph.py</code> 的 <code>OUTPUT_MODE = "last_message"</code> 是<b>刻意选的</b>,它自己的注释写着:</p>
+    <p>「选它而不是 <code>full_history</code>,是因为工地场景里子 Agent 的中间步骤
+      (检索到的 20 段原文、DXF 里的几百个实体)对调度决策没用,
+      全带回来只会把 supervisor 的上下文撑爆、烧掉额度。」</p>
+    <p>改成 <code>full_history</code> 等于用<b>每一次对话的成本与稳定性</b>去换几张卡片。不划算。</p>
+    <p>订阅 <code>subgraphs</code> 也不行:那样能在<b>实时流</b>里看到,但<b>刷新页面就没了</b> ——
+      而留档文书是要事后回来取的东西。</p>
+  </div>
+</section>
+
+<section>
+  <h2>3 / Fix</h2>
+  <div class="h">把操作台与取件从聊天流里解耦</div>
+  <p class="sub"><b>处置面板是操作台,不是聊天产物。</b>它该有自己的入口和自己的数据源。
+    仓里有现成的先例:<b>W7 的打卡面板</b> —— 界面上一个常驻按钮 → 点开面板 → 直连 HTTP 端点,
+    一个字都不经过聊天流。W9 的处置面板本来就该长这样。</p>
+
+<pre> 现在(坏)                          改后(照 checkin 的先例)
+ ─────────────────────            ──────────────────────────
+ 聊天流                            <u>界面常驻按钮</u>(带待确认计数)
+   └ 工具返回 <i>✂ 被砍掉</i>              └ 点开面板
+       └ 隐患卡(<i>渲不出</i>)                └ GET  /supervision/hazards       清单
+           └ 处置面板(<i>到不了</i>)          └ GET  /supervision/hazards/{no}  详情+证据链
+                                          └ POST /supervision/confirm 等七个(<u>已有</u>)</pre>
+
+  <h3>3.1 后端补三个端点</h3>
+  <table>
+    <thead><tr><th>端点</th><th>干什么</th><th>备注</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /supervision/hazards</code></td><td>清单,支持 scope 与 project_id</td><td>复用现有筛子语义</td></tr>
+      <tr><td><code>GET /supervision/hazards/{no}</code></td><td>详情 + 证据链(含每次复查的照片编号)</td><td>F4 修完的字段终于有出口</td></tr>
+      <tr><td><code>POST /supervision/reject</code></td><td>否决一条 pending</td><td><b>TODO-45 B 组</b>:<code>delete_pending()</code> 现在零调用</td></tr>
+    </tbody>
+  </table>
+  <div class="box b-bad">
+    <span class="hd">🔴 筛子逻辑不许再写第四份</span>
+    <p>同一套判据已经有三份(端点闸门 / <code>_advise</code> / 前端 <code>availableActions</code>,
+      见 TODO-45 A 组)。<code>list_hazards</code> 的 scope 筛子与超期判定在
+      <code>agents/supervision/tools.py</code>,而那个模块会拉 langchain 栈。</p>
+    <p>做法:把<b>纯逻辑</b>抽到 <code>agents/supervision/scoping.py</code>(零 langchain 依赖),
+      <code>tools.py</code> 与 <code>supervision_api.py</code> 都 import 它。方向合法 ——
+      <code>supervision_api</code> 已经 import <code>agents.supervision.documents</code>。</p>
+  </div>
+
+  <h3>3.2 前端加常驻入口</h3>
+  <p>照 <code>thread/index.tsx:593</code> 的 <code>&lt;CheckinEntry /&gt;</code> 那一行,
+    在旁边加一个 <code>&lt;SupervisionEntry /&gt;</code>:</p>
+  <ul>
+    <li><b>带待确认计数徽章</b> —— 没有它,没人知道有东西要确认(pending 不催办,是 D17 定的)</li>
+    <li>点开就是现有的 <code>supervision.tsx</code> 面板,数据源换成新的 GET 接口</li>
+    <li>「否决」按钮接上新端点,不再只是本地划掉</li>
+  </ul>
+  <p>⚠️ 要改 <code>thread-index.tsx</code> 覆盖件(已有一件,DXF 上传那组的)。
+    <code>apply_override</code> 计数 <b>12 不变</b>(改的是已有件);<code>install_new_file</code> 仍是 7。</p>
+
+  <h3>3.3 巡检记录卡:同一个根因,单独一批</h3>
+  <div class="box b-info">
+    <p>它是 W3/W5 的洞,不是 W9 的。巡检记录的 docx 是 <code>artifacts</code> 里的产物,
+      而它<b>不在</b> <code>hazard_docs</code> 里,所以现有的详情接口捞不到它。</p>
+    <p><b>本批只记账,不做</b> —— 范围,而且它牵扯 report 与 hazards 的关系,该单独想清楚。</p>
+  </div>
+</section>
+
+<section>
+  <h2>4 / Out of scope</h2>
+  <div class="h">不在范围</div>
+  <table>
+    <thead><tr><th>项</th><th>为什么</th></tr></thead>
+    <tbody>
+      <tr><td>改 <code>output_mode</code> 为 <code>full_history</code></td><td>拿每次对话的成本与稳定性换几张卡片,不划算(§2)</td></tr>
+      <tr><td>订阅 <code>subgraphs</code></td><td>刷新即失,而留档文书要事后回来取</td></tr>
+      <tr><td>巡检记录卡</td><td>同一根因但属 W3/W5,牵扯 report↔hazards 的关系,单独一批</td></tr>
+      <tr><td>TODO-45 A 组三条跨实现漂移</td><td>与本方案正交;但抽 <code>scoping.py</code> 时<b>别再制造第四份</b></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>5 / Verify</h2>
+  <div class="h">验证怎么做</div>
+  <div class="box b-bad">
+    <span class="hd">不许只看「测试绿」</span>
+    <p>这个洞的全部特征就是:<b>后端对、测试绿、界面上什么都没有</b>。</p>
+  </div>
+  <ol>
+    <li><b>端到端手工</b>:传照片 → 按钮徽章出现计数 → 点开看到两条 pending → 确认 →
+      严重那条出现「签发暂停令」→ 签发 → 三张下载卡 → <b>点开能下到 docx</b></li>
+    <li><b>刷新页面再来一遍</b> —— 这一条是关键:现在的卡片就算 live 能渲染,刷新也会没;
+      新入口必须刷新后照样在</li>
+    <li><b>库级对照</b>:界面上显示的条数/状态,与直接查 <code>data/gyt.sqlite3</code> 一致</li>
+    <li>新端点的鉴权照 <code>checkin_api</code> 同款(设令牌后无钥匙必拒)</li>
+  </ol>
+</section>
+
+<section>
+  <h2>6 / Lanes</h2>
+  <div class="h">泳道</div>
+<pre>S1 抽 scoping.py(scope 筛子+超期判定,零 langchain)   agents/supervision/     依赖 —
+S2 三个新端点 + webapp 挂载(Caddy 同前缀不用改)       supervision_api·webapp  依赖 S1
+S3 前端常驻入口 + 面板数据源换 GET + 否决接上          frontend-overrides/     依赖 S2
+S4 端到端手工验(含<b>刷新</b>那一条)                      —                       依赖 S2,S3
+
+S1 → S2 → S3 → S4      <i>基本串行:契约不定死,前端没法写</i></pre>
+</section>
+
+<footer>
+  docs/W10_界面取不到工具返回_方案.md · 2026-08-16 · 工友通 GYT<br>
+  本方案的每一条证据都是实测,没有推理项。
+</footer>
+</div>
