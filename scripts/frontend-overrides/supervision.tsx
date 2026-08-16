@@ -316,8 +316,25 @@ export function SupervisionDocCards({
   artifactBase: string;
 }) {
   if (documents.length === 0) return null;
+  const 有文书 = documents.some(isDownloadableDoc);
   return (
     <div className="flex flex-col gap-1.5">
+      {/* D15 的定位:AI 出稿、总监理工程师签字生效。
+          这句话在**每份文书正文里**也印着(docgen 的 SUPERVISION_DISCLAIMER,
+          那儿逐份印是对的 —— 每份 docx 都会被单独打印、单独归档)。
+          界面上仍要说一遍,是因为「已签发」三个字在屏幕上太容易被读成「已经生效」。
+
+          🔴 但**只说一次,不逐份说**(2026-08-17 改):真人看到证据链里三份文书
+          各印一遍同一句话,问的是「这个都需要签字吗」—— 重复本身制造了
+          「这是三件不同的事」的错觉。这句话对清单里每一份都成立,说一次就够。
+
+          只在真有文书时才说:复查记录不是文书、不用签字,一堆复查记录上面顶一句
+          「签字盖章」是凭空制造一个不存在的手续。 */}
+      {有文书 && (
+        <div className="text-[12px] text-gray-500">
+          下面这些都是出稿,要总监理工程师签字盖章后才是正式文件。
+        </div>
+      )}
       {/* 顺序原样照抄后端给的(= 挂进台账的先后),**不按类型分组** ——
           理由整段在 supervision-lib 的 `evidenceRows` 头注:证据链的意义就是这个先后。
           `evidenceRows` 顺手把「第几次复查」数出来,那是唯一需要跨行才算得出的东西,
@@ -336,7 +353,7 @@ export function SupervisionDocCards({
       )}
       {/* 只在真有东西可下的时候说这句 —— 一堆复查记录底下挂一行「打不开?」
           等于凭空制造一个不存在的问题。 */}
-      {documents.some(isDownloadableDoc) && (
+      {有文书 && (
         <div className="text-[11px] text-gray-400">
           打不开?本机要先在仓库根执行 <code className="font-mono">make serve-artifacts</code>
         </div>
@@ -376,12 +393,13 @@ function IssuedDocCard({ doc, artifactBase }: { doc: SupervisionDoc; artifactBas
             <span className="text-[11px] text-gray-400 tabular-nums">签发 {issuedAt}</span>
           )}
         </div>
-        {/* D15 的定位:AI 出稿、总监理工程师签字生效。这句话在每份文书正文里
-            也印着(docgen 的 SUPERVISION_DISCLAIMER),界面上再说一遍是因为
-            「已签发」三个字在屏幕上太容易被读成「已经生效」。 */}
-        <div className="mt-1 text-[12px] text-gray-500">
-          这份是出稿,要总监理工程师签字盖章后才是正式文件。
-        </div>
+        {/* ⚠️ 这里原来每张卡各印一遍「这份是出稿,要总监理工程师签字盖章后才是正式
+            文件。」——2026-08-17 真人反馈「这个都需要签字吗」时数了一下:证据链里
+            三份文书 = 同一句话连着出现三遍,读起来像三件不同的事各要一次签字。
+            现在**整份清单上方说一次**(见 SupervisionDocCards 里那条),
+            那句话对每一份都成立,不必逐份复述。
+            🔴 别搬回来。也别删掉上面那条 —— 「已签发」三个字在屏幕上太容易被读成
+            「已经生效」,而这几份签字之前不得据以停工、复工或对外发出。 */}
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {url ? (
             <a
