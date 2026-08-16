@@ -423,6 +423,88 @@ async def test_证据链带中文名与结论() -> None:
     assert "不合格" in result["user_msg"]
 
 
+async def test_证据链带出复查照片编号_F4() -> None:
+    """🔴 **复查照片一直存在库里,而 2026-08-16 之前没有任何地方读得出来。**
+
+    「复查必须挂一张照片」是方案 §5.2 的红线,写它的理由是**事后追责**。取不出来的话
+    这条红线就只是一道提交时的门槛:照片进了库,而追责那天谁也拿不到它 —— 红线的目的
+    被整个抽空,却不会有任何报错。
+
+    两件一起钉:``data`` 里逐条带着(前端按编号取件走的就是它),``user_msg`` 里也念得出来
+    (在对话里问"这条复查了吗"的人,下一步就是要调那张图)。
+    """
+    hazard_no = _make(status=db.STATUS_NOTIFIED, due=FUTURE)
+    复查照片 = "d" * 32
+    assert db.mark_reinspect_failed(
+        hazard_no,
+        docs=[
+            db.DocDraft(
+                doc_type="reinspect",
+                doc_no=f"{hazard_no}-R-1",
+                photo_id=复查照片,
+                result="fail",
+            )
+        ],
+    )
+
+    result = await get_hazard.ainvoke({"hazard_no": hazard_no})
+
+    复查行 = [d for d in result["data"]["documents"] if d["doc_type"] == "reinspect"]
+    assert [d["photo_id"] for d in 复查行] == [复查照片]
+    assert 复查照片 in result["user_msg"], "取件用的编号只进 data 不进人话 = 对话里还是拿不到"
+
+
+async def test_复查照片编号不许拿隐患首次发现那张顶替_F4() -> None:
+    """``hazards.photo_id``(**首次发现**那张)与 ``hazard_docs.photo_id``(**每次复查各一张**)
+    是两张完全不同的照片。
+
+    顶替的后果不是少一个字段,是**拿发现时的照片当"整改后"的证据** —— 而复查必须挂照片
+    这条红线的全部意义就是分得清这两者。造数时两个编号刻意取不同的值,相等就测不出来了。
+    """
+    hazard_no = _make(status=db.STATUS_NOTIFIED, due=FUTURE)
+    首次发现 = db.fetch(hazard_no).photo_id
+    复查照片 = "e" * 32
+    assert 首次发现 != 复查照片
+    assert db.mark_reinspect_failed(
+        hazard_no,
+        docs=[
+            db.DocDraft(
+                doc_type="reinspect",
+                doc_no=f"{hazard_no}-R-1",
+                photo_id=复查照片,
+                result="fail",
+            )
+        ],
+    )
+
+    result = await get_hazard.ainvoke({"hazard_no": hazard_no})
+
+    复查行 = next(d for d in result["data"]["documents"] if d["doc_type"] == "reinspect")
+    assert 复查行["photo_id"] == 复查照片
+    assert 首次发现 not in result["user_msg"], "念的必须是复查那张,不是发现时那张"
+    # 文书行本来就没有复查照片,得是 None 而不是跟着抄一份隐患那张
+    文书行 = [d for d in result["data"]["documents"] if d["doc_type"] != "reinspect"]
+    assert all(d["photo_id"] is None for d in 文书行)
+
+
+async def test_复查没挂照片时如实说而不是沉默略过_F4() -> None:
+    """库里 ``photo_id`` 可空(端点那侧才必填),所以历史行 / 补录行可能真的没有照片。
+
+    这时**不许安静地少说一句**:少说的表现是这条复查看起来一切正常,而它在追责场合
+    根本举不出现场凭据 —— 那正是这条红线漏掉的那一条,得让人看见。
+    """
+    hazard_no = _make(status=db.STATUS_NOTIFIED, due=FUTURE)
+    assert db.mark_reinspect_failed(
+        hazard_no,
+        docs=[db.DocDraft(doc_type="reinspect", doc_no=f"{hazard_no}-R-1", result="fail")],
+    )
+
+    result = await get_hazard.ainvoke({"hazard_no": hazard_no})
+
+    assert "没留下照片编号" in result["user_msg"]
+    assert "举不出" in result["user_msg"]
+
+
 # ===========================================================================
 # suggest_disposal —— 建议是确定性推出来的,不是模型现编
 # ===========================================================================

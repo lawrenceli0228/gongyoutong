@@ -413,6 +413,14 @@ async def get_hazard(hazard_no: str) -> Envelope:
             "doc_no": d.doc_no,
             # artifact_id 给前端渲下载卡用;复查记录那行没有文件,是 None。
             "artifact_id": d.artifact_id,
+            # 🔴 **复查照片编号 —— 这一行是「复查必须挂照片」那条红线的取件口**(方案 §5.2)。
+            #    它是 ``hazard_docs.photo_id``:**这一次复查**拍的那张,一次复查一张。
+            #    **不是** ``hazards.photo_id``(隐患首次发现那张,一条隐患只有一张)——
+            #    两者混起来的后果是拿发现时的照片当"整改后"的证据,而红线的全部意义
+            #    就是事后追责时分得清这两张。文书行没有复查照片,是 None。
+            #    2026-08-16 之前这个字段一处都没往外给过:照片存进了库,却谁也取不出来,
+            #    红线被抽成了一道提交时的门槛。前端按 artifact_id 取件的那条路直接能用它。
+            "photo_id": d.photo_id,
             "result": d.result,
             "created_at": d.created_at,
         }
@@ -449,7 +457,28 @@ def _detail_summary(
         last = reinspections[-1]  # docs_of 按 id 升序,最后一条就是最近一次
         verdict = "合格" if last["result"] == "pass" else "不合格"
         lines.append(f"复查过 {len(reinspections)} 次,最近一次结论:{verdict}。")
+        lines.append(_reinspect_photo_line(last))
     return "\n".join(lines)
+
+
+def _reinspect_photo_line(last: dict[str, Any]) -> str:
+    """最近一次复查的照片编号那一句。
+
+    为什么非得在**人话里**也念一遍(``data.documents`` 里每一条都带着,前端能全渲):
+    在对话里问「这条复查了吗」的人,下一步多半就是要调那张图去核对或者去存档 ——
+    编号只进 data 不进正文的话,他还得再去界面上翻一遍。念的是最近一次那张,
+    历次的在 ``data`` 里,要全的走界面。
+
+    🔴 念的是 ``hazard_docs.photo_id``(**这一次复查**那张),不是 ``hazards.photo_id``
+    (首次发现那张)—— 混起来就是拿发现时的照片当"整改后"的证据。
+
+    缺编号时**不许沉默地少说一句**:那意味着这条复查记录在追责场合举不出现场凭据,
+    而它恰恰是「复查必须挂照片」这条红线漏掉的那一条,得让人看见。
+    """
+    photo_id = last.get("photo_id")
+    if photo_id:
+        return f"最近一次的复查照片编号 {photo_id},要调原图报这个号。"
+    return "最近一次复查没留下照片编号 —— 这条复查在事后追责时举不出现场凭据。"
 
 
 def _advise(row: db.HazardRow) -> tuple[str, tuple[str, ...], str]:
