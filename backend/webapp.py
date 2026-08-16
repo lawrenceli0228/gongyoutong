@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
@@ -37,6 +38,7 @@ from gyt.checkin_api import CHECKIN_ROUTES
 from gyt.config import ALLOWED_CAD_EXT, get_settings
 from gyt.core import artifacts, project_fs
 from gyt.core.artifacts import ArtifactKind
+from gyt.db import hazards
 from gyt.db import projects as db
 from gyt.supervision_api import SUPERVISION_ROUTES
 
@@ -455,13 +457,33 @@ async def remove_project(request: Request) -> JSONResponse:
     """DELETE /projects/{project_id} —— 删整个项目(级联)。
 
     清:名下图纸行/文件/产物/CAD索引 + 项目作用域向量块 + 项目目录 + 项目行。
-    全局规范(project_id="")不受影响。顺序:先图纸(外键)→ 项目向量 → 目录 → 项目行。
+    全局规范(project_id="")不受影响。
+    顺序:**先摘隐患** → 图纸(外键)→ 项目向量 → 目录 → 项目行。
+
+    🔴 隐患**只摘不删**,而且必须排在最前面。两件事:
+
+    · **不删** —— ``hazards`` 挂着已经签发的法律文书与整条证据链
+      (``db/hazards.py`` 的 ``delete_pending`` 注释:确认过的隐患不许被删,
+      证据链不能凭一次点击消失,而删项目正是一次点击)。摘成「未归属」(空串,D6)之后,
+      supervision 侧会显式报「未归属 N 条」,监理照样看得见、照样处置得了。
+      不摘的话它们的 ``project_id`` 指向一个不存在的项目(这张表**没有外键**),
+      既不在未归属桶里也不在任何项目里 —— 彻底找不到,而库里它们还是「在办」。
+    · **排最前** —— 摘不动时(极小概率撞幂等键)整条 UPDATE 回滚、异常抛上来,
+      这时图纸文件、向量、目录都还一个没动,拒绝掉就是干净的"什么都没发生";
+      放在后面的话,失败时项目已经被拆了一半。
     """
     pid = request.path_params["project_id"]
 
     def _work() -> dict[str, Any] | None:
         if db.get_project(pid) is None:
             return None
+        try:
+            detached = hazards.detach_project(pid)
+        except sqlite3.IntegrityError:
+            # db 层刻意不吞这个异常(那层的头注:吞了就等于把"该重试/该拒绝"变成静默失败)。
+            # 这里接住,整个删除动作作废 —— 此刻还一个文件都没动。
+            logger.warning("项目 %s 名下的隐患摘不到未归属(撞幂等键),拒绝删除", pid, exc_info=True)
+            return {"hazards_blocked": True}
         rows = db.delete_project_drawings(pid)
         for r in rows:
             project_fs.delete_drawing_file(pid, r.rel_path)
@@ -470,15 +492,35 @@ async def remove_project(request: Request) -> JSONResponse:
         chunks = ingest.delete_project_documents(pid)
         project_fs.delete_project_tree(pid)
         db.delete_project(pid)
-        return {"drawings": len(rows), "chunks": chunks}
+        return {"drawings": len(rows), "chunks": chunks, "hazards": detached}
 
     result = await run_in_threadpool(_work)
     if result is None:
         return _fail(404, "没找到这个项目(可能已删)。", "NOT_FOUND")
-    logger.info("删除项目 %s(图纸 %d 张,向量 %d 段)", pid, result["drawings"], result["chunks"])
+    if result.get("hazards_blocked"):
+        # 后半句「这次没删」是关键:不说的话人会以为删了一半,回头去找一个其实还在的工地。
+        return _fail(
+            409,
+            "这个工地名下有隐患跟「未归属」清单里的重复了(同一张照片、同一个问题),"
+            "没法整批转过去,所以这次没删。先在隐患清单里把重复的那条处置掉,再删这个工地。",
+            "CONFLICT",
+        )
+    logger.info(
+        "删除项目 %s(图纸 %d 张,向量 %d 段,隐患 %d 条转未归属)",
+        pid,
+        result["drawings"],
+        result["chunks"],
+        result["hazards"],
+    )
+    # 隐患那句只在真有隐患时说:说了才知道那批法律文书没跟着项目一起消失。
+    hazard_tail = (
+        f"名下 {result['hazards']} 条隐患没有删除,已转到「未归属」清单,可以继续处置。"
+        if result["hazards"]
+        else ""
+    )
     return _ok(
         {"project_id": pid, **result},
-        f"项目已删除(含 {result['drawings']} 张图纸、{result['chunks']} 段规范索引)。",
+        f"项目已删除(含 {result['drawings']} 张图纸、{result['chunks']} 段规范索引)。{hazard_tail}",
     )
 
 

@@ -167,6 +167,21 @@ def can_transition(src: str, dst: str) -> bool:
     return dst in ALLOWED_TRANSITIONS.get(src, frozenset())
 
 
+GRADABLE_STATUSES: Final[tuple[str, ...]] = (STATUS_PENDING, STATUS_OPEN)
+"""允许人工改级的状态 = **还没签过任何文书的那两档**。这里是唯一真相。
+
+为什么归 db(与 ``GRADES`` 同一条理由):``_SET_GRADE_SQL`` 的 ``WHERE status IN (…)``
+拿它拼,而「端点 → db」是合法方向、反过来不是。``supervision_api._GRADABLE_STATUSES``
+从这里派生,**不许再手抄一份** —— 抄了之后两份漂开的表现是端点先放行、库再拒,
+工友拿到「状态刚被改过」这种驴唇不对马嘴的提示,而两边看各自的代码都觉得自己没错。
+
+为什么不能拿 ``_sources_for`` 校验:**定级不是状态迁移**(它不改 status,没有 target),
+``ALLOWED_TRANSITIONS`` 里根本没有它这条边。这两档是业务口径,理由在
+``supervision_api._GRADABLE_STATUSES``:通知单已经按「一般」出了稿,库里却改成「严重」,
+证据链当场自相矛盾,而那份纸还贴在工地上;本批不做重签,所以只在签发前可改。
+"""
+
+
 def _sources_for(target: str, *sources: str) -> tuple[str, ...]:
     """声明"某个迁移函数允许的起始状态",并当场校验它是 ALLOWED_TRANSITIONS 的子集。
 
@@ -361,11 +376,23 @@ _DOCS_ORDER_BY: Final[str] = "ORDER BY hazard_no, id"
 _FAILURES_BASE_SQL: Final[str] = f"SELECT {_FAILURE_COLUMNS} FROM hazard_ingest_failures"
 _FAILURES_ORDER_BY: Final[str] = "ORDER BY id"
 
+# 🔴 ``AND status IN (…)`` 是**写前状态守卫**,与下面每一个迁移函数同一条理由
+#    (见 ``_transition_sql``)。定级以前唯独没有它。
+#    端点那侧是「先读 status 判断能不能改 → 再 UPDATE」两步,中间有并发窗口:
+#      读到 open(可以改级)→ 另一个请求把暂停令签了、三份文书已落盘、status 变 suspended
+#      → 这条 UPDATE 若不带守卫照样命中 → 库里成了「一般隐患 + 已出暂停令」。
+#    而且**没有任何报错**:台账与那张贴在工地上的纸从此永久矛盾,追责时谁也说不清哪份算数。
+#    合法前态从 ``GRADABLE_STATUSES`` 一处派生(别再手抄),成败一律看 rowcount。
 _SET_GRADE_SQL: Final[str] = (
-    "UPDATE hazards SET grade = ?, needs_grading = 0, updated_at = ? WHERE hazard_no = ?"
+    "UPDATE hazards SET grade = ?, needs_grading = 0, updated_at = ? "
+    f"WHERE hazard_no = ? AND status IN ({placeholders(len(GRADABLE_STATUSES))})"
 )
 # 否决只针对 pending:确认过的隐患不许被删,证据链不能凭一次点击消失。
 _DELETE_PENDING_SQL: Final[str] = "DELETE FROM hazards WHERE hazard_no = ? AND status = ?"
+# 项目被删时把名下隐患摘成「未归属」(空串,D6)。**只摘不删** —— 理由见 ``detach_project``。
+_DETACH_PROJECT_SQL: Final[str] = (
+    "UPDATE hazards SET project_id = '', updated_at = ? WHERE project_id = ?"
+)
 
 
 def _transition_sql(
@@ -547,17 +574,25 @@ def list_rows(
 
 
 def set_grade(hazard_no: str, grade: str) -> bool:
-    """人工定级:改 ``grade`` 并把 ``needs_grading`` 清零。返回 False = 编号不存在。
+    """人工定级:改 ``grade`` 并把 ``needs_grading`` 清零。
+
+    返回 False = **这次没改成**:编号不存在,或者它已经签过文书(状态不在
+    ``GRADABLE_STATUSES``)。调用方一律靠这个返回值判成败,**不许信自己先读的那份快照**
+    —— 先读与写之间有并发窗口,那正是这条 UPDATE 带 ``WHERE status IN (…)`` 的原因
+    (推演见 ``_SET_GRADE_SQL`` 头上那段)。
 
     这是 ``needs_grading=1`` 的隐患唯一的解锁通道(Codex#11:没定级的隐患所有签发工具硬拒,
     否则未知风险能按一般隐患走完整闭环并被销项)。
 
-    这层**不限制**在什么状态下改级:「文书都签发了还能不能改级」是业务判断,归端点层 ——
-    它同时还要管「改级后要不要重签文书」,那不是一条 UPDATE 的事。
+    **哪两档可改是业务口径,但守卫必须落在写这一步。** 端点那道「先读再判」留着只为说人话
+    (它能说清「这条现在是已签发通知单」),真正说了算的是这里的 rowcount;
+    「改级之后要不要重签文书」仍归端点,那不是一条 UPDATE 的事。
     ``grade`` 不在 GRADES 里会撞 CHECK 抛 IntegrityError,本层不吞。
     """
     with _hazard_db() as conn:
-        touched = conn.execute(_SET_GRADE_SQL, (grade, _now_iso(), hazard_no)).rowcount
+        touched = conn.execute(
+            _SET_GRADE_SQL, (grade, _now_iso(), hazard_no, *GRADABLE_STATUSES)
+        ).rowcount
     return touched > 0
 
 
@@ -570,6 +605,39 @@ def delete_pending(hazard_no: str) -> bool:
     with _hazard_db() as conn:
         touched = conn.execute(_DELETE_PENDING_SQL, (hazard_no, STATUS_PENDING)).rowcount
     return touched > 0
+
+
+def detach_project(project_id: str) -> int:
+    """项目被删时,把它名下的隐患整批摘成**未归属**(``project_id=''``)。返回摘了几条。
+
+    ⚠️ **是"摘"不是"删"。** 隐患挂着已经签发的法律文书与整条证据链
+    (``hazard_docs`` 外键指着它),跟 ``delete_pending`` 那条注释是同一条底线:
+    确认过的隐患不许被删,证据链不能凭一次点击消失 —— 而删项目是一次点击。
+
+    为什么摘到空串而不是留着原来的 ``project_id``:``hazards.project_id`` 是
+    ``TEXT NOT NULL DEFAULT ''`` 且**没有外键**,项目行一删,那些隐患的 project_id 就指向
+    一个不存在的项目 —— 既不在「未归属」桶里(它非空),也不在项目列表里(项目没了),
+    于是**彻底找不到**:``list_hazards`` 两条路都列不出它,而库里它还是「在办」。
+    空串是 D6 定下的那个值(是设计里的一档,不是错误态),supervision 侧会显式报「未归属 N 条」,
+    所有状态迁移又都只认 ``hazard_no`` —— 摘过去之后监理照样看得见、照样处置得了。
+    摘的是**全部状态**(含 closed / escalated):留档那批挂的文书最多,更不能变成找不到的行。
+
+    **不吞 ``sqlite3.IntegrityError``。** 幂等键是 ``(project_id, photo_sha256, item)``,
+    所以极小概率会撞上:同一张照片、同一个违规项,既在这个项目下登记过、又在未归属那堆里
+    躺着一条。这时整条 UPDATE 在事务里回滚(一条都没摘),异常抛给调用方去决定 ——
+    ``webapp.remove_project`` 接住它并**拒绝删除整个项目**,好过静默留下一批找不到的隐患。
+
+    空 ``project_id`` 直接返回 0:空串本来就是未归属那一堆,"摘"它是无操作,
+    真跑一遍反而会把全部未归属隐患的 ``updated_at`` 刷一遍(白改一列历史数据)。
+
+    **只管 ``hazards`` 这一张表。** ``hazard_docs`` 认的是 ``hazard_no``,跟着走;
+    ``hazard_ingest_failures`` 的 ``project_id`` 刻意不动 —— 那是"当时哪条没写进去"的
+    诊断留痕(Codex#10),不是在办的东西,改了反而对不上当时的现场。
+    """
+    if not project_id:
+        return 0
+    with _hazard_db() as conn:
+        return conn.execute(_DETACH_PROJECT_SQL, (_now_iso(), project_id)).rowcount
 
 
 # --- 状态迁移 ----------------------------------------------------------------
@@ -758,6 +826,7 @@ __all__ = [
     "ALLOWED_TRANSITIONS",
     "DOC_RESULTS",
     "DOC_TYPES",
+    "GRADABLE_STATUSES",
     "GRADES",
     "GRADE_NORMAL",
     "GRADE_SEVERE",
@@ -780,6 +849,7 @@ __all__ = [
     "confirm",
     "create",
     "delete_pending",
+    "detach_project",
     "docs_of",
     "fetch",
     "list_ingest_failures",

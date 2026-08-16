@@ -642,6 +642,52 @@ class Test人工定级:
         assert resp.status_code == 409
         assert hazards.fetch(hazard_no).grade == hazards.GRADE_NORMAL
 
+    def test_可改的状态名单从db那一份派生(self) -> None:
+        """两份名单漂开的表现是端点先放行、库再拒,工友拿到「状态刚被改过」这种
+        驴唇不对马嘴的提示 —— 而两边看各自的代码都觉得自己没错。"""
+        assert supervision_api._GRADABLE_STATUSES == frozenset(hazards.GRADABLE_STATUSES)
+
+    def test_先读之后被抢签了文书_定级必须落空(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """🔴 并发窗口:端点是「先读 status 判断能不能改 → 再 UPDATE」两步。
+
+        这里不真起两个线程,手工在两步之间把库改掉 —— 效果一样,而且必然复现:
+        读到 ``open``(可以改级)之后、UPDATE 之前,另一个请求把《监理通知单》按
+        「一般隐患」签了(状态成 notified、文书已落盘)。这时定级要是照样命中,
+        库里就成了「严重隐患 + 已按一般隐患发出去的通知单」,**而且一声不吭** ——
+        该停的工没停,而台账看起来一切正常。
+
+        兜得住这一下的**只有 db 那条 ``UPDATE … WHERE status IN (…)``**:
+        端点先读的那份快照说可以,它说了不算。
+        """
+        hazard_no = _arrive(hazards.STATUS_OPEN, severity="待定级", needs_grading=True)
+        真的 = hazards.set_grade
+
+        def 抢在前面(*args: Any, **kwargs: Any) -> bool:
+            # 「另一个请求」:先读之后、这条 UPDATE 之前把通知单签了
+            hazards.mark_notified(
+                hazard_no,
+                "2026-12-31",
+                docs=[hazards.DocDraft("notice", "GYT-TZ-抢跑", artifact_id="a" * 32)],
+            )
+            return 真的(*args, **kwargs)
+
+        monkeypatch.setattr(hazards, "set_grade", 抢在前面)
+
+        resp = client.post(
+            "/supervision/grade", json={"hazard_no": hazard_no, "grade": hazards.GRADE_SEVERE}
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["error_code"] == "CONFLICT"
+        assert "刚被改过" in resp.json()["user_msg"]  # 人话:让人刷新再看,而不是报个内部词
+        row = hazards.fetch(hazard_no)
+        # 两个见证:级别没被改成严重,待定级的旗子也没被顺手清掉(清了签发闸就白开了)
+        assert row.grade == hazards.GRADE_NORMAL
+        assert row.needs_grading == 1
+        assert row.status == hazards.STATUS_NOTIFIED  # 抢跑那一手确实落了库
+
 
 # ---------------------------------------------------------------------------
 # 复查结论:照片是证据,结论由人下,落到哪一站由 db 挑边
@@ -672,6 +718,57 @@ class Test复查结论:
 
         assert resp.status_code == 404
         assert hazards.fetch(hazard_no).status == hazards.STATUS_NOTIFIED
+
+    def test_拿一份文书当复查照片_销不了项(self, client: TestClient) -> None:
+        """🔴 §5.2 的红线是「拿不到**照片**就没有任何路径能把状态改成 closed」。
+
+        只问「这个编号取得到 sidecar 吗」是不够的:我们自己签发的文书就是产物,
+        它的 artifact_id 还大大方方摆在界面的下载卡上 —— 随手复制一个回填到复查那一栏,
+        就能把隐患销项,而复查证据成了「我们自己出的那张纸」,现场一张照片都没有。
+        """
+        hazard_no = _arrive(hazards.STATUS_OPEN)
+        签发 = client.post(
+            "/supervision/notice", json={"hazard_no": hazard_no, "due_phrase": DUE_PHRASE}
+        )
+        assert 签发.status_code == 200
+        文书编号 = 签发.json()["data"]["documents"][0]["artifact_id"]
+
+        resp = client.post(
+            "/supervision/reinspect-result",
+            json={"hazard_no": hazard_no, "result": "pass", "after_photo_id": 文书编号},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["error_code"] == "INVALID_INPUT"
+        assert "不是照片" in resp.json()["user_msg"]  # 说清是"拿错了东西",不是"编号找不到"
+        assert "REPORT" not in resp.json()["user_msg"]  # 内部枚举值不许露头
+        # 隐患没被销项,证据链里也没多出一条复查记录
+        assert hazards.fetch(hazard_no).status == hazards.STATUS_NOTIFIED
+        assert [r.doc_type for r in hazards.docs_of([hazard_no])] == ["notice"]
+
+    def test_照片正文被清掉只剩元数据_也销不了项(self, client: TestClient) -> None:
+        """产物是「正文 + sidecar」两个文件,清理器 / 手工删档 / 落盘半截都可能只剩后者。
+
+        只读 sidecar 的话这种产物照样"存在",于是隐患拿一张**已经不存在的照片**销了项 ——
+        等到要拿证据链去追责那天,复查那一格点开是空的。
+
+        人话必须与「拿错编号」那条**不一样**:文件丢了该重新传一张,编号拿错了该去重找,
+        给同一句话的话工友会一直核对一个本来就没错的编号。
+        """
+        hazard_no = _arrive(hazards.STATUS_NOTIFIED)
+        photo_id = _photo()
+        artifacts.resolve(photo_id).unlink()  # 只删正文,sidecar 留着
+
+        resp = client.post(
+            "/supervision/reinspect-result",
+            json={"hazard_no": hazard_no, "result": "pass", "after_photo_id": photo_id},
+        )
+
+        assert resp.status_code == 404
+        assert resp.json()["error_code"] == "NOT_FOUND"
+        assert "重新传一张" in resp.json()["user_msg"]
+        assert hazards.fetch(hazard_no).status == hazards.STATUS_NOTIFIED
+        assert hazards.docs_of([hazard_no]) == []
 
     def test_结论不在词表被拒(self, client: TestClient) -> None:
         hazard_no = _arrive(hazards.STATUS_NOTIFIED)

@@ -537,6 +537,35 @@ def test_人工定级改级并清零needs_grading() -> None:
     assert hazards.set_grade("GYT-H-没这个号", hazards.GRADE_SEVERE) is False
 
 
+@pytest.mark.parametrize("status", hazards.STATUSES)
+def test_定级只在签发前放行_其余状态一个字节都不动(status: str) -> None:
+    """🔴 定级 UPDATE 的**写前状态守卫** —— 与每个迁移函数是同一件事,以前唯独它没有。
+
+    端点那侧是「先读 status 判断能不能改 → 再 UPDATE」两步,中间有并发窗口:
+    读到 ``open``(可以改级)的同时另一个请求把暂停令签了、三份文书已落盘、状态成了
+    ``suspended``;这条 UPDATE 若不带守卫**照样命中** —— 库里就成了「一般隐患 + 已出暂停令」,
+    而且一声不吭:台账与那张贴在工地上的纸从此永久矛盾,追责时谁也说不清哪份算数。
+
+    合法前态按 ``GRADABLE_STATUSES`` 逐格断言,**不在测试里手抄第二份名单** ——
+    抄了的话有人改常量时这条测试还会绿。
+    """
+    no = _register(severity="待定级", grade=hazards.GRADE_NORMAL, needs_grading=True).row.hazard_no
+    _force_status(no, status, 0)
+
+    changed = hazards.set_grade(no, hazards.GRADE_SEVERE)
+
+    assert changed is (status in hazards.GRADABLE_STATUSES), status
+    row = hazards.fetch(no)
+    assert row is not None
+    if changed:
+        assert row.grade == hazards.GRADE_SEVERE
+        assert row.needs_grading == 0
+    else:
+        # 两个见证:级别没改,旗子也没被顺手清掉 —— 清了的话签发那道闸就白开了
+        assert row.grade == hazards.GRADE_NORMAL
+        assert row.needs_grading == 1
+
+
 def test_定级表外的级别撞CHECK且本层不吞异常() -> None:
     """约束由库兜底、异常向上抛(与 db/projects.py 同一职责边界):
     翻成中文人话是端点的事,这层吞了就没人知道写进去的是个野级别。"""
@@ -556,6 +585,77 @@ def test_否决只删得掉待确认的() -> None:
     assert hazards.delete_pending(kept) is False
 
     assert [row.hazard_no for row in hazards.list_rows()] == [kept]
+
+
+def test_摘项目_只摘不删且证据链原样在() -> None:
+    """🔴 项目被删时隐患的去处:摘成**未归属**(空串,D6),不是跟着项目消失。
+
+    删掉的话就违了 ``delete_pending`` 那条底线(确认过的隐患不许被删,证据链不能凭一次
+    点击消失 —— 而删项目正是一次点击);不摘的话它们的 ``project_id`` 指向一个不存在的
+    项目(这张表**没有外键**),既不在未归属桶里也不在任何项目里,**彻底找不到**,
+    而库里它们还是「在办」。
+    """
+    old = _register(project_id="").row.hazard_no  # 本来就在未归属那一堆
+    other = _register(project_id="gyt-b7").row.hazard_no  # 别的工地,不许被误伤
+    kept = _register(project_id="gyt-a3").row.hazard_no  # 已签文书的,证据链要原样在
+    pending = _register(project_id="gyt-a3").row.hazard_no
+    hazards.confirm(kept)
+    hazards.mark_notified(
+        kept, DUE, docs=[hazards.DocDraft("notice", "GYT-TZ-7001", artifact_id="a")]
+    )
+
+    moved = hazards.detach_project("gyt-a3")
+
+    assert moved == 2
+    for no in (kept, pending):
+        row = hazards.fetch(no)
+        assert row is not None
+        assert row.project_id == ""  # 摘到了未归属那一桶(可见、可继续处置)
+    still = hazards.fetch(kept)
+    assert still is not None
+    assert still.status == hazards.STATUS_NOTIFIED  # 状态一点没动
+    assert [doc.doc_no for doc in hazards.docs_of([kept])] == ["GYT-TZ-7001"]  # 文书还挂着
+    # 未归属那一桶现在装得下它们(supervision 侧就是靠这条路显式报「未归属 N 条」)
+    assert {row.hazard_no for row in hazards.list_rows(project_id="")} == {old, kept, pending}
+    assert [row.hazard_no for row in hazards.list_rows(project_id="gyt-b7")] == [other]
+    assert hazards.list_rows(project_id="gyt-a3") == []
+
+
+def test_摘项目_空项目号与查无此项目都是无操作() -> None:
+    """空串**不许**当项目号来摘:它本来就是未归属那一堆,真跑一遍等于把全部未归属隐患的
+    ``updated_at`` 白刷一遍(改一列历史数据,而且没人会发现)。"""
+    no = _register(project_id="").row.hazard_no
+    with closing(_raw_connect()) as conn, conn:
+        conn.execute("UPDATE hazards SET updated_at = ? WHERE hazard_no = ?", (OLD_STAMP, no))
+
+    assert hazards.detach_project("") == 0
+    assert hazards.detach_project("查无此项目") == 0
+
+    row = hazards.fetch(no)
+    assert row is not None
+    assert row.updated_at == OLD_STAMP  # 一列都没被碰过
+
+
+def test_摘项目撞幂等键时整批回滚且不吞异常() -> None:
+    """同一张照片、同一个违规项,既在这个项目下登记过、又在未归属那堆里躺着一条 ——
+    摘过去就撞 ``UNIQUE (project_id, photo_sha256, item)``。
+
+    这时**一条都不许摘**(一个事务,异常回滚),异常照直抛给调用方:
+    ``webapp.remove_project`` 接住它、拒绝删除整个项目。吞掉的话会摘掉一半、
+    剩下的成了找不到的孤儿,而界面上显示"项目已删除"。
+    """
+    撞车 = _register(project_id="gyt-a3", photo_sha256="同一张照片", item="未戴安全帽").row
+    _register(project_id="", photo_sha256="同一张照片", item="未戴安全帽")
+    同伴 = _register(project_id="gyt-a3", photo_sha256="另一张照片").row
+
+    with pytest.raises(sqlite3.IntegrityError):
+        hazards.detach_project("gyt-a3")
+
+    # 整批回滚:连没撞车的那条也还挂在原项目上
+    assert {row.hazard_no for row in hazards.list_rows(project_id="gyt-a3")} == {
+        撞车.hazard_no,
+        同伴.hazard_no,
+    }
 
 
 def test_列表一次取全_有期限在前无期限垫底() -> None:

@@ -44,7 +44,8 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
 
     POST /supervision/reinspect-result   {"hazard_no": …, "result": "pass"|"fail",
                                           "after_photo_id": "<32位hex>"}
-        复查结论。**结论由人下**(D11),``after_photo_id`` 必填且必须是真实产物。
+        复查结论。**结论由人下**(D11),``after_photo_id`` 必填,而且必须是
+        **真实存在的一张照片**:kind=PHOTO + 正文文件还在(三道校验见 ``_require_photo``)。
         它**不出文书**:只往 hazard_docs 挂一条 ``reinspect`` 记录
         (那一行的 ``doc_no`` 长相刻意不像文书编号,见 ``_REINSPECT_NO_MARK``)。
 
@@ -229,12 +230,18 @@ if _UNNAMED_STATUSES:  # pragma: no cover —— 只在 db 层加了状态而这
 # 正文构造函数的完整性和证据链表的中文名反查,跟正文分不开。本模块 import documents,
 # 所以那条校验照样在**导入时**炸,不是等到真签发那一刻。
 
-_GRADABLE_STATUSES: Final[frozenset[str]] = frozenset({hazards.STATUS_PENDING, hazards.STATUS_OPEN})
+_GRADABLE_STATUSES: Final[frozenset[str]] = frozenset(hazards.GRADABLE_STATUSES)
 """允许人工改级的状态:**还没签过任何文书的那两档**。
 
-db 层刻意不管这件事(``set_grade`` 的头注:「文书都签发了还能不能改级」是业务判断)。
-这里定成"签发前才可改",理由是本批**不做重签**:通知单已经按「一般」出了稿,
-库里却改成「严重」,证据链当场自相矛盾,而那份纸还在工地上贴着。
+⚠️ **从 db 那一份派生,这里不许再手抄一遍。** ``db/hazards.py`` 的 ``_SET_GRADE_SQL``
+拿同一份拼 ``WHERE status IN (…)``(写前状态守卫);两份漂开的表现是端点先放行、库再拒,
+工友拿到「状态刚被改过」这种驴唇不对马嘴的提示,而两边看各自的代码都觉得自己没错。
+
+**这里这道判断只为说人话**(它能说清「这条现在是已签发通知单」),真正说了算的是
+``set_grade`` 的 rowcount —— 先读与写之间有并发窗口,拿到 False 一律 409。
+
+为什么定成"签发前才可改":本批**不做重签**。通知单已经按「一般」出了稿,库里却改成「严重」,
+证据链当场自相矛盾,而那份纸还在工地上贴着。
 真定错了,走复查/升级流程,或按新证据另立一条隐患(新照片、新编号)。
 """
 
@@ -535,11 +542,23 @@ def _resolve_due(due_phrase: str, today: date) -> tuple[str, str]:
 
 
 def _require_photo(after_photo_id: str) -> str:
-    """复查照片必填,而且必须是**真实存在的产物**(方案 §5.2 红线)。
+    """复查照片必填,而且必须是**真实存在的一张照片**(方案 §5.2 红线)。
 
-    只校验"非空"是不够的:编号打错一位照样非空,而复查合格是能把隐患销项的 ——
-    「隐患已消除」被写进留档文书,现场却原样没动。真去 ``read_meta`` 问一次,
-    编号错就在这儿拦下。
+    §5.2 那条红线的原话是「拿不到照片就没有任何路径能把状态改成 closed」——
+    所以"拿到的"必须真是**照片**,而且正文文件真的**还在**。三道各拦一种事故:
+
+    ① 空 → 400。只校验非空不够,但连非空都不校验就更没边。
+    ② 编号取不到 sidecar → 404。编号打错一位照样非空,而复查合格是能把隐患销项的:
+       「隐患已消除」被写进留档文书,现场却原样没动。
+    ③ **``kind`` 不是 PHOTO → 400。** 只问 ``read_meta`` 拿得到拿不到的话,随手抓一个
+       我们自己生成的**文书** artifact_id(签发通知单时回给前端的那几个,就摆在界面上)
+       就能通过校验、把隐患销项 —— 复查证据成了「我们自己出的那张纸」,一张现场照片都没有。
+    ④ **正文文件不在 → 404。** sidecar 与正文是两个文件,清理器 / 手工删档 / 落盘半截
+       都可能只剩 sidecar;``resolve`` 会去 ``is_file()`` 问一次。
+       拿一个"只剩元数据"的产物销项,等于证据链里挂着一张点不开的照片。
+
+    ③ 与 ④ 的人话必须**不一样**:拿错编号(该去重找那张照片)和文件丢了(该重新传一张)
+    是两回事,给同一句话的话工友会一直核对一个本来就没错的编号。
     """
     if not after_photo_id:
         raise _refuse(
@@ -548,13 +567,34 @@ def _require_photo(after_photo_id: str) -> str:
             "复查要挂一张整改后的现场照片:先把照片传上来,再拿它的编号来下结论。",
         )
     try:
-        artifacts.read_meta(after_photo_id)
+        meta = artifacts.read_meta(after_photo_id)
     except ArtifactNotFound as exc:
         raise _refuse(
             404,
             ErrorCode.NOT_FOUND,
             "没找到这张复查照片,核对一下照片编号,或者重新传一张。",
             detail=f"复查照片 {after_photo_id!r} 取不到:{exc}",
+        ) from exc
+
+    kind = str(meta.get("kind", ""))
+    if kind != ArtifactKind.PHOTO.value:
+        # 不透 kind 的英文枚举值(REPORT / DRAWING 不是工地上的话),只说"不是照片"。
+        raise _refuse(
+            400,
+            ErrorCode.INVALID_INPUT,
+            "这个编号指的不是照片(像是文书或图纸)。复查要挂的是整改后的现场照片,"
+            "先把照片传上来,再拿照片的编号来下结论。",
+            detail=f"复查照片 {after_photo_id!r} 的 kind={kind!r},不是 PHOTO",
+        )
+
+    try:
+        artifacts.resolve(after_photo_id)
+    except ArtifactNotFound as exc:
+        raise _refuse(
+            404,
+            ErrorCode.NOT_FOUND,
+            "这张照片的文件已经找不到了(可能被清理掉了),重新传一张再来下结论。",
+            detail=f"复查照片 {after_photo_id!r} 的正文文件缺失:{exc}",
         ) from exc
     return after_photo_id
 
@@ -791,7 +831,12 @@ def _work_grade(body: dict[str, Any]) -> _Result:
             f"隐患「{hazard_no}」已经签过文书(现在是「{_zh(row.status)}」),不能改级别 —— "
             "改了的话已发出去的那份文书就和台账对不上了。定错了请走复查或升级流程。",
         )
-    if not hazards.set_grade(hazard_no, grade):  # pragma: no cover —— 与否决并发才走到
+    # 上面那道 ``_GRADABLE_STATUSES`` 判断用的是**先读的快照**,读完到这一行之间有窗口:
+    # 另一个请求可能已经把暂停令签了(status → suspended、三份文书已落盘),也可能把这条
+    # pending 否决删掉了。真正说了算的是 db 那条 ``UPDATE … WHERE status IN (…)`` 的 rowcount
+    # —— 拿到 False 一律 409,**绝不信先读的那份快照**(没有这道守卫,库里会留下
+    # 「一般隐患 + 已出暂停令」这种永久矛盾,而且一声不吭)。
+    if not hazards.set_grade(hazard_no, grade):
         raise _refuse(409, ErrorCode.CONFLICT, _MSG_RACED)
 
     hint = (
