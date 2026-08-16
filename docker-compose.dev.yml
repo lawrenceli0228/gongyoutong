@@ -140,6 +140,22 @@ services:
       - ./backend/webapp.py:/app/webapp.py:ro
       - ./backend/auth.py:/app/auth.py:ro
       - ./backend/langgraph.json:/app/langgraph.json:ro
+      # ↓ 2026-08-16 加。**线上 2026-08-11 就为这个丢过一次数据**(见 08f606d),
+      #   当时的修法只加进了 docker-compose.vps.yml —— 本地档漏了,于是本机每次
+      #   `up -d --force-recreate backend` 照样把历史对话清零。
+      #
+      #   今天 W10 联调时又撞了一次,而且**复现了那个提交自己预言的现象**:
+      #   它的原话是「界面上看不出区别,只是历史列表突然空了,**人会以为是前端出了问题**」。
+      #   真人当时的反馈原话正是「前端报错」—— 而前端一行错都没有,
+      #   只是 `POST /threads/{id}/history` 回了 404。
+      #
+      #   langgraph dev 把线程 / 检查点存在 `/app/.langgraph_api/.langgraph_ops.pckl`,
+      #   那是**容器自己的 overlay 文件系统**,不在 ./data 那条挂载里。
+      #   产物(照片 / docx)落在 ./data 所以还在 —— 只有对话没了,这正是它难查的地方。
+      #
+      #   ⚠️ 本地这条与 vps 那条**必须同源**:哪天改了存储位置,两处一起改,
+      #   否则「本地好好的、线上丢数据」(或者反过来)。
+      - ./data/langgraph:/app/.langgraph_api
 
     # environment 是映射,按键合并:基础档的 GYT_DATA_DIR / HF_HUB_OFFLINE 不受影响。
     environment:
