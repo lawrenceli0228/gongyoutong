@@ -21,29 +21,33 @@
 ---------------------------------------------------------------------------
     模型(prompt.md)      只负责:把隐患编号原样填进参数、照抄工具结果里的编号与日期
         │
-        ▼ 本文件(工具层)   受控筛子词表校验、超期判定、状态与文书的中文名、
-        │                  处置建议的**确定性**推导;信封契约 {ok, data, user_msg}
+        ▼ 本文件(工具层)   受控筛子词表校验、处置建议的**确定性**推导、人话组装;
+        │                  信封契约 {ok, data, user_msg}
+        ▼ scoping.py       筛子四词、超期判定、状态与结论的中文名、hazard_item 的形状
+        │                  (**零 langchain**,supervision_api 的查询端点共用同一份)
         ▼ db/hazards.py    只读取数(``list_rows`` / ``fetch`` / ``docs_of``),
           │                状态机与表级约束的唯一真相也在那边
           ▼ 写入侧          supervision_api.py 七个 HTTP 端点(见上)
 
 ===========================================================================
-「今天」为什么不是 date.today()
+筛子与超期判定为什么不在本文件里(2026-08-16 S1)
 ---------------------------------------------------------------------------
-``due_date`` 是**香港日历日**(D7:全仓唯一时间权威 = ``attendance/receipt.py``,
-``db/hazards.py`` 盖 ``found_at`` 用的也是它)。超期判定要和期限用同一本日历,
-否则跨午夜的窗口里"今天到期"会被算成"已超期" —— 而超期是升级、是对外指控
-施工方拒不整改的起点,差一天就是冤枉人。**不许改回 ``date.today()``**
-(那是宿主时区,容器 Shanghai 与本机数值一致纯属巧合)。
+它们搬去了同包的 ``scoping.py``。理由不是"文件太长",是 **W10 要给
+``supervision_api.py`` 加三个查询端点,而它们必须和 ``list_hazards`` 用同一套判据** ——
+判据再抄一份,后端筛出来的清单和对话里报的条数就会悄悄对不上,而两边测试都绿
+(TODO-45 A 组记的正是这类漂移)。
 
-⚠️ 与 ``agents/schedule/tools.py`` 的 ``_today()`` 刻意**不同源**:那边管任务台账,
-今天用的是宿主本地日期;这边管的是要写进法律文书的期限。别为了"统一"合并。
+🔴 **边是单向的:本文件 import ``scoping``,scoping 一个包内模块都不许 import。**
+哪天有人为了图方便让 scoping 回头 import 本文件,当场成环 —— 而循环导入炸出来的
+报错往往指着第三个文件。完整的依赖约束写在 ``scoping.py`` 头注。
+
+「今天」为什么是香港日历日而不是 ``date.today()``,一并搬去了那边的头注 ——
+判据一个字节没改,只是换了个住处。
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime
 from typing import Any, Final
 
 from langchain_core.runnables import RunnableConfig
@@ -51,12 +55,11 @@ from langchain_core.tools import tool
 
 from gyt.agents.safety.severity import SEVERITY_PENDING
 
-# 期限的展示形态与 schedule 同源:「8月20日(周四)」这种带星期字的说法**只有**
-# dates.format_display 产得出来,模型照抄即可。自己换算星期是 schedule 那边
-# 用 314 行证明过不可靠的事,监理这边的期限还要进文书,更不能让模型算。
-# (supervision_api.py 解析 due_phrase 时 import 的也是这个模块,同一本日历。)
-from gyt.agents.schedule.dates import format_display
-from gyt.attendance.receipt import HK
+# 筛子四词、超期判定、状态与结论的中文名、hazard_item 的形状 —— 全部在 scoping.py。
+# ⚠️ **按模块名 import,调用点写 ``scoping.xxx()``,不许 ``from ... import today_hk``**:
+#    测试把「今天」钉死靠的是 monkeypatch ``scoping.today_hk`` 这一个点,
+#    按名 import 会在导入那一刻把函数对象绑死,桩打不进去(理由写在那个函数的 docstring)。
+from gyt.agents.supervision import scoping
 from gyt.config import get_settings
 from gyt.core.doc_no import DOC_TITLE_ZH, DocKind
 from gyt.core.errors import Envelope, ErrorCode, fail, ok, tool_guard
@@ -67,34 +70,14 @@ from gyt.db import hazards as db
 # 受控词表(禁止在函数体里散落字面量)
 # ---------------------------------------------------------------------------
 
-_STATUS_ZH: Final[dict[str, str]] = {
-    db.STATUS_PENDING: "待确认",
-    db.STATUS_OPEN: "已确认待处置",
-    db.STATUS_NOTIFIED: "已签发通知单",
-    # 🔴 「已出具暂停令」不是「已责令停工」(db/hazards.py 的 STATUSES 头注):
-    # suspended 只证明文书出了稿,不证明工地真停了工。对外措辞不许升级。
-    db.STATUS_SUSPENDED: "已出具暂停令",
-    db.STATUS_REINSPECT_FAILED: "复查不合格",
-    db.STATUS_RESUMING: "待签发复工令",
-    db.STATUS_CLOSED: "已销项",
-    db.STATUS_ESCALATED: "已上报主管部门",
-}
-"""状态 → 给工地上的人看的中文。**八个状态每个都要有名字。**
-
-⚠️ 这是这张表的**第二份拷贝**,第一份在 ``supervision_api.py`` 的 ``_STATUS_ZH``
-(两边逐字相同,CLAUDE.md 同源清单里有登记)。为什么不共用一份:那个模块是被
-langgraph 按**文件路径**加载的 HTTP 层,而它反过来 import 本包的 ``docgen`` ——
-让它再 import 本模块就成了环。真要收敛,该往下沉到一个两边都能 import 的地方
-(``db/hazards.py`` 旁边),那是另一条泳道的事,别在这儿单方面改一份。
-"""
-
-_UNNAMED_STATUSES: Final[tuple[str, ...]] = tuple(s for s in db.STATUSES if s not in _STATUS_ZH)
-if _UNNAMED_STATUSES:  # pragma: no cover —— 只在 db 层加了状态而这里漏配时触发
-    raise RuntimeError(
-        f"状态 {_UNNAMED_STATUSES} 没有中文名 —— db/hazards.py 的 STATUSES 加了档,"
-        "agents/supervision/tools.py 的 _STATUS_ZH 要跟上。做成导入时硬失败是刻意的:"
-        "漏配的表现是回给工友的话里冒出一个英文状态词,而那不会有任何报错"
-    )
+# 筛子四个词**转出去**给老调用点(``__all__`` 里有,测试与别处直接 import 它们)。
+# 🔴 这四行只是转出,**真相在 ``scoping.py``** —— 不许在这儿改字面量,
+#    改了就又变成两份拷贝,而两份筛子词表漂开的表现是端点认得的词对话链不认。
+SCOPE_ACTIVE: Final[str] = scoping.SCOPE_ACTIVE
+SCOPE_PENDING: Final[str] = scoping.SCOPE_PENDING
+SCOPE_OVERDUE: Final[str] = scoping.SCOPE_OVERDUE
+SCOPE_ALL: Final[str] = scoping.SCOPE_ALL
+SCOPES: Final[tuple[str, ...]] = scoping.SCOPES
 
 _REINSPECT_DOC_TYPE: Final[str] = "reinspect"
 """``hazard_docs`` 里那条**不是文书**的行:复查留痕,没有 artifact_id,也没有编号类型段。"""
@@ -126,36 +109,6 @@ _GRADE_UNKNOWN: Final[str] = SEVERITY_PENDING
 直接**取自** ``agents/safety/severity.py`` 的「待定级」而不是另抄一个字符串:两边说的
 是同一件事(不知道),那边改词这边跟着改。同包的 ``grading.py`` 走的是同一条 import ——
 severity.py 只 import 标准库,是张纯表,拉它不构成环、也不捎带任何重依赖。"""
-
-SCOPE_ACTIVE: Final[str] = "在办"
-SCOPE_PENDING: Final[str] = "待确认"
-SCOPE_OVERDUE: Final[str] = "超期"
-SCOPE_ALL: Final[str] = "全部"
-
-SCOPES: Final[tuple[str, ...]] = (SCOPE_ACTIVE, SCOPE_PENDING, SCOPE_OVERDUE, SCOPE_ALL)
-"""``list_hazards`` 的筛子,**只认这四个词**(默认「在办」)。
-
-刻意做成受控词表而不是自由文本:模型自己发明筛子(「严重的」「这周的」)时,
-静默按"全部"处理会让监理以为清单就这么多。词表外一律回一句人话让它换个词。
-"""
-
-_CLOSED_STATUSES: Final[tuple[str, ...]] = (db.STATUS_CLOSED, db.STATUS_ESCALATED)
-"""「在办」要排除的两档 —— 状态机里的两个终点(``ALLOWED_TRANSITIONS`` 里出口是空集)。"""
-
-_OVERDUE_STATUSES: Final[tuple[str, ...]] = (
-    db.STATUS_NOTIFIED,
-    db.STATUS_SUSPENDED,
-    db.STATUS_REINSPECT_FAILED,
-)
-"""哪些状态才可能"超期"= **已经下过整改期限、现场还没改好**的三档。
-
-三处不显然的排除,每一处都对应一条定案:
-  · ``pending`` —— D17:自动登记的还没人确认,不算进整改率、不进超期清单;
-  · ``needs_grading=1`` —— Codex#11:没定级的隐患任何签发都被硬拒,催它没有意义
-    (判据写在 ``_is_overdue`` 里,不在这张表);
-  · ``resuming`` —— 复查已经合格了,只是在等《复工令》。把它算成超期 = 拿"我们自己
-    还没签复工令"去指控施工方拒不整改。
-"""
 
 _LIST_DESCRIPTION = (
     "查监理隐患台账:还有几条没销、待确认的有几条、超期的有哪些。"
@@ -192,47 +145,6 @@ _NEXT_DONE: Final[str] = "不用再处置"
 端点拒绝时的措辞是同一套词 —— 师傅不用在三种说法之间自己做翻译。"""
 
 
-def _today() -> date:
-    """监理口径的「今天」= 香港日历日(与 due_date 同一本日历)。独立成函数供测试打桩。"""
-    return datetime.now(HK).date()
-
-
-def _due_display(due_date: str | None) -> str | None:
-    """ISO 期限 → 「8月20日(周四)」。没定期限就是 None(不是空串,少一种"看着像有"的形态)。"""
-    return format_display(date.fromisoformat(due_date)) if due_date else None
-
-
-def _is_overdue(row: db.HazardRow, today_iso: str) -> bool:
-    """这条隐患超期没有。纯 Python 比较,**不往 SQL 里塞「今天」**(方案 §5.2)。
-
-    ISO 文本序 = 日期序,所以直接比字符串。边界是**严格小于**:今天到期不算超期 ——
-    差一天就会把还在期限内的人写成"拒不整改",而那句话是要进上报材料的。
-    """
-    if row.needs_grading:  # Codex#11:没定级的签发都被硬拒,催它没有意义
-        return False
-    return bool(row.due_date) and row.status in _OVERDUE_STATUSES and str(row.due_date) < today_iso
-
-
-def _hazard_item(row: db.HazardRow, *, today_iso: str) -> dict[str, Any]:
-    """一条隐患的对外形态。超期与中文状态都在这儿算好,模型只管照抄。
-
-    刻意**不**放进来的字段:``photo_sha256``(幂等键的内节,对人没用)、
-    ``project_id``(归属由 ``list_hazards`` 在汇总层统一说,逐行重复只会挤上下文)、
-    ``grading_version``(事后追溯用,不是对话内容)。少给少错,同 attendance 的最小化约定。
-    """
-    return {
-        "hazard_no": row.hazard_no,
-        "item": row.item,
-        "grade": row.grade,
-        "status": row.status,
-        "status_display": _STATUS_ZH[row.status],  # 键必存在:导入期已校验覆盖 STATUSES
-        "due_date": row.due_date,
-        "due_display": _due_display(row.due_date),
-        "overdue": _is_overdue(row, today_iso),
-        "needs_grading": bool(row.needs_grading),
-    }
-
-
 def _hazard_line(item: dict[str, Any]) -> str:
     """清单里的一行人话。编号在最前 —— 师傅要拿着它跟监理对账、在界面上找那一条。
 
@@ -247,17 +159,6 @@ def _hazard_line(item: dict[str, Any]) -> str:
     if item["overdue"]:
         tail += ",已超期"
     return f"{item['hazard_no']} {item['item']}({level},{item['status_display']}{tail})"
-
-
-def _in_scope(row: db.HazardRow, *, scope: str, today_iso: str) -> bool:
-    """受控筛子。四个词各自的判据都在这一处,别散到调用点去。"""
-    if scope == SCOPE_ALL:
-        return True
-    if scope == SCOPE_PENDING:
-        return row.status == db.STATUS_PENDING
-    if scope == SCOPE_OVERDUE:
-        return _is_overdue(row, today_iso)
-    return row.status not in _CLOSED_STATUSES  # SCOPE_ACTIVE
 
 
 @tool("list_hazards", description=_LIST_DESCRIPTION)
@@ -291,16 +192,16 @@ async def list_hazards(scope: str = SCOPE_ACTIVE, *, config: RunnableConfig) -> 
     else:
         unassigned = len(rows)  # 这一堆本身就是未归属的
 
-    today_iso = _today().isoformat()
+    today_iso = scoping.today_hk().isoformat()
     limit = get_settings().supervision_list_max_rows
-    matched = [r for r in rows if _in_scope(r, scope=picked, today_iso=today_iso)]
-    shown = [_hazard_item(r, today_iso=today_iso) for r in matched[:limit]]
+    matched = [r for r in rows if scoping.in_scope(r, scope=picked, today_iso=today_iso)]
+    shown = [scoping.hazard_item(r, today_iso=today_iso) for r in matched[:limit]]
     truncated = len(matched) > limit
 
     # 三个计数都在**本次筛出来的全部行**上算(不是截断后的那批):师傅要的是
     # 「一共还有几条」,截断只影响列出来几行。
     pending_count = sum(1 for r in matched if r.status == db.STATUS_PENDING)
-    overdue_count = sum(1 for r in matched if _is_overdue(r, today_iso))
+    overdue_count = sum(1 for r in matched if scoping.is_overdue(r, today_iso))
 
     data: dict[str, Any] = {
         "scope": picked,
@@ -404,8 +305,8 @@ async def get_hazard(hazard_no: str) -> Envelope:
         )
 
     docs = await asyncio.to_thread(db.docs_of, [row.hazard_no])
-    today_iso = _today().isoformat()
-    item = _hazard_item(row, today_iso=today_iso)
+    today_iso = scoping.today_hk().isoformat()
+    item = scoping.hazard_item(row, today_iso=today_iso)
     documents = [
         {
             "doc_type": d.doc_type,
@@ -455,7 +356,14 @@ def _detail_summary(
         lines.append("还没复查过。")
     else:
         last = reinspections[-1]  # docs_of 按 id 升序,最后一条就是最近一次
-        verdict = "合格" if last["result"] == "pass" else "不合格"
+        # 结论的中文名走 ``scoping.result_zh``(全仓唯一那张表)。这里原来写的是
+        # ``"合格" if last["result"] == "pass" else "不合格"`` —— 那正是那张表的
+        # 另一份拷贝,S1 一并收敛掉。
+        # 🔴 顺带修掉那句 else 的静默错话:``hazard_docs.result`` 的 CHECK 是
+        #    ``IS NULL OR IN (...)``,历史行/补录行**真的可能没有结论**,而旧写法
+        #    会把"没记结论"念成「不合格」—— 在没有结论的情况下对外声称施工方复查没过。
+        #    没结论就如实说没结论。
+        verdict = scoping.result_zh(last["result"]) if last["result"] else "没记结论"
         lines.append(f"复查过 {len(reinspections)} 次,最近一次结论:{verdict}。")
         lines.append(_reinspect_photo_line(last))
     return "\n".join(lines)
@@ -597,8 +505,8 @@ async def suggest_disposal(hazard_no: str) -> Envelope:
         )
 
     next_action, documents, advice = _advise(row)
-    today_iso = _today().isoformat()
-    item = _hazard_item(row, today_iso=today_iso)
+    today_iso = scoping.today_hk().isoformat()
+    item = scoping.hazard_item(row, today_iso=today_iso)
     data: dict[str, Any] = {
         **item,
         "next_action": next_action,

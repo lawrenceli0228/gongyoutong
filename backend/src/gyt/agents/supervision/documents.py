@@ -15,8 +15,11 @@
 版式合并是因为六份长得一样,正文分开是因为六份说的话本来就不一样。
 
 ===========================================================================
-本模块的边界:只依赖 ``docgen`` 和一个 ``DocContext``
+本模块的边界:只依赖 ``docgen``、``scoping`` 和一个 ``DocContext``
 ---------------------------------------------------------------------------
+(``scoping`` 是 2026-08-16 S1 加的第二条边,只为 ``result_zh`` / ``NO_VALUE``
+这两个共享词表件 —— 它是零 langchain 的叶子模块,不改变本模块"只出正文"的性质。)
+
 鉴权、状态机、期限解析、编号重试、原子性顺序 —— 一概不在这儿,全在
 ``gyt/supervision_api.py``。素材由那边查好了塞进 ``DocContext``
 (``supervision_api._context()`` 干这活:项目名一次查询、证据链一次查询),
@@ -78,6 +81,12 @@ from gyt.agents.supervision.docgen import (
     TextSection,
     render_document,
 )
+
+# 结论的中文名(pass/fail → 合格/不合格)与「—」这两样 2026-08-16(S1)搬去了
+# ``scoping.py``:W10 的隐患详情端点也要念这两个词,留在本模块它就成了第三份拷贝。
+# scoping 是**零 langchain 的叶子模块**(它自己不 import 本包任何东西),
+# 所以 documents → scoping 这条边不成环,详见 scoping.py 头注。
+from gyt.agents.supervision.scoping import NO_VALUE, result_zh
 from gyt.core.doc_no import DOC_TITLE_ZH, DocKind
 from gyt.db import hazards
 
@@ -156,9 +165,6 @@ REINSPECT_PHOTO_LABEL: Final[str] = "复查照片编号"
 混成同一个词的后果不是排版难看,是**拿发现时的照片当"整改后"的证据** ——
 而复查必须挂照片这条红线(方案 §5.2)的全部意义就是事后追责时分得清这两者。
 """
-
-_NO_VALUE: Final[str] = "—"
-"""表格里"这一格本来就没有内容"的写法。空单元格在留档文件里读起来像漏填。"""
 
 _MISSING_REINSPECT_PHOTO: Final[str] = "(缺复查照片)"
 """复查记录没挂照片时的写法。**不许写成 ``—`` 混进去**:文书行没有照片是正常的,
@@ -255,7 +261,7 @@ def _evidence_section(ctx: DocContext, *, empty_note: str = _EVIDENCE_EMPTY) -> 
                 str(index),
                 _doc_type_zh(doc.doc_type),
                 doc.doc_no,
-                _result_zh(doc.result),
+                result_zh(doc.result),
                 _evidence_photo(doc),
                 doc.created_at,
             )
@@ -278,7 +284,7 @@ def _evidence_photo(doc: hazards.HazardDocRow) -> str:
     """
     if doc.photo_id:
         return doc.photo_id
-    return _MISSING_REINSPECT_PHOTO if doc.doc_type == _REINSPECT_DOC_TYPE else _NO_VALUE
+    return _MISSING_REINSPECT_PHOTO if doc.doc_type == _REINSPECT_DOC_TYPE else NO_VALUE
 
 
 def _prior_issued_titles(ctx: DocContext) -> tuple[str, ...]:
@@ -316,45 +322,6 @@ def _doc_type_zh(doc_type: str) -> str:
         if kind.name.lower() == doc_type:
             return DOC_TITLE_ZH[kind]
     return doc_type  # pragma: no cover —— 词表外的类型原样透出,不猜
-
-
-_RESULT_ZH: Final[dict[str, str]] = {
-    "pass": "合格",
-    "fail": "不合格",
-}
-"""``hazard_docs.result`` → 中文。**留档文书上不许出现英文枚举值。**
-
-这张表是 2026-08-16 代码评审补的:证据链那一列原来是 ``doc.result or _NO_VALUE``,
-把库里的 ``pass`` / ``fail`` **原样印到纸上** —— 而这份纸是要报建设主管部门的。
-同一份文件里 ``doc_type`` 与 ``status`` 都过了反查表(``_doc_type_zh`` / ``_STATUS_ZH``),
-唯独结论没有,口径也不一致。
-
-⚠️ 键集必须等于 ``db.hazards.DOC_RESULTS`` —— 下面有导入期硬失败守着。
-判据只验**覆盖**(每个取值都有中文名),验不了「两处中文名一致」,那是另一类问题
-(TODO-45 A 组记着三份 ``_STATUS_ZH`` 的同款缺口)。
-"""
-
-_MISSING_RESULT_ZH: Final[tuple[str, ...]] = tuple(
-    r for r in hazards.DOC_RESULTS if r not in _RESULT_ZH
-)
-if _MISSING_RESULT_ZH:  # pragma: no cover —— 配齐了就到不了这里
-    raise RuntimeError(
-        f"hazards.DOC_RESULTS 里这些取值没有中文名:{_MISSING_RESULT_ZH};"
-        "本模块的 _RESULT_ZH 要跟上。做成导入时硬失败是刻意的 —— 漏配的表现是"
-        "留档文书上印出一个英文单词,而那是要送到建设主管部门手里的纸,"
-        "没有任何测试会因为「纸上有个英文词」而变红。"
-    )
-
-
-def _result_zh(result: str | None) -> str:
-    """结论 → 中文。``None`` 是文书行(它本来就没有结论),给「—」而不是空格。
-
-    词表外的取值**原样透出**,与 ``_doc_type_zh`` 同一个哲学:不猜。
-    真出现了说明 CHECK 约束被绕过,纸上留着那个怪值比悄悄改成「合格」安全得多。
-    """
-    if result is None:
-        return _NO_VALUE
-    return _RESULT_ZH.get(result, result)
 
 
 def _find_doc_no(ctx: DocContext, doc_type: str) -> str:

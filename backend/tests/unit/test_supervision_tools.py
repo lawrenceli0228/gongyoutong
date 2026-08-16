@@ -33,8 +33,8 @@ from gyt.agents.supervision import (
     SUPERVISION_GIVE_UP_MESSAGE,
     SUPERVISION_RECEIPT_PATTERN,
     SUPERVISION_RETRY_NUDGE,
+    scoping,
 )
-from gyt.agents.supervision import tools as sup_tools
 from gyt.agents.supervision.tools import (
     SCOPE_ALL,
     SCOPE_OVERDUE,
@@ -68,7 +68,15 @@ _SEQ = iter(range(1, 10_000))
 
 @pytest.fixture(autouse=True)
 def _pin_today(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sup_tools, "_today", lambda: TODAY)
+    """把「今天」钉死。
+
+    2026-08-16 S1 之后桩打在 ``scoping.today_hk`` 上(原来是 ``tools._today``):
+    判据搬去了 ``agents/supervision/scoping.py``,而 ``tools.py`` 是按模块属性
+    ``scoping.today_hk()`` 调的 —— 所以这一个桩点同时管住三个工具。
+    哪天有人把 tools.py 改成 ``from ... import today_hk``,这个桩就打不进去了,
+    表现是超期那几条用例跟着真实日子飘(那个函数的 docstring 里写了原因)。
+    """
+    monkeypatch.setattr(scoping, "today_hk", lambda: TODAY)
 
 
 def _config(project_id: str = "") -> dict:
@@ -503,6 +511,46 @@ async def test_复查没挂照片时如实说而不是沉默略过_F4() -> None:
 
     assert "没留下照片编号" in result["user_msg"]
     assert "举不出" in result["user_msg"]
+
+
+async def test_复查结论用的是全仓那张中文表_合格与不合格() -> None:
+    """结论的中文名走 ``scoping.result_zh``,不在 tools.py 里再写一份「合格/不合格」。
+
+    2026-08-16 S1 之前这里是一句 ``"合格" if ... else "不合格"`` —— 那正是
+    ``RESULT_ZH`` 的另一份拷贝(TODO-45 A 组记的同款漂移)。
+    """
+    hazard_no = _make(status=db.STATUS_NOTIFIED, due=FUTURE)
+    assert db.mark_reinspect_failed(
+        hazard_no,
+        docs=[db.DocDraft(doc_type="reinspect", doc_no=f"{hazard_no}-R-1", result="fail")],
+    )
+
+    result = await get_hazard.ainvoke({"hazard_no": hazard_no})
+
+    assert "最近一次结论:不合格" in result["user_msg"]
+    assert "fail" not in result["user_msg"], "英文枚举值不许漏到工友眼前"
+
+
+async def test_复查没记结论时如实说_不许一律念成不合格() -> None:
+    """🔴 ``hazard_docs.result`` 的 CHECK 是 ``IS NULL OR IN (...)``,历史行/补录行
+    **真的可能没有结论**。
+
+    S1 之前那句 ``else "不合格"`` 会把「没记结论」念成「不合格」—— 在根本没有结论的
+    情况下对外声称施工方复查没过,而复查不合格是升级、是上报主管部门的依据。
+    没结论就如实说没结论。
+    """
+    hazard_no = _make(status=db.STATUS_NOTIFIED, due=FUTURE)
+    assert db.mark_reinspect_failed(
+        hazard_no,
+        docs=[db.DocDraft(doc_type="reinspect", doc_no=f"{hazard_no}-R-1")],  # result 缺席
+    )
+
+    result = await get_hazard.ainvoke({"hazard_no": hazard_no})
+
+    assert "最近一次结论:没记结论" in result["user_msg"]
+    # 只比「结论」那一句。整段里的「不合格」还有一个合法出处 —— 状态本身就叫
+    # 「复查不合格」(STATUS_REINSPECT_FAILED 的中文名),那句不是结论。
+    assert "最近一次结论:不合格" not in result["user_msg"]
 
 
 # ===========================================================================
