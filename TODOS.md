@@ -1210,8 +1210,20 @@
 - **🔴 为什么验收抓不到:** E3 断的是「向量库真有 chunk(872)」——**数得出条数,数不出
   metadata 缺字段**。库彻底不可用时 E3 照样绿。E1(路由到 knowledge)也照样绿。
   只有 E2(真要答案)会红,而它红了很容易被归给「模型没答对」。
-  **建议给 E3 加一条:拿一个必然命中的 query 走一遍真检索,断言返回条数 > 0。**
-  形状与 `ingest.pdf_has_text()` 那道「先探再嵌」的闸同源:**便宜的探针挡住整类静默失败。**
+- **怎么补这条闸(已核过表结构,可直接照抄):**
+  ```sql
+  SELECT count(*) FROM embedding_metadata WHERE key='scope'
+  ```
+  和 `count_chunks()` 同一套技术 —— 只读 URI 连 `chroma/chroma.sqlite3`,零 ML 依赖。
+  实测现状:`embedding_metadata` 只有三个 key(`chroma:document` / `page` / `source`,
+  各 872 行),`scope` 一行都没有;重建之后该是 872。判据写成
+  「带 scope 的行数 == chunk 总数」比「> 0」更严(防只重建了一部分)。
+
+  ⚠️ **我一开始在这条 TODO 里写的建议是错的**,留着当反面记录:原话是「拿一个必然
+  命中的 query 走一遍**真检索**」。做不到 —— 验收脚本跑在**宿主**上,而宿主装不了
+  torch(Intel Mac,`pyproject.toml` 第 171 行写着),`count_chunks` 当初写成直接读
+  sqlite **正是为了绕开这件事**。照那条建议去改,会写出一条在本机永远 import 失败的断言。
+  教训:**给一个"加断言"的建议之前,先确认那条断言跑得起来。**
 - **谁会中招:** 任何一台向量库建于作用域功能之前的机器。因为 manifest 会一直跳过,
   这个状态**不会自愈**,而且每次 `make build-knowledge` 都会告诉你「已是最新」。
 - **Depends:** 无。
