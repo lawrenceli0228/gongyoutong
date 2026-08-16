@@ -1226,6 +1226,32 @@
   教训:**给一个"加断言"的建议之前,先确认那条断言跑得起来。**
 - **谁会中招:** 任何一台向量库建于作用域功能之前的机器。因为 manifest 会一直跳过,
   这个状态**不会自愈**,而且每次 `make build-knowledge` 都会告诉你「已是最新」。
+
+- **✅ 2026-08-16 已在本机修复,但修复链是三步,少一步都不行**(实测):
+  1. `docker exec gyt-backend python -m gyt.agents.knowledge.ingest --rebuild`
+     —— 二十多分钟(CPU 上嵌 872 个 chunk),**输出全程缓冲**,中途查会看到
+     「还是 872、还是没 scope」,别以为没生效。
+  2. 🔴 **重启服务。** 不重启的话检索报
+     `chromadb.errors.InternalError: Error executing plan: Internal error: Error finding id`
+     —— 服务进程握的是重建**之前**的 chroma 句柄(`get_vectorstore()` 带 `lru_cache`),
+     段文件被另一个进程重写后,缓存句柄指向的 id 已经不存在。
+     **这条在生产上更要命**:线上重建规范库不重启,knowledge 会从「查得到」变成
+     「报内部错误」,而且不会自愈;而报错内容跟「查不到」完全是两回事,排查方向也不同。
+  3. 验:直接查向量库通了**不等于**服务里通了 —— 这次就是直接查 3 条命中、
+     通过服务问却报错。两处都要验。
+
+- **🔴 `--rebuild` 清不掉前 scope 时代的残留(同一个洞的第二半,本次实测)。**
+  重建后是 **1744 = 872 新 + 872 旧**,不是 872。原因:`delete_document()` 的
+  「先删同 source 的旧块」用的是
+  ```python
+  where={"$and": [{"source": …}, {"scope": …}, {"project_id": …}]}
+  ```
+  而旧块**没有** `scope` / `project_id` 两个键 → 匹配 0 条 → 删不掉;
+  又因为 `_chunk_ids()` 生成的 id 带 `<scope>:<project_id>/` 前缀、与旧 id 形状不同,
+  upsert 也覆盖不了,只能并排新增。第二次重建净值不变(删掉新的 872 再重加)即为佐证。
+  **不影响正确性**(检索带 scope 过滤,查不到那批),但库体积翻倍,
+  而且下一个人看 `count_chunks` 的 1744 会以为有那么多份内容。
+  要清干净只能手工删 collection 或按「没有 scope 键」反查 id 后删。
 - **Depends:** 无。
 
 ## TODO-44 C3 断言判在全角/半角括号上 —— 事实全对却红
