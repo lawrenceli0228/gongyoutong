@@ -819,11 +819,8 @@ function ReinspectPhotoField({
             }`}
           >
             <Camera className="size-5" />
-            拍照 / 选图
+            拍整改后的照片
           </Label>
-          <div className="text-[11px] text-gray-400">
-            手机上会直接开后置摄像头,对着整改好的那个部位拍一张;电脑上会让你选文件。
-          </div>
         </>
       ) : upload.phase === "uploading" ? (
         <div className="flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5">
@@ -926,15 +923,22 @@ function ReinspectPhotoField({
       {/* ── 手填编号:降级成折叠项,不删 ────────────────────────────────
           默认折起来是因为它现在是**少数路径**(引用聊天里已经传过的那张图);
           摆在明面上的话,人又会以为「那才是正经做法」,而那正是这次要修掉的东西。
-          措辞写清「什么时候用它」,不写「高级选项」这种什么都没说的词。 */}
+
+          🔴 2026-08-16 真人反馈「太多手续复杂」之后,这行字从
+          「或者填照片编号(引用聊天里已经传过的那张)」缩成「用已有编号」。
+          **什么时候用它这句话没有丢,只是挪进了 title** —— 收起状态下它是一行
+          常驻文字,而清单里每条可复查的隐患都要重复一遍;展开之后紧跟着的
+          Label「照片编号(32 位,在聊天里那张图下面)」把同一件事又说了一次。
+          砍的是**重复**,不是解释。 */}
       <div>
         <button
           type="button"
           onClick={() => setManualOpen((open) => !open)}
           aria-expanded={manualOpen}
+          title={manualOpen ? undefined : "引用聊天里已经传过的那张照片,填它的编号"}
           className="cursor-pointer text-[11px] text-gray-400 underline-offset-2 transition-colors hover:text-gray-600 hover:underline pointer-coarse:min-h-11"
         >
-          {manualOpen ? "收起" : "或者填照片编号(引用聊天里已经传过的那张)"}
+          {manualOpen ? "收起" : "用已有编号"}
         </button>
         {manualOpen && (
           <div className="mt-1.5 flex flex-col gap-1">
@@ -962,15 +966,21 @@ function ReinspectPhotoField({
         )}
       </div>
 
-      {/* D11:模型给建议、人下结论。复查照片角度光线取景都变了,
-          「没拍到那个部位」和「问题已消除」在模型眼里一样 —— 那是往
-          「误判合格」方向错,而这一侧会死人。 */}
-      <div className="text-[11px] text-gray-400">
-        复查结论由人来下:模型分不清「问题已消除」和「这张没拍到那个部位」。
-      </div>
     </div>
   );
 }
+
+// ⚠️ 本组件里原来还有一行常驻文字:「复查结论由人来下:模型分不清『问题已消除』
+//    和『这张没拍到那个部位』。」
+//
+//    2026-08-16 真人反馈「太多手续复杂」后**挪到了面板顶部、只说一次**(搜 D11_NOTE)。
+//    它讲的是 D11 —— 模型给建议、人下结论。复查照片的角度光线取景都变了,
+//    「没拍到那个部位」和「问题已消除」在模型眼里一样,那是往「误判合格」方向错,
+//    而这一侧会死人。
+//
+//    🔴 **它是产品立场,不是每行的操作提示。** 挂在每一行上时,清单里每条可复查的
+//    隐患都要重复一遍(实测 3 条 → 同一句话在屏幕上出现 3 次),而它要传达的东西
+//    一个人只需要知道一次。**删掉不行** —— 那样「为什么系统不替我判」就没人回答了。
 
 /** 一条隐患的处置区。纯展示 + 回调,自己不发请求 —— 请求全在面板那一层,
  *  这样「同一时刻只有一个动作在飞」才好保证(法律文书不能并发点两下)。 */
@@ -1240,12 +1250,23 @@ function HazardRow({
               //    折叠的手填框里打半截编号也算没就绪,不然按钮亮着、点下去照样被自己人拦。
               //    正在传的时候 `form.photo` 是空的(选图那一下就清了,见 `pickPhoto`),
               //    所以这一条判据顺带把「传到一半就点合格」也挡住了,不用另加一个 phase 判断。
+              // 变灰**必须说清差什么** —— 只变灰的话人只知道点不动、不知道要先干嘛,
+              // 那正是本仓反复防的「点了没反应」。
+              //
+              // 🔴 但这句话 2026-08-16 从**常驻文字**改成了 `title`(真人反馈
+              //    「太多手续复杂」)。判据:上面那一格「拍整改后的照片」就在眼前、
+              //    大得多、还是虚线框 —— 缺什么是自明的,一句常驻解释换来的是
+              //    每条可复查的隐患都重复一遍。改成 title 之后,想知道的人停一下就有,
+              //    不想看的人不用每行读一遍。**没有删掉,只是换了时机。**
+              //    ⚠️ 触屏没有 hover:所以「正在传」那一档仍然出常驻文字 ——
+              //    那一档的等待是有尽头的,而人盯着屏幕不知道在等什么最难受。
               <div key={action} className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[12px] text-gray-500">复查结论</span>
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={busy || !照片就绪}
+                  title={照片就绪 ? undefined : PHOTO_MESSAGES.noPhoto}
                   onClick={() => onAct("reinspect", undefined, "pass")}
                   className="pointer-coarse:min-h-11"
                 >
@@ -1256,19 +1277,14 @@ function HazardRow({
                   size="sm"
                   variant="outline"
                   disabled={busy || !照片就绪}
+                  title={照片就绪 ? undefined : PHOTO_MESSAGES.noPhoto}
                   onClick={() => onAct("reinspect", undefined, "fail")}
                   className="pointer-coarse:min-h-11"
                 >
                   不合格
                 </Button>
-                {/* 变灰必须**说清差什么**。只把按钮变灰的话,人只知道点不动,
-                    不知道要先干嘛 —— 而上面那一格就在眼前,一句话就够把他领过去。 */}
-                {!照片就绪 && (
-                  <span className="text-[12px] text-gray-500">
-                    {photoUpload?.phase === "uploading"
-                      ? "照片还在传,传完就能点。"
-                      : PHOTO_MESSAGES.noPhoto}
-                  </span>
+                {photoUpload?.phase === "uploading" && (
+                  <span className="text-[12px] text-gray-500">照片还在传,传完就能点。</span>
                 )}
               </div>
             ) : (
@@ -2266,6 +2282,19 @@ export function SupervisionPanel({
               {onScreenOverdue > 0 ? ` · 已超期 ${onScreenOverdue} 条` : ""}
             </span>
             {snapshot?.today && <span>期限按工地日期 {snapshot.today} 算</span>}
+            {/* D11_NOTE —— 复查结论为什么不让模型下。
+                2026-08-16 真人反馈「太多手续复杂」之前,这句话挂在**每一条**可复查的
+                隐患行上,清单里有几条就重复几遍(实测 3 条)。而它要传达的东西
+                一个人只需要知道一次:模型给建议、人下结论。
+                复查照片的角度光线取景都变了,「没拍到那个部位」和「问题已消除」
+                在模型眼里一样 —— 那是往「误判合格」方向错,而这一侧会死人。
+                🔴 **别再挪回行里,也别删。** 删了「为什么系统不替我判」就没人回答;
+                挪回行里就又变成每行讲一遍课。 */}
+            {list.some((h) => availableActions(h).includes("reinspect")) && (
+              <span title="复查照片的角度、光线、取景都变了,模型分不清「问题已消除」和「这张没拍到那个部位」——那是往「误判合格」方向错。">
+                复查结论由人来下
+              </span>
+            )}
           </div>
         )}
 
