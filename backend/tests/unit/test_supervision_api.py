@@ -331,6 +331,25 @@ class Test暂停令三文书:
         docs = body["data"]["documents"]
         assert [d["doc_type"] for d in docs] == ["notice", "suspension", "owner_report"]
 
+    def test_三份的种类与顺序与文书侧那份镜像逐项相同(self, client: TestClient) -> None:
+        """`documents.OWNER_REPORT_BATCH` 是本端点 kinds 元组的**跨文件镜像**。
+
+        为什么它必须存在:《致建设单位报告》的正文要点名「同批出具了哪几份」,
+        而渲染发生在落库**之前**(§6.4 冻结的顺序),它看不见同批另外两份的编号 ——
+        只能靠一份写死的清单。清单与真实签发漂开的后果是**正文说签了三份、
+        实际出了两份**,而那是要送到建设单位手里的纸。
+
+        两边各自的模块内守卫只验「清单里得有报告自己、都是签发得出来的文书」,
+        **验不了顺序与件数** —— 那正是这条断言的位置(2026-08-16 代码评审补)。
+        """
+        from gyt.agents.supervision.documents import OWNER_REPORT_BATCH
+
+        _, body = self._suspend(client)
+
+        assert [d["doc_type"] for d in body["data"]["documents"]] == [
+            kind.name.lower() for kind in OWNER_REPORT_BATCH
+        ]
+
     def test_每一项四个键齐全且编号类型段对得上(self, client: TestClient) -> None:
         """少一个键前端就少渲一块,而且不会报错。编号的类型段是这份文书的对外身份。"""
         _, body = self._suspend(client)

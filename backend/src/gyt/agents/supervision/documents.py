@@ -255,7 +255,7 @@ def _evidence_section(ctx: DocContext, *, empty_note: str = _EVIDENCE_EMPTY) -> 
                 str(index),
                 _doc_type_zh(doc.doc_type),
                 doc.doc_no,
-                doc.result or _NO_VALUE,
+                _result_zh(doc.result),
                 _evidence_photo(doc),
                 doc.created_at,
             )
@@ -316,6 +316,45 @@ def _doc_type_zh(doc_type: str) -> str:
         if kind.name.lower() == doc_type:
             return DOC_TITLE_ZH[kind]
     return doc_type  # pragma: no cover —— 词表外的类型原样透出,不猜
+
+
+_RESULT_ZH: Final[dict[str, str]] = {
+    "pass": "合格",
+    "fail": "不合格",
+}
+"""``hazard_docs.result`` → 中文。**留档文书上不许出现英文枚举值。**
+
+这张表是 2026-08-16 代码评审补的:证据链那一列原来是 ``doc.result or _NO_VALUE``,
+把库里的 ``pass`` / ``fail`` **原样印到纸上** —— 而这份纸是要报建设主管部门的。
+同一份文件里 ``doc_type`` 与 ``status`` 都过了反查表(``_doc_type_zh`` / ``_STATUS_ZH``),
+唯独结论没有,口径也不一致。
+
+⚠️ 键集必须等于 ``db.hazards.DOC_RESULTS`` —— 下面有导入期硬失败守着。
+判据只验**覆盖**(每个取值都有中文名),验不了「两处中文名一致」,那是另一类问题
+(TODO-45 A 组记着三份 ``_STATUS_ZH`` 的同款缺口)。
+"""
+
+_MISSING_RESULT_ZH: Final[tuple[str, ...]] = tuple(
+    r for r in hazards.DOC_RESULTS if r not in _RESULT_ZH
+)
+if _MISSING_RESULT_ZH:  # pragma: no cover —— 配齐了就到不了这里
+    raise RuntimeError(
+        f"hazards.DOC_RESULTS 里这些取值没有中文名:{_MISSING_RESULT_ZH};"
+        "本模块的 _RESULT_ZH 要跟上。做成导入时硬失败是刻意的 —— 漏配的表现是"
+        "留档文书上印出一个英文单词,而那是要送到建设主管部门手里的纸,"
+        "没有任何测试会因为「纸上有个英文词」而变红。"
+    )
+
+
+def _result_zh(result: str | None) -> str:
+    """结论 → 中文。``None`` 是文书行(它本来就没有结论),给「—」而不是空格。
+
+    词表外的取值**原样透出**,与 ``_doc_type_zh`` 同一个哲学:不猜。
+    真出现了说明 CHECK 约束被绕过,纸上留着那个怪值比悄悄改成「合格」安全得多。
+    """
+    if result is None:
+        return _NO_VALUE
+    return _RESULT_ZH.get(result, result)
 
 
 def _find_doc_no(ctx: DocContext, doc_type: str) -> str:

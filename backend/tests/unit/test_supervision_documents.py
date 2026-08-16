@@ -399,7 +399,9 @@ def test_证据链按顺序列出且复查记录叫复查记录() -> None:
         ["3", "复查记录"],
     ]
     # 没有结论的行画一个破折号,不留空格 —— 空单元格读起来像漏填
-    assert [行[3] for 行 in 表[1:]] == ["—", "—", "fail"]
+    # 结论列过反查表:库里是 pass/fail,纸上必须是中文
+    # (2026-08-16 代码评审:原来这里原样印英文,而这份纸要报建设主管部门)
+    assert [行[3] for 行 in 表[1:]] == ["—", "—", "不合格"]
 
 
 def test_词表外的文书类型原样透出不猜() -> None:
@@ -566,3 +568,47 @@ def test_证据链标题写明了截止到本文书签发前() -> None:
 
     for kind in _带证据链的三种:
         assert EVIDENCE_HEADING in _paragraphs(_render(kind, _满证据链()))
+
+
+# ---------------------------------------------------------------------------
+# 留档文书上不许出现英文枚举值(2026-08-16 代码评审补)
+# ---------------------------------------------------------------------------
+
+
+def test_整份文书里不出现pass或fail这两个英文词() -> None:
+    """证据链的「结论」列原来是 ``doc.result or _NO_VALUE`` —— 把库里的枚举值
+    **原样印到纸上**,而这份纸是要报建设主管部门的。
+
+    同一份文件里 ``doc_type`` 与状态都过了反查表,唯独结论没有,口径也不一致。
+
+    ⚠️ 断言写成「整份 docx 的文本里不含这两个词」而不是只查那一格:
+    后者在换了渲染实现之后可能悄悄失效,而这条盯的是**读者真正看到的东西**。
+    """
+    payload = _render(DocKind.AUTHORITY_REPORT, _满证据链())
+    # 段落 + 所有表格单元格 —— 结论在**表格里**,只取段落会漏掉它
+    text = "\n".join(
+        [*_paragraphs(payload), *(格 for 表 in _tables(payload) for 行 in 表 for 格 in 行)]
+    )
+
+    assert "不合格" in text, "复查 fail 该印成「不合格」"
+    assert "fail" not in text, f"留档文书上出现了英文 fail:\n{text}"
+    assert "pass" not in text, f"留档文书上出现了英文 pass:\n{text}"
+
+
+def test_复查合格印成合格() -> None:
+    """``pass`` 那一档单独测:上面那条走的是 fail 分支,两个取值都要有覆盖。"""
+    ctx = _ctx(evidence=(_reinspect_doc(id=3, result="pass"),))
+    表 = _evidence_table(_render(DocKind.AUTHORITY_REPORT, ctx))
+
+    assert 表[1][3] == "合格"
+
+
+def test_文书行没有结论时画破折号而不是留空() -> None:
+    """``result is None`` 是文书行的正常形态(它本来就没有结论)。
+
+    空单元格在留档文件里读起来像「这一栏还没填」—— 与本模块 ``_NO_VALUE`` 的原意一致。
+    """
+    表 = _evidence_table(_render(DocKind.AUTHORITY_REPORT, _满证据链()))
+
+    assert 表[1][3] == "—", "通知单那一行本来就没有结论"
+    assert 表[2][3] == "—", "暂停令那一行同理"
