@@ -58,6 +58,7 @@ import {
   ExternalLink,
   FileText,
   Gavel,
+  ImageOff,
   LoaderCircle,
   RefreshCcw,
   ShieldAlert,
@@ -81,6 +82,7 @@ import {
   confirmBody,
   confirmPrompt,
   describeDocuments,
+  describePhotoFile,
   DisposalAction,
   documentUrl,
   docTypeZh,
@@ -88,6 +90,7 @@ import {
   formatHkMoment,
   GRADE_NORMAL,
   GRADE_SEVERE,
+  isPhotoId,
   HAZARD_SCOPE_ACTIVE,
   HAZARD_SCOPE_PENDING,
   HAZARD_SCOPES,
@@ -105,14 +108,19 @@ import {
   parseConfirmEnvelope,
   parseHazardDetailEnvelope,
   parseHazardListEnvelope,
+  parsePhotoEnvelope,
   patchHazard,
   pendingHazards,
+  PHOTO_MESSAGES,
+  photoSizeProblem,
+  photoTypeProblem,
   REJECTED_STATUS,
   removeHazard,
   SupervisionContractError,
   SupervisionDoc,
   SupervisionEndpoint,
   SUPERVISION_MESSAGES,
+  supervisionPhotoUrl,
   supervisionUrl,
   toggleSelected,
 } from "@/lib/supervision-lib";
@@ -357,7 +365,10 @@ function IssuedDocCard({ doc, artifactBase }: { doc: SupervisionDoc; artifactBas
               rel="noreferrer"
               // title 给文件名:落到磁盘上叫什么,点之前就知道
               // (取件端点按编号给文件,浏览器另存时用的就是这个名字)。
-              title={doc.filename}
+              // `?? undefined`:`filename` 可以是 null(复查记录行),而 title 只收
+              // string | undefined。走到这个分支时 url 非空、也就一定是文书行、
+              // 文件名一定有 —— 但类型上证不了,所以在这儿收口而不是在上面断言。
+              title={doc.filename ?? undefined}
               // pointer-coarse:戴手套的手指按不中 28px 的链接(同 checkin.tsx 那颗关闭按钮)
               className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-2.5 py-1 text-[13px] font-medium text-white transition-colors hover:bg-amber-700 pointer-coarse:min-h-11 pointer-coarse:px-4"
             >
@@ -645,6 +656,322 @@ function HazardEvidence({
   );
 }
 
+/**
+ * 选中的那张复查照片(还没传 / 正在传 / 传好了,三态共用这一份)。
+ *
+ * `file` 留着是给**重试**用的:传失败之后要能原地再传一次,而不是逼人重拍 ——
+ * 工地上那个部位可能已经不方便再爬上去了。
+ */
+type PhotoDraft = {
+  file: File;
+  /** `URL.createObjectURL` 出来的本地预览地址。**换图/关面板必须 revoke**,否则图堆在内存里。 */
+  previewUrl: string;
+  /** 「整改后.jpg · 2.3 MB」,由 `describePhotoFile` 排的人话。 */
+  label: string;
+};
+
+/**
+ * 复查照片直传的三态。
+ *
+ * 🔴 **「传失败」绝不许长得像「还没传」。** 这是本面板已经落过两次的规矩
+ *(清单三态、证据链三态),这一处的代价同样具体:失败画成「还没传」的话,
+ * 人以为自己忘了点,再点一次「拍照」重来一遍 —— 而真正的原因(照片太大 /
+ * 接口没开通)一次都没被看见,他会一直循环下去。
+ *
+ * 三态在屏幕上的区分是**颜色 + 图标 + 措辞**三样一起变(见 `ReinspectPhotoField`),
+ * 只靠一行小字的话,阳光下的手机屏幕上根本读不出来。
+ */
+type PhotoUpload =
+  | { phase: "uploading"; draft: PhotoDraft }
+  /** `message` 一律是人话:后端的 `user_msg`、`normalizeError` 的固定中文,或本地预检那句。 */
+  | { phase: "failed"; draft: PhotoDraft; message: string }
+  | { phase: "done"; draft: PhotoDraft; photoId: string };
+
+/**
+ * 缩略图。**三态一律用本地 objectURL,不走产物出口取件。**
+ *
+ * 理由分两半:
+ *   ① 「正在传」和「传失败」这两态压根还没有编号,取不了件 —— 只有本地这张能画。
+ *      三态里两态用本地、一态用远端的话,传成功那一下同一张照片会在同一个位置
+ *      重新加载一次(闪一下),而那正是人最需要确认「传对了没有」的时刻;
+ *   ② 产物出口那条链(`NEXT_PUBLIC_ARTIFACT_BASE`)**断在任何一环都不报错**,
+ *      https 页面拉 http 资源更是连请求都不发。断了的话,屏幕上会是一张绿色的
+ *      「照片已上传」卡配一个碎图 —— 读起来就是「传成功了但图没了」,而事实是
+ *      照片好好地在产物库里,只是这台机器的取件地址没配对。
+ *
+ * 产物出口那条路仍然要走一遍,但走在旁边那颗「打开」上(见 done 分支):
+ * 它验的是「这张确实进了产物库、取得回来」,是**多一道核对**,不是替代预览。
+ *
+ * 预览画不出来的兜底:HEIC 在多数浏览器里渲染不了(iPhone 设成「保留原片」时
+ * 从相册选图就是它),点错文件选到 PDF 也一样。给一个说明框比一个破图框强 ——
+ * 这一格的全部意义就是让人确认自己选对了那张。
+ *
+ * `broken` 记的是**哪一张坏了**而不是一个布尔:换图之后 src 变了,布尔会把
+ * 上一张的失败带到新的这张上,表现是换了一张好图却还写着「预览不出来」。
+ */
+function PhotoThumb({ src, alt }: { src: string; alt: string }) {
+  const [broken, setBroken] = useState<string | null>(null);
+  if (broken === src) {
+    return (
+      <div className="flex size-20 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-gray-300 bg-gray-50 text-center">
+        <ImageOff className="size-5 text-gray-400" />
+        <span className="px-1 text-[10px] leading-tight text-gray-400">这张预览不出来</span>
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      onError={() => setBroken(src)}
+      className="size-20 shrink-0 rounded-lg border border-gray-200 bg-white object-cover"
+    />
+  );
+}
+
+/**
+ * 「整改后的现场照片」那一格 —— 复查结论的凭据。
+ *
+ * ── 为什么从「填编号」改成「拍照」(2026-08-16)──────────────────────────
+ * 真人测试的原话:**「照片不能是编号意义不明」**。原先这一格是个文本框,
+ * 标签写着「整改后照片的编号(32 位,在聊天里那张图下面)」—— 做复查的人
+ * 手机里刚拍完那张照片,却要他退出去翻聊天记录、找到那张图、把图底下那串 hex
+ * 抄回来。戴着手套、太阳底下、一只手扶梯子,这条路在工地上不成立。
+ *
+ * 🔴 **手填编号那一格没有删掉,只是折叠了。** 它是引用「聊天里已经传过的那张图」
+ * 的唯一途径 —— 有人确实会先在对话里发照片、再来登记复查。删掉等于把那条路堵死,
+ * 而那时人手上只有一个编号,连个能粘的地方都没有。
+ *
+ * ── `capture="environment"` 不能省 ────────────────────────────────────
+ * 手机上它直接调起**后置**摄像头 —— 复查拍的是墙面、临边、脚手架,不是脸。
+ * 少了它会先弹一个「拍照 / 照片图库 / 浏览」的选择菜单,多一步,而且默认那一档
+ * 在部分机型上是前置。桌面浏览器一律忽略这个属性、退回文件选择框,两边都对。
+ * (打卡那边写的是 `capture="user"`,同一个属性、相反的取向 —— 那边要自拍。)
+ */
+function ReinspectPhotoField({
+  hazardNo,
+  upload,
+  photoId,
+  busy,
+  artifactBase,
+  onPick,
+  onRetry,
+  onPhotoIdChange,
+}: {
+  hazardNo: string;
+  /** `undefined` = 还没选过图。 */
+  upload: PhotoUpload | undefined;
+  /** 真正会被提交的那个编号(= `form.photo`)。**它才是唯一真相**,不是 `upload.photoId`。 */
+  photoId: string;
+  busy: boolean;
+  artifactBase: string;
+  onPick: (file: File) => void;
+  onRetry: () => void;
+  onPhotoIdChange: (value: string) => void;
+}) {
+  /** 手填编号那一格折起来没有。纯 UI 状态,不发请求,所以留在这一层。 */
+  const [manualOpen, setManualOpen] = useState(false);
+  const inputId = `gyt-photo-file-${hazardNo}`;
+  const manualId = `gyt-photo-id-${hazardNo}`;
+  /** 传好之后那张图在产物库里的地址 —— 与证据链里的复查照片走的是同一条取件路。 */
+  const storedUrl =
+    upload?.phase === "done" ? documentUrl({ artifact_id: upload.photoId }, artifactBase) : null;
+  /**
+   * 手填的编号和刚传上去那张对不上。
+   *
+   * 🔴 必须说出来:缩略图摆着 A 张、而提交时用的是手填的 B 编号,是这一格唯一
+   * 能悄悄挂错证据的路子 —— 而复查合格会把隐患**销项**,事后翻证据链只会看到
+   * 一张跟这次复查无关的照片。屏幕上那两样东西看着都对,所以只能明说。
+   */
+  const idMismatch = upload?.phase === "done" && photoId.trim() !== upload.photoId;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-[12px] font-medium text-gray-700">整改后的现场照片</div>
+
+      {/* 文件选择框**始终挂着**(靠 htmlFor 触发),三种状态下的「换一张」共用它。
+          按状态条件渲染的话,每换一次状态 input 就重建一次,选到一半的对话框会被吞掉。 */}
+      <input
+        id={inputId}
+        type="file"
+        accept="image/*"
+        // 🔴 后置摄像头,见组件头注。别改成 user,那是打卡自拍那条线。
+        capture="environment"
+        disabled={busy}
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          // 🔴 先取到文件,再把 value 清空。清 value 是为了「重试时又选了同一张」
+          //    也能触发 change —— 不清的话浏览器认为值没变、根本不发事件,
+          //    界面上就是「点了没反应」,而这恰恰是传失败之后最常见的下一步动作。
+          event.currentTarget.value = "";
+          if (file) onPick(file);
+        }}
+        className="hidden"
+      />
+
+      {!upload ? (
+        <>
+          <Label
+            htmlFor={inputId}
+            aria-disabled={busy}
+            className={`flex items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-sm text-gray-600 transition-colors ${
+              busy ? "pointer-events-none opacity-50" : "cursor-pointer hover:bg-gray-100"
+            }`}
+          >
+            <Camera className="size-5" />
+            拍照 / 选图
+          </Label>
+          <div className="text-[11px] text-gray-400">
+            手机上会直接开后置摄像头,对着整改好的那个部位拍一张;电脑上会让你选文件。
+          </div>
+        </>
+      ) : upload.phase === "uploading" ? (
+        <div className="flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5">
+          <PhotoThumb src={upload.draft.previewUrl} alt="正在上传的复查照片" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 text-[13px] font-medium text-gray-700">
+              <LoaderCircle className="size-4 animate-spin" />
+              正在上传照片…
+            </div>
+            <div className="mt-0.5 truncate text-[12px] text-gray-500">{upload.draft.label}</div>
+            <div className="mt-1 text-[11px] text-gray-400">传完才能下复查结论,稍等一下。</div>
+          </div>
+        </div>
+      ) : upload.phase === "failed" ? (
+        // 🔴 红边 + 红字 + 警告图标 + 「这张还没传上去」这句话,四样一起上 ——
+        //    见 `PhotoUpload` 头注:失败长得像「还没传」的话,人会以为自己忘了点。
+        <div className="flex items-start gap-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2.5">
+          <PhotoThumb src={upload.draft.previewUrl} alt="没能上传的复查照片" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 text-[13px] font-medium text-red-700">
+              <AlertTriangle className="size-4 shrink-0" />
+              这张还没传上去
+            </div>
+            {/* 后端那句人话(或本地预检那句)原样上屏,不重新包装成「上传失败」——
+                「照片太大了(12.4 MB),上限 10MB」能让人自己解决,「上传失败」不能。 */}
+            <div className="mt-0.5 text-[12px] leading-snug text-red-700">{upload.message}</div>
+            <div className="mt-0.5 truncate text-[12px] text-gray-500">{upload.draft.label}</div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={onRetry}
+                className="pointer-coarse:min-h-11"
+              >
+                <RefreshCcw className="mr-1 size-3.5" />
+                重新上传这张
+              </Button>
+              <Label
+                htmlFor={inputId}
+                aria-disabled={busy}
+                className={`inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 py-1 text-[12px] text-gray-700 transition-colors pointer-coarse:min-h-11 pointer-coarse:px-4 ${
+                  busy ? "pointer-events-none opacity-50" : "cursor-pointer hover:bg-gray-50"
+                }`}
+              >
+                <Camera className="size-3.5" />
+                换一张
+              </Label>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2.5">
+          <PhotoThumb src={upload.draft.previewUrl} alt="已上传的复查照片" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 text-[13px] font-medium text-emerald-800">
+              <Check className="size-4 shrink-0" />
+              照片已上传,可以下复查结论了
+            </div>
+            <div className="mt-0.5 truncate text-[12px] text-gray-500">{upload.draft.label}</div>
+            {/* 编号仍然摆出来,但它现在是**结果**不是**输入** —— 监理要在电话里报它、
+                事后按它对证据链,一点就能整串复制(同文书卡片的做法)。 */}
+            <div className="mt-0.5 font-mono text-[11px] break-all text-gray-400 select-all">
+              {upload.photoId}
+            </div>
+            {idMismatch && (
+              <div className="mt-1 text-[12px] leading-snug text-red-600">
+                注意:下面手填的编号和这张不是同一张 —— 提交时用的是手填的那个。
+              </div>
+            )}
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <Label
+                htmlFor={inputId}
+                aria-disabled={busy}
+                className={`inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 py-1 text-[12px] text-gray-700 transition-colors pointer-coarse:min-h-11 pointer-coarse:px-4 ${
+                  busy ? "pointer-events-none opacity-50" : "cursor-pointer hover:bg-gray-50"
+                }`}
+              >
+                <Camera className="size-3.5" />
+                换一张
+              </Label>
+              {storedUrl && (
+                // 走产物出口取一遍 —— 多一道核对:这张确实进了产物库、取得回来。
+                // 取不回来的话下一步的证据链里也会是碎图,早发现比晚发现好。
+                <a
+                  href={storedUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1 text-[12px] text-gray-700 transition-colors hover:bg-gray-50 pointer-coarse:min-h-11 pointer-coarse:px-4"
+                >
+                  <ExternalLink className="size-3" />
+                  打开
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 手填编号:降级成折叠项,不删 ────────────────────────────────
+          默认折起来是因为它现在是**少数路径**(引用聊天里已经传过的那张图);
+          摆在明面上的话,人又会以为「那才是正经做法」,而那正是这次要修掉的东西。
+          措辞写清「什么时候用它」,不写「高级选项」这种什么都没说的词。 */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setManualOpen((open) => !open)}
+          aria-expanded={manualOpen}
+          className="cursor-pointer text-[11px] text-gray-400 underline-offset-2 transition-colors hover:text-gray-600 hover:underline pointer-coarse:min-h-11"
+        >
+          {manualOpen ? "收起" : "或者填照片编号(引用聊天里已经传过的那张)"}
+        </button>
+        {manualOpen && (
+          <div className="mt-1.5 flex flex-col gap-1">
+            <Label htmlFor={manualId} className="text-[12px]">
+              照片编号(32 位,在聊天里那张图下面)
+            </Label>
+            <Input
+              id={manualId}
+              value={photoId}
+              onChange={(e) => onPhotoIdChange(e.target.value)}
+              placeholder="如:0123456789abcdef0123456789abcdef"
+              disabled={busy}
+              className="font-mono text-[12px]"
+            />
+            {/* 打了半截就说一句 —— 空着不说(那是还没开始填,不是填错了)。
+                判据用 isPhotoId,与 actionBody 同一个正则:不然会出现
+                「这里说没问题、点下去被拦住」。 */}
+            {photoId.trim() !== "" && !isPhotoId(photoId) && (
+              <div className="text-[11px] text-red-600">{PHOTO_MESSAGES.badManualId}</div>
+            )}
+            <div className="text-[11px] text-gray-400">
+              上面拍了照的话,这一格已经自动填好了,不用动它。
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* D11:模型给建议、人下结论。复查照片角度光线取景都变了,
+          「没拍到那个部位」和「问题已消除」在模型眼里一样 —— 那是往
+          「误判合格」方向错,而这一侧会死人。 */}
+      <div className="text-[11px] text-gray-400">
+        复查结论由人来下:模型分不清「问题已消除」和「这张没拍到那个部位」。
+      </div>
+    </div>
+  );
+}
+
 /** 一条隐患的处置区。纯展示 + 回调,自己不发请求 —— 请求全在面板那一层,
  *  这样「同一时刻只有一个动作在飞」才好保证(法律文书不能并发点两下)。 */
 function HazardRow({
@@ -658,6 +985,7 @@ function HazardRow({
   artifactBase,
   expanded,
   detail,
+  photoUpload,
   onToggleSelect,
   onFormChange,
   onArm,
@@ -665,6 +993,8 @@ function HazardRow({
   onAct,
   onToggleDetail,
   onRetryDetail,
+  onPickPhoto,
+  onRetryPhoto,
 }: {
   hazard: HazardBrief;
   selected: boolean;
@@ -681,6 +1011,8 @@ function HazardRow({
   expanded: boolean;
   /** 这条的详情三态;`undefined` = 还没开始读(见 `DetailState` 头注)。 */
   detail: DetailState | undefined;
+  /** 这条的复查照片直传三态;`undefined` = 还没选过图。 */
+  photoUpload: PhotoUpload | undefined;
   onToggleSelect: () => void;
   onFormChange: (patch: Partial<FormState>) => void;
   onArm: (action: DisposalAction) => void;
@@ -688,6 +1020,8 @@ function HazardRow({
   onAct: (action: DisposalAction, grade?: string, result?: "pass" | "fail") => void;
   onToggleDetail: () => void;
   onRetryDetail: () => void;
+  onPickPhoto: (file: File) => void;
+  onRetryPhoto: () => void;
 }) {
   const actions = availableActions(hazard);
   const isPending = hazard.status === "pending";
@@ -709,6 +1043,14 @@ function HazardRow({
    * 后端 `_advise` 与端点 `_require_graded` 认的都是这同一个旗子。
    */
   const 已判级别 = currentGrade(hazard);
+  /**
+   * 复查照片备好了没有 —— 决定「合格 / 不合格」那两颗能不能点。
+   *
+   * 判据是**编号本身合不合法**,不是「传没传过」:手填那条路也能把它填上,
+   * 而传过一张之后又被手改成半截串同样算没就绪。与 `actionBody` 同一个正则,
+   * 两边不许各写一份(`isPhotoId` 头注)。
+   */
+  const 照片就绪 = isPhotoId(form.photo);
   /** 展开区的 id —— 给 `aria-controls` 用。隐患编号只含字母数字和连字符,直接拼安全。 */
   const evidenceId = `gyt-evidence-${hazard.hazard_no}`;
 
@@ -815,25 +1157,16 @@ function HazardRow({
       )}
 
       {needsPhoto && (
-        <div className="flex flex-col gap-1">
-          <Label htmlFor={`gyt-photo-${hazard.hazard_no}`} className="text-[12px]">
-            整改后照片的编号(32 位,在聊天里那张图下面)
-          </Label>
-          <Input
-            id={`gyt-photo-${hazard.hazard_no}`}
-            value={form.photo}
-            onChange={(e) => onFormChange({ photo: e.target.value })}
-            placeholder="如:0123456789abcdef0123456789abcdef"
-            disabled={busy}
-            className="font-mono text-[12px]"
-          />
-          {/* D11:模型给建议、人下结论。复查照片角度光线取景都变了,
-              「没拍到那个部位」和「问题已消除」在模型眼里一样 —— 那是往
-              「误判合格」方向错,而这一侧会死人。 */}
-          <div className="text-[11px] text-gray-400">
-            复查结论由人来下:模型分不清「问题已消除」和「这张没拍到那个部位」。
-          </div>
-        </div>
+        <ReinspectPhotoField
+          hazardNo={hazard.hazard_no}
+          upload={photoUpload}
+          photoId={form.photo}
+          busy={busy}
+          artifactBase={artifactBase}
+          onPick={onPickPhoto}
+          onRetry={onRetryPhoto}
+          onPhotoIdChange={(value) => onFormChange({ photo: value })}
+        />
       )}
 
       {armedAction ? (
@@ -895,12 +1228,24 @@ function HazardRow({
                 )}
               </div>
             ) : action === "reinspect" ? (
+              // 🔴 **没照片就把这两颗按下去的路堵上**,而不是让 `actionBody` 事后抛。
+              //    ① 「合格」会把隐患**销项**,那一下不可撤销,而销项的唯一凭据就是
+              //       这张整改后的照片(方案 §5.2 那条红线)—— 不能让人在一个不可逆
+              //       动作上先点了再说;
+              //    ② 更要命的是被拦下来那句话:`SUPERVISION_MESSAGES.badPhotoId` 写的是
+              //       「在聊天记录里那张照片下面能看到」,那是**旧路**的指路话。人刚刚
+              //       明明拍了一张,却被指回聊天记录去找编号 —— 真人测试反馈的那句
+              //       「照片不能是编号意义不明」说的就是这一幕。
+              //    判据用 `isPhotoId`(与 `actionBody` 同一个正则),**不是 `form.photo !== ""`**:
+              //    折叠的手填框里打半截编号也算没就绪,不然按钮亮着、点下去照样被自己人拦。
+              //    正在传的时候 `form.photo` 是空的(选图那一下就清了,见 `pickPhoto`),
+              //    所以这一条判据顺带把「传到一半就点合格」也挡住了,不用另加一个 phase 判断。
               <div key={action} className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[12px] text-gray-500">复查结论</span>
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={busy}
+                  disabled={busy || !照片就绪}
                   onClick={() => onAct("reinspect", undefined, "pass")}
                   className="pointer-coarse:min-h-11"
                 >
@@ -910,12 +1255,21 @@ function HazardRow({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={busy}
+                  disabled={busy || !照片就绪}
                   onClick={() => onAct("reinspect", undefined, "fail")}
                   className="pointer-coarse:min-h-11"
                 >
                   不合格
                 </Button>
+                {/* 变灰必须**说清差什么**。只把按钮变灰的话,人只知道点不动,
+                    不知道要先干嘛 —— 而上面那一格就在眼前,一句话就够把他领过去。 */}
+                {!照片就绪 && (
+                  <span className="text-[12px] text-gray-500">
+                    {photoUpload?.phase === "uploading"
+                      ? "照片还在传,传完就能点。"
+                      : PHOTO_MESSAGES.noPhoto}
+                  </span>
+                )}
               </div>
             ) : (
               <Button
@@ -1109,6 +1463,31 @@ export function SupervisionPanel({
    */
   const detailFetchesRef = useRef<Map<string, AbortController>>(new Map());
 
+  /**
+   * 每条隐患的复查照片直传状态(三态,见 `PhotoUpload`)。
+   *
+   * ⚠️ 拿到的 `photo_id` **写进 `forms[编号].photo`,不在这里另存一份** ——
+   * 那一格本来就是提交时读的地方(`actionBody` 的 `afterPhotoId`)。
+   * 并存两份的下场是它们迟早漂开:界面按这一份画绿卡,而提交发的是那一份,
+   * 两处看着都对。这里只管「传的过程长什么样」,不管「提交时用哪个编号」。
+   */
+  const [photoUploads, setPhotoUploads] = useState<Record<string, PhotoUpload>>({});
+  /** 每条隐患当前在飞的那一发上传。认领机制同 `detailFetchesRef`(见它的头注)。 */
+  const photoFetchesRef = useRef<Map<string, AbortController>>(new Map());
+  /**
+   * 每条隐患当前那张本地预览图的 objectURL。
+   *
+   * 🔴 **必须用 ref 记,不能只靠 state 收尾。** revoke 要在卸载时做,而卸载时
+   * 清理函数闭包里的 state 是**挂载那一刻**那份(空的)—— 靠 state 收尾等于
+   * 一张都不 revoke,面板反复开关就一直往内存里堆图(每张几 MB)。
+   *
+   * 🔴 revoke 一律在**事件处理里**做(`swapPreview`),不在 setState 的更新函数里做:
+   * 更新函数允许被 React 重复调用(严格模式、并发渲染),而 revoke 是一次性副作用,
+   * 放进去就可能把还在显示的那张吊销掉 —— 表现是缩略图突然变成碎图,而且只在某些
+   * 渲染时序下复现,查起来极费劲。
+   */
+  const photoPreviewsRef = useRef<Map<string, string>>(new Map());
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -1124,6 +1503,36 @@ export function SupervisionPanel({
       for (const controller of inFlight.values()) controller.abort();
       inFlight.clear();
     };
+  }, []);
+
+  /**
+   * 关面板时:掐掉还在飞的上传,并把所有本地预览图 revoke 掉。
+   *
+   * 不 revoke 的话每张现场照片(几 MB)会一直占着内存,而面板是反复开关的 ——
+   * 一个下午下来就是几百 MB,表现是浏览器越用越卡,没人会把它跟这个面板联系起来。
+   */
+  useEffect(() => {
+    const inFlight = photoFetchesRef.current;
+    const previews = photoPreviewsRef.current;
+    return () => {
+      for (const controller of inFlight.values()) controller.abort();
+      inFlight.clear();
+      for (const url of previews.values()) URL.revokeObjectURL(url);
+      previews.clear();
+    };
+  }, []);
+
+  /**
+   * 换掉某条隐患的本地预览图,顺手 revoke 旧的那张(传 null = 只清不换)。
+   *
+   * 单独抽出来是因为「什么时候该 revoke」有三个来源(换一张、复查登记完清场、
+   * 关面板),写在一处才不会漏 —— 而漏掉不会有任何报错,只是内存慢慢涨。
+   */
+  const swapPreview = useCallback((hazardNo: string, url: string | null) => {
+    const previous = photoPreviewsRef.current.get(hazardNo);
+    if (previous && previous !== url) URL.revokeObjectURL(previous);
+    if (url) photoPreviewsRef.current.set(hazardNo, url);
+    else photoPreviewsRef.current.delete(hazardNo);
   }, []);
 
   /**
@@ -1153,7 +1562,9 @@ export function SupervisionPanel({
     setPhase("loading");
     // 举手状态和勾选跨清单没有意义:编号可能压根不在新的一屏里。
     // 上一屏的失败原因同理(它说的是对着旧快照做的那次动作)。
-    // `forms` 刻意**不清**:那是人一个字一个字打进去的期限,切一下筛子就没了很气人。
+    // `forms` 与 `photoUploads` 刻意**不清**:那是人一个字一个字打进去的期限、
+    // 和刚爬上去拍回来的那张照片,切一下筛子就没了很气人(照片还得重拍一趟)。
+    // 它们都按隐患编号存,换一屏之后不属于这一屏的那些只是暂时不显示,不会串行。
     setArmed(null);
     setSelected([]);
     setFailures({});
@@ -1375,6 +1786,159 @@ export function SupervisionPanel({
     });
   }, []);
 
+  /**
+   * 把某条隐患的复查照片草稿收干净:掐掉在飞的上传、revoke 预览图、清掉编号。
+   *
+   * 🔴 **复查登记成功之后必须调它。** 不调的下场:复查判「不合格」时这一行会
+   * **再次**出现「登记复查结论」,而上面还挂着上一次那张照片和它的编号 ——
+   * 第二次复查会把第一次的照片当成整改后的证据交上去,而屏幕上一切正常
+   *(绿卡写着「照片已上传」)。证据链里两次复查挂同一张图,事后没人分得清
+   * 哪一次是哪一次,而那正是「复查必须挂照片」这条红线的全部意义。
+   */
+  const clearPhoto = useCallback(
+    (hazardNo: string) => {
+      photoFetchesRef.current.get(hazardNo)?.abort();
+      photoFetchesRef.current.delete(hazardNo);
+      swapPreview(hazardNo, null);
+      setPhotoUploads((prev) => {
+        if (!(hazardNo in prev)) return prev; // 没草稿就别造新引用,省一次重渲染
+        const next = { ...prev };
+        delete next[hazardNo];
+        return next;
+      });
+      setForm(hazardNo, { photo: "" });
+    },
+    [setForm, swapPreview],
+  );
+
+  /**
+   * 选了一张复查照片 → **立刻直传**,拿回 32 位编号写进 `forms[编号].photo`。
+   *
+   * ── 上传时机:选完就传,不等点「合格」──────────────────────────────
+   * 三条理由,按分量排:
+   *   ① 传失败必须在**点结论之前**就让人知道。等点完「合格」才发现照片没上去,
+   *      那一下已经是法律动作,而人以为隐患已经销项了;
+   *   ② 「合格 / 不合格」那两颗是不可撤销的动作,点下去到出结果之间越短越好 ——
+   *      把几秒的上传塞进那个窗口里,人会以为是签发本身在卡;
+   *   ③ 传完才有编号,而有没有编号决定那两颗能不能点(见 `照片就绪`)。
+   *      不先传的话,那两颗按钮在点之前无法判断能不能点,只能一律亮着。
+   *
+   * ── 为什么**不**占面板那个 `busy` 闸 ─────────────────────────────────
+   * `busy` 的语义是「同一时刻只允许一个**法律动作**在飞」(签发 / 定级 / 销项)。
+   * 上传不是法律动作:它只把一张图存进产物库,一个台账状态都不改,失败了重来一次
+   * 也没有任何副作用。占了 `busy` 的代价是实打实的 —— 工地 4G 传一张 3MB 的照片
+   * 要好几秒,这几秒里**整个操作台是死的**:别的行连「签发通知单」都点不动,
+   * 而那两件事互不相干。
+   *
+   * 不占就得自己防连点,两道:
+   *   · 每条隐患**各一发**(键是隐患编号),同一行再选一张会先 abort 上一发 +
+   *     认领机制挡掉迟到的结果,不会出现「传了两张、写进去的是先回来那张」;
+   *   · 选图那一下就把 `forms[编号].photo` **清空**(见下面那条红线),所以传的期间
+   *     那一行的「合格 / 不合格」自然是灰的,不存在「传到一半就销项」。
+   * 有法律动作在飞时(`busy`)选图入口是禁用的,那是在 `ReinspectPhotoField` 里
+   * 按 `busy` 关掉的 —— 与它上面那个期限输入框同一条规矩:这一行的下一个动作可能
+   * 就是拿这张照片去销项,换图换到一半会让人分不清提交的到底是哪张。
+   */
+  const pickPhoto = useCallback(
+    async (hazardNo: string, file: File) => {
+      const draft: PhotoDraft = {
+        file,
+        previewUrl: URL.createObjectURL(file),
+        label: describePhotoFile(file),
+      };
+      swapPreview(hazardNo, draft.previewUrl);
+
+      // 🔴 **先把已经填好的编号清掉,再开始传。** 顺序反了会出这一幕:
+      //    A 张传成功(photo=A),换成 B 张、B 传失败 —— photo 里还是 A,
+      //    而屏幕上摆着 B 的缩略图和一句「这张还没传上去」。人重拍一次不成、
+      //    索性点了「合格」,隐患销项,而证据链里挂的是 A 那张。
+      //    两样东西看着都对,没有任何报错。
+      setForm(hazardNo, { photo: "" });
+
+      // 本地预检:大小 / 明摆着不是图。省一次白传 —— 工地 4G 传 12MB 要十几秒,
+      // 等完再被 413 拒是最气人的一种失败。**真正说了算的仍是后端**(魔数 + 413),
+      // 这两条只认它们有把握的那两类,判据与理由在 supervision-lib 那两个函数头注。
+      const problem = photoSizeProblem(file) ?? photoTypeProblem(file);
+      if (problem) {
+        setPhotoUploads((prev) => ({ ...prev, [hazardNo]: { phase: "failed", draft, message: problem } }));
+        return;
+      }
+
+      photoFetchesRef.current.get(hazardNo)?.abort();
+      const controller = new AbortController();
+      photoFetchesRef.current.set(hazardNo, controller);
+      /** 这一发还算不算数 —— 认领机制,理由原样见 `loadDetail` 里那段。 */
+      const mine = () => photoFetchesRef.current.get(hazardNo) === controller;
+      /** 落地:先认领再写状态;`photoId` 非空时同时把编号填进那一行的表单。 */
+      const land = (state: PhotoUpload, photoId: string | null) => {
+        if (!mine()) return;
+        photoFetchesRef.current.delete(hazardNo);
+        setPhotoUploads((prev) => ({ ...prev, [hazardNo]: state }));
+        if (photoId) setForm(hazardNo, { photo: photoId });
+      };
+
+      setPhotoUploads((prev) => ({ ...prev, [hazardNo]: { phase: "uploading", draft } }));
+      try {
+        const apiKey = getApiKey();
+        const res = await fetch(supervisionPhotoUrl(apiBase), {
+          method: "POST",
+          headers: {
+            // 直传**原始字节**(不是 multipart、不是 JSON)。报上文件自己的类型只是
+            // 礼貌:后端按**魔数**判,浏览器给的 MIME 不可靠(DXF 那条线证过一次)。
+            // 拿不到类型就给 application/octet-stream —— 留空的话有的代理会自己补一个,
+            // 补成什么不由我们说了算。
+            "content-type": file.type || "application/octet-stream",
+            ...(apiKey ? { "x-api-key": apiKey } : {}),
+          },
+          body: file,
+          signal: controller.signal,
+        });
+        const bodyText = await res.text();
+        if (!res.ok) {
+          // 后端的人话原样上屏(413「照片太大了…」、400「不是照片文件」都写得很具体);
+          // 接口还没开通那种 404 由 normalizeError 说成「请管理员确认后端版本」。
+          land(
+            {
+              phase: "failed",
+              draft,
+              message: normalizeError(res.status, res.headers.get("content-type"), bodyText).message,
+            },
+            null,
+          );
+          return;
+        }
+        const result = parsePhotoEnvelope(bodyText);
+        if (!result.ok || !result.photoId) {
+          // 200 但信封说 ok:false,或者编号形状认不出 —— 两种都不许画成「传好了」,
+          // 理由在 parsePhotoEnvelope 头注(绿卡 + 空编号 = 下一步被自己人拦住)。
+          land({ phase: "failed", draft, message: result.userMsg || PHOTO_MESSAGES.badEnvelope }, null);
+          return;
+        }
+        land({ phase: "done", draft, photoId: result.photoId }, result.photoId);
+      } catch {
+        // 两种:真网络异常,和换图/关面板时自己 abort 的。后者已经不在表里,
+        // `mine()` 会挡掉 —— 不挡的话换一张图就会闪一句「连不上服务器」。
+        land({ phase: "failed", draft, message: SUPERVISION_MESSAGES.network }, null);
+      }
+    },
+    [apiBase, setForm, swapPreview],
+  );
+
+  /**
+   * 重传上一次那张(不用重新选图)。
+   *
+   * 失败之后最常见的下一步就是原地再试一次 —— 逼人重拍的话,工地上那个部位
+   * 可能已经不方便再爬上去了。走的还是 `pickPhoto`,所以清编号、预检、认领
+   * 那几道一样都不少。
+   */
+  const retryPhoto = useCallback(
+    (hazardNo: string) => {
+      const file = photoUploads[hazardNo]?.draft.file;
+      if (file) void pickPhoto(hazardNo, file);
+    },
+    [photoUploads, pickPhoto],
+  );
+
   /** 批量确认(pending → open)。**这是 D17 那道人工闸的全部实现。** */
   const confirmSelected = useCallback(async () => {
     let body: { hazard_nos: string[] };
@@ -1532,6 +2096,11 @@ export function SupervisionPanel({
         // 收着的隐患也拉:多一发很便宜(动作本来就稀少且是人一下一下点的),
         // 而少拉的代价是那一行一直挂着过期的期限。
         void loadDetail(parsed.hazard_no);
+        // 复查登记完就把这一行的照片草稿收干净(编号 + 缩略图 + 本地预览地址)。
+        // 完整理由在 `clearPhoto` 头注:不收的话,判「不合格」之后这一行会再次出现
+        // 「登记复查结论」,而上面还挂着上一次那张照片 —— 第二次复查会拿第一次的
+        // 照片当整改后的证据交上去,屏幕上一切正常。
+        if (action === "reinspect") clearPhoto(hazard.hazard_no);
         const docLine = describeDocuments(parsed.documents);
         setBanner({
           tone: "ok",
@@ -1548,7 +2117,7 @@ export function SupervisionPanel({
         setBusy(false);
       }
     },
-    [apiBase, forms, setFailure, invalidateDetail, loadDetail],
+    [apiBase, forms, setFailure, invalidateDetail, loadDetail, clearPhoto],
   );
 
   if (typeof document === "undefined") return null;
@@ -1772,6 +2341,7 @@ export function SupervisionPanel({
                 artifactBase={artifactBase}
                 expanded={expandedDetails.includes(hazard.hazard_no)}
                 detail={details[hazard.hazard_no]}
+                photoUpload={photoUploads[hazard.hazard_no]}
                 onToggleSelect={() => setSelected((prev) => toggleSelected(prev, hazard.hazard_no))}
                 onFormChange={(patch) => setForm(hazard.hazard_no, patch)}
                 onArm={(action) => armAction(hazard, action)}
@@ -1779,6 +2349,8 @@ export function SupervisionPanel({
                 onAct={(action, grade, result) => void runAction(hazard, action, grade, result)}
                 onToggleDetail={() => toggleDetail(hazard.hazard_no)}
                 onRetryDetail={() => retryDetail(hazard.hazard_no)}
+                onPickPhoto={(file) => void pickPhoto(hazard.hazard_no, file)}
+                onRetryPhoto={() => retryPhoto(hazard.hazard_no)}
               />
             ))
           )}

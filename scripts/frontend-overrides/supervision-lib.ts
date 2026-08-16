@@ -864,7 +864,19 @@ export interface SupervisionDoc {
   doc_no: string;
   /** 取件编号。**为 null 时绝不渲染下载链接**,见 documentUrl。 */
   artifact_id: string | null;
-  filename: string;
+  /**
+   * 文件名。**复查记录行是 `null`** —— 那一行没有文件(`artifact_id` 也是 null)。
+   *
+   * 🔴 这里原来写的是 `string`,与后端详情端点的真实返回对不上
+   * (`GET /supervision/hazards/{no}` 对 reinspect 行回的就是 `"filename": null`,
+   *  契约在 supervision_api.py 的模块头注)。
+   * 没炸只是因为**两条产出路径都不走类型检查**:动作回执那条来自
+   * `parseActionEnvelope`(内部 `as` 断言),详情那条来自 `parseHazardDetailEnvelope`;
+   * 而 `scripts/frontend-tests` 那份 tsc **不在 `make test-frontend` 的路径上**
+   * (CI 跑的是 vitest)。于是「类型说不可能为 null、运行时天天为 null」并存了一阵子。
+   * 2026-08-16 给测试里的工厂补显式返回类型标注时才暴露出来。
+   */
+  filename: string | null;
   /** 文书类型的中文名,后端算好的;前端也有 `docTypeZh` 兜底,两边同一张表。 */
   doc_type_display?: string;
   /**
@@ -1340,4 +1352,240 @@ export function documentsFromToolData(data: unknown): SupervisionDoc[] {
 export function describeDocuments(docs: readonly SupervisionDoc[]): string {
   if (docs.length === 0) return "";
   return `已出稿 ${docs.length} 份:${docs.map((d) => docTypeZh(d.doc_type)).join("、")}`;
+}
+
+// ---------------------------------------------------------------------------
+// 复查照片直传(2026-08-16)—— 端点、本地预检、回执解析
+// ---------------------------------------------------------------------------
+//
+// ── 为什么加这一节 ────────────────────────────────────────────────────────
+// 真人测试的反馈原话:**「照片不能是编号意义不明」**。
+// 在这之前,「登记复查结论」那一格是个文本框,标签写着
+//   「整改后照片的编号(32 位,在聊天里那张图下面)」
+// —— 做复查的人手机里刚拍完那张照片,却要他退出去翻聊天记录、找到那张图、
+// 把图底下那串 hex 抄回来。工地上这不成立:戴着手套、太阳底下看屏幕、
+// 一只手还扶着梯子。**编号是给机器用的,不该出现在人手上的主路径上。**
+//
+// 修法:先把照片直传成产物拿到编号,再拿这个编号去打 `reinspect-result`。
+//
+// 🔴 **两步,不是一步。** `reinspect-result` 是法律动作端点(复查合格会把隐患销项),
+// 它的请求体形状一个字都不动。把文件塞进那个端点的下场是它同时管上传和销项:
+// 「照片太大」和「这条状态不对,签不了」会糊成同一句话回来,而人手上那张照片
+// 到底传上去没有,屏幕上再也说不清 —— 而销项是不可撤销的。
+//
+// ── 这一节的东西为什么值得下沉到 lib ──────────────────────────────────────
+// 它们全是**判据**(多大算超限、什么算编号、什么样的回执算数),而判据一旦漂开
+// 就是静默出错:前端拦掉一张后端本来收得下的照片、或者放行一个后端不认的编号,
+// 两种都不报错。放这里才有测试钉着。碰浏览器的部分(FileReader、objectURL、
+// fetch)一律留在 supervision.tsx,这条分法与 checkin-lib.ts 一致。
+
+/**
+ * `POST /supervision/photo` 的地址 —— 复查照片直传。
+ * 请求体是**原始图片字节**(不是 multipart、也不是 JSON)。
+ *
+ * ⚠️ 它**故意不进 `SUPERVISION_ENDPOINTS` 那张表**,理由与两个 GET 端点同款:
+ * 那张表是给 `supervisionUrl` 拼「八个 POST 动作端点」用的,而那八个共享同一套
+ * 调用形状 —— JSON 请求体、`ActionResult` 回执、会改台账状态。这一条一样都不占:
+ * 它发的是字节流,它不改任何台账状态,回执形状也不同。
+ *
+ * 混进那张表的具体下场:`supervision.tsx` 里那个统一出口 `callSupervision`
+ * 会给它套上 `content-type: application/json` 并 `JSON.stringify(body)` ——
+ * 一张 JPEG 会被序列化成 `{}` 发出去,后端按魔数一看不是图片,回一句
+ * 「传上来的不是照片」。人明明拍了照,屏幕上却说没收到照片,而线索一条都没有。
+ */
+export function supervisionPhotoUrl(apiBase: string): string {
+  return `${stripTrailingSlash(apiBase)}/supervision/photo`;
+}
+
+/**
+ * 照片大小上限,镜像后端 `config.photo_max_mb`(当前 10)。
+ *
+ * 🔴 **1MB = 1024×1024,不是 1000×1000** —— 后端 `checkin_api._BYTES_PER_MB`
+ * 就是这么算的。两边算法不一致的后果只在边界上出现,而且是**单向**的:
+ * 按 1000×1000 算的话,一张 10.4MB 的照片在前端被判超限(10.4 > 10),
+ * 后端却算它 9.92MiB、本来收得下 —— 于是前端拦掉了一张合法照片,
+ * 而界面上除了「太大了」没有任何出路,人只能一张张试。
+ *
+ * 🔴 这是**第二道**闸不是唯一那道:真正说了算的是后端那句 413。这里拦一下只为
+ * 省一次白传 —— 工地 4G 传 12MB 要十几秒,让人等完再被拒是最气人的一种失败。
+ */
+export const PHOTO_MAX_MB = 10;
+export const PHOTO_MAX_BYTES = PHOTO_MAX_MB * 1024 * 1024;
+
+/**
+ * 复查照片这条链上的固定文案。
+ *
+ * 🔴 **另起一份,不并进 `SUPERVISION_MESSAGES`。** 那份里的 `badPhotoId` 写的是
+ * 「要 32 位的编号(在聊天记录里那张照片下面能看到)」—— 那是**旧路**的指路话,
+ * 今天它只服务折叠起来的手填编号那一格。主路径现在是「拍一张」,两句话指向
+ * 两个不同的地方,合成一句必然有一半人被指错方向;而「被指错方向」正是真人测试
+ * 反馈的那句「编号意义不明」的全部内容。旧那句一个字不动。
+ *
+ * 与全仓一样:这些话是给工地上的人看的,不许出现英文枚举值、类名、内部路径。
+ */
+export const PHOTO_MESSAGES = Object.freeze({
+  /** 0 字节。多半是选图时文件还没从 iCloud/网盘下下来。 */
+  emptyFile: "这个文件是空的(0 字节),没法当照片用。换一张再试。",
+  /** MIME 明摆着不是图片(选到了 PDF、视频之类)。 */
+  notAnImage: "选中的不是照片文件。用「拍照 / 选图」重新拍一张,或者从相册里挑一张照片。",
+  /**
+   * HEIC / HEIF。**必须单独说一句**:它是真照片,人看不出有什么不对
+   * (iPhone 设置成「保留原片」时从相册选图就是这个格式),而后端的魔数闸
+   * 只认 JPEG/PNG/WebP、一定拒。只说「格式不对」的话,人会一张接一张地试相册,
+   * 每张都被拒 —— 所以这句必须给出唯一那条走得通的路:**现拍一张**。
+   */
+  heicNotSupported:
+    "这张是 iPhone 的 HEIC 格式,系统这边打不开。用「拍照 / 选图」现拍一张就行,现拍出来的格式没问题。",
+  /**
+   * 传上去了、也回了 200,但回执里没有能用的照片编号。
+   *
+   * 话要说清「先别用这张」:不说的话,人看到「传成功了」的直觉是接着点复查结论,
+   * 而那时手上根本没有编号 —— 下一步会被自己人拦住,而拦的那句话指向聊天记录。
+   */
+  badEnvelope: "照片好像传上去了,但服务器没回编号 —— 这张先别用,重传一次。",
+  /** 复查结论那两颗按钮点不动时,旁边那句解释。**必须说清「差什么」而不是只把按钮变灰。** */
+  noPhoto: "先拍一张整改后的照片,才能下复查结论。",
+  /** 折叠的手填编号那一格里打了半截东西。 */
+  badManualId: "这不像照片编号:要 32 位,只有数字和 a 到 f 这几个字母。",
+});
+
+/**
+ * 这串是不是一个产物编号(32 位小写十六进制)。
+ *
+ * 🔴 与 `actionBody` 里那道校验**共用同一个 `ARTIFACT_ID_PATTERN`**,不许各写一份。
+ * 两个调用方问的是同一个问题的两半:界面拿它决定「复查结论那两颗按钮能不能点」,
+ * `actionBody` 拿它决定「这次请求发不发」。两份正则一旦漂开,表现是按钮亮着、
+ * 点下去被自己人拦住,而拦下来那句话还把人指回聊天记录 —— 正是这次要修掉的东西。
+ *
+ * 归一化(trim + 转小写)也必须与 `actionBody` 一致:那边收到 `"ABC…"` 会先转小写
+ * 再比,这边如果直接比就会判它不合法,于是一个后端认得的编号在界面上点不动。
+ */
+export function isPhotoId(value: string): boolean {
+  return ARTIFACT_ID_PATTERN.test(value.trim().toLowerCase());
+}
+
+/** 「2.3 MB」这种人话。**不做本地化数字**,工地上没人关心千分位。 */
+function formatBytes(size: number): string {
+  if (!Number.isFinite(size) || size < 0) return "大小不明";
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+  return `${Math.trunc(size)} 字节`;
+}
+
+/** 文件名显示上限(字符数)。超了掐中间 —— 理由见 `describePhotoFile`。 */
+const FILE_NAME_HEAD = 16;
+const FILE_NAME_TAIL = 10;
+
+/**
+ * 长文件名掐中间。**掐中间,不掐尾巴。**
+ *
+ * 尾巴是扩展名,而「这张到底是不是 .heic」正是这一行要回答的问题之一 ——
+ * 掐掉尾巴的话,`IMG_20260816_143052_整改后临边防护.heic` 会显示成
+ * `IMG_20260816_1430…`,人看不出格式,传上去被拒了也不知道为什么。
+ */
+function shortenFileName(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length <= FILE_NAME_HEAD + FILE_NAME_TAIL + 1) return trimmed;
+  return `${trimmed.slice(0, FILE_NAME_HEAD)}…${trimmed.slice(-FILE_NAME_TAIL)}`;
+}
+
+/**
+ * 「整改后.jpg · 2.3 MB」—— 选完之后摆在缩略图旁边那一行。
+ *
+ * 为什么**大小**要显示出来:超限是这条链上最常见的失败,而它在点上传之前就看得见。
+ * 显示了,人自己会换一张;不显示的话,他只能等十几秒换来一句「太大了」。
+ *
+ * 为什么**文件名**要显示出来:工地上戴手套点屏,从相册里选错一张是常事,
+ * 而两张现场照片缩了图看着都差不多 —— 文件名是唯一能一眼分清的东西。
+ *
+ * 没有文件名时说「(没有文件名)」而不是留空:留空的话那一行只剩一个「· 2.3 MB」,
+ * 看着像界面坏了。
+ */
+export function describePhotoFile(file: { name: string; size: number }): string {
+  return `${shortenFileName(file.name) || "(没有文件名)"} · ${formatBytes(file.size)}`;
+}
+
+/**
+ * 大小上的毛病;没毛病返回 null。
+ *
+ * 超限那句**必须带上具体多大和上限是多少** —— 与后端 `messages.photo_too_large`
+ * 同一条规矩:「太大」这三个字答不了「那多大才行」,人只能一张张试。
+ */
+export function photoSizeProblem(file: { size: number }): string | null {
+  if (!Number.isFinite(file.size) || file.size <= 0) return PHOTO_MESSAGES.emptyFile;
+  if (file.size > PHOTO_MAX_BYTES) {
+    return `照片太大了(${formatBytes(file.size)}),上限 ${PHOTO_MAX_MB}MB。换一张小一点的再传。`;
+  }
+  return null;
+}
+
+/**
+ * 挑明两种「不用传也知道不行」的文件;其余一律放行。
+ *
+ * 🔴 **保守是刻意的。** 浏览器给的 MIME 不可靠(DXF 那条线已经证过一次:
+ * 同一个 .dxf 在不同浏览器里报三种类型,最后只能按后缀认)。前端把判据抄严一点的
+ * 代价是**拦掉一张后端本来收得下的照片,而且界面上没有任何出路** —— 人只会以为
+ * 这个功能坏了。真正说了算的是后端那道魔数闸,它看的是文件头字节,不是这个字符串。
+ *
+ * 所以这里只认两类:
+ *   ① 压根不是图(`application/pdf`、`video/mp4`……)—— 十有八九是点错了文件;
+ *   ② HEIC / HEIF —— 它是**真照片**,但后端只认 JPEG/PNG/WebP,必拒(见
+ *      `PHOTO_MESSAGES.heicNotSupported` 那条:这一类必须单独给出路)。
+ * 别的 `image/*`(包括没见过的)一律放行,让后端去判。
+ *
+ * 拿不到类型(`file.type === ""`)也放行:部分安卓浏览器和相机回调就是空的,
+ * 按「空 = 不是图」拦的话,那些机器上整条拍照路径直接断掉,而且毫无提示。
+ */
+export function photoTypeProblem(file: { type: string }): string | null {
+  const type = file.type.trim().toLowerCase();
+  if (!type) return null;
+  if (type.startsWith("image/heic") || type.startsWith("image/heif")) {
+    return PHOTO_MESSAGES.heicNotSupported;
+  }
+  if (!type.startsWith("image/")) return PHOTO_MESSAGES.notAnImage;
+  return null;
+}
+
+/** `POST /supervision/photo` 的 200 回执解析结果。 */
+export interface PhotoUploadResult {
+  /** 信封是 `ok:true` 且**编号认得出**才为 true。 */
+  ok: boolean;
+  /** 32 位产物编号。**唯一不能兜底的字段** —— 没有它这张照片挂不上复查记录。 */
+  photoId: string | null;
+  /** 后端给的文件名(如「复查照片.jpg」),只用来显示;拿不到就空串。 */
+  filename: string;
+  /** 后端那句人话,原样透传(不重新包装)。 */
+  userMsg: string;
+}
+
+/**
+ * 解析 `POST /supervision/photo` 的响应体。**一个错都不抛。**
+ *
+ * 🔴 与 `parseActionEnvelope` 反着来,判据是「这一下能不能给人一条出路」:
+ *   · 动作那条路契约破了必须响亮地失败 —— 三份文书出了两份,不能被静默当成
+ *     「这次就出两份」;
+ *   · 这一条的正确处置是**摆一张「传失败 + 重试」的卡**,那需要一个能渲染的
+ *     失败值,不是一个异常。抛的话调用点必须记得 try/catch,而漏掉的表现是
+ *     整个面板白屏 —— 人手上那张刚拍的照片就这么没了,连重试按钮都没有。
+ *
+ * 🔴 `photo_id` **认不出就一律 `ok:false`,而且要按 `isPhotoId` 验形状**,
+ * 不是「有个字符串就算数」。硬回 `ok:true` 的下场很具体:界面画一张绿色的
+ * 「照片已上传」卡,而 `form.photo` 里是个半截串 —— 人接着点「合格」,
+ * 被 `actionBody` 自己人拦住,而拦下来那句话是「在聊天记录里那张照片下面能看到」。
+ * 他刚刚明明拍了一张。
+ *
+ * `userMsg` **照旧解析出来**(哪怕 `ok:false`):200 带 `ok:false` 这种
+ * 「进了 handler 又没成」的情形,后端写好的那句人话是屏幕上唯一的线索
+ * —— 同 `parseHazardListEnvelope` 的那条规矩。
+ */
+export function parsePhotoEnvelope(bodyText: string): PhotoUploadResult {
+  const parsed = tryParseJsonObject(bodyText);
+  // 连 JSON 都不是的时候 parsed 是 null,`?? {}` 让下面这行不必再分一次支。
+  const userMsg = textOf(parsed ?? {}, "user_msg");
+  const data = parsed && parsed.ok === true ? asRecord(parsed.data) : null;
+  const photoId = data ? textOf(data, "photo_id").toLowerCase() : "";
+  if (!data || !isPhotoId(photoId)) {
+    return { ok: false, photoId: null, filename: "", userMsg };
+  }
+  return { ok: true, photoId, filename: textOf(data, "filename"), userMsg };
 }

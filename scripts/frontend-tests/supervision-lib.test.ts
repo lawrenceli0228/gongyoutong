@@ -27,6 +27,7 @@ import {
   confirmBody,
   confirmPrompt,
   describeDocuments,
+  describePhotoFile,
   DISPOSAL_ACTIONS,
   DisposalAction,
   documentsFromToolData,
@@ -51,6 +52,7 @@ import {
   hazardsFromToolData,
   hazardStatusZh,
   isDownloadableDoc,
+  isPhotoId,
   currentGrade,
   evidenceRows,
   formatHkMoment,
@@ -62,14 +64,22 @@ import {
   parseConfirmEnvelope,
   parseHazardDetailEnvelope,
   parseHazardListEnvelope,
+  parsePhotoEnvelope,
   patchHazard,
   pendingHazards,
+  PHOTO_MAX_BYTES,
+  PHOTO_MAX_MB,
+  PHOTO_MESSAGES,
+  photoSizeProblem,
+  photoTypeProblem,
   REINSPECT_DOC_TYPE,
   REJECTED_STATUS,
   removeHazard,
   SUPERVISION_ENDPOINTS,
   SUPERVISION_MESSAGES,
   SupervisionContractError,
+  SupervisionDoc,
+  supervisionPhotoUrl,
   supervisionUrl,
   toggleSelected,
 } from "../frontend-overrides/supervision-lib";
@@ -1232,11 +1242,22 @@ describe("详情端点解析(证据链:哪张照片算数,是整条链的要害)
 });
 
 describe("证据链的排版素材(W10 · 详情面板)", () => {
-  const 文书 = (doc_no: string) => ({ doc_type: "notice", doc_no, artifact_id: "a".repeat(32) });
-  const 复查 = (doc_no: string, result: "pass" | "fail") => ({
+  // ⚠️ 两个工厂都标了返回类型 `SupervisionDoc`,**不许省**。省掉的话 TS 只按字面量
+  //    推断,少给 `filename` 这类必填键也不报错 —— 而 vitest **不跑类型检查**,
+  //    于是这几条会「测试绿 + tsc 红」地并存(2026-08-16 就是这么并存了一阵子)。
+  //    `make test-frontend` 走的是 vitest,所以这一格全靠这里的显式标注顶着。
+  const 文书 = (doc_no: string): SupervisionDoc => ({
+    doc_type: "notice",
+    doc_no,
+    artifact_id: "a".repeat(32),
+    filename: `监理通知单_${doc_no}.docx`,
+  });
+  const 复查 = (doc_no: string, result: "pass" | "fail"): SupervisionDoc => ({
     doc_type: REINSPECT_DOC_TYPE,
     doc_no,
+    // 复查记录没有文件:两处都是 null,而不是空串 —— isDownloadableDoc 认的就是这个。
     artifact_id: null,
+    filename: null,
     result,
   });
 
@@ -1256,7 +1277,12 @@ describe("证据链的排版素材(W10 · 详情面板)", () => {
   it("🔴 artifact_id 为空的通知单仍算文书行,不许被编进复查序号", () => {
     // 那是**事故**(纸签了取不了件),要走文书那张卡显眼地说 ——
     // 被当成复查行的话,它会顶掉一个真复查的序号,屏幕上「第 2 次复查」其实是第 1 次。
-    const 取不了件的通知单 = { doc_type: "notice", doc_no: "GYT-TZ-坏", artifact_id: null };
+    const 取不了件的通知单: SupervisionDoc = {
+      doc_type: "notice",
+      doc_no: "GYT-TZ-坏",
+      artifact_id: null,
+      filename: null,
+    };
     const rows = evidenceRows([取不了件的通知单, 复查("R1", "pass")]);
     expect(rows[0].reinspectionNo).toBeNull();
     expect(rows[1].reinspectionNo).toBe(1);
@@ -1368,5 +1394,357 @@ describe("currentGrade —— 默认档不许冒充结论(2026-08-16 手工验�
       expect(currentGrade(hazard({ status, needs_grading: true }))).toBeNull();
       expect(currentGrade(hazard({ status, needs_grading: false }))).toBe(GRADE_NORMAL);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 复查照片直传(2026-08-16)
+// ---------------------------------------------------------------------------
+//
+// 这一组钉的是真人测试反馈那句「照片不能是编号意义不明」修完之后的判据。
+// 失败方式仍然全部安静:
+//   · 上传端点混进动作端点那张表 → 一张 JPEG 被 JSON.stringify 成 `{}` 发出去;
+//   · MB 的算法与后端不一致 → 前端拦掉一张后端本来收得下的照片,而且没有出路;
+//   · `isPhotoId` 与 `actionBody` 的正则漂开 → 按钮亮着、点下去被自己人拦住;
+//   · `parsePhotoEnvelope` 放行半截编号 → 界面画绿卡「已上传」,而提交时是空的。
+
+describe("照片上传端点(它不是动作端点,混进那张表就等于把 JPEG 序列化成 JSON)", () => {
+  it("地址是 /supervision/photo", () => {
+    expect(supervisionPhotoUrl("http://localhost:2024")).toBe(
+      "http://localhost:2024/supervision/photo",
+    );
+  });
+
+  it("apiBase 末尾的斜杠照旧吃掉(与其余端点同一条规矩)", () => {
+    expect(supervisionPhotoUrl("https://gyt.example.com/api/")).toBe(
+      "https://gyt.example.com/api/supervision/photo",
+    );
+    expect(supervisionPhotoUrl("https://gyt.example.com/api///")).toBe(
+      "https://gyt.example.com/api/supervision/photo",
+    );
+  });
+
+  it("🔴 photo **不许**出现在 SUPERVISION_ENDPOINTS 里", () => {
+    // 那张表是给 supervisionUrl 拼「八个 JSON 动作端点」用的,而 supervision.tsx 的
+    // 统一出口 callSupervision 会给表里每一条套上 content-type: application/json
+    // 并 JSON.stringify(body) —— 一张 JPEG 会被序列化成 `{}`,后端按魔数一看不是图,
+    // 回一句「传上来的不是照片」。人明明拍了照,而屏幕上说没收到照片。
+    expect([...SUPERVISION_ENDPOINTS]).not.toContain("photo");
+  });
+});
+
+describe("isPhotoId —— 与 actionBody 同一个判据,漂开就是「按钮亮着、点下去被拦」", () => {
+  const 合法 = "0123456789abcdef0123456789abcdef";
+
+  it("32 位小写十六进制才算数", () => {
+    expect(isPhotoId(合法)).toBe(true);
+    expect(isPhotoId("a".repeat(32))).toBe(true);
+    expect(isPhotoId("0".repeat(32))).toBe(true);
+  });
+
+  it("长度差一位都不认(31 / 33)", () => {
+    expect(isPhotoId("0".repeat(31))).toBe(false);
+    expect(isPhotoId("0".repeat(33))).toBe(false);
+  });
+
+  it("十六进制以外的字母不认(g 是最容易手抄错的那个)", () => {
+    expect(isPhotoId("g".repeat(32))).toBe(false);
+    expect(isPhotoId(`${"0".repeat(31)}z`)).toBe(false);
+  });
+
+  it("空串 / 空白串不算 —— 界面靠它决定复查结论那两颗能不能点", () => {
+    expect(isPhotoId("")).toBe(false);
+    expect(isPhotoId("   ")).toBe(false);
+  });
+
+  it("🔴 归一化必须与 actionBody 一致:带空格、大写都要认", () => {
+    // actionBody 里是 `.trim().toLowerCase()` 之后再比。这边不跟着归一化的话,
+    // 从聊天里复制来的编号(常带尾空格)在界面上被判成非法、按钮变灰,
+    // 而它其实发得出去 —— 人只能一个字符一个字符地删空格试。
+    expect(isPhotoId(`  ${合法}  `)).toBe(true);
+    expect(isPhotoId(合法.toUpperCase())).toBe(true);
+    // 反向的钉子:两边真的是同一套判据 —— actionBody 收下的,isPhotoId 必须也认。
+    const body = actionBody("reinspect", {
+      hazardNo: "GYT-H-1",
+      result: "pass",
+      afterPhotoId: `  ${合法.toUpperCase()}  `,
+    });
+    expect(body.after_photo_id).toBe(合法);
+    expect(isPhotoId(String(body.after_photo_id))).toBe(true);
+  });
+});
+
+describe("照片大小上限(🔴 1MB = 1024×1024,与后端 _BYTES_PER_MB 同一个算法)", () => {
+  it("上限是 10MB,按 1024×1024 折算", () => {
+    // 镜像 config.photo_max_mb=10 与 checkin_api._BYTES_PER_MB。
+    // 用 1000×1000 的话,10.4MB 的照片前端拦、后端本来收得下(9.92MiB)——
+    // 前端拦掉一张合法照片,而界面上除了「太大了」没有任何出路。
+    expect(PHOTO_MAX_MB).toBe(10);
+    expect(PHOTO_MAX_BYTES).toBe(10 * 1024 * 1024);
+  });
+
+  it("正好压线的那一张要放行(> 才拦,不是 >=)", () => {
+    expect(photoSizeProblem({ size: PHOTO_MAX_BYTES })).toBeNull();
+    expect(photoSizeProblem({ size: PHOTO_MAX_BYTES - 1 })).toBeNull();
+  });
+
+  it("超一个字节就拦,而且话里带着「多大」和「上限多少」", () => {
+    const msg = photoSizeProblem({ size: PHOTO_MAX_BYTES + 1 });
+    expect(msg).not.toBeNull();
+    // 「太大」三个字答不了「那多大才行」—— 与后端 messages.photo_too_large 同一条规矩。
+    expect(msg).toContain("10MB");
+    expect(msg).toContain("10.0 MB");
+  });
+
+  it("0 字节单独说一句(多半是文件还没从 iCloud 下下来,不是「太大」)", () => {
+    expect(photoSizeProblem({ size: 0 })).toBe(PHOTO_MESSAGES.emptyFile);
+  });
+
+  it("畸形大小(负数 / NaN / Infinity)当空文件处理,不许放行也不许炸", () => {
+    expect(photoSizeProblem({ size: -1 })).toBe(PHOTO_MESSAGES.emptyFile);
+    expect(photoSizeProblem({ size: Number.NaN })).toBe(PHOTO_MESSAGES.emptyFile);
+    expect(photoSizeProblem({ size: Number.POSITIVE_INFINITY })).toBe(PHOTO_MESSAGES.emptyFile);
+  });
+});
+
+describe("photoTypeProblem —— 只拦有把握的那两类,其余交给后端的魔数闸", () => {
+  it("常见图片格式一律放行", () => {
+    for (const type of ["image/jpeg", "image/png", "image/webp"]) {
+      expect(photoTypeProblem({ type })).toBeNull();
+    }
+  });
+
+  it("🔴 没见过的 image/* 也放行 —— 判据在后端,前端抄严了就没出路", () => {
+    // 浏览器给的 MIME 不可靠(DXF 那条线证过一次:同一个文件三种类型)。
+    // 前端多拦一类的代价是拦掉一张后端本来收得下的照片,而界面上毫无出路。
+    expect(photoTypeProblem({ type: "image/avif" })).toBeNull();
+    expect(photoTypeProblem({ type: "image/tiff" })).toBeNull();
+  });
+
+  it("🔴 拿不到类型(空串)必须放行 —— 部分安卓浏览器的相机回调就是空的", () => {
+    // 按「空 = 不是图」拦的话,那些机器上整条拍照路径直接断掉,而且毫无提示。
+    expect(photoTypeProblem({ type: "" })).toBeNull();
+    expect(photoTypeProblem({ type: "   " })).toBeNull();
+  });
+
+  it("HEIC / HEIF 单独一句,而且必须指出「现拍一张」这条出路", () => {
+    // 它是真照片,人看不出有什么不对(iPhone 设成「保留原片」时相册选图就是它),
+    // 而后端只认 JPEG/PNG/WebP、一定拒。只说「格式不对」的话,人会一张接一张地试相册。
+    for (const type of ["image/heic", "image/heif", "image/heic-sequence"]) {
+      expect(photoTypeProblem({ type })).toBe(PHOTO_MESSAGES.heicNotSupported);
+    }
+    expect(PHOTO_MESSAGES.heicNotSupported).toContain("拍照 / 选图");
+  });
+
+  it("压根不是图的拦下来(点错文件那一类)", () => {
+    for (const type of ["application/pdf", "video/mp4", "text/plain"]) {
+      expect(photoTypeProblem({ type })).toBe(PHOTO_MESSAGES.notAnImage);
+    }
+  });
+
+  it("大写 MIME 也认(有的宿主 App 会大写)", () => {
+    expect(photoTypeProblem({ type: "IMAGE/JPEG" })).toBeNull();
+    expect(photoTypeProblem({ type: "IMAGE/HEIC" })).toBe(PHOTO_MESSAGES.heicNotSupported);
+  });
+});
+
+describe("describePhotoFile —— 「整改后.jpg · 2.3 MB」", () => {
+  it("MB 保留一位小数", () => {
+    expect(describePhotoFile({ name: "整改后.jpg", size: 2.3 * 1024 * 1024 })).toBe(
+      "整改后.jpg · 2.3 MB",
+    );
+  });
+
+  it("不到 1MB 说 KB,不到 1KB 说字节 —— 别让人看见「0.0 MB」", () => {
+    expect(describePhotoFile({ name: "a.png", size: 400 * 1024 })).toBe("a.png · 400 KB");
+    expect(describePhotoFile({ name: "a.png", size: 512 })).toBe("a.png · 512 字节");
+  });
+
+  it("🔴 长文件名掐中间不掐尾巴 —— 尾巴是扩展名,而「是不是 .heic」正是要看的", () => {
+    const long = "IMG_20260816_143052_整改后临边防护复查.heic";
+    const shown = describePhotoFile({ name: long, size: 1024 });
+    expect(shown).toContain("…");
+    expect(shown).toContain(".heic");
+    expect(shown.startsWith("IMG_20260816_143")).toBe(true);
+  });
+
+  it("刚好不超长的名字一个字不动", () => {
+    const name = "整改后.jpg";
+    expect(describePhotoFile({ name, size: 1024 })).toBe(`${name} · 1 KB`);
+  });
+
+  it("没有文件名时说「(没有文件名)」,不留一个孤零零的「· 2.3 MB」", () => {
+    expect(describePhotoFile({ name: "", size: 1024 })).toBe("(没有文件名) · 1 KB");
+    expect(describePhotoFile({ name: "   ", size: 1024 })).toBe("(没有文件名) · 1 KB");
+  });
+
+  it("畸形大小也要排得出一行字,不许炸(渲染路径)", () => {
+    expect(describePhotoFile({ name: "a.jpg", size: Number.NaN })).toBe("a.jpg · 大小不明");
+    expect(describePhotoFile({ name: "a.jpg", size: -5 })).toBe("a.jpg · 大小不明");
+  });
+});
+
+describe("parsePhotoEnvelope —— 一个错都不抛,而 photo_id 是唯一不能兜底的字段", () => {
+  const 好回执 = JSON.stringify({
+    ok: true,
+    data: { photo_id: "0123456789abcdef0123456789abcdef", filename: "复查照片.jpg" },
+    user_msg: "照片收到了。",
+    error_code: null,
+  });
+
+  it("正常回执:编号 + 文件名 + 人话都取出来", () => {
+    const result = parsePhotoEnvelope(好回执);
+    expect(result).toEqual({
+      ok: true,
+      photoId: "0123456789abcdef0123456789abcdef",
+      filename: "复查照片.jpg",
+      userMsg: "照片收到了。",
+    });
+  });
+
+  it("拿到的编号能直接喂给 actionBody(两处判据同源,不用再洗一遍)", () => {
+    const { photoId } = parsePhotoEnvelope(好回执);
+    const body = actionBody("reinspect", {
+      hazardNo: "GYT-H-1",
+      result: "pass",
+      afterPhotoId: photoId ?? "",
+    });
+    expect(body.after_photo_id).toBe("0123456789abcdef0123456789abcdef");
+  });
+
+  it("大写编号收下并转小写 —— 与 actionBody 的归一化一致", () => {
+    const body = JSON.stringify({
+      ok: true,
+      data: { photo_id: "ABCDEF0123456789ABCDEF0123456789" },
+      user_msg: "",
+    });
+    expect(parsePhotoEnvelope(body).photoId).toBe("abcdef0123456789abcdef0123456789");
+  });
+
+  it("文件名缺了就空串(它只用来显示,兜底轮不到它)", () => {
+    const body = JSON.stringify({
+      ok: true,
+      data: { photo_id: "0123456789abcdef0123456789abcdef" },
+      user_msg: "照片收到了。",
+    });
+    const result = parsePhotoEnvelope(body);
+    expect(result.ok).toBe(true);
+    expect(result.filename).toBe("");
+  });
+
+  it("🔴 编号形状不对一律 ok:false —— 绿卡配空编号是最坏的一种", () => {
+    // 硬回 ok:true 的下场:界面画一张绿色的「照片已上传」,而 form.photo 里是半截串;
+    // 人接着点「合格」,被 actionBody 自己人拦住,而拦下来那句话是
+    //「在聊天记录里那张照片下面能看到」—— 他刚刚明明拍了一张。
+    for (const 坏编号 of ["", "   ", "abc", "0".repeat(31), "0".repeat(33), "g".repeat(32)]) {
+      const body = JSON.stringify({ ok: true, data: { photo_id: 坏编号 }, user_msg: "照片收到了。" });
+      const result = parsePhotoEnvelope(body);
+      expect(result.ok).toBe(false);
+      expect(result.photoId).toBeNull();
+    }
+  });
+
+  it("photo_id 不是字符串(null / 数字 / 对象)也是 ok:false,不抛", () => {
+    for (const 坏值 of [null, 42, { hex: "0" }, ["0"]]) {
+      const body = JSON.stringify({ ok: true, data: { photo_id: 坏值 }, user_msg: "" });
+      expect(() => parsePhotoEnvelope(body)).not.toThrow();
+      expect(parsePhotoEnvelope(body).ok).toBe(false);
+    }
+  });
+
+  it("🔴 ok:false 时那句人话仍要留着 —— 它是屏幕上唯一的线索", () => {
+    // 200 带 ok:false 这种「进了 handler 又没成」的情形,normalizeError 帮不上忙
+    //(它只管非 200),后端写好的这句话是人唯一能读到的东西。
+    const body = JSON.stringify({
+      ok: false,
+      data: null,
+      user_msg: "这张照片打不开,可能传的时候坏了,请重拍一张再交。",
+      error_code: "PHOTO_UNREADABLE",
+    });
+    const result = parsePhotoEnvelope(body);
+    expect(result.ok).toBe(false);
+    expect(result.photoId).toBeNull();
+    expect(result.userMsg).toBe("这张照片打不开,可能传的时候坏了,请重拍一张再交。");
+  });
+
+  it("data 不是对象 / 缺 data:ok:false,不抛", () => {
+    for (const body of [
+      JSON.stringify({ ok: true, user_msg: "照片收到了。" }),
+      JSON.stringify({ ok: true, data: null, user_msg: "" }),
+      JSON.stringify({ ok: true, data: "0123456789abcdef0123456789abcdef", user_msg: "" }),
+      JSON.stringify({ ok: true, data: ["0123456789abcdef0123456789abcdef"], user_msg: "" }),
+    ]) {
+      expect(() => parsePhotoEnvelope(body)).not.toThrow();
+      expect(parsePhotoEnvelope(body).ok).toBe(false);
+    }
+  });
+
+  it("不是 JSON(Caddy 的错误页 / 空体 / 一段 HTML)也不抛,退成 ok:false", () => {
+    for (const body of ["", "   ", "<html>502 Bad Gateway</html>", "null", "[]", "{"]) {
+      expect(() => parsePhotoEnvelope(body)).not.toThrow();
+      const result = parsePhotoEnvelope(body);
+      expect(result.ok).toBe(false);
+      expect(result.photoId).toBeNull();
+      expect(result.userMsg).toBe("");
+    }
+  });
+
+  it("信封没说 ok:true(缺字段 / 是字符串 \"true\")一律当没成", () => {
+    for (const body of [
+      JSON.stringify({ data: { photo_id: "0123456789abcdef0123456789abcdef" } }),
+      JSON.stringify({ ok: "true", data: { photo_id: "0123456789abcdef0123456789abcdef" } }),
+      JSON.stringify({ ok: 1, data: { photo_id: "0123456789abcdef0123456789abcdef" } }),
+    ]) {
+      expect(parsePhotoEnvelope(body).ok).toBe(false);
+    }
+  });
+});
+
+describe("照片这条链的文案(它们会原样上屏,所以在这里钉住)", () => {
+  it("🔴 PHOTO_MESSAGES 与 SUPERVISION_MESSAGES 是两份,badPhotoId 一个字不许动", () => {
+    // 旧那句「在聊天记录里那张照片下面能看到」现在只服务折叠起来的手填编号那一格。
+    // 主路径是「拍一张」,两句话指向两个不同的地方 —— 合成一句必然有一半人被指错方向,
+    // 而「被指错方向」正是真人测试反馈那句「照片不能是编号意义不明」的全部内容。
+    expect(SUPERVISION_MESSAGES.badPhotoId).toContain("聊天记录");
+    expect(PHOTO_MESSAGES.noPhoto).not.toContain("聊天");
+    expect(PHOTO_MESSAGES.noPhoto).not.toContain("编号");
+  });
+
+  it("每一句都是中文人话:不许漏进后端的字段名、英文状态词、模块路径", () => {
+    // 允许的英文只有**工地上的人自己会说的词**(iPhone、HEIC、MB)。
+    // 拦的是内部标识符 —— 它们混进来不会有任何报错,只是屏幕上突然冒出一截
+    // 谁也看不懂的东西,而看的人是戴着手套的监理。
+    const 内部词 = [
+      "photo_id",
+      "artifact_id",
+      "error_code",
+      "user_msg",
+      "hazard_no",
+      "pending",
+      "notified",
+      "suspended",
+      "reinspect",
+      "escalated",
+      "closed",
+      "supervision",
+      ".py",
+      ".ts",
+      "None",
+      "null",
+    ];
+    for (const [key, text] of Object.entries(PHOTO_MESSAGES)) {
+      expect(text.length, key).toBeGreaterThan(0);
+      // 至少得有中文 —— 一句纯英文的话是最典型的「内部细节直接上屏」。
+      expect(/[一-龥]/.test(text), `${key} 里没有中文`).toBe(true);
+      // 下划线在人话里没有用途,出现了几乎一定是后端字段名被抄进来了。
+      expect(text.includes("_"), `${key} 里有下划线`).toBe(false);
+      for (const 词 of 内部词) {
+        expect(text.toLowerCase().includes(词.toLowerCase()), `${key} 里出现了 ${词}`).toBe(false);
+      }
+    }
+  });
+
+  it("PHOTO_MESSAGES 是冻的 —— 运行时被改掉的话,错的话会一路传到屏幕上", () => {
+    expect(Object.isFrozen(PHOTO_MESSAGES)).toBe(true);
   });
 });
