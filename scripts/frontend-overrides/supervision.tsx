@@ -393,6 +393,28 @@ function IssuedDocCard({ doc, artifactBase }: { doc: SupervisionDoc; artifactBas
             <span className="text-[11px] text-gray-400 tabular-nums">签发 {issuedAt}</span>
           )}
         </div>
+        {/* 🔴 这份是**给哪条隐患**的。
+            「本次出的文书」是跨隐患的汇总:连着给三条签复工令,那里就是三张
+            一模一样的「工程复工令」,只有编号不同 —— 而编号对人不说明任何事。
+            2026-08-17 真人反馈原话:「意义不明,缺加上什么的复工令」。
+
+            证据链那一侧整块就挂在某一条隐患下面、上下文自明,所以后端不给这个字段,
+            由 runAction 在收到回执时补(见那儿的注释)。**没有就不显示** ——
+            两个调用方共用同一张卡,证据链里多印一行「针对:xxx」是废话。
+
+            念的是**违规项**而不是隐患编号:人认的是「高空作业未系安全带」,
+            编号是拿来对账的,已经在上面那一行了。编号也带上,因为汇总区里
+            可能有同一个违规项的两条隐患(不同工位),光看名字分不开。 */}
+        {doc.hazard_item && (
+          <div className="mt-0.5 text-[12px] text-gray-600">
+            针对:{doc.hazard_item}
+            {doc.hazard_no && (
+              <span className="ml-1.5 font-mono text-[11px] text-gray-400 select-all">
+                {doc.hazard_no}
+              </span>
+            )}
+          </div>
+        )}
         {/* ⚠️ 这里原来每张卡各印一遍「这份是出稿,要总监理工程师签字盖章后才是正式
             文件。」——2026-08-17 真人反馈「这个都需要签字吗」时数了一下:证据链里
             三份文书 = 同一句话连着出现三遍,读起来像三件不同的事各要一次签字。
@@ -2292,7 +2314,18 @@ export function SupervisionPanel({
           }),
         );
         if (parsed.documents.length > 0) {
-          setDocs((prev) => [...prev, ...parsed.documents]);
+          // 🔴 补上「这份是哪条隐患的」。后端的 documents[] 只有类型和编号 ——
+          //    而「本次出的文书」是**跨隐患**的汇总:连着给三条隐患签复工令,
+          //    那里就是三张一模一样的「工程复工令」,只有编号不同。
+          //    2026-08-17 真人反馈原话:「意义不明,缺加上什么的复工令」。
+          //    身份从**这次动作的那条隐患**来(不是从回执里找,回执里没有),
+          //    所以只能在这儿补 —— 补完两个调用方共用的那张卡自然就会显示。
+          const 带身份 = parsed.documents.map((doc) => ({
+            ...doc,
+            hazard_no: parsed.hazard_no,
+            hazard_item: hazard.item,
+          }));
+          setDocs((prev) => [...prev, ...带身份]);
         }
         // 🔴 动作之后**立刻重拉这一条的详情**,两件事一次办完:
         //   ① 证据链缓存作废 —— 刚签完暂停令、展开却写着「还没签过任何文书」的话,
