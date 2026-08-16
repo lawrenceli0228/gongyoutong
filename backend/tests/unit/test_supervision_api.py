@@ -62,7 +62,7 @@ from gyt.agents.supervision.docgen import SUPERVISION_DISCLAIMER
 from gyt.config import get_settings
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind
-from gyt.core.doc_no import DocKind, DocNoExhaustedError, new_doc_no
+from gyt.core.doc_no import DocKind, DocNoExhaustedError, generate_unique
 from gyt.db import hazards
 
 REAL_TOKEN = "0123456789abcdef0123456789abcdef"
@@ -162,7 +162,13 @@ def _new_hazard(
     「编号互不相同」,否则"我造了 4 条"其实只有 1 条,而断言看起来还是绿的。
     """
     registration = hazards.create(
-        hazard_no=new_doc_no(DocKind.HAZARD),
+        # 🔴 走 `generate_unique` 而不是裸 `new_doc_no`,**与生产代码同一条路**。
+        #    编号是「到秒的时间戳 + 4 位随机」,而这些用例常常在同一秒里造几十条 ——
+        #    生日悖论下撞号是必然会发生的偶发事件(2026-08-16 实测到一次:
+        #    `UNIQUE constraint failed: hazards.hazard_no`,重跑就绿)。
+        #    偶发红的测试比没有测试更坏:它教会人「再跑一遍就好了」,
+        #    于是真回归也会被当成抖动重跑掉。
+        hazard_no=generate_unique(DocKind.HAZARD, lambda no: hazards.fetch(no) is not None),
         project_id=project_id,
         photo_sha256=f"sha256-{item}-{project_id}-{grade}-{severity}-{needs_grading}",
         photo_id=_photo("现场.jpg"),

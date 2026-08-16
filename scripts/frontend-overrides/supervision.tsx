@@ -1231,7 +1231,33 @@ export function SupervisionPanel({
           land({ phase: "unreadable", message: result.userMsg || SUPERVISION_MESSAGES.badEnvelope });
           return;
         }
-        land({ phase: "ready", detail: result.hazard, userMsg: result.userMsg });
+        // 先取出来再用:`land` 是个闭包调用,TS 会因此丢掉上面那个 guard 的收窄
+        // (它没法证明这次调用不会改到 result)。
+        const 权威 = result.hazard;
+        land({ phase: "ready", detail: 权威, userMsg: result.userMsg });
+        // 顺手把清单里那一行也校准成权威值。
+        //
+        // 🔴 动作回执**只带得回 status / grade / needs_grading**(data 形状是冻结的,
+        // 见 supervision_api 头注),而签发同时会写下 `due_date` —— 于是 patchHazard
+        // 之后那一行还挂着旧的期限字段。2026-08-16 手工验实测:签完暂停令、
+        // 库里 due_date=2026-08-19,而屏幕上那行仍写着「还没下过整改期限」。
+        // 监理据此以为期限没定上,会去再签一次 —— 又是两份法律文书。
+        //
+        // 详情端点本来就要拉(动作成功后缓存必须作废),顺带把这几个字段接过来,
+        // 比给动作回执加字段更省:少一处契约、少一处能漂的地方。
+        // `patchHazard` 找不到编号会原样返回,所以这一行对已经被移出清单的隐患是安全的。
+        setList((prev) =>
+          patchHazard(prev, hazardNo, {
+            status: 权威.status,
+            status_display: 权威.status_display,
+            grade: 权威.grade,
+            severity: 权威.severity,
+            needs_grading: 权威.needs_grading,
+            due_date: 权威.due_date,
+            due_display: 权威.due_display,
+            overdue: 权威.overdue,
+          }),
+        );
       } catch {
         // 两种:真网络异常,和收起/关面板/重试时自己 abort 的。
         // 后者已经不在表里了,`mine()` 会挡掉 —— 不挡的话收一下再展开会闪一句「连不上」。
@@ -1455,11 +1481,16 @@ export function SupervisionPanel({
         if (parsed.documents.length > 0) {
           setDocs((prev) => [...prev, ...parsed.documents]);
         }
-        // 🔴 证据链变了,缓存必须作废。**所有动作都要**,不只是出文书那几个:
-        // 定级改了级别、复查加了一条复查记录、确认改了状态,展开的那一块全在显示旧的。
-        // 最贵的一种是签发:刚签完暂停令、展开却写着「还没签过任何文书」,
-        // 监理会认为没签成而再签一份 —— 同一件事两份法律文书,编号和日期都不一样。
-        invalidateDetail(parsed.hazard_no);
+        // 🔴 动作之后**立刻重拉这一条的详情**,两件事一次办完:
+        //   ① 证据链缓存作废 —— 刚签完暂停令、展开却写着「还没签过任何文书」的话,
+        //      监理会认为没签成而再签一份,同一件事两份法律文书,编号和日期都不一样;
+        //   ② 把清单那一行校准成权威值(期限、中文状态、超期与否)——
+        //      动作回执带不回这些,`loadDetail` 落地时会顺手 patch(见它里头那段)。
+        // **所有动作都要**,不只是出文书那几个:定级改了级别、复查加了一条记录、
+        // 确认改了状态,展开的那一块与那一行都在显示旧的。
+        // 收着的隐患也拉:多一发很便宜(动作本来就稀少且是人一下一下点的),
+        // 而少拉的代价是那一行一直挂着过期的期限。
+        void loadDetail(parsed.hazard_no);
         const docLine = describeDocuments(parsed.documents);
         setBanner({
           tone: "ok",
@@ -1476,7 +1507,7 @@ export function SupervisionPanel({
         setBusy(false);
       }
     },
-    [apiBase, forms, setFailure, invalidateDetail],
+    [apiBase, forms, setFailure, invalidateDetail, loadDetail],
   );
 
   if (typeof document === "undefined") return null;

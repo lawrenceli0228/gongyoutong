@@ -1295,3 +1295,52 @@ describe("时刻排版(🔴 禁止任何时区换算)", () => {
     expect(formatHkMoment("  2026-08-16T09:50:08+08:00 ")).toBe("2026-08-16 09:50");
   });
 });
+
+describe("patchHazard 与 status_display(2026-08-16 手工验当场抓到的那条)", () => {
+  const 待确认 = (): HazardBrief => ({
+    hazard_no: "GYT-H-1",
+    item: "临边无防护",
+    grade: GRADE_SEVERE,
+    status: "pending",
+    status_display: "待确认",
+    needs_grading: false,
+  });
+
+  it("🔴 改了 status,旧的 status_display 必须被丢掉", () => {
+    // 不丢的下场(实测):确认之后按钮已经变成「签发暂停令」、证据链也写着
+    // 「已确认待处置」,而行首徽章还写着「待确认」—— 工友会以为没点成,再点一次,
+    // 而下一颗按钮是签发法律文书。
+    const [row] = patchHazard([待确认()], "GYT-H-1", { status: "open" });
+    expect(row.status).toBe("open");
+    expect(row.status_display).toBeUndefined();
+    // 丢掉之后渲染回落到镜像词表 —— 同一份真相,不是现造第二份
+    expect(hazardStatusZh(row.status)).toBe("已确认待处置");
+  });
+
+  it("patch 自己带了新的 status_display 就用它(后端说了算)", () => {
+    const [row] = patchHazard([待确认()], "GYT-H-1", {
+      status: "open",
+      status_display: "已确认待处置",
+    });
+    expect(row.status_display).toBe("已确认待处置");
+  });
+
+  it("没改 status 的 patch 不许动 status_display", () => {
+    const [row] = patchHazard([待确认()], "GYT-H-1", { grade: GRADE_NORMAL });
+    expect(row.status_display).toBe("待确认");
+    expect(row.grade).toBe(GRADE_NORMAL);
+  });
+
+  it("不可变:原数组与原对象一个字节没动", () => {
+    const 原 = [待确认()];
+    const 快照 = JSON.stringify(原);
+    patchHazard(原, "GYT-H-1", { status: "open" });
+    expect(JSON.stringify(原)).toBe(快照);
+  });
+
+  it("编号对不上就原样返回,不误伤别人的 status_display", () => {
+    const [row] = patchHazard([待确认()], "GYT-H-别人", { status: "open" });
+    expect(row.status).toBe("pending");
+    expect(row.status_display).toBe("待确认");
+  });
+});

@@ -530,16 +530,39 @@ export function mergeHazards(
   return merged;
 }
 
-/** 改一条隐患的字段,返回**新数组**(不可变;找不到编号就原样返回)。 */
+/**
+ * 改一条隐患的字段,返回**新数组**(不可变;找不到编号就原样返回)。
+ *
+ * 🔴 **改了 `status` 就必须把 `status_display` 一起丢掉**(除非这次 patch 自己带了新的)。
+ *
+ * 2026-08-16 手工验当场抓到的:确认一条隐患之后,动作按钮已经变成「签发暂停令」、
+ * 展开的证据链也写着「已确认待处置」,而**行首那颗徽章还写着「待确认」**——
+ * 因为 `status_display` 是后端**按旧状态**拼好的那句中文,patch 只改了 `status`,
+ * 它原封不动留着。渲染那行是 `status_display || hazardStatusZh(status)`,
+ * 于是旧标签一直赢。
+ *
+ * 这比「少显示一格」坏得多:工友点了确认,屏幕上还写着待确认,他会再点一次 ——
+ * 而下一颗按钮是签发法律文书。丢掉之后渲染自然回落到 `hazardStatusZh(status)`,
+ * 那张词表本来就是后端那份的镜像,不会有第二种说法。
+ *
+ * 为什么不在这里顺手算一个新的 `status_display`:那等于让这一层替后端做措辞决定。
+ * 回落到镜像词表是**同一份真相**,而现造一个是第二份。
+ */
 export function patchHazard(
   list: readonly HazardBrief[],
   hazardNo: string,
   patch: Partial<HazardBrief>,
 ): HazardBrief[] {
-  return list.map((h) => (h.hazard_no === hazardNo ? { ...h, ...patch } : h));
+  const stale = "status" in patch && !("status_display" in patch);
+  return list.map((h) => {
+    if (h.hazard_no !== hazardNo) return h;
+    const next = { ...h, ...patch };
+    if (stale) delete next.status_display;
+    return next;
+  });
 }
 
-/** 从清单里划掉一条(「否决」只是本地视图操作,见 supervision.tsx 里那段说明)。 */
+/** 从清单里划掉一条。否决成功后用它 —— 那一行在库里**是真删了**(POST /supervision/reject)。 */
 export function removeHazard(list: readonly HazardBrief[], hazardNo: string): HazardBrief[] {
   return list.filter((h) => h.hazard_no !== hazardNo);
 }
