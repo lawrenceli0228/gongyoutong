@@ -1771,6 +1771,26 @@ export function SupervisionPanel({
         }
         setSnapshot(result);
         setList(result.hazards);
+        // 🔴 「待签发复工令」这一档**证据链默认展开**(2026-08-17 真人反馈)。
+        //
+        // 那一档的行里只剩一颗「签发工程复工令」,而**签复工令是法律动作,它的依据
+        // 就是那张复查合格的照片**。照片折在「已签文书和复查记录」里的话,人是在
+        // 看不见证据的情况下点签发的 —— 方向反了。
+        //
+        // 只对这一档做,别推广到别的状态:其余几档的下一步动作(定级、签通知单、
+        // 登记复查)靠的是行里已有的信息,默认展开只会把清单撑长,而清单太长本身
+        // 就是这一轮在治的毛病。
+        //
+        // 用**并集**而不是覆盖:人手动展开的那几条不能因为切一次筛子就被收起来。
+        // 代价是每条 resuming 各一发详情请求(对账 effect 去拉)—— 这一档很窄
+        //(停过工 + 复查已合格 + 就差一份复工令),真机上通常一两条。
+        setExpandedDetails((prev) => {
+          const 待签复工 = result.hazards
+            .filter((h) => h.status === "resuming")
+            .map((h) => h.hazard_no)
+            .filter((no) => !prev.includes(no));
+          return 待签复工.length > 0 ? [...prev, ...待签复工] : prev;
+        });
         setPhase("ready");
       } catch {
         // 走到这里的有两种:真的网络异常,和面板关闭/切筛子时的 abort。
