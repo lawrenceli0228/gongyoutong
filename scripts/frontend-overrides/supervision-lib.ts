@@ -1443,8 +1443,6 @@ export const PHOTO_MESSAGES = Object.freeze({
    * 而那时手上根本没有编号 —— 下一步会被自己人拦住,而拦的那句话指向聊天记录。
    */
   badEnvelope: "照片好像传上去了,但服务器没回编号 —— 这张先别用,重传一次。",
-  /** 复查结论那两颗按钮点不动时,旁边那句解释。**必须说清「差什么」而不是只把按钮变灰。** */
-  noPhoto: "先拍一张整改后的照片,才能下复查结论。",
   /** 折叠的手填编号那一格里打了半截东西。 */
   badManualId: "这不像照片编号:要 32 位,只有数字和 a 到 f 这几个字母。",
 });
@@ -1588,4 +1586,281 @@ export function parsePhotoEnvelope(bodyText: string): PhotoUploadResult {
     return { ok: false, photoId: null, filename: "", userMsg };
   }
   return { ok: true, photoId, filename: textOf(data, "filename"), userMsg };
+}
+
+// ---------------------------------------------------------------------------
+// 一张照片、多条隐患共用(2026-08-16)—— 真人反馈「上传照片的地方太多了」
+// ---------------------------------------------------------------------------
+//
+// ── 事实先摆出来 ──────────────────────────────────────────────────────────
+// 隐患**本来就是从同一张照片里认出来的**:`analyze_site_photo` 看一张工地照片、
+// 一次登记好几条(库里现成的例子:同一个照片指纹下面挂着「临边无防护」和
+// 「未穿反光衣」两条)。整改完监理去现场拍**一张**,那一张同样覆盖这几条。
+//
+// 而改之前,清单里**每一条**可复查的隐患各有一个大虚线上传框 —— 三条隐患三个框,
+// 屏幕被撑得老长,而人手上只有一张照片。真人原话:「一般都是在一张照片里」。
+// 所以正确形状是:**一张照片、多条隐患共用;而结论(合格/不合格)仍然一条一条下。**
+//
+// ── 🔴 共用会不会让「一次把好几条标成合格」变容易 ────────────────────────
+// 会容易一点,但**这不构成新风险**,两条理由:
+//   ① 结论仍然**逐条点**。界面上没有、也永远不许有「选中的都合格」那种批量结论 ——
+//      D11 讲的是**谁来判**(模型给建议、人下结论),不是**判之前要点几次上传**。
+//      误判合格会死人,拦它的是「每条各点一次、每条各自弹自己的后果」,
+//      不是「每条各传一次照片」;
+//   ② 原先那道「每行各传一次」的摩擦**本来也拦不住谁** —— 想批量放行的人把同一个
+//      文件传三遍就是了。而且传三遍拿到的是**三个不同的编号**
+//      (`POST /supervision/photo` 明说不做去重、不做幂等),证据链上反而**更难**
+//      看出这是同一张照片;共用之后三条挂的是同一个编号,事后一眼就知道同源。
+// 一句话:改之前那道摩擦买到的是**麻烦**,不是**安全**。
+// 下一个人看到「共用照片」别当成图省事 —— 上面这段推演才是它的理由。
+//
+// ── 这一节为什么在 lib 里 ─────────────────────────────────────────────────
+// 全是**判据**:哪几条用这张、某一行用的是不是这张、这一行现在能不能下结论。
+// 判据漂开就是静默出错 —— 界面上标着「用共用那张」而提交发的是另一个编号,
+// 两处看着都对,而错的那一侧是**销项**(不可撤销,证据链里挂的是无关的一张照片)。
+// 碰浏览器的部分(objectURL、fetch、file input)一律留在 supervision.tsx。
+
+/**
+ * 面板上那张共用照片的状态 —— **判别联合,不是「编号 + 一堆布尔」**。
+ *
+ * 🔴 做成联合是刻意的:编号只在 `ready` 这一档存在,其余三档**根本没有编号**。
+ * 写成 `{photoId: string | null; uploading: boolean; failed: boolean}` 的话,
+ * 「正在传但 photoId 有值」这种自相矛盾的组合是拼得出来的,而它拼出来之后
+ * 界面会让人在照片还没传完时就点「合格」—— 那一下不可撤销。
+ *
+ * 四档在屏幕上要说四句不同的话(见 `reinspectBlocker`):没传 / 在传 / 传失败 /
+ * 传好了。糊成一句「先拍一张照片」的下场是传失败的人以为自己忘了点,再点一次重来。
+ */
+export type SharedPhotoState =
+  | { phase: "none" }
+  | { phase: "uploading" }
+  | { phase: "failed" }
+  | { phase: "ready"; photoId: string };
+
+/** 一行的复查照片是从哪儿来的 —— 界面据此标注(见 `SHARED_PHOTO_MESSAGES`)。 */
+export type RowPhotoSource = "none" | "shared" | "own";
+
+/**
+ * 复查结论那两颗按钮点不动时的**原因分类**。
+ *
+ * 界面按它挑呈现方式,不是按它挑措辞(措辞在 `message` 里):
+ * 前三档(没传/在传/传失败)在面板顶上那一格里本来就有大幅提示(虚线框 / 转圈 /
+ * 红卡),行里再重复一遍就是每条隐患讲一遍课 —— 那正是这次要砍的东西,所以走 title;
+ * 而 `already-used` 是**这一行独有的事实**,面板那一格上一点线索都没有,
+ * 必须在行里常驻显示(触屏没有 hover,藏进 title 等于没说)。
+ */
+export type ReinspectBlockReason =
+  | "no-photo"
+  | "uploading"
+  | "upload-failed"
+  | "bad-id"
+  | "already-used";
+
+export interface ReinspectBlock {
+  reason: ReinspectBlockReason;
+  /** 给工地上的人看的那句话,组件直接上屏。 */
+  message: string;
+}
+
+/**
+ * 共用照片这条链上的固定文案。
+ *
+ * 🔴 **另起一份,不并进 `PHOTO_MESSAGES`。** 那一份里的话都指向「这一行自己那一格」
+ * (「先拍一张整改后的照片」),而这一份的话必须把人指到**面板顶上那一格** ——
+ * 共用之后照片不在行里了,还说「先拍一张」的人会在自己这一行上下找那个框。
+ * 指错方向正是上一轮真人反馈(「照片不能是编号意义不明」)的全部内容,别重演。
+ */
+export const SHARED_PHOTO_MESSAGES = Object.freeze({
+  /**
+   * 一张都还没传。
+   *
+   * ⚠️ 它**取代了**「先拍一张整改后的照片,才能下复查结论。」那句(原
+   * `PHOTO_MESSAGES.noPhoto`,2026-08-17 一并删掉了)—— 那是「每行一个上传格」
+   * 时代的话,**没说清在哪儿拍**:改成共用之后照片那一格在面板顶上,
+   * 而人此刻的眼睛在第 5 行那颗灰按钮上,照着那句话会在原地找不到东西可点。
+   * 所以这一句的要害是**「在上面那一格」这五个字**,改措辞时别把方位丢了。
+   */
+  waiting: "先在上面那一格拍一张这次复查的照片,才能下结论。",
+  /** 正在传(还没有编号)。**等待是有尽头的,得说出来**,不然人不知道自己在等什么。 */
+  uploading: "上面那张照片还在传,传完就能下结论。",
+  /**
+   * 传失败。🔴 **绝不许说成「还没传」** —— 那样人以为自己忘了点,再点一次重来一遍,
+   * 而真正的原因(太大 / 不是照片 / 接口没开通)一次都没被看见。
+   */
+  failed: "上面那张照片没传上去。先在上面重传一次,或者换一张。",
+  /**
+   * 这一行刚拿这张登记过复查了。
+   *
+   * 🔴 这句话是「共用照片不清场」的配套闸,完整推演见 `reinspectBlocker` 头注:
+   * 判「不合格」的那一条会回到可复查,而它上面还挂着刚才那张 —— 让它再用一次
+   * 等于拿**上一轮**的照片当这一轮「整改后」的证据,而屏幕上一切正常。
+   */
+  alreadyUsed: "这一条刚用上面那张登记过复查了。要再复查一次,先在上面换一张新拍的照片。",
+  /** 这一行用的是共用那张(常态,说得轻)。 */
+  usesShared: "复查照片:用上面那张共用的",
+  /** 🔴 这一行用的**不是**共用那张 —— 必须显眼,理由见 `photoSourceOf` 头注。 */
+  usesOwn: "这一条用的不是上面那张共用的,是下面填的这个编号。",
+  /** 上面还没传共用照片,而这一行自己填了编号 —— 没有「共用那张」可对照,话就别提它。 */
+  usesOwnAlone: "这一条用下面填的这个编号的照片。",
+  /** 共用那张现在一条隐患都没管着。 */
+  coversNothing: "这张暂时没有隐患在用 —— 下面每条要么填了自己的编号,要么刚用它登记过复查。",
+});
+
+/**
+ * 这一屏里**要用共用照片**的那几条 = 现在能登记复查结论的那几条。
+ *
+ * 判据用现成的 `availableActions(h).includes("reinspect")`,**不自己比状态** ——
+ * 那张表是服务端四道闸在界面上的唯一投影,在这里另写一份 `status === "notified" || …`
+ * 的话,哪天状态机加一档,两处就会各说各话:面板顶上那一格不出现,而行里
+ * 「合格/不合格」两颗按钮好端端亮着,人点下去才发现根本没地方传照片。
+ *
+ * 它同时是「那一格要不要出现」的判据:一条可复查的都没有时摆一个上传框是纯噪音。
+ */
+export function reinspectableHazards(list: readonly HazardBrief[]): HazardBrief[] {
+  return list.filter((h) => availableActions(h).includes("reinspect"));
+}
+
+/** 编号归一化。**必须与 `actionBody` 一致**(它 trim + 转小写之后再比正则)——
+ *  两边不一致的表现是:同一个编号在这儿被判成「用的是别的照片」,发出去的却是同一张。 */
+function normalizePhotoId(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+/**
+ * 这一行的复查照片是从哪儿来的。
+ *
+ * 🔴 **行内填了就以行内为准,一个字符都不许回落到共用那张。** 这条不是偏好,
+ * 是防一幕具体的事故:折叠的手填格里打了半截编号(比如少一位),若这时悄悄
+ * 回落成共用那张,屏幕上写着「照片编号不对」而按钮却是亮的、点下去销的项挂着
+ * 另一张照片 —— 两样东西看着都对,没有任何报错。所以半截串也算 `own`,
+ * 由 `reinspectBlocker` 明说「这不像照片编号」,而不是替人做主。
+ *
+ * 手填的编号**恰好等于**共用那张时算 `shared`:那本来就是同一张照片,
+ * 标成「用的不是共用那张」是撒谎,而这一行标注的全部意义就是让人分清哪条不是同源。
+ */
+export function photoSourceOf(rowPhotoId: string, shared: SharedPhotoState): RowPhotoSource {
+  const own = normalizePhotoId(rowPhotoId);
+  if (!own) return shared.phase === "ready" ? "shared" : "none";
+  if (shared.phase === "ready" && own === normalizePhotoId(shared.photoId)) return "shared";
+  return "own";
+}
+
+/**
+ * 这一行**提交时真正会发出去**的那个照片编号(拿不到就是空串)。
+ *
+ * 🔴 它是这一层唯一的真相:按钮灰不灰(`reinspectBlocker`)、请求体里填哪个
+ * (`actionBody` 的 `afterPhotoId`),两处读的必须是同一个函数的返回值。
+ * 各算一遍的下场就是「界面按这一份画、提交发的是那一份」——
+ * 而这一侧错了是**销项**:隐患关掉,证据链里挂着一张跟这次复查无关的照片。
+ *
+ * ⚠️ 这**不是**在 `forms[编号].photo` 之外另开一条并行状态:行内那一格仍然是
+ * 唯一的行内真相,共用那张只是它**为空时的回落**,而回落只在这一个函数里算。
+ * (为什么不在上传成功那一刻把编号写进每一行的 `forms`:那是一次**快照** ——
+ *  之后切筛子、判了不合格、或者别的隐患刚走到可复查,新出现的那些行里就是空的,
+ *  而共用那张明明就摆在屏幕顶上。表现是按钮灰着、旁边写「先去拍一张」,
+ *  照片却已经传好了。回落是算出来的,不会漏掉后来的行。)
+ */
+export function effectivePhotoId(rowPhotoId: string, shared: SharedPhotoState): string {
+  const own = normalizePhotoId(rowPhotoId);
+  if (own) return own;
+  return shared.phase === "ready" ? normalizePhotoId(shared.photoId) : "";
+}
+
+export interface ReinspectPhotoContext {
+  /** 行内手填的那个编号(折叠的「用已有编号」那一格);空 = 用共用那张。 */
+  rowPhotoId: string;
+  /** 面板顶上那张共用照片现在什么样。 */
+  shared: SharedPhotoState;
+  /**
+   * 这一行**上一次登记复查用掉的**那个编号;null = 这一轮还没登记过。
+   *
+   * 只记最近一次,不记全部历史 —— 它挡的是「刚登记完、照片还挂在上面,
+   * 顺手又给同一条点了一次」这一幕,那是共用之后唯一新增的误用路径。
+   */
+  usedPhotoId: string | null;
+}
+
+/**
+ * 这一行现在能不能下复查结论。**返回 null = 能;返回一句人话 = 不能,这就是原因。**
+ *
+ * 只变灰不说原因是本仓反复防的「点了没反应」:人只知道点不动,不知道要先干嘛。
+ *
+ * ── 🔴 `already-used` 这一档为什么存在(共用照片带来的唯一新账)──────────
+ * 改成共用之前,复查登记成功会把**那一行**的照片草稿整个收掉(旧 `clearPhoto`),
+ * 理由是:判「不合格」的隐患会回到可复查,而上面还挂着刚才那张照片 ——
+ * 第二次复查会拿第一次的照片当「整改后」的证据交上去,屏幕上一切正常。
+ *
+ * 共用之后**不能再照行清**:清掉就是「登记完第一条,后面几条的照片全没了」,
+ * 而人手上只有那一张、也不该被逼着重传三遍(这次改造要修的正是这个)。
+ * 两者的共存点是:**留着照片,但记下这一行已经用过它**。于是
+ *   · 别的行照用不误(共用的意义);
+ *   · 判了不合格的那一条**仍然能再复查**,只是必须先换一张新拍的 —— 而那正是
+ *     现实里该发生的事:第二次复查本来就发生在下一次整改之后,不可能还是同一张;
+ *   · 出路是明的、就在屏幕顶上(换一张 = 新编号,这一条当场解锁),
+ *     不是把人锁死在一个灰按钮前面。
+ * `POST /supervision/photo` **不做去重也不做幂等**(它自己的头注写明),所以哪怕
+ * 重传的是同一个文件,拿到的也是新编号 —— 这条出路不会被幂等堵死。
+ *
+ * 判据顺序不许换:先「有没有」、再「像不像编号」、最后「是不是刚用过」。
+ * 反过来的话,一个空编号会先撞上「刚用过」那句,而屏幕上说的是一件没发生的事。
+ */
+export function reinspectBlocker(ctx: ReinspectPhotoContext): ReinspectBlock | null {
+  const photoId = effectivePhotoId(ctx.rowPhotoId, ctx.shared);
+  if (!photoId) {
+    if (ctx.shared.phase === "uploading") {
+      return { reason: "uploading", message: SHARED_PHOTO_MESSAGES.uploading };
+    }
+    if (ctx.shared.phase === "failed") {
+      return { reason: "upload-failed", message: SHARED_PHOTO_MESSAGES.failed };
+    }
+    return { reason: "no-photo", message: SHARED_PHOTO_MESSAGES.waiting };
+  }
+  // 只有手填那条路走得到这里(共用那张的编号在 `parsePhotoEnvelope` 就验过形状了)。
+  if (!isPhotoId(photoId)) {
+    return { reason: "bad-id", message: PHOTO_MESSAGES.badManualId };
+  }
+  if (ctx.usedPhotoId && normalizePhotoId(ctx.usedPhotoId) === photoId) {
+    return { reason: "already-used", message: SHARED_PHOTO_MESSAGES.alreadyUsed };
+  }
+  return null;
+}
+
+/**
+ * 共用那张**此刻真正管着**的那几条 —— 面板上那句「下面 N 条都用这张」按它数。
+ *
+ * 三道筛子缺一不可,少一道那个数就是句空话:
+ *   · 现在能登记复查结论(`reinspectableHazards`);
+ *   · 用的确实是共用那张(行内填了别的编号的不算);
+ *   · 现在真点得动(刚拿这张登记过复查的那一条已经不归它管了)。
+ * 数错的代价不是排版难看:监理照着「下面 3 条都用这张」去点,发现只点得动 2 条,
+ * 而第 3 条为什么点不动屏幕上没说 —— 于是他会以为系统坏了。
+ */
+export function hazardsUsingSharedPhoto(
+  list: readonly HazardBrief[],
+  rowPhotoIds: Readonly<Record<string, string>>,
+  usedPhotoIds: Readonly<Record<string, string>>,
+  shared: SharedPhotoState,
+): HazardBrief[] {
+  if (shared.phase !== "ready") return [];
+  return reinspectableHazards(list).filter((h) => {
+    const rowPhotoId = rowPhotoIds[h.hazard_no] ?? "";
+    if (photoSourceOf(rowPhotoId, shared) !== "shared") return false;
+    const usedPhotoId = usedPhotoIds[h.hazard_no] ?? null;
+    return reinspectBlocker({ rowPhotoId, shared, usedPhotoId }) === null;
+  });
+}
+
+/**
+ * 「下面 3 条隐患的复查结论都用这张」—— 传好之后那张卡上那一句。
+ *
+ * 这句话是这次改造的**要害**:共用之后照片和结论不在同一行了,不说清它管着哪几条,
+ * 人就得自己数,而数错的方向是「以为它管的比实际多」——「那三条我都传过照片了」,
+ * 然后有一条的证据其实来自别处。所以 0 条那一档也要说话(`coversNothing`),
+ * 不许静默留白。
+ */
+export function describeSharedPhotoCoverage(count: number): string {
+  if (!Number.isFinite(count) || count <= 0) return SHARED_PHOTO_MESSAGES.coversNothing;
+  // 1 条时不说「都」——「都」在中文里预设了复数,一条时读起来像界面算错了。
+  if (count === 1) return "下面这 1 条隐患的复查结论用这张。";
+  return `下面 ${count} 条隐患的复查结论都用这张。`;
 }

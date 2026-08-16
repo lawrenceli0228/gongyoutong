@@ -43,6 +43,23 @@
  * 留不留得住,是编排层说了算的事,而处置面板要能在刷新之后照样打开。
  * 修法照 W7 打卡面板的先例(`checkin.tsx`):常驻按钮 + 直连 HTTP。
  * `HazardIntakeCard` 留着没删,但它现在**不可达** —— 那条注释在它头上,别当它是活的。
+ *
+ * ── 复查照片:从「每行一个」改成「面板一个」(2026-08-16)────────────────
+ * 真人反馈原话:**「上传照片的地方太多了,一般都是在一张照片里」**。
+ * 而这与事实相反 —— 隐患本来就是从**同一张**照片里认出来的(`analyze_site_photo`
+ * 一张图登记多条),整改后监理也只拍一张。改之前每条可复查的隐患各有一个大虚线
+ * 上传框,三条就是三个框,把面板撑得老长,人手上却只有一张照片。
+ *
+ * 今天的形状:**照片一格在面板顶上、多条隐患共用;结论(合格/不合格)仍然一条一条下。**
+ * 「共用会不会让批量放行变容易」这个取舍的完整推演在 supervision-lib.ts
+ * 那一节的头注里(结论:不构成新风险,原先那道摩擦买到的是麻烦不是安全)——
+ * 看见「共用照片」先去读那段,别当成图省事。
+ *
+ * 落在本文件里的三件:
+ *   ① `SharedReinspectPhotoField` —— 面板级那一格,三态照旧(在传 / 传失败 / 传好了);
+ *   ② `RowPhotoChoice` —— 行里只剩「这一条用的是哪张」的标注 + 折叠的手填编号逃生口;
+ *   ③ 复查登记成功后**不清照片**,改为记下「这一行用过哪个编号」(`usedPhotos`),
+ *      判不合格的那一条要再复查必须换一张新的 —— 推演在 `reinspectBlocker` 头注。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -83,13 +100,16 @@ import {
   confirmPrompt,
   describeDocuments,
   describePhotoFile,
+  describeSharedPhotoCoverage,
   DisposalAction,
   documentUrl,
   docTypeZh,
+  effectivePhotoId,
   evidenceRows,
   formatHkMoment,
   GRADE_NORMAL,
   GRADE_SEVERE,
+  hazardsUsingSharedPhoto,
   isPhotoId,
   HAZARD_SCOPE_ACTIVE,
   HAZARD_SCOPE_PENDING,
@@ -113,9 +133,14 @@ import {
   pendingHazards,
   PHOTO_MESSAGES,
   photoSizeProblem,
+  photoSourceOf,
   photoTypeProblem,
+  reinspectableHazards,
+  reinspectBlocker,
   REJECTED_STATUS,
   removeHazard,
+  SharedPhotoState,
+  SHARED_PHOTO_MESSAGES,
   SupervisionContractError,
   SupervisionDoc,
   SupervisionEndpoint,
@@ -678,8 +703,13 @@ type PhotoDraft = {
  * 人以为自己忘了点,再点一次「拍照」重来一遍 —— 而真正的原因(照片太大 /
  * 接口没开通)一次都没被看见,他会一直循环下去。
  *
- * 三态在屏幕上的区分是**颜色 + 图标 + 措辞**三样一起变(见 `ReinspectPhotoField`),
+ * 三态在屏幕上的区分是**颜色 + 图标 + 措辞**三样一起变(见 `SharedReinspectPhotoField`),
  * 只靠一行小字的话,阳光下的手机屏幕上根本读不出来。
+ *
+ * ⚠️ 2026-08-16 起**整屏只有一份**(共用一张照片),不再按隐患编号存。
+ * 它面向 lib 的那一份形状是 `SharedPhotoState` —— 那边是判别联合,编号只在
+ * 「传好了」那一档存在;这边多带一个 `draft`,那是浏览器对象(File、objectURL),
+ * 不许下沉到零依赖的 lib 里去。
  */
 type PhotoUpload =
   | { phase: "uploading"; draft: PhotoDraft }
@@ -730,17 +760,23 @@ function PhotoThumb({ src, alt }: { src: string; alt: string }) {
 }
 
 /**
- * 「整改后的现场照片」那一格 —— 复查结论的凭据。
+ * 「这次复查的照片」那一格 —— **面板级,整屏只有一处**(2026-08-16)。
  *
- * ── 为什么从「填编号」改成「拍照」(2026-08-16)──────────────────────────
+ * ── 为什么从「填编号」改成「拍照」(上一轮)────────────────────────────
  * 真人测试的原话:**「照片不能是编号意义不明」**。原先这一格是个文本框,
  * 标签写着「整改后照片的编号(32 位,在聊天里那张图下面)」—— 做复查的人
  * 手机里刚拍完那张照片,却要他退出去翻聊天记录、找到那张图、把图底下那串 hex
  * 抄回来。戴着手套、太阳底下、一只手扶梯子,这条路在工地上不成立。
  *
- * 🔴 **手填编号那一格没有删掉,只是折叠了。** 它是引用「聊天里已经传过的那张图」
- * 的唯一途径 —— 有人确实会先在对话里发照片、再来登记复查。删掉等于把那条路堵死,
- * 而那时人手上只有一个编号,连个能粘的地方都没有。
+ * ── 为什么从「每行一个」改成「面板一个」(这一轮)──────────────────────
+ * 真人原话:**「上传照片的地方太多了,一般都是在一张照片里」**。而这与事实相反 ——
+ * 隐患本来就是从同一张照片里认出来的,整改后也只拍一张。三条隐患三个大虚线框,
+ * 撑长了面板、还暗示人要拍三次。今天一张管一屏,**结论仍然一条一条下**
+ * (那条取舍的完整推演在 supervision-lib 那一节的头注,别当成图省事)。
+ *
+ * 🔴 **手填编号那条逃生口没有删掉,只是挪进了每一行**(见 `RowPhotoChoice`)。
+ * 它在这一层没有意义:共用那张不该被一个手打的编号顶掉,而「某一条要用别的照片」
+ * 天然是**行**的事。有人确实会先在对话里发照片、再来登记复查,那条路仍然通。
  *
  * ── `capture="environment"` 不能省 ────────────────────────────────────
  * 手机上它直接调起**后置**摄像头 —— 复查拍的是墙面、临边、脚手架,不是脸。
@@ -748,46 +784,32 @@ function PhotoThumb({ src, alt }: { src: string; alt: string }) {
  * 在部分机型上是前置。桌面浏览器一律忽略这个属性、退回文件选择框,两边都对。
  * (打卡那边写的是 `capture="user"`,同一个属性、相反的取向 —— 那边要自拍。)
  */
-function ReinspectPhotoField({
-  hazardNo,
+function SharedReinspectPhotoField({
   upload,
-  photoId,
   busy,
   artifactBase,
+  coverage,
   onPick,
   onRetry,
-  onPhotoIdChange,
 }: {
-  hazardNo: string;
   /** `undefined` = 还没选过图。 */
   upload: PhotoUpload | undefined;
-  /** 真正会被提交的那个编号(= `form.photo`)。**它才是唯一真相**,不是 `upload.photoId`。 */
-  photoId: string;
   busy: boolean;
   artifactBase: string;
+  /** 「下面 3 条隐患的复查结论都用这张」—— 由 `describeSharedPhotoCoverage` 排的人话。 */
+  coverage: string;
   onPick: (file: File) => void;
   onRetry: () => void;
-  onPhotoIdChange: (value: string) => void;
 }) {
-  /** 手填编号那一格折起来没有。纯 UI 状态,不发请求,所以留在这一层。 */
-  const [manualOpen, setManualOpen] = useState(false);
-  const inputId = `gyt-photo-file-${hazardNo}`;
-  const manualId = `gyt-photo-id-${hazardNo}`;
+  /** 整屏只有一格,所以 id 是定值 —— 不再拼隐患编号(拼了反而像每行各有一个)。 */
+  const inputId = "gyt-shared-photo-file";
   /** 传好之后那张图在产物库里的地址 —— 与证据链里的复查照片走的是同一条取件路。 */
   const storedUrl =
     upload?.phase === "done" ? documentUrl({ artifact_id: upload.photoId }, artifactBase) : null;
-  /**
-   * 手填的编号和刚传上去那张对不上。
-   *
-   * 🔴 必须说出来:缩略图摆着 A 张、而提交时用的是手填的 B 编号,是这一格唯一
-   * 能悄悄挂错证据的路子 —— 而复查合格会把隐患**销项**,事后翻证据链只会看到
-   * 一张跟这次复查无关的照片。屏幕上那两样东西看着都对,所以只能明说。
-   */
-  const idMismatch = upload?.phase === "done" && photoId.trim() !== upload.photoId;
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="text-[12px] font-medium text-gray-700">整改后的现场照片</div>
+    <div className="flex flex-col gap-2 rounded-xl border border-gray-200 bg-gray-50/60 px-3 py-2.5">
+      <div className="text-[12px] font-medium text-gray-700">这次复查的照片</div>
 
       {/* 文件选择框**始终挂着**(靠 htmlFor 触发),三种状态下的「换一张」共用它。
           按状态条件渲染的话,每换一次状态 input 就重建一次,选到一半的对话框会被吞掉。 */}
@@ -814,16 +836,24 @@ function ReinspectPhotoField({
           <Label
             htmlFor={inputId}
             aria-disabled={busy}
-            className={`flex items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-6 text-sm text-gray-600 transition-colors ${
+            className={`flex items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 bg-white px-4 py-6 text-sm text-gray-600 transition-colors ${
               busy ? "pointer-events-none opacity-50" : "cursor-pointer hover:bg-gray-100"
             }`}
           >
             <Camera className="size-5" />
             拍整改后的照片
           </Label>
+          {/* 传之前就把「它管着哪几条」说清楚 —— 不说的话,人看见一个孤零零的上传框
+              会以为它只管第一条,于是拍完第一张又去找第二个框(而第二个框已经没有了)。
+              后半句是这次改造的红线:共用的是**照片**,不是**结论**。 */}
+          <div className="text-[11px] leading-snug text-gray-500">
+            {coverage}结论仍然一条一条下。
+          </div>
         </>
       ) : upload.phase === "uploading" ? (
-        <div className="flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5">
+        // 底色用白:外面那圈已经是浅灰了,再套一层同色的话边框看不出来,
+        // 三态里就少了「颜色」这一维(见 `PhotoUpload` 头注:三样一起变才读得出)。
+        <div className="flex items-start gap-3 rounded-xl border border-gray-200 bg-white px-3 py-2.5">
           <PhotoThumb src={upload.draft.previewUrl} alt="正在上传的复查照片" />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5 text-[13px] font-medium text-gray-700">
@@ -886,11 +916,12 @@ function ReinspectPhotoField({
             <div className="mt-0.5 font-mono text-[11px] break-all text-gray-400 select-all">
               {upload.photoId}
             </div>
-            {idMismatch && (
-              <div className="mt-1 text-[12px] leading-snug text-red-600">
-                注意:下面手填的编号和这张不是同一张 —— 提交时用的是手填的那个。
-              </div>
-            )}
+            {/* 🔴 **它管着哪几条,必须写在这张卡上。** 共用之后照片和结论不在同一行了,
+                不说清的话人得自己数,而数错的方向是「以为它管的比实际多」——
+                「那三条我都传过照片了」,然后有一条的证据其实来自别处。
+                这个数由 `hazardsUsingSharedPhoto` 算(三道筛子:能复查 + 用的是这张 +
+                现在真点得动),不是拿清单长度凑的。 */}
+            <div className="mt-1 text-[12px] leading-snug text-emerald-900">{coverage}</div>
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <Label
                 htmlFor={inputId}
@@ -920,25 +951,95 @@ function ReinspectPhotoField({
         </div>
       )}
 
-      {/* ── 手填编号:降级成折叠项,不删 ────────────────────────────────
-          默认折起来是因为它现在是**少数路径**(引用聊天里已经传过的那张图);
-          摆在明面上的话,人又会以为「那才是正经做法」,而那正是这次要修掉的东西。
+    </div>
+  );
+}
 
-          🔴 2026-08-16 真人反馈「太多手续复杂」之后,这行字从
-          「或者填照片编号(引用聊天里已经传过的那张)」缩成「用已有编号」。
-          **什么时候用它这句话没有丢,只是挪进了 title** —— 收起状态下它是一行
-          常驻文字,而清单里每条可复查的隐患都要重复一遍;展开之后紧跟着的
-          Label「照片编号(32 位,在聊天里那张图下面)」把同一件事又说了一次。
-          砍的是**重复**,不是解释。 */}
+/**
+ * 一行的「这一条用哪张照片」—— 标注 + 折叠着的手填编号逃生口。
+ *
+ * ── 为什么行里只剩这么点东西 ──────────────────────────────────────────
+ * 照片本身搬到面板顶上去了(见 `SharedReinspectPhotoField` 头注)。行里留下的
+ * 只有两件**只有行才回答得了**的事:这一条到底用的哪张、以及某一条要用别的照片时
+ * 从哪儿填。一个虚线上传框都不该再出现在这里。
+ *
+ * ── 🔴 「用的不是共用那张」必须看得出来 ──────────────────────────────
+ * 这是行内逃生口的配套。人以为清单里几条都用同一张、而证据链里其实不是,
+ * 是这一层唯一能悄悄挂错证据的路子 —— 而复查合格会把隐患**销项**,事后翻证据链
+ * 只会看到一张跟这次复查无关的照片,屏幕上那两样东西当时看着都对。
+ * 所以 `own` 那一档用琥珀色 + 常驻一句话,不藏进 title(触屏没有 hover)。
+ *
+ * 判据一律问 `photoSourceOf`,**不在这儿就地比字符串** —— 归一化(trim + 转小写)
+ * 和「手填的恰好等于共用那张就算同一张」两条规矩都在那个函数里,抄一份必然漂。
+ */
+function RowPhotoChoice({
+  hazardNo,
+  rowPhotoId,
+  shared,
+  busy,
+  onPhotoIdChange,
+}: {
+  hazardNo: string;
+  /** 行内手填的那个编号(= `form.photo`);空 = 用共用那张。 */
+  rowPhotoId: string;
+  shared: SharedPhotoState;
+  busy: boolean;
+  onPhotoIdChange: (value: string) => void;
+}) {
+  const source = photoSourceOf(rowPhotoId, shared);
+  /**
+   * 手填那一格折起来没有。纯 UI 状态,不发请求,所以留在这一层。
+   *
+   * 初值跟着 `source` 走:已经填了编号的行**一进来就是展开的** —— 收起来的话,
+   * 屏幕上写着「这一条用的不是共用那张」,而那个编号在哪儿改却看不见。
+   */
+  const [manualOpen, setManualOpen] = useState(source === "own");
+  const manualId = `gyt-photo-id-${hazardNo}`;
+
+  return (
+    <div className="flex flex-col gap-1">
+      {source === "own" ? (
+        <div className="flex items-start gap-1.5 rounded-lg bg-amber-50 px-2 py-1.5 text-[12px] leading-snug text-amber-900">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <div className="min-w-0">
+            {/* 上面还没传共用照片时不提「共用那张」—— 没有的东西不该被拿来对照,
+                那只会让人去找一个屏幕上不存在的参照物。 */}
+            <div>
+              {shared.phase === "ready"
+                ? SHARED_PHOTO_MESSAGES.usesOwn
+                : SHARED_PHOTO_MESSAGES.usesOwnAlone}
+            </div>
+            {/* 编号跟着一起摆出来,这一格才是自足的:手填框折起来之后
+                「下面填的这个编号」底下就什么都没有了,而这条标注的意义正是
+                让人看清这一条挂的到底是哪张。原样显示人打进去的那串(不归一化)——
+                他要核对的是自己刚才粘的东西。 */}
+            <div className="mt-0.5 font-mono text-[11px] break-all text-amber-800 select-all">
+              {rowPhotoId.trim()}
+            </div>
+          </div>
+        </div>
+      ) : source === "shared" ? (
+        // 常态,说得轻:一句灰字就够了。这一格的意义是让上面那一档(用了别的照片)
+        // 有得对照 —— 全屏都没有标注的话,琥珀色那条也就没有参照系了。
+        <div className="text-[11px] text-gray-400">{SHARED_PHOTO_MESSAGES.usesShared}</div>
+      ) : null}
+
+      {/* ── 手填编号:折叠着,不删 ──────────────────────────────────────
+          它是引用「聊天里已经传过的那张图」的唯一途径 —— 有人确实会先在对话里
+          发照片、再来登记复查。删掉等于把那条路堵死,而那时人手上只有一个编号,
+          连个能粘的地方都没有。默认折起来是因为它是**少数路径**:摆在明面上的话,
+          人又会以为「那才是正经做法」,而那正是上一轮就修掉的东西。
+          **什么时候用它这句话没有丢,只是在 title 里**(收起时它是一行常驻文字,
+          而清单里每条可复查的隐患都要重复一遍)。 */}
       <div>
         <button
           type="button"
           onClick={() => setManualOpen((open) => !open)}
           aria-expanded={manualOpen}
-          title={manualOpen ? undefined : "引用聊天里已经传过的那张照片,填它的编号"}
+          title={manualOpen ? undefined : "这一条要用别的照片:填它的编号,填了就不吃上面那张"}
           className="cursor-pointer text-[11px] text-gray-400 underline-offset-2 transition-colors hover:text-gray-600 hover:underline pointer-coarse:min-h-11"
         >
-          {manualOpen ? "收起" : "用已有编号"}
+          {manualOpen ? "收起" : "这条用别的照片"}
         </button>
         {manualOpen && (
           <div className="mt-1.5 flex flex-col gap-1">
@@ -947,7 +1048,7 @@ function ReinspectPhotoField({
             </Label>
             <Input
               id={manualId}
-              value={photoId}
+              value={rowPhotoId}
               onChange={(e) => onPhotoIdChange(e.target.value)}
               placeholder="如:0123456789abcdef0123456789abcdef"
               disabled={busy}
@@ -955,17 +1056,21 @@ function ReinspectPhotoField({
             />
             {/* 打了半截就说一句 —— 空着不说(那是还没开始填,不是填错了)。
                 判据用 isPhotoId,与 actionBody 同一个正则:不然会出现
-                「这里说没问题、点下去被拦住」。 */}
-            {photoId.trim() !== "" && !isPhotoId(photoId) && (
+                「这里说没问题、点下去被拦住」。
+                🔴 半截编号**不会**悄悄回落成共用那张(`photoSourceOf` 头注),
+                所以这句红字和那两颗灰按钮说的是同一件事。 */}
+            {rowPhotoId.trim() !== "" && !isPhotoId(rowPhotoId) && (
               <div className="text-[11px] text-red-600">{PHOTO_MESSAGES.badManualId}</div>
             )}
+            {/* 空着是**有意义的**(= 用共用那张),所以这句话不写成「必填」。
+                「怎么回到共用那张」得有人说 —— 不说的话,填错了的人只会再去找一颗
+                「取消」按钮,而正确做法就是把这一格清空。 */}
             <div className="text-[11px] text-gray-400">
-              上面拍了照的话,这一格已经自动填好了,不用动它。
+              留空就用上面那张共用的照片。
             </div>
           </div>
         )}
       </div>
-
     </div>
   );
 }
@@ -995,7 +1100,8 @@ function HazardRow({
   artifactBase,
   expanded,
   detail,
-  photoUpload,
+  sharedPhoto,
+  usedPhotoId,
   onToggleSelect,
   onFormChange,
   onArm,
@@ -1003,8 +1109,6 @@ function HazardRow({
   onAct,
   onToggleDetail,
   onRetryDetail,
-  onPickPhoto,
-  onRetryPhoto,
 }: {
   hazard: HazardBrief;
   selected: boolean;
@@ -1021,8 +1125,10 @@ function HazardRow({
   expanded: boolean;
   /** 这条的详情三态;`undefined` = 还没开始读(见 `DetailState` 头注)。 */
   detail: DetailState | undefined;
-  /** 这条的复查照片直传三态;`undefined` = 还没选过图。 */
-  photoUpload: PhotoUpload | undefined;
+  /** 面板顶上那张共用照片现在什么样(整屏一份,不是每行一份)。 */
+  sharedPhoto: SharedPhotoState;
+  /** 这一行上一次登记复查用掉的编号;null = 这一轮还没登记过(见 `reinspectBlocker`)。 */
+  usedPhotoId: string | null;
   onToggleSelect: () => void;
   onFormChange: (patch: Partial<FormState>) => void;
   onArm: (action: DisposalAction) => void;
@@ -1030,8 +1136,6 @@ function HazardRow({
   onAct: (action: DisposalAction, grade?: string, result?: "pass" | "fail") => void;
   onToggleDetail: () => void;
   onRetryDetail: () => void;
-  onPickPhoto: (file: File) => void;
-  onRetryPhoto: () => void;
 }) {
   const actions = availableActions(hazard);
   const isPending = hazard.status === "pending";
@@ -1054,13 +1158,19 @@ function HazardRow({
    */
   const 已判级别 = currentGrade(hazard);
   /**
-   * 复查照片备好了没有 —— 决定「合格 / 不合格」那两颗能不能点。
+   * 「合格 / 不合格」那两颗现在点不点得动 —— `null` = 点得动,否则里面就是原因。
    *
-   * 判据是**编号本身合不合法**,不是「传没传过」:手填那条路也能把它填上,
-   * 而传过一张之后又被手改成半截串同样算没就绪。与 `actionBody` 同一个正则,
-   * 两边不许各写一份(`isPhotoId` 头注)。
+   * 🔴 判据整个下沉到 `reinspectBlocker`,**这一层一个 if 都不许自己写**:
+   * 它要同时回答四件事(有没有照片 / 在不在传 / 传没传上去 / 这一行是不是刚用过
+   * 这张),而**提交时发哪个编号**是同一个 `effectivePhotoId` 算的。
+   * 在这儿另写一遍的下场就是那两处漂开:按钮亮着而请求被自己人拦、
+   * 或者更坏 —— 按钮说用 A 张、发出去的是 B 张,而复查合格是**销项**,不可撤销。
    */
-  const 照片就绪 = isPhotoId(form.photo);
+  const 复查拦路 = reinspectBlocker({
+    rowPhotoId: form.photo,
+    shared: sharedPhoto,
+    usedPhotoId,
+  });
   /** 展开区的 id —— 给 `aria-controls` 用。隐患编号只含字母数字和连字符,直接拼安全。 */
   const evidenceId = `gyt-evidence-${hazard.hazard_no}`;
 
@@ -1167,14 +1277,11 @@ function HazardRow({
       )}
 
       {needsPhoto && (
-        <ReinspectPhotoField
+        <RowPhotoChoice
           hazardNo={hazard.hazard_no}
-          upload={photoUpload}
-          photoId={form.photo}
+          rowPhotoId={form.photo}
+          shared={sharedPhoto}
           busy={busy}
-          artifactBase={artifactBase}
-          onPick={onPickPhoto}
-          onRetry={onRetryPhoto}
           onPhotoIdChange={(value) => onFormChange({ photo: value })}
         />
       )}
@@ -1238,7 +1345,7 @@ function HazardRow({
                 )}
               </div>
             ) : action === "reinspect" ? (
-              // 🔴 **没照片就把这两颗按下去的路堵上**,而不是让 `actionBody` 事后抛。
+              // 🔴 **照片没就绪就把这两颗按下去的路堵上**,而不是让 `actionBody` 事后抛。
               //    ① 「合格」会把隐患**销项**,那一下不可撤销,而销项的唯一凭据就是
               //       这张整改后的照片(方案 §5.2 那条红线)—— 不能让人在一个不可逆
               //       动作上先点了再说;
@@ -1246,27 +1353,24 @@ function HazardRow({
               //       「在聊天记录里那张照片下面能看到」,那是**旧路**的指路话。人刚刚
               //       明明拍了一张,却被指回聊天记录去找编号 —— 真人测试反馈的那句
               //       「照片不能是编号意义不明」说的就是这一幕。
-              //    判据用 `isPhotoId`(与 `actionBody` 同一个正则),**不是 `form.photo !== ""`**:
-              //    折叠的手填框里打半截编号也算没就绪,不然按钮亮着、点下去照样被自己人拦。
-              //    正在传的时候 `form.photo` 是空的(选图那一下就清了,见 `pickPhoto`),
-              //    所以这一条判据顺带把「传到一半就点合格」也挡住了,不用另加一个 phase 判断。
+              //    判据用 `复查拦路`(= `reinspectBlocker`),与提交时算编号的
+              //    `effectivePhotoId` 同源,两处不许各写一份。
               // 变灰**必须说清差什么** —— 只变灰的话人只知道点不动、不知道要先干嘛,
               // 那正是本仓反复防的「点了没反应」。
               //
-              // 🔴 但这句话 2026-08-16 从**常驻文字**改成了 `title`(真人反馈
-              //    「太多手续复杂」)。判据:上面那一格「拍整改后的照片」就在眼前、
-              //    大得多、还是虚线框 —— 缺什么是自明的,一句常驻解释换来的是
-              //    每条可复查的隐患都重复一遍。改成 title 之后,想知道的人停一下就有,
-              //    不想看的人不用每行读一遍。**没有删掉,只是换了时机。**
-              //    ⚠️ 触屏没有 hover:所以「正在传」那一档仍然出常驻文字 ——
-              //    那一档的等待是有尽头的,而人盯着屏幕不知道在等什么最难受。
+              // 🔴 差什么这句话默认在 `title` 里(真人反馈「太多手续复杂」那一轮定的):
+              //    照片那一格就在面板顶上、大得多、还是虚线框/转圈/红卡 —— 缺什么是
+              //    自明的,一句常驻解释换来的是每条可复查的隐患都重复一遍。
+              //    ⚠️ **`already-used` 那一档是例外,必须常驻**:它是这一行独有的事实
+              //    (刚拿共用那张给这条登记过复查了),面板顶上那一格一点线索都没有,
+              //    而触屏根本没有 hover —— 藏进 title 等于没说,人只会看见一颗死按钮。
               <div key={action} className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[12px] text-gray-500">复查结论</span>
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={busy || !照片就绪}
-                  title={照片就绪 ? undefined : PHOTO_MESSAGES.noPhoto}
+                  disabled={busy || 复查拦路 !== null}
+                  title={复查拦路?.message}
                   onClick={() => onAct("reinspect", undefined, "pass")}
                   className="pointer-coarse:min-h-11"
                 >
@@ -1276,15 +1380,17 @@ function HazardRow({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={busy || !照片就绪}
-                  title={照片就绪 ? undefined : PHOTO_MESSAGES.noPhoto}
+                  disabled={busy || 复查拦路 !== null}
+                  title={复查拦路?.message}
                   onClick={() => onAct("reinspect", undefined, "fail")}
                   className="pointer-coarse:min-h-11"
                 >
                   不合格
                 </Button>
-                {photoUpload?.phase === "uploading" && (
-                  <span className="text-[12px] text-gray-500">照片还在传,传完就能点。</span>
+                {(复查拦路?.reason === "already-used" || 复查拦路?.reason === "uploading") && (
+                  // 「正在传」也常驻:那一档的等待是有尽头的,而人盯着屏幕不知道
+                  // 自己在等什么最难受(这条从改造前就是这么定的,措辞跟着共用改了指向)。
+                  <span className="text-[12px] text-gray-600">{复查拦路.message}</span>
                 )}
               </div>
             ) : (
@@ -1480,29 +1586,47 @@ export function SupervisionPanel({
   const detailFetchesRef = useRef<Map<string, AbortController>>(new Map());
 
   /**
-   * 每条隐患的复查照片直传状态(三态,见 `PhotoUpload`)。
+   * **整屏共用的**那张复查照片,三态见 `PhotoUpload`(2026-08-16 从「每条一份」改过来)。
    *
-   * ⚠️ 拿到的 `photo_id` **写进 `forms[编号].photo`,不在这里另存一份** ——
-   * 那一格本来就是提交时读的地方(`actionBody` 的 `afterPhotoId`)。
-   * 并存两份的下场是它们迟早漂开:界面按这一份画绿卡,而提交发的是那一份,
-   * 两处看着都对。这里只管「传的过程长什么样」,不管「提交时用哪个编号」。
+   * ⚠️ 它**不是** `forms[编号].photo` 的替身:提交时发哪个编号仍然由
+   * `effectivePhotoId(form.photo, sharedPhoto)` 一处算出来 —— 行内填了以行内为准,
+   * 没填才回落到这一张。并存两份「提交用编号」的下场是它们迟早漂开:
+   * 界面按这一份画绿卡,而提交发的是那一份,两处看着都对。
+   * 这里只管「传的过程长什么样」和「传成了拿到哪个编号」。
+   *
+   * ⚠️ **不在上传成功那一刻把编号写进每一行的 `forms`** —— 那是一次快照,
+   * 之后新出现的可复查行(切筛子、刚判了不合格、别的隐患刚签完通知单)就是空的,
+   * 而照片明明还摆在屏幕顶上。理由整段在 `effectivePhotoId` 头注。
    */
-  const [photoUploads, setPhotoUploads] = useState<Record<string, PhotoUpload>>({});
-  /** 每条隐患当前在飞的那一发上传。认领机制同 `detailFetchesRef`(见它的头注)。 */
-  const photoFetchesRef = useRef<Map<string, AbortController>>(new Map());
+  const [sharedPhoto, setSharedPhoto] = useState<PhotoUpload | undefined>(undefined);
+  /** 共用那一发上传的 controller。认领机制同 `detailFetchesRef`(见它的头注)。 */
+  const sharedPhotoFetchRef = useRef<AbortController | null>(null);
   /**
-   * 每条隐患当前那张本地预览图的 objectURL。
+   * 共用那张本地预览图的 objectURL。
    *
    * 🔴 **必须用 ref 记,不能只靠 state 收尾。** revoke 要在卸载时做,而卸载时
    * 清理函数闭包里的 state 是**挂载那一刻**那份(空的)—— 靠 state 收尾等于
    * 一张都不 revoke,面板反复开关就一直往内存里堆图(每张几 MB)。
    *
-   * 🔴 revoke 一律在**事件处理里**做(`swapPreview`),不在 setState 的更新函数里做:
-   * 更新函数允许被 React 重复调用(严格模式、并发渲染),而 revoke 是一次性副作用,
-   * 放进去就可能把还在显示的那张吊销掉 —— 表现是缩略图突然变成碎图,而且只在某些
-   * 渲染时序下复现,查起来极费劲。
+   * 🔴 revoke 一律在**事件处理里**做(`swapSharedPreview`),不在 setState 的更新函数
+   * 里做:更新函数允许被 React 重复调用(严格模式、并发渲染),而 revoke 是一次性
+   * 副作用,放进去就可能把还在显示的那张吊销掉 —— 表现是缩略图突然变成碎图,
+   * 而且只在某些渲染时序下复现,查起来极费劲。
    */
-  const photoPreviewsRef = useRef<Map<string, string>>(new Map());
+  const sharedPreviewRef = useRef<string | null>(null);
+  /**
+   * 每条隐患**上一次登记复查用掉的那个编号**。
+   *
+   * 🔴 它是「共用照片不清场」的配套闸,完整推演在 supervision-lib 的
+   * `reinspectBlocker` 头注。一句话:改成共用之后不能再照行清照片(清了就是
+   * 「登记完第一条,后面几条的照片全没了」),但判「不合格」的那一条会回到可复查,
+   * 上面还挂着刚才那张 —— 让它再用一次等于拿**上一轮**的照片当这一轮
+   * 「整改后」的证据,而屏幕上一切正常。记下用过哪张,那一条就得先换一张新的。
+   *
+   * 只记最近一次,不记全部历史:它挡的是「刚登记完、照片还挂着,顺手又给同一条
+   * 点了一次」这一幕 —— 那是共用带来的唯一新增误用路径。
+   */
+  const [usedPhotos, setUsedPhotos] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1522,34 +1646,49 @@ export function SupervisionPanel({
   }, []);
 
   /**
-   * 关面板时:掐掉还在飞的上传,并把所有本地预览图 revoke 掉。
+   * 关面板时:掐掉还在飞的上传,并把本地预览图 revoke 掉。
    *
-   * 不 revoke 的话每张现场照片(几 MB)会一直占着内存,而面板是反复开关的 ——
+   * 不 revoke 的话那张现场照片(几 MB)会一直占着内存,而面板是反复开关的 ——
    * 一个下午下来就是几百 MB,表现是浏览器越用越卡,没人会把它跟这个面板联系起来。
+   * (共用之后只剩一张要收,但这一步一样不能省:反复开关照样会堆。)
    */
   useEffect(() => {
-    const inFlight = photoFetchesRef.current;
-    const previews = photoPreviewsRef.current;
     return () => {
-      for (const controller of inFlight.values()) controller.abort();
-      inFlight.clear();
-      for (const url of previews.values()) URL.revokeObjectURL(url);
-      previews.clear();
+      sharedPhotoFetchRef.current?.abort();
+      sharedPhotoFetchRef.current = null;
+      if (sharedPreviewRef.current) URL.revokeObjectURL(sharedPreviewRef.current);
+      sharedPreviewRef.current = null;
     };
   }, []);
 
   /**
-   * 换掉某条隐患的本地预览图,顺手 revoke 旧的那张(传 null = 只清不换)。
+   * 换掉共用那张本地预览图,顺手 revoke 旧的那张(传 null = 只清不换)。
    *
-   * 单独抽出来是因为「什么时候该 revoke」有三个来源(换一张、复查登记完清场、
-   * 关面板),写在一处才不会漏 —— 而漏掉不会有任何报错,只是内存慢慢涨。
+   * 单独抽出来是因为「什么时候该 revoke」有两个来源(换一张、关面板),
+   * 写在一处才不会漏 —— 而漏掉不会有任何报错,只是内存慢慢涨。
+   * ⚠️ 复查登记成功**不再**是它的来源之一:共用那张登记完照旧留着
+   * (见 `usedPhotos` 头注),清掉就是「登记完第一条,后面几条的照片全没了」。
    */
-  const swapPreview = useCallback((hazardNo: string, url: string | null) => {
-    const previous = photoPreviewsRef.current.get(hazardNo);
+  const swapSharedPreview = useCallback((url: string | null) => {
+    const previous = sharedPreviewRef.current;
     if (previous && previous !== url) URL.revokeObjectURL(previous);
-    if (url) photoPreviewsRef.current.set(hazardNo, url);
-    else photoPreviewsRef.current.delete(hazardNo);
+    sharedPreviewRef.current = url;
   }, []);
+
+  /**
+   * 共用那张照片的**对外形状** —— 交给 lib 那几个判据用(它们不认 `PhotoDraft`
+   * 那些浏览器对象,只认「有没有编号 / 现在是哪一档」)。
+   *
+   * 🔴 `photoId` 只在 `done` 这一档存在,这条由类型钉着(判别联合,见
+   * `SharedPhotoState` 头注)—— 「正在传却已经有编号」那种组合根本拼不出来,
+   * 而它拼出来的后果是人在照片还没传完时就点得动「合格」,那一下不可撤销。
+   */
+  const sharedPhotoState = useMemo<SharedPhotoState>(() => {
+    if (!sharedPhoto) return { phase: "none" };
+    if (sharedPhoto.phase === "uploading") return { phase: "uploading" };
+    if (sharedPhoto.phase === "failed") return { phase: "failed" };
+    return { phase: "ready", photoId: sharedPhoto.photoId };
+  }, [sharedPhoto]);
 
   /**
    * 拉一屏隐患。**这是整个面板唯一的取数口**(动作回执只打补丁,不重拉)。
@@ -1578,9 +1717,11 @@ export function SupervisionPanel({
     setPhase("loading");
     // 举手状态和勾选跨清单没有意义:编号可能压根不在新的一屏里。
     // 上一屏的失败原因同理(它说的是对着旧快照做的那次动作)。
-    // `forms` 与 `photoUploads` 刻意**不清**:那是人一个字一个字打进去的期限、
-    // 和刚爬上去拍回来的那张照片,切一下筛子就没了很气人(照片还得重拍一趟)。
-    // 它们都按隐患编号存,换一屏之后不属于这一屏的那些只是暂时不显示,不会串行。
+    // `forms` / `sharedPhoto` / `usedPhotos` 刻意**不清**:那是人一个字一个字打进去
+    // 的期限、和刚爬上去拍回来的那张照片,切一下筛子就没了很气人(照片还得重拍一趟)。
+    // `forms` 与 `usedPhotos` 都按隐患编号存,换一屏之后不属于这一屏的那些只是暂时
+    // 不显示,不会串行;共用那张本来就是整屏一份,**跨筛子继续管用是它该有的样子**
+    // ——「在办」里判完一条,切到「全部」接着判另一条,用的还是同一趟拍的那张照片。
     setArmed(null);
     setSelected([]);
     setFailures({});
@@ -1787,6 +1928,39 @@ export function SupervisionPanel({
     () => selected.filter((no) => pending.some((h) => h.hazard_no === no)),
     [selected, pending],
   );
+  /**
+   * 这一屏有没有可复查的隐患 —— **那一格照片要不要出现,就看它**。
+   *
+   * 一条都没有的时候摆一个上传框是纯噪音:人会以为哪儿漏了一步、或者去猜它管什么。
+   * 判据用 `reinspectableHazards`(内部就是 `availableActions(h).includes("reinspect")`),
+   * 不在这儿另比状态 —— 那张表是服务端四道闸在界面上的唯一投影。
+   */
+  const reinspectable = useMemo(() => reinspectableHazards(list), [list]);
+  /**
+   * 「下面 3 条隐患的复查结论都用这张」这句话。**传好之前和传好之后数的不是同一个数。**
+   *
+   * · 还没传成(没传 / 在传 / 传失败)—— 数的是**这一屏能复查的那几条**,
+   *   它是一句承诺:「你拍的这张会管住下面这几条」。这一格只在至少有一条时才渲染,
+   *   所以这里不会出现 0;
+   * · 传好了 —— 数的是它**此刻真正管着**的那几条。🔴 **不是 `reinspectable.length`**:
+   *   填了自己编号的、以及刚拿这张登记过复查的,都已经不归它管了。数大了的方向最坏
+   *   —— 监理照着这句以为「那几条我都传过照片了」,而其中一条的证据其实来自别处。
+   *   三道筛子在 `hazardsUsingSharedPhoto` 里。
+   */
+  const sharedCoverage = useMemo(() => {
+    if (sharedPhotoState.phase !== "ready") {
+      return describeSharedPhotoCoverage(reinspectable.length);
+    }
+    const covered = hazardsUsingSharedPhoto(
+      list,
+      // `forms` 里还带着期限那一格,这里只把照片编号那一维抽出来给 lib ——
+      // lib 是零依赖纯 TS,不该认识面板的表单形状。
+      Object.fromEntries(Object.entries(forms).map(([no, f]) => [no, f.photo])),
+      usedPhotos,
+      sharedPhotoState,
+    );
+    return describeSharedPhotoCoverage(covered.length);
+  }, [list, reinspectable, forms, usedPhotos, sharedPhotoState]);
 
   const setForm = useCallback((hazardNo: string, patch: Partial<FormState>) => {
     setForms((prev) => ({ ...prev, [hazardNo]: { ...(prev[hazardNo] ?? EMPTY_FORM), ...patch } }));
@@ -1803,32 +1977,7 @@ export function SupervisionPanel({
   }, []);
 
   /**
-   * 把某条隐患的复查照片草稿收干净:掐掉在飞的上传、revoke 预览图、清掉编号。
-   *
-   * 🔴 **复查登记成功之后必须调它。** 不调的下场:复查判「不合格」时这一行会
-   * **再次**出现「登记复查结论」,而上面还挂着上一次那张照片和它的编号 ——
-   * 第二次复查会把第一次的照片当成整改后的证据交上去,而屏幕上一切正常
-   *(绿卡写着「照片已上传」)。证据链里两次复查挂同一张图,事后没人分得清
-   * 哪一次是哪一次,而那正是「复查必须挂照片」这条红线的全部意义。
-   */
-  const clearPhoto = useCallback(
-    (hazardNo: string) => {
-      photoFetchesRef.current.get(hazardNo)?.abort();
-      photoFetchesRef.current.delete(hazardNo);
-      swapPreview(hazardNo, null);
-      setPhotoUploads((prev) => {
-        if (!(hazardNo in prev)) return prev; // 没草稿就别造新引用,省一次重渲染
-        const next = { ...prev };
-        delete next[hazardNo];
-        return next;
-      });
-      setForm(hazardNo, { photo: "" });
-    },
-    [setForm, swapPreview],
-  );
-
-  /**
-   * 选了一张复查照片 → **立刻直传**,拿回 32 位编号写进 `forms[编号].photo`。
+   * 选了一张复查照片 → **立刻直传**,拿回 32 位编号存进 `sharedPhoto`(整屏一份)。
    *
    * ── 上传时机:选完就传,不等点「合格」──────────────────────────────
    * 三条理由,按分量排:
@@ -1836,7 +1985,7 @@ export function SupervisionPanel({
    *      那一下已经是法律动作,而人以为隐患已经销项了;
    *   ② 「合格 / 不合格」那两颗是不可撤销的动作,点下去到出结果之间越短越好 ——
    *      把几秒的上传塞进那个窗口里,人会以为是签发本身在卡;
-   *   ③ 传完才有编号,而有没有编号决定那两颗能不能点(见 `照片就绪`)。
+   *   ③ 传完才有编号,而有没有编号决定那两颗能不能点(见 `reinspectBlocker`)。
    *      不先传的话,那两颗按钮在点之前无法判断能不能点,只能一律亮着。
    *
    * ── 为什么**不**占面板那个 `busy` 闸 ─────────────────────────────────
@@ -1847,53 +1996,56 @@ export function SupervisionPanel({
    * 而那两件事互不相干。
    *
    * 不占就得自己防连点,两道:
-   *   · 每条隐患**各一发**(键是隐患编号),同一行再选一张会先 abort 上一发 +
-   *     认领机制挡掉迟到的结果,不会出现「传了两张、写进去的是先回来那张」;
-   *   · 选图那一下就把 `forms[编号].photo` **清空**(见下面那条红线),所以传的期间
-   *     那一行的「合格 / 不合格」自然是灰的,不存在「传到一半就销项」。
-   * 有法律动作在飞时(`busy`)选图入口是禁用的,那是在 `ReinspectPhotoField` 里
-   * 按 `busy` 关掉的 —— 与它上面那个期限输入框同一条规矩:这一行的下一个动作可能
-   * 就是拿这张照片去销项,换图换到一半会让人分不清提交的到底是哪张。
+   *   · **整屏只一发**(共用之后连键都不用了):再选一张会先 abort 上一发 +
+   *     认领机制挡掉迟到的结果,不会出现「传了两张、用的是先回来那张」;
+   *   · 传的期间 `sharedPhoto.phase === "uploading"`,`reinspectBlocker` 据此把所有
+   *     可复查行的「合格 / 不合格」判成点不动,不存在「传到一半就销项」。
+   *     ⚠️ 这一道**不能再靠「选图那一下清空 `forms[编号].photo`」** —— 共用之后
+   *     那一格是**行内逃生口**,清它等于把人手填的编号抹掉,而那条路跟这张照片无关。
+   * 有法律动作在飞时(`busy`)选图入口是禁用的,那是在 `SharedReinspectPhotoField` 里
+   * 按 `busy` 关掉的 —— 与行里那个期限输入框同一条规矩:下一个动作可能就是拿这张
+   * 照片去销项,换图换到一半会让人分不清提交的到底是哪张。
    */
-  const pickPhoto = useCallback(
-    async (hazardNo: string, file: File) => {
+  const pickSharedPhoto = useCallback(
+    async (file: File) => {
       const draft: PhotoDraft = {
         file,
         previewUrl: URL.createObjectURL(file),
         label: describePhotoFile(file),
       };
-      swapPreview(hazardNo, draft.previewUrl);
+      swapSharedPreview(draft.previewUrl);
 
-      // 🔴 **先把已经填好的编号清掉,再开始传。** 顺序反了会出这一幕:
-      //    A 张传成功(photo=A),换成 B 张、B 传失败 —— photo 里还是 A,
-      //    而屏幕上摆着 B 的缩略图和一句「这张还没传上去」。人重拍一次不成、
-      //    索性点了「合格」,隐患销项,而证据链里挂的是 A 那张。
-      //    两样东西看着都对,没有任何报错。
-      setForm(hazardNo, { photo: "" });
-
+      // 🔴 **先把旧的那一份状态换掉,再开始传**(下面 `setSharedPhoto` 那两处)。
+      //    改成共用之前这里还要清 `forms[编号].photo`,防的是这一幕:
+      //    A 张传成功、换成 B 张、B 传失败 —— 编号里还是 A,而屏幕上摆着 B 的缩略图
+      //    和一句「这张还没传上去」,人索性点了「合格」,证据链里挂的是 A。
+      //    共用之后这一幕由**类型**挡住:编号只存在于 `phase === "done"` 那一档
+      //    (`SharedPhotoState` 是判别联合),一进 uploading / failed 就没有编号可用,
+      //    根本不需要另外去清一个字段 —— 而 `forms[编号].photo` 现在是行内逃生口,
+      //    清它反而会抹掉人手填的东西。
+      //
       // 本地预检:大小 / 明摆着不是图。省一次白传 —— 工地 4G 传 12MB 要十几秒,
       // 等完再被 413 拒是最气人的一种失败。**真正说了算的仍是后端**(魔数 + 413),
       // 这两条只认它们有把握的那两类,判据与理由在 supervision-lib 那两个函数头注。
       const problem = photoSizeProblem(file) ?? photoTypeProblem(file);
       if (problem) {
-        setPhotoUploads((prev) => ({ ...prev, [hazardNo]: { phase: "failed", draft, message: problem } }));
+        setSharedPhoto({ phase: "failed", draft, message: problem });
         return;
       }
 
-      photoFetchesRef.current.get(hazardNo)?.abort();
+      sharedPhotoFetchRef.current?.abort();
       const controller = new AbortController();
-      photoFetchesRef.current.set(hazardNo, controller);
+      sharedPhotoFetchRef.current = controller;
       /** 这一发还算不算数 —— 认领机制,理由原样见 `loadDetail` 里那段。 */
-      const mine = () => photoFetchesRef.current.get(hazardNo) === controller;
-      /** 落地:先认领再写状态;`photoId` 非空时同时把编号填进那一行的表单。 */
-      const land = (state: PhotoUpload, photoId: string | null) => {
+      const mine = () => sharedPhotoFetchRef.current === controller;
+      /** 落地:先认领再写状态。 */
+      const land = (state: PhotoUpload) => {
         if (!mine()) return;
-        photoFetchesRef.current.delete(hazardNo);
-        setPhotoUploads((prev) => ({ ...prev, [hazardNo]: state }));
-        if (photoId) setForm(hazardNo, { photo: photoId });
+        sharedPhotoFetchRef.current = null;
+        setSharedPhoto(state);
       };
 
-      setPhotoUploads((prev) => ({ ...prev, [hazardNo]: { phase: "uploading", draft } }));
+      setSharedPhoto({ phase: "uploading", draft });
       try {
         const apiKey = getApiKey();
         const res = await fetch(supervisionPhotoUrl(apiBase), {
@@ -1913,47 +2065,41 @@ export function SupervisionPanel({
         if (!res.ok) {
           // 后端的人话原样上屏(413「照片太大了…」、400「不是照片文件」都写得很具体);
           // 接口还没开通那种 404 由 normalizeError 说成「请管理员确认后端版本」。
-          land(
-            {
-              phase: "failed",
-              draft,
-              message: normalizeError(res.status, res.headers.get("content-type"), bodyText).message,
-            },
-            null,
-          );
+          land({
+            phase: "failed",
+            draft,
+            message: normalizeError(res.status, res.headers.get("content-type"), bodyText).message,
+          });
           return;
         }
         const result = parsePhotoEnvelope(bodyText);
         if (!result.ok || !result.photoId) {
           // 200 但信封说 ok:false,或者编号形状认不出 —— 两种都不许画成「传好了」,
           // 理由在 parsePhotoEnvelope 头注(绿卡 + 空编号 = 下一步被自己人拦住)。
-          land({ phase: "failed", draft, message: result.userMsg || PHOTO_MESSAGES.badEnvelope }, null);
+          land({ phase: "failed", draft, message: result.userMsg || PHOTO_MESSAGES.badEnvelope });
           return;
         }
-        land({ phase: "done", draft, photoId: result.photoId }, result.photoId);
+        land({ phase: "done", draft, photoId: result.photoId });
       } catch {
-        // 两种:真网络异常,和换图/关面板时自己 abort 的。后者已经不在表里,
+        // 两种:真网络异常,和换图/关面板时自己 abort 的。后者已经不是当前那一发,
         // `mine()` 会挡掉 —— 不挡的话换一张图就会闪一句「连不上服务器」。
-        land({ phase: "failed", draft, message: SUPERVISION_MESSAGES.network }, null);
+        land({ phase: "failed", draft, message: SUPERVISION_MESSAGES.network });
       }
     },
-    [apiBase, setForm, swapPreview],
+    [apiBase, swapSharedPreview],
   );
 
   /**
    * 重传上一次那张(不用重新选图)。
    *
    * 失败之后最常见的下一步就是原地再试一次 —— 逼人重拍的话,工地上那个部位
-   * 可能已经不方便再爬上去了。走的还是 `pickPhoto`,所以清编号、预检、认领
+   * 可能已经不方便再爬上去了。走的还是 `pickSharedPhoto`,所以预检、认领
    * 那几道一样都不少。
    */
-  const retryPhoto = useCallback(
-    (hazardNo: string) => {
-      const file = photoUploads[hazardNo]?.draft.file;
-      if (file) void pickPhoto(hazardNo, file);
-    },
-    [photoUploads, pickPhoto],
-  );
+  const retrySharedPhoto = useCallback(() => {
+    const file = sharedPhoto?.draft.file;
+    if (file) void pickSharedPhoto(file);
+  }, [sharedPhoto, pickSharedPhoto]);
 
   /** 批量确认(pending → open)。**这是 D17 那道人工闸的全部实现。** */
   const confirmSelected = useCallback(async () => {
@@ -2021,7 +2167,9 @@ export function SupervisionPanel({
         actionBody(action, {
           hazardNo: hazard.hazard_no,
           duePhrase: form.due,
-          afterPhotoId: form.photo,
+          // 与 `runAction` 走同一个 `effectivePhotoId` —— 两处各写一份的话,
+          // 举手时验的是 A 张、真发出去的是 B 张,而中间隔着一句「不能撤销」。
+          afterPhotoId: effectivePhotoId(form.photo, sharedPhotoState),
         });
       } catch (err) {
         setFailure(
@@ -2033,19 +2181,25 @@ export function SupervisionPanel({
       setFailure(hazard.hazard_no, null);
       setArmed({ hazardNo: hazard.hazard_no, action, at: Date.now() });
     },
-    [forms, setFailure],
+    [forms, sharedPhotoState, setFailure],
   );
 
   /** 单条处置:定级 / 签发 / 复查 / 复工 / 上报。**一次只飞一个请求**(busy 全局)。 */
   const runAction = useCallback(
     async (hazard: HazardBrief, action: DisposalAction, grade?: string, result?: "pass" | "fail") => {
       const form = forms[hazard.hazard_no] ?? EMPTY_FORM;
+      /**
+       * 这一行这次要发的照片编号。**行内填了以行内为准,没填才回落到共用那张** ——
+       * 判据只在 `effectivePhotoId` 一处算,按钮灰不灰(`reinspectBlocker`)读的也是它。
+       * 各算一遍的下场是「界面说用 A、请求发的是 B」,而复查合格是销项,不可撤销。
+       */
+      const photoId = effectivePhotoId(form.photo, sharedPhotoState);
       let body: Record<string, unknown>;
       try {
         body = actionBody(action, {
           hazardNo: hazard.hazard_no,
           duePhrase: form.due,
-          afterPhotoId: form.photo,
+          afterPhotoId: photoId,
           grade,
           result,
         });
@@ -2112,11 +2266,21 @@ export function SupervisionPanel({
         // 收着的隐患也拉:多一发很便宜(动作本来就稀少且是人一下一下点的),
         // 而少拉的代价是那一行一直挂着过期的期限。
         void loadDetail(parsed.hazard_no);
-        // 复查登记完就把这一行的照片草稿收干净(编号 + 缩略图 + 本地预览地址)。
-        // 完整理由在 `clearPhoto` 头注:不收的话,判「不合格」之后这一行会再次出现
-        // 「登记复查结论」,而上面还挂着上一次那张照片 —— 第二次复查会拿第一次的
-        // 照片当整改后的证据交上去,屏幕上一切正常。
-        if (action === "reinspect") clearPhoto(hazard.hazard_no);
+        // 🔴 复查登记完:**照片留着,但记下这一行用掉了哪个编号。**
+        //
+        // 改成共用之前这里是「把这一行的照片草稿整个收干净」,防的是:判「不合格」
+        // 之后这一行会再次出现「登记复查结论」,而上面还挂着上一次那张照片 ——
+        // 第二次复查会拿第一次的照片当整改后的证据交上去,屏幕上一切正常。
+        //
+        // 共用之后**不能再照行清**:那张照片同时管着别的几条,清掉就是
+        // 「登记完第一条,后面几条的照片全没了」,而人手上只有那一张。
+        // 两者的共存点就是下面这一行 —— 留着照片、记下用过,那一条要再复查必须
+        // 先在上面换一张新拍的(完整推演在 supervision-lib 的 `reinspectBlocker` 头注)。
+        // 记的是**真发出去的那个** `photoId`,不是共用那张的编号:行内填了别的编号时
+        // 用掉的是它,拿共用那张去记的话那一行会被错误地放行第二次。
+        if (action === "reinspect") {
+          setUsedPhotos((prev) => ({ ...prev, [hazard.hazard_no]: photoId }));
+        }
         const docLine = describeDocuments(parsed.documents);
         setBanner({
           tone: "ok",
@@ -2133,7 +2297,7 @@ export function SupervisionPanel({
         setBusy(false);
       }
     },
-    [apiBase, forms, setFailure, invalidateDetail, loadDetail, clearPhoto],
+    [apiBase, forms, sharedPhotoState, setFailure, invalidateDetail, loadDetail],
   );
 
   if (typeof document === "undefined") return null;
@@ -2290,7 +2454,12 @@ export function SupervisionPanel({
                 在模型眼里一样 —— 那是往「误判合格」方向错,而这一侧会死人。
                 🔴 **别再挪回行里,也别删。** 删了「为什么系统不替我判」就没人回答;
                 挪回行里就又变成每行讲一遍课。 */}
-            {list.some((h) => availableActions(h).includes("reinspect")) && (
+            {/* 判据与那一格照片同源(`reinspectable`,内部就是
+                `availableActions(h).includes("reinspect")`)—— 两处各写一份的话,
+                会出现「照片那一格在、这句话不在」这种说不清的组合。
+                ⚠️ 共用照片之后这句话更要紧了:一张照片管好几条结论,
+                「谁来判」这件事只会更容易被当成「系统替我判过了」。 */}
+            {reinspectable.length > 0 && (
               <span title="复查照片的角度、光线、取景都变了,模型分不清「问题已消除」和「这张没拍到那个部位」——那是往「误判合格」方向错。">
                 复查结论由人来下
               </span>
@@ -2319,6 +2488,29 @@ export function SupervisionPanel({
               ? `上面这些里,有 ${snapshot?.unassigned} 条还没归到任何工地。`
               : `另外还有 ${snapshot?.unassigned} 条隐患没归到任何工地,这一屏里看不到 —— 把顶栏的工地切回「全部」才看得见。`}
           </div>
+        )}
+
+        {/* ── 这次复查的照片:整屏一格,排在清单**之前** ──────────────────────
+            🔴 **只在这一屏至少有一条能复查时才出现。** 一条都没有的时候摆一个上传框
+            是纯噪音:人会以为哪儿漏了一步,或者去猜它到底管什么。判据用 `reinspectable`
+            (= `availableActions(h).includes("reinspect")`),与下面每一行「合格/不合格」
+            那两颗按钮出不出现是同一张表 —— 分开写就会出现「有框没按钮」或者反过来。
+
+            排在清单之前是刻意的:人的动作顺序就是「先拍照,再一条条下结论」。
+            排在后面的话,前几条的按钮是灰的而解释在屏幕更下方,人得先滚下去才知道差什么。
+
+            ⚠️ 它**不在** `phase === "ready"` 之外出现:正在读 / 读不出来的时候
+            `list` 是空的,`reinspectable` 自然也空,这一格跟着不出现 —— 不用额外加判据,
+            但别把 `list` 换成快照里的数,那份数是「拉取那一刻」的。 */}
+        {reinspectable.length > 0 && (
+          <SharedReinspectPhotoField
+            upload={sharedPhoto}
+            busy={busy}
+            artifactBase={artifactBase}
+            coverage={sharedCoverage}
+            onPick={(file) => void pickSharedPhoto(file)}
+            onRetry={retrySharedPhoto}
+          />
         )}
 
         <div className="flex flex-col gap-2">
@@ -2370,7 +2562,8 @@ export function SupervisionPanel({
                 artifactBase={artifactBase}
                 expanded={expandedDetails.includes(hazard.hazard_no)}
                 detail={details[hazard.hazard_no]}
-                photoUpload={photoUploads[hazard.hazard_no]}
+                sharedPhoto={sharedPhotoState}
+                usedPhotoId={usedPhotos[hazard.hazard_no] ?? null}
                 onToggleSelect={() => setSelected((prev) => toggleSelected(prev, hazard.hazard_no))}
                 onFormChange={(patch) => setForm(hazard.hazard_no, patch)}
                 onArm={(action) => armAction(hazard, action)}
@@ -2378,8 +2571,6 @@ export function SupervisionPanel({
                 onAct={(action, grade, result) => void runAction(hazard, action, grade, result)}
                 onToggleDetail={() => toggleDetail(hazard.hazard_no)}
                 onRetryDetail={() => retryDetail(hazard.hazard_no)}
-                onPickPhoto={(file) => void pickPhoto(hazard.hazard_no, file)}
-                onRetryPhoto={() => retryPhoto(hazard.hazard_no)}
               />
             ))
           )}

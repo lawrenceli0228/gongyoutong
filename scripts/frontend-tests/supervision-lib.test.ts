@@ -28,12 +28,14 @@ import {
   confirmPrompt,
   describeDocuments,
   describePhotoFile,
+  describeSharedPhotoCoverage,
   DISPOSAL_ACTIONS,
   DisposalAction,
   documentsFromToolData,
   documentUrl,
   docTypeZh,
   DOC_TYPE_ZH,
+  effectivePhotoId,
   failedItemsFromToolData,
   GRADE_NORMAL,
   GRADE_SEVERE,
@@ -50,6 +52,7 @@ import {
   hazardDetailUrl,
   hazardListUrl,
   hazardsFromToolData,
+  hazardsUsingSharedPhoto,
   hazardStatusZh,
   isDownloadableDoc,
   isPhotoId,
@@ -71,10 +74,15 @@ import {
   PHOTO_MAX_MB,
   PHOTO_MESSAGES,
   photoSizeProblem,
+  photoSourceOf,
   photoTypeProblem,
+  reinspectableHazards,
+  reinspectBlocker,
   REINSPECT_DOC_TYPE,
   REJECTED_STATUS,
   removeHazard,
+  SharedPhotoState,
+  SHARED_PHOTO_MESSAGES,
   SUPERVISION_ENDPOINTS,
   SUPERVISION_MESSAGES,
   SupervisionContractError,
@@ -1706,8 +1714,10 @@ describe("照片这条链的文案(它们会原样上屏,所以在这里钉住)"
     // 主路径是「拍一张」,两句话指向两个不同的地方 —— 合成一句必然有一半人被指错方向,
     // 而「被指错方向」正是真人测试反馈那句「照片不能是编号意义不明」的全部内容。
     expect(SUPERVISION_MESSAGES.badPhotoId).toContain("聊天记录");
-    expect(PHOTO_MESSAGES.noPhoto).not.toContain("聊天");
-    expect(PHOTO_MESSAGES.noPhoto).not.toContain("编号");
+    // 主路径那句现在是 SHARED_PHOTO_MESSAGES.waiting(照片在面板顶上那一格)。
+    // 🔴 它不许再把人指回聊天记录 —— 那正是真人反馈「照片不能是编号意义不明」说的那一幕。
+    expect(SHARED_PHOTO_MESSAGES.waiting).not.toContain("聊天");
+    expect(SHARED_PHOTO_MESSAGES.waiting).not.toContain("编号");
   });
 
   it("每一句都是中文人话:不许漏进后端的字段名、英文状态词、模块路径", () => {
@@ -1746,5 +1756,308 @@ describe("照片这条链的文案(它们会原样上屏,所以在这里钉住)"
 
   it("PHOTO_MESSAGES 是冻的 —— 运行时被改掉的话,错的话会一路传到屏幕上", () => {
     expect(Object.isFrozen(PHOTO_MESSAGES)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 一张照片、多条隐患共用(2026-08-16:真人反馈「上传照片的地方太多了」)
+// ---------------------------------------------------------------------------
+//
+// 这一节锁的东西全部**静默出错**:
+//   · `photoSourceOf` 判错 → 屏幕上标着「用共用那张」而提交发的是别的编号,
+//     两处看着都对,而错的那一侧是**销项**(不可撤销,证据链里挂着无关的照片);
+//   · `effectivePhotoId` 与 `actionBody` 漂开 → 按钮亮着、点下去被自己人拦;
+//   · `reinspectBlocker` 少一档 → 判「不合格」的那一条能拿**上一轮**的照片再登记一次;
+//   · `hazardsUsingSharedPhoto` 数大了 → 监理以为「那几条我都传过照片了」。
+
+/** 共用那张照片的编号(传成功之后拿到的那个)。 */
+const 共用编号 = "0123456789abcdef0123456789abcdef";
+/** 某一行自己填的那个别的编号。 */
+const 行内编号 = "aaaabbbbccccddddeeeeffff00001111";
+const 传好了: SharedPhotoState = { phase: "ready", photoId: 共用编号 };
+const 没传: SharedPhotoState = { phase: "none" };
+const 在传: SharedPhotoState = { phase: "uploading" };
+const 传失败: SharedPhotoState = { phase: "failed" };
+
+/** 一条可复查的隐患(notified 是最常见的那一档)。 */
+function 可复查(overrides: Partial<HazardBrief> = {}): HazardBrief {
+  return hazard({ status: "notified", ...overrides });
+}
+
+describe("reinspectableHazards —— 那一格照片要不要出现,判据只有这一个", () => {
+  it("能登记复查结论的三档才算(通知过 / 停过工 / 上次复查没过)", () => {
+    const list = [
+      可复查({ hazard_no: "H-1", status: "notified" }),
+      可复查({ hazard_no: "H-2", status: "suspended", grade: GRADE_SEVERE }),
+      可复查({ hazard_no: "H-3", status: "reinspect_failed" }),
+    ];
+    expect(reinspectableHazards(list).map((h) => h.hazard_no)).toEqual(["H-1", "H-2", "H-3"]);
+  });
+
+  it("其余状态一条都不算 —— 一条可复查的都没有时摆一个上传框是纯噪音", () => {
+    for (const status of ["pending", "open", "resuming", "closed", "escalated"] as const) {
+      expect(reinspectableHazards([hazard({ status })])).toEqual([]);
+    }
+  });
+
+  it("🔴 未定级的隐患不算 —— 它连复查按钮都没有(硬拦③在这儿也得成立)", () => {
+    // 判据必须走 availableActions,不许在这儿自己比 status:
+    // 自己比的话 needs_grading=1 的 notified 会被算进来,于是屏幕上出现一个
+    // 上传框、而下面那一行根本没有「合格/不合格」两颗按钮 —— 人会以为按钮没加载出来。
+    expect(reinspectableHazards([可复查({ needs_grading: true })])).toEqual([]);
+  });
+});
+
+describe("photoSourceOf —— 「这一条用的不是共用那张」必须看得出来", () => {
+  it("行内没填 + 共用那张传好了 → 用共用的", () => {
+    expect(photoSourceOf("", 传好了)).toBe("shared");
+  });
+
+  it("行内没填 + 共用那张还没传好 → 这一行现在没有照片", () => {
+    for (const shared of [没传, 在传, 传失败]) {
+      expect(photoSourceOf("", shared)).toBe("none");
+    }
+  });
+
+  it("行内填了别的编号 → 用它自己的(逃生口生效,不吃共用那张)", () => {
+    expect(photoSourceOf(行内编号, 传好了)).toBe("own");
+    expect(photoSourceOf(行内编号, 没传)).toBe("own");
+  });
+
+  it("🔴 半截编号也算「用它自己的」,**绝不许悄悄回落到共用那张**", () => {
+    // 回落的话会出这一幕:手填格里少打一位,屏幕上写着「这不像照片编号」,
+    // 而按钮却是亮的、点下去销的项挂着另一张照片 —— 两样东西看着都对,没有报错。
+    // 正确做法是行内赢,再由 reinspectBlocker 明说「这不像照片编号」。
+    expect(photoSourceOf("abc", 传好了)).toBe("own");
+    expect(reinspectBlocker({ rowPhotoId: "abc", shared: 传好了, usedPhotoId: null })).toEqual({
+      reason: "bad-id",
+      message: PHOTO_MESSAGES.badManualId,
+    });
+  });
+
+  it("手填的正好就是共用那张(大小写/空格不同)→ 仍然算共用,不许标成「用了别的照片」", () => {
+    // 标错了就是撒谎,而这条标注的全部意义就是让人分清哪条不是同源。
+    expect(photoSourceOf(`  ${共用编号.toUpperCase()}  `, 传好了)).toBe("shared");
+  });
+});
+
+describe("effectivePhotoId —— 界面画的和请求发的必须是同一个编号", () => {
+  it("行内没填就回落到共用那张", () => {
+    expect(effectivePhotoId("", 传好了)).toBe(共用编号);
+    expect(effectivePhotoId("   ", 传好了)).toBe(共用编号);
+  });
+
+  it("行内填了就用行内那个(逃生口:某一条要用别的照片)", () => {
+    expect(effectivePhotoId(行内编号, 传好了)).toBe(行内编号);
+  });
+
+  it("共用那张还没传好 + 行内也没填 → 空串(界面据此把两颗按钮判成点不动)", () => {
+    for (const shared of [没传, 在传, 传失败]) {
+      expect(effectivePhotoId("", shared)).toBe("");
+    }
+  });
+
+  it("🔴 归一化与 actionBody 一致 —— 不然同一个编号在两处会被当成两张照片", () => {
+    expect(effectivePhotoId(`  ${行内编号.toUpperCase()}  `, 传好了)).toBe(行内编号);
+    // 反向的钉子:这一层算出来的东西,`actionBody` 必须原样收下并发出去。
+    const body = actionBody("reinspect", {
+      hazardNo: "GYT-H-1",
+      result: "pass",
+      afterPhotoId: effectivePhotoId("", 传好了),
+    });
+    expect(body.after_photo_id).toBe(共用编号);
+  });
+});
+
+describe("reinspectBlocker —— 变灰必须说清差什么(共用之后差的东西有五种)", () => {
+  it("一张都没有 → 指到面板顶上那一格去拍", () => {
+    const block = reinspectBlocker({ rowPhotoId: "", shared: 没传, usedPhotoId: null });
+    expect(block).toEqual({ reason: "no-photo", message: SHARED_PHOTO_MESSAGES.waiting });
+  });
+
+  it("🔴 正在传 / 传失败 是**两句不同的话**,都不许说成「还没传」", () => {
+    // 失败长得像「还没传」的话,人以为自己忘了点,再点一次重来一遍,
+    // 而真正的原因(太大 / 不是照片 / 接口没开通)一次都没被看见。
+    const 传着 = reinspectBlocker({ rowPhotoId: "", shared: 在传, usedPhotoId: null });
+    const 失败 = reinspectBlocker({ rowPhotoId: "", shared: 传失败, usedPhotoId: null });
+    expect(传着?.reason).toBe("uploading");
+    expect(失败?.reason).toBe("upload-failed");
+    expect(传着?.message).not.toBe(失败?.message);
+    expect(失败?.message).not.toBe(SHARED_PHOTO_MESSAGES.waiting);
+  });
+
+  it("照片就绪、这一行也没用过 → 点得动", () => {
+    expect(reinspectBlocker({ rowPhotoId: "", shared: 传好了, usedPhotoId: null })).toBeNull();
+    expect(reinspectBlocker({ rowPhotoId: 行内编号, shared: 传好了, usedPhotoId: null })).toBeNull();
+  });
+
+  it("🔴 这一行刚拿这张登记过复查 → 拦住,并说清「换一张新拍的」", () => {
+    // 共用之后照片不再逐行清场(清了就是「登记完第一条,后面几条的照片全没了」),
+    // 于是判「不合格」的那一条会带着上一轮那张照片回到可复查 —— 再用一次就是拿
+    // 上一轮的照片当这一轮「整改后」的证据,而屏幕上一切正常。
+    const block = reinspectBlocker({
+      rowPhotoId: "",
+      shared: 传好了,
+      usedPhotoId: 共用编号,
+    });
+    expect(block).toEqual({
+      reason: "already-used",
+      message: SHARED_PHOTO_MESSAGES.alreadyUsed,
+    });
+  });
+
+  it("🔴 换一张新的之后,判不合格那一条**当场解锁** —— 不许把人锁死在灰按钮前", () => {
+    // 「仍然要能再复查一次」这条要求的落点。`POST /supervision/photo` 不做去重也不做
+    // 幂等(它自己的头注写明),所以哪怕重传的是同一个文件,拿到的也是新编号。
+    const 新编号 = "ffffeeeeddddccccbbbbaaaa99998888";
+    const block = reinspectBlocker({
+      rowPhotoId: "",
+      shared: { phase: "ready", photoId: 新编号 },
+      usedPhotoId: 共用编号,
+    });
+    expect(block).toBeNull();
+  });
+
+  it("手填的编号正好是刚用过那个(大小写不同)→ 照样拦", () => {
+    const block = reinspectBlocker({
+      rowPhotoId: 共用编号.toUpperCase(),
+      shared: 没传,
+      usedPhotoId: 共用编号,
+    });
+    expect(block?.reason).toBe("already-used");
+  });
+
+  it("🔴 判据顺序:先「有没有」再「像不像」最后「是不是刚用过」", () => {
+    // 顺序反了的话,一个空编号会先撞上「刚用过」那句 —— 屏幕上说的是一件没发生的事,
+    // 而人手上其实是一张都还没传。
+    const block = reinspectBlocker({ rowPhotoId: "", shared: 没传, usedPhotoId: 共用编号 });
+    expect(block?.reason).toBe("no-photo");
+    // 半截编号 + 刚用过 → 先说「这不像照片编号」(那才是他现在该改的地方)
+    const 半截 = reinspectBlocker({ rowPhotoId: "abc", shared: 传好了, usedPhotoId: "abc" });
+    expect(半截?.reason).toBe("bad-id");
+  });
+});
+
+describe("「下面 N 条隐患都用这张」那个数(数大了 = 监理以为都传过照片了)", () => {
+  const 三条 = [
+    可复查({ hazard_no: "H-1" }),
+    可复查({ hazard_no: "H-2" }),
+    可复查({ hazard_no: "H-3", status: "reinspect_failed" }),
+  ];
+
+  it("都没填自己的编号 → 三条全归它管", () => {
+    expect(hazardsUsingSharedPhoto(三条, {}, {}, 传好了).map((h) => h.hazard_no)).toEqual([
+      "H-1",
+      "H-2",
+      "H-3",
+    ]);
+  });
+
+  it("填了自己编号的那一条不算 —— 它用的不是这张", () => {
+    const 用的 = hazardsUsingSharedPhoto(三条, { "H-2": 行内编号 }, {}, 传好了);
+    expect(用的.map((h) => h.hazard_no)).toEqual(["H-1", "H-3"]);
+  });
+
+  it("🔴 刚拿这张登记过复查的那一条也不算 —— 它现在点不动", () => {
+    // 算进去的话屏幕上写「下面 3 条都用这张」,而监理只点得动 2 条,
+    // 第 3 条为什么点不动那一句在别处 —— 于是他会以为系统坏了。
+    const 用的 = hazardsUsingSharedPhoto(三条, {}, { "H-3": 共用编号 }, 传好了);
+    expect(用的.map((h) => h.hazard_no)).toEqual(["H-1", "H-2"]);
+  });
+
+  it("不能复查的隐患一条都不算(哪怕它的表单里留着编号)", () => {
+    const 混着 = [...三条, hazard({ hazard_no: "H-9", status: "closed" })];
+    const 用的 = hazardsUsingSharedPhoto(混着, { "H-9": 共用编号 }, {}, 传好了);
+    expect(用的.map((h) => h.hazard_no)).not.toContain("H-9");
+  });
+
+  it("共用那张还没传好 → 一条都不归它管(没传成的照片管不了任何结论)", () => {
+    for (const shared of [没传, 在传, 传失败]) {
+      expect(hazardsUsingSharedPhoto(三条, {}, {}, shared)).toEqual([]);
+    }
+  });
+
+  it("describeSharedPhotoCoverage:1 条时不说「都」(中文里「都」预设复数)", () => {
+    expect(describeSharedPhotoCoverage(1)).toContain("1 条");
+    expect(describeSharedPhotoCoverage(1)).not.toContain("都");
+    expect(describeSharedPhotoCoverage(3)).toContain("3 条");
+    expect(describeSharedPhotoCoverage(3)).toContain("都");
+  });
+
+  it("0 条那一档也要说话 —— 静默留白等于让人自己猜它管什么", () => {
+    expect(describeSharedPhotoCoverage(0)).toBe(SHARED_PHOTO_MESSAGES.coversNothing);
+    // 脏数据不许把界面弄成「下面 NaN 条」
+    expect(describeSharedPhotoCoverage(-1)).toBe(SHARED_PHOTO_MESSAGES.coversNothing);
+    expect(describeSharedPhotoCoverage(Number.NaN)).toBe(SHARED_PHOTO_MESSAGES.coversNothing);
+  });
+});
+
+describe("共用照片这条链的文案(它们会原样上屏,所以在这里钉住)", () => {
+  it("🔴 四句「差什么」互不相同 —— 糊成一句就是三态白做了", () => {
+    const 四句 = [
+      SHARED_PHOTO_MESSAGES.waiting,
+      SHARED_PHOTO_MESSAGES.uploading,
+      SHARED_PHOTO_MESSAGES.failed,
+      SHARED_PHOTO_MESSAGES.alreadyUsed,
+    ];
+    expect(new Set(四句).size).toBe(4);
+  });
+
+  it("🔴 共用之后必须把人指到**面板顶上那一格**,不能只说「先拍一张」", () => {
+    // 人此刻的眼睛在第 5 行那颗灰按钮上,而照片那一格在屏幕顶上。
+    // 不说「上面」的话他会在自己这一行上下找那个框 —— 而那个框已经不在行里了。
+    for (const 句 of [
+      SHARED_PHOTO_MESSAGES.waiting,
+      SHARED_PHOTO_MESSAGES.uploading,
+      SHARED_PHOTO_MESSAGES.failed,
+      SHARED_PHOTO_MESSAGES.alreadyUsed,
+    ]) {
+      expect(句).toContain("上面");
+    }
+  });
+
+  it("「传失败」那句绝不许读成「还没传」", () => {
+    expect(SHARED_PHOTO_MESSAGES.failed).toContain("没传上去");
+    expect(SHARED_PHOTO_MESSAGES.failed).not.toBe(SHARED_PHOTO_MESSAGES.waiting);
+  });
+
+  it("「用了别的照片」那句要显眼地说出「不是上面那张」", () => {
+    expect(SHARED_PHOTO_MESSAGES.usesOwn).toContain("不是上面那张");
+    // 上面还没传共用照片时用的是另一句 —— 那时不该提一个屏幕上不存在的参照物
+    expect(SHARED_PHOTO_MESSAGES.usesOwnAlone).not.toContain("共用");
+  });
+
+  it("每一句都是中文人话:不许漏进后端的字段名、英文状态词、模块路径", () => {
+    // 判据整套照抄 PHOTO_MESSAGES 那一节 —— 两份文案面对的是同一个戴手套的监理。
+    const 内部词 = [
+      "photo_id",
+      "artifact_id",
+      "error_code",
+      "user_msg",
+      "hazard_no",
+      "pending",
+      "notified",
+      "suspended",
+      "reinspect",
+      "escalated",
+      "closed",
+      "supervision",
+      ".py",
+      ".ts",
+      "None",
+      "null",
+    ];
+    for (const [key, text] of Object.entries(SHARED_PHOTO_MESSAGES)) {
+      expect(text.length, key).toBeGreaterThan(0);
+      expect(/[一-龥]/.test(text), `${key} 里没有中文`).toBe(true);
+      expect(text.includes("_"), `${key} 里有下划线`).toBe(false);
+      for (const 词 of 内部词) {
+        expect(text.toLowerCase().includes(词.toLowerCase()), `${key} 里出现了 ${词}`).toBe(false);
+      }
+    }
+  });
+
+  it("SHARED_PHOTO_MESSAGES 是冻的 —— 运行时被改掉的话,错的话会一路传到屏幕上", () => {
+    expect(Object.isFrozen(SHARED_PHOTO_MESSAGES)).toBe(true);
   });
 });
