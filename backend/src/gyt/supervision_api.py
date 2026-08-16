@@ -1285,14 +1285,22 @@ def _optional_project_id(params: dict[str, Any]) -> str | None:
 
 
 def _row_payload(row: hazards.HazardRow, *, today_iso: str) -> dict[str, Any]:
-    """清单/详情里的一行 = ``scoping.hazard_item()`` 那九个键,**再加两个**。
+    """清单/详情里的一行 = ``scoping.hazard_item()`` 那九个键,**再加三个**。
 
-    加的两个都是"表格要、对话不要"的东西,这个差别是刻意的:
+    加的三个都是"表格要、对话不要"的东西,这个差别是刻意的:
       · ``severity`` —— **未定级的隐患对人念的是它,不是 ``grade``**(那时 grade 是映射表
         给的默认档「一般」,不是有人判过的结论;照着念就是「这条是一般隐患」,
         而硬拦③ ``_require_graded`` 拦的正是这句话);
       · ``project_id`` —— 操作台会跨工地看(``?project_id`` 不出现 = 全部工地),
         不给这一格就分不出哪条属于谁。
+      · 🔴 ``photo_id`` —— **发现这条隐患的那张现场照片**(2026-08-17 补)。
+        补之前操作台上一条隐患只有文字:监理要在**看不到照片**的情况下判
+        一般/严重,还要判是不是「识错了」而按下否决 —— 而「否决」这个判断
+        **完全依赖看照片**(帽子到底戴没戴)。定级又是签发文书的前置。
+        真人当时的反馈只有三个字:「没有照片」。
+        ⚠️ 它**不是**复查照片:那张在 ``hazard_docs.photo_id``,一次复查一张;
+        这张是首次发现那张,一条隐患只有一张。两者混起来就是拿发现时的照片
+        当"整改后"的证据,而那条红线的全部意义就是事后追责时分得清。
 
     为什么 ``scoping.hazard_item()`` 自己不给这两个键:它那份**每一行都要进模型上下文**,
     少给少错(它的 docstring 里点名剔掉了 ``project_id``);这边是一张表格,多两列不花钱。
@@ -1303,6 +1311,7 @@ def _row_payload(row: hazards.HazardRow, *, today_iso: str) -> dict[str, Any]:
         **scoping.hazard_item(row, today_iso=today_iso),
         "severity": row.severity,
         "project_id": row.project_id,
+        "photo_id": row.photo_id,
     }
 
 

@@ -398,6 +398,19 @@ export interface HazardBrief {
   overdue?: boolean;
   /** 归属工地。**空串 = 未归属**(D6),不是「缺失」—— 两者在界面上要分开说。 */
   project_id?: string;
+  /**
+   * 🔴 **发现这条隐患的那张现场照片**(取件编号)。
+   *
+   * 补它之前,操作台上一条隐患只有文字:监理要在**看不到照片**的情况下判
+   * 一般/严重,还要判是不是「识错了」而按下否决 —— 而**否决这个判断完全依赖
+   * 看照片**(帽子到底戴没戴),定级又是签发文书的前置。
+   * 2026-08-17 真人反馈只有三个字:「没有照片」。
+   *
+   * ⚠️ **不是复查照片。** 那张在 `SupervisionDoc.photo_id`(证据链里,一次复查一张);
+   * 这张是首次发现那张,一条隐患只有一张。两者混起来就是拿发现时的照片当
+   * 「整改后」的证据,而那条红线的全部意义就是事后追责时分得清这两张。
+   */
+  photo_id?: string;
 }
 
 /**
@@ -474,6 +487,10 @@ function toHazardBrief(entry: unknown): HazardBrief | null {
     ...(typeof rec.overdue === "boolean" ? { overdue: rec.overdue } : {}),
     // project_id 走 typeof 判断而不是 textOf:空串是「未归属」这个**值**,不是缺失。
     ...(typeof rec.project_id === "string" ? { project_id: rec.project_id.trim() } : {}),
+    // 发现照片的取件编号。**空/畸形一律当没有** —— 界面据此决定渲不渲缩略图,
+    // 塞个半截串进去只会得到一个破图框(而破图与「这条本来就没照片」在屏幕上
+    // 长得一样,那正是本仓反复防的那类)。判据与 isPhotoId 同一个正则。
+    ...(isPhotoId(textOf(rec, "photo_id")) ? { photo_id: textOf(rec, "photo_id") } : {}),
   };
 }
 

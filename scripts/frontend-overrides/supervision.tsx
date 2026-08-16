@@ -1200,6 +1200,11 @@ function HazardRow({
    * 老路(聊天里的工具返回)没有这几个字段,渲成「期限:—」看着像后端没下期限,
    * 而真相是这条路不带这个信息 —— supervision-lib 的 HazardBrief 头注写了同一件事。
    */
+  /**
+   * 发现照片的取件地址;没有照片(或链没配)就是 null,那时整格不渲染。
+   * 走 `documentUrl` 而不是自己拼:它守着「空就返回 null、绝不渲染死链接」那条规矩。
+   */
+  const photoUrl = documentUrl({ artifact_id: hazard.photo_id ?? null }, artifactBase);
   const hasDueInfo = hazard.due_date !== undefined;
   /**
    * 这条隐患的级别**有没有人判过**。
@@ -1242,6 +1247,22 @@ function HazardRow({
             aria-label={`选中隐患 ${hazard.hazard_no}`}
             className="mt-1 size-4 shrink-0 cursor-pointer accent-blue-600 pointer-coarse:size-6"
           />
+        )}
+        {/* 🔴 发现这条隐患的那张现场照片。
+            2026-08-17 真人反馈只有三个字:「没有照片」——
+            在这之前操作台上一条隐患只有文字,而人要在这儿判**一般 / 严重**
+            (定级是签发文书的前置),还要判是不是「识错了」而按下否决 ——
+            **否决这个判断完全依赖看照片**(帽子到底戴没戴)。
+            让人不看照片就下这两个判断,方向是反的。
+
+            ⚠️ 这是**首次发现**那张,不是复查照片(那张在证据链的复查记录行里)。
+            混起来 = 拿发现时的照片当「整改后」的证据。
+            ⚠️ 它吃 ARTIFACT_BASE 那条链;断了会变成「预览不出来」的占位框
+            (PhotoThumb 的 onError 兜着,不留破图)。点开是大图,走同一个取件端点。 */}
+        {photoUrl && (
+          <a href={photoUrl} target="_blank" rel="noreferrer" title="点开看大图">
+            <PhotoThumb src={photoUrl} alt={`${hazard.item} 的现场照片`} />
+          </a>
         )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">

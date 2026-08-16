@@ -1196,6 +1196,12 @@ _清单行的键: Final[frozenset[str]] = frozenset(
         #    · project_id —— 操作台会跨工地看,不给这一格就分不出哪条属于谁。
         "severity",
         "project_id",
+        #    · photo_id —— 🔴 **发现这条隐患的那张现场照片**(2026-08-17 补)。
+        #      补之前操作台上一条隐患只有文字,监理要在看不到照片的情况下判
+        #      一般/严重、还要判是不是「识错了」而按下否决 —— 而否决这个判断
+        #      完全依赖看照片。真人反馈只有三个字:「没有照片」。
+        #      ⚠️ 不是复查照片(那张在 hazard_docs.photo_id,一次复查一张)。
+        "photo_id",
     }
 )
 """清单/详情里一行**恰好**有的键。
@@ -1545,7 +1551,7 @@ class Test隐患清单:
         assert data["overdue"] == 3
         assert data["pending"] == 1
 
-    def test_一行恰好这十一个键(self, client: TestClient, 台账: _台账) -> None:
+    def test_一行恰好这十二个键(self, client: TestClient, 台账: _台账) -> None:
         """键集合是**对外契约**:前端按它渲染,加字段要连前端一起改,减字段会让某一侧
         静默少一格(比如没了 ``severity``,未定级的隐患在面板上会被念成「一般」——
         而硬拦③ ``_require_graded`` 拦的正是这句话)。
@@ -1563,6 +1569,7 @@ class Test隐患清单:
         assert set(scoping.hazard_item(源头, today_iso=TODAY_ISO)) == _清单行的键 - {
             "severity",
             "project_id",
+            "photo_id",
         }
 
     def test_今天是钉住的那天且超期真按它算(
