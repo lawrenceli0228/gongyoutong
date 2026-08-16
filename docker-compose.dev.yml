@@ -34,9 +34,12 @@
 #       python -c "import gyt; print(gyt.__file__)"  →  /app/src/gyt/__init__.py
 #   把宿主的 backend/src 盖到 /app/src 上,改一行 Python 立刻就是容器里跑的那一行。
 #
-#   注意这条只覆盖 **src/**。下面这些改了仍然要重建镜像(`docker compose build backend`):
+#   注意这条只覆盖 **src/**。src/ 外面还有三份文件也是仓里的源码
+#   (`webapp.py` / `auth.py` / `langgraph.json`),2026-08-16 起单独挂了进来 ——
+#   为什么非挂不可,见下面 volumes 那一段的实录(不挂的表现是端点 404 且零报错)。
+#
+#   剩下这些改了**仍然要重建镜像**(`docker compose build backend`):
 #       pyproject.toml / uv.lock  —— 依赖装在镜像层里,不在挂载卷里
-#       langgraph.json            —— 没挂,容器读的是镜像里那份
 #       Dockerfile / .dockerignore
 #   (make test-docker 会拿宿主的 uv.lock 和镜像里那份对一下,不一致就直接拦下来
 #     并让你去重建 —— 免得对着"依赖怎么少了一半"的报错查半天。)
@@ -76,6 +79,10 @@
 #
 #   所以判据只有一条,别扩大解释:
 #       改 *.py            → 自动重载,几秒生效,不用管容器
+#                            (2026-08-16 起这条也覆盖 webapp.py / auth.py ——
+#                             它们在 src/ 外面,是单独挂进来的)
+#       改 langgraph.json  → **不会**自动重载(它不是 .py)。restart 即可,
+#                            但不用再重建镜像 —— 见 volumes 那一段。
 #       改 prompt.md 等    → **不会**自动重载。要 `make down` 后重来,或者
 #                            docker compose -f ... -f ... restart backend(秒级)。
 #                            提示词是建图时 load_prompt() 读进去的,重启进程就会重读,
@@ -101,9 +108,38 @@
 services:
   backend:
     # volumes 是列表,compose 会按**容器内挂载点**去重后合并 ——
-    # 基础档的 ./data:/app/data 会原样保留,这里只是追加一条。
+    # 基础档的 ./data:/app/data 会原样保留,这里只是追加几条。
     volumes:
       - ./backend/src:/app/src:ro
+      # ↓ 下面三条是 2026-08-16(W10·S4)加的。**加它们之前,本机容器从来没有
+      #   服务过任何一条自定义 HTTP 路由** —— 打卡、项目管理、监理处置,一个都没有。
+      #
+      # 怎么发现的:S4 手工验之前先 curl 了一下 `POST /supervision/confirm`,
+      # 期望 400(空 body),实际拿到 **404**。查下去:
+      #     docker exec gyt-backend ls /app/webapp.py   →  No such file or directory
+      #     docker exec gyt-backend cat /app/langgraph.json → **连 http 块都没有**
+      # 镜像是 5 天前(≈08-11)烤的,而 webapp.py 与 langgraph.json 的 http 块是
+      # W7(08-15)才加的。而上面「为什么挂 /app/src 就够了」那一节**说得没错**:
+      # 它列的重建触发项里就有 langgraph.json。错在没人意识到
+      # **`webapp.py` 和 `auth.py` 也在 src/ 外面** —— 它们是 .py,
+      # 看着就该跟着热重载,于是没人去想"这一条要重建镜像吗"。
+      #
+      # 这个洞的形状与 W10 本身完全同构:**后端代码是对的、测试全绿、
+      # 端点返回 404 而没有任何一行报错**。所以修法不是"下次记得重建",
+      # 是把这三份也挂进来,让本机跑的就是仓里那份。
+      #
+      #   webapp.py       .py,watchfiles 看着 *.py → **改了自动重载**,与 src/ 同档
+      #   auth.py         同上(langgraph.json 的 auth.path 指着它)
+      #   langgraph.json  **不是 .py,不会自动重载** —— 改它仍要
+      #                   `docker compose -f ... -f ... restart backend`(秒级),
+      #                   但**不用再重建镜像**(分钟级),这才是这一条省下的东西。
+      #
+      # ⚠️ 三条都是 :ro,理由同 src/(见上面「为什么是 :ro」那一节)。
+      # ⚠️ 生产档(docker-compose.vps.yml)**不许照抄这三条**:线上跑的必须是
+      #    烤进镜像的那一份,挂宿主文件等于让「部署了什么」取决于服务器上的散文件。
+      - ./backend/webapp.py:/app/webapp.py:ro
+      - ./backend/auth.py:/app/auth.py:ro
+      - ./backend/langgraph.json:/app/langgraph.json:ro
 
     # environment 是映射,按键合并:基础档的 GYT_DATA_DIR / HF_HUB_OFFLINE 不受影响。
     environment:
