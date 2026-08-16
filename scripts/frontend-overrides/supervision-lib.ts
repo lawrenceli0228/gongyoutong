@@ -654,6 +654,25 @@ export const ACTION_LABEL: Readonly<Record<DisposalAction, string>> = Object.fre
  * `reject`(W10)**只在 pending 一档**:服务端硬拦「已经确认过的不许删」(409),
  * 别处给出来就是一颗点下去必挨骂的按钮。
  */
+/**
+ * 这条隐患**有人判过的**级别;没人判过就是 `null`。
+ *
+ * 🔴 **`hazard.grade` 永远有值,所以它答不了这个问题。** `needs_grading=1` 时那个值是
+ * `agents/supervision/grading.py` 的映射表给的**默认档(一般)**,不是结论。
+ *
+ * 2026-08-16 手工验抓到过把它当结论用的两个后果:
+ *   · 界面上「定级为一般」那颗按钮被判成「当前值」而**禁用** —— 监理认定它就是
+ *     一般隐患,却点不下去,屏幕上唯一能点的是「严重」。而硬拦②防的正是
+ *     「一般隐患签了暂停令 = 平白停一片人的工」;
+ *   · 对外念出「这条是一般隐患」,而它真实级别是未知的(`_hazard_line` 那条同源约束)。
+ *
+ * 后端 `_advise` 与端点 `_require_graded` 认的都是同一个旗子(`needs_grading`),
+ * 不是级别字段本身。
+ */
+export function currentGrade(hazard: HazardBrief): string | null {
+  return hazard.needs_grading ? null : hazard.grade;
+}
+
 export function availableActions(hazard: HazardBrief): DisposalAction[] {
   if (hazard.needs_grading) {
     // 未定级这一档只剩定级一件事(Codex#11:未知风险不许按一般隐患走完闭环)——

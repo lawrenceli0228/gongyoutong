@@ -77,6 +77,7 @@ import {
   actionNeedsDuePhrase,
   actionNeedsPhoto,
   availableActions,
+  currentGrade,
   confirmBody,
   confirmPrompt,
   describeDocuments,
@@ -698,6 +699,16 @@ function HazardRow({
    * 而真相是这条路不带这个信息 —— supervision-lib 的 HazardBrief 头注写了同一件事。
    */
   const hasDueInfo = hazard.due_date !== undefined;
+  /**
+   * 这条隐患的级别**有没有人判过**。
+   *
+   * 🔴 **不是 `hazard.grade` 有没有值** —— 它永远有值。`needs_grading=1` 时那个值是
+   * `agents/supervision/grading.py` 的映射表给的**默认档**(一般),不是结论。
+   * 把默认档当结论用,轻则界面上锁掉一颗本该能点的按钮(定级为一般),
+   * 重则对外念出「这条是一般隐患」—— 而它真实级别是未知的。
+   * 后端 `_advise` 与端点 `_require_graded` 认的都是这同一个旗子。
+   */
+  const 已判级别 = currentGrade(hazard);
   /** 展开区的 id —— 给 `aria-controls` 用。隐患编号只含字母数字和连字符,直接拼安全。 */
   const evidenceId = `gyt-evidence-${hazard.hazard_no}`;
 
@@ -838,20 +849,50 @@ function HazardRow({
           {actions.map((action) =>
             action === "grade" ? (
               // 定级给两颗按钮而不是一个下拉:少一次点击,手套也点得中。
+              //
+              // 🔴 **「现在是哪一档」不许渲染成按钮。** 2026-08-16 手工验抓到两件事,
+              //    根子都在原来那句 `disabled={busy || hazard.grade === grade}`:
+              //
+              //    ① 观感:当前级别那颗是 disabled 的,但「严重」恒用 destructive
+              //       (实心红)——而这个面板里实心红是**主操作**的样子。
+              //       一颗看着是主操作、点下去没反应的按钮,读起来就是系统坏了。
+              //    ② 🔴 **功能**:`needs_grading=1` 时 `hazard.grade` 里存的是
+              //       **映射表给的默认档(一般)**,不是有人判过的结论。于是那一档
+              //       「一般」这颗被判成「当前值」而禁用 —— 监理认定它就是一般隐患,
+              //       **却点不下去**,屏幕上唯一能点的是「严重」。
+              //       而硬拦②防的正是「一般隐患签了暂停令 = 平白停一片人的工」。
+              //
+              //    所以判据从「值相等」换成 `hasVerdict`(有没有人判过):
+              //      · 判过 → 当前那一档渲成**灰色状态片**(不是按钮),另一档才是按钮;
+              //      · 没判过(needs_grading)→ **两颗都是真按钮**,一颗都不锁。
               <div key={action} className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[12px] text-gray-500">定级为</span>
-                {[GRADE_NORMAL, GRADE_SEVERE].map((grade) => (
-                  <Button
-                    key={grade}
-                    size="sm"
-                    variant={grade === GRADE_SEVERE ? "destructive" : "outline"}
-                    disabled={busy || hazard.grade === grade}
-                    onClick={() => onAct("grade", grade)}
-                    className="pointer-coarse:min-h-11"
-                  >
-                    {grade}
-                  </Button>
-                ))}
+                <span className="text-[12px] text-gray-500">
+                  {已判级别 ? "改判为" : "定级为"}
+                </span>
+                {[GRADE_NORMAL, GRADE_SEVERE].map((grade) =>
+                  已判级别 === grade ? (
+                    // 状态片:说清「现在就是这一档」,而不是摆一颗点不动的按钮。
+                    <span
+                      key={grade}
+                      title="这是现在的级别,不用再点一次"
+                      className="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2 py-1 text-[12px] text-gray-500 ring-1 ring-gray-200 ring-inset"
+                    >
+                      <Check className="size-3.5" />
+                      现在:{grade}
+                    </span>
+                  ) : (
+                    <Button
+                      key={grade}
+                      size="sm"
+                      variant={grade === GRADE_SEVERE ? "destructive" : "outline"}
+                      disabled={busy}
+                      onClick={() => onAct("grade", grade)}
+                      className="pointer-coarse:min-h-11"
+                    >
+                      {grade}
+                    </Button>
+                  ),
+                )}
               </div>
             ) : action === "reinspect" ? (
               <div key={action} className="flex flex-wrap items-center gap-1.5">

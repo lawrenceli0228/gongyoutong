@@ -51,6 +51,7 @@ import {
   hazardsFromToolData,
   hazardStatusZh,
   isDownloadableDoc,
+  currentGrade,
   evidenceRows,
   formatHkMoment,
   MAX_CONFIRM_BATCH,
@@ -1342,5 +1343,30 @@ describe("patchHazard 与 status_display(2026-08-16 手工验当场抓到的那�
     const [row] = patchHazard([待确认()], "GYT-H-别人", { status: "open" });
     expect(row.status).toBe("pending");
     expect(row.status_display).toBe("待确认");
+  });
+});
+
+describe("currentGrade —— 默认档不许冒充结论(2026-08-16 手工验抓到的那条)", () => {
+  it("🔴 needs_grading=1 时是 null,哪怕 grade 字段里写着「一般」", () => {
+    // 那个「一般」是 grading.py 映射表给的默认档,不是有人判过的结论。
+    // 当成结论用的两个后果都真出现过:界面锁掉「定级为一般」那颗按钮
+    //(监理认定它就是一般,却点不下去,只剩「严重」能点 —— 而硬拦②防的
+    // 正是「一般隐患签了暂停令 = 平白停一片人的工」);以及对外念出
+    //「这条是一般隐患」而它真实级别未知。
+    expect(currentGrade(hazard({ grade: GRADE_NORMAL, needs_grading: true }))).toBeNull();
+    expect(currentGrade(hazard({ grade: GRADE_SEVERE, needs_grading: true }))).toBeNull();
+  });
+
+  it("判过就照实返回", () => {
+    expect(currentGrade(hazard({ grade: GRADE_NORMAL, needs_grading: false }))).toBe(GRADE_NORMAL);
+    expect(currentGrade(hazard({ grade: GRADE_SEVERE, needs_grading: false }))).toBe(GRADE_SEVERE);
+  });
+
+  it("八个状态都不影响判据 —— 认的是旗子,不是状态", () => {
+    // 后端 _advise 与端点 _require_graded 认的也是这同一个旗子。
+    for (const status of HAZARD_STATUSES) {
+      expect(currentGrade(hazard({ status, needs_grading: true }))).toBeNull();
+      expect(currentGrade(hazard({ status, needs_grading: false }))).toBe(GRADE_NORMAL);
+    }
   });
 });
