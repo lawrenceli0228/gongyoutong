@@ -784,15 +784,51 @@ T2(改 D12 措辞)  纯文档,任何时候插进来都行</pre>
       <tr><td>前端判别字集删两个字</td><td>判别向量测试</td><td>新写</td></tr>
     </tbody>
   </table>
-  <div class="box b-bad">
-    <span class="hd">第一行是本批唯一的 critical gap</span>
-    <p>转换点挪位之后,<code>make test-frontend</code> 的纯函数测试<b>照样全绿</b>
-      (转换函数本身没变),而界面静默变哑。</p>
-    <p>而 <code>scripts/frontend-tests/</code> 现在是<b>纯函数包,没有渲染测试基础设施</b>
-      (vitest 无 jsdom、无 testing-library)。</p>
-    <p><b>定案:加 jsdom + @testing-library/react。</b> 代价是新依赖 + CI 时间;
-      理由是「挪位 = 静默变哑」这个失败模式<b>没有别的抓手</b>。</p>
+  <h3>6.2.1 T3 落地时改了形状:源码级守卫,不上 jsdom(2026-08-18)</h3>
+  <p>原定案是「加 jsdom + @testing-library/react」。<b>实现时那条 critical gap
+    已经被 04.6 的做法结构性地关掉了</b> —— 加宽徽章表之后,
+    「转换点挪位」不再让徽章变哑,两套键都在表里。</p>
+  <p>于是抓手从「渲染出来对不对」变成三条<b>「某个文件里有没有某件事」</b>:</p>
+  <table>
+    <thead><tr><th>不变量</th><th>渲染测试能查吗</th><th>源码级能查吗</th></tr></thead>
+    <tbody>
+      <tr><td>① 两张徽章表由 <code>withHantKeys</code> 派生,没被手写回去</td>
+        <td>能(纯函数层已覆盖)</td><td><span class="yes">能</span></td></tr>
+      <tr><td>② <code>markdown-text.tsx</code> <b>不许</b> import <code>hant-convert</code></td>
+        <td><span class="no">❌ 查不到</span></td><td><span class="yes">能</span></td></tr>
+      <tr><td>③ <code>ai.tsx</code> 真的调了 <code>useHantText</code></td>
+        <td>能</td><td><span class="yes">能</span></td></tr>
+      <tr><td>④ opencc 只能是动态 <code>import()</code>、只能走 <code>cn2t</code> 全量入口</td>
+        <td><span class="no">❌ 查不到</span></td><td><span class="yes">能</span></td></tr>
+    </tbody>
+  </table>
+  <div class="box b-warn">
+    <span class="hd">② 和 ④ 是这批最要命的两条,而渲染测试都覆盖不到</span>
+    <p><b>②</b> —— <code>MarkdownText</code> 有四个消费者,两个是上游的英文调试界面
+      (agent-inbox 的 <code>state-view.tsx</code> / <code>inbox-item-input.tsx</code>)。
+      「这个文件不许 import 那个」只有源码级看得见。</p>
+    <p><b>④</b> —— 静态 import 会把 438 KB 字典拉进首屏包,而<b>本地一切正常</b>,
+      只有真跑 <code>next build</code> 才看得出来。渲染测试同样看不见。</p>
   </div>
+  <div class="box b-info">
+    <p><b>所以 T3 落成 <code>conversion-seam.test.ts</code>(10 条源码级断言),不上 jsdom。</b></p>
+    <p>⚠️ <b>这不是「懒得上 jsdom」。</b> 上 jsdom 要给这个包加
+      react / react-dom / react-markdown / @testing-library/react + 三个路径别名 stub,
+      而本包的立身之本是<b>零依赖</b>(<code>package.json</code> 的 description 写着理由:
+      <code>frontend/</code> 不进 git,测试不能指望它存在)。</p>
+    <p><b>将来真要上 jsdom,先回来改这一节</b> —— 那是对这个测试包的架构改动,
+      不该顺手做掉。</p>
+  </div>
+  <p>变异验证(2026-08-18 实跑):</p>
+  <table>
+    <thead><tr><th>改坏什么</th><th>红了几条</th></tr></thead>
+    <tbody>
+      <tr><td><code>displayString</code> 改回直接用裁完的原文(转换链断开)</td>
+        <td class="n"><b>2</b></td></tr>
+      <tr><td>把 <code>import("opencc-js/cn2t")</code> 换成 <code>core</code>(精简档)</td>
+        <td class="n"><b>2</b></td></tr>
+    </tbody>
+  </table>
 
   <h3>评测 —— 第一批一套都不用跑</h3>
   <div class="box b-ok">
