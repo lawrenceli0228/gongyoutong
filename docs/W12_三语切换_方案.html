@@ -811,13 +811,74 @@ T2(改 D12 措辞)  纯文档,任何时候插进来都行</pre>
       只有真跑 <code>next build</code> 才看得出来。渲染测试同样看不见。</p>
   </div>
   <div class="box b-info">
-    <p><b>所以 T3 落成 <code>conversion-seam.test.ts</code>(10 条源码级断言),不上 jsdom。</b></p>
-    <p>⚠️ <b>这不是「懒得上 jsdom」。</b> 上 jsdom 要给这个包加
-      react / react-dom / react-markdown / @testing-library/react + 三个路径别名 stub,
-      而本包的立身之本是<b>零依赖</b>(<code>package.json</code> 的 description 写着理由:
-      <code>frontend/</code> 不进 git,测试不能指望它存在)。</p>
-    <p><b>将来真要上 jsdom,先回来改这一节</b> —— 那是对这个测试包的架构改动,
-      不该顺手做掉。</p>
+    <p><b>所以 T3 第一版落成 <code>conversion-seam.test.ts</code>(10 条源码级断言),不上 jsdom。</b></p>
+  </div>
+
+  <h3>6.2.2 🔴 上面那个判断错了一半 —— jsdom 当天就补上了(2026-08-18)</h3>
+  <p>第一版落地当天真机就崩了:</p>
+<pre>点开任一条有消息的线程 → <i>Application error: a client-side exception has occurred</i>
+
+TypeError: Cannot read properties of null (reading 'length')
+    at n.convert (opencc-js/cn2t.js)
+    at <b>basicStateReducer</b> (react-dom)        <i>← 病根</i>
+    at useHantText (hant-convert.tsx)</pre>
+  <div class="box b-bad">
+    <p>病因是 <code>setConverter(conv)</code> 里 <code>conv</code> 是函数,
+      <b>React 把它当 updater</b>(<code>setState(prev =&gt; next)</code>)去调
+      <code>conv(null)</code>。</p>
+    <p>🔴 <b>当时 334 条测试全绿。</b> 因为没有任何测试<b>执行</b>过那个 hook ——
+      <code>lang-lib.test.ts</code> 不碰它,<code>conversion-seam.test.ts</code>
+      读源码不执行。</p>
+    <p><b>6.2.1 那个判断的前半段成立</b>(有两条不变量只有源码级看得见),
+      <b>漏的是后半段:渲染测试能查到的东西里,有一个真 bug 在等着。</b></p>
+  </div>
+
+  <h3>依赖面比 6.2.1 估的小得多</h3>
+  <p>原估「react + react-dom + <b>react-markdown</b> + testing-library + jsdom
+    + 三个路径别名 stub」。实测只要四个,全 dev-only:</p>
+<pre>jsdom   react   react-dom   @testing-library/react</pre>
+  <p>因为<b>只渲染那个 hook,不渲染 markdown-text.tsx</b> ——
+    <code>hant-convert.tsx</code> 只 import <code>react</code> 和
+    <code>@/lib/lang-lib</code>,碰不到那棵重依赖树。而它虽然是 <code>.tsx</code>
+    后缀却<b>没有 JSX</b>,连 JSX 转换都不用配(测试用 <code>createElement</code> 写)。</p>
+  <div class="box b-warn">
+    <p>jsdom 只对 <code>hant-convert.render.test.ts</code> 生效
+      (文件头 <code>@vitest-environment jsdom</code>),其余测试仍是 node 环境。</p>
+    <p>⚠️ <b>默认环境不许改成 jsdom</b> —— 那会让「库代码不许有 window 假设」
+      这条前提失效:误用 <code>window</code> 的代码在测试里会悄悄跑通,
+      换到 SSR / Node 才炸。</p>
+  </div>
+
+  <h3>顺带撞出一件下一个人一定会撞的事</h3>
+  <p><code>hant-convert.tsx</code> 是<b>第一个带真依赖的被测覆盖件</b>。而覆盖件躺在
+    <code>scripts/frontend-overrides/</code>,那个目录<b>没有 node_modules</b> ——
+    TS 和 Vite 都从文件所在目录往上找依赖,于是<b>两边都要给它指路</b>:</p>
+  <table>
+    <thead><tr><th>在哪</th><th>要加什么</th></tr></thead>
+    <tbody>
+      <tr><td><code>vitest.config.ts</code></td>
+        <td><code>resolve.alias</code> 里 <code>react</code> / <code>react-dom</code> /
+          <code>opencc-js/cn2t</code> 指到本包的那份</td></tr>
+      <tr><td><code>tsconfig.json</code></td>
+        <td><code>paths</code> 同上,<b>且 <code>@types/react</code> 要排在
+          <code>react</code> 前面</b></td></tr>
+    </tbody>
+  </table>
+  <p><code>@types</code> 排后面的症状很误导:报 TS7016 隐式 any,而文案建议你
+    「给 DefinitelyTyped 发 PR」—— 完全指向错误的方向。</p>
+
+  <h3>变异验证,以及一条「别把功劳记错人」</h3>
+  <div class="box b-bad">
+    <p>把 <code>setConverter(conv)</code> 写回去:<b>红 1 条</b>,报的就是生产上那个
+      <code>null.length</code>。但红的是<b>「字典拉到之后答话真的变成繁體」</b>那条,
+      <b>不是</b>「首帧渲染不抛」那条 —— 那个 TypeError 在<b>异步 setState</b> 里抛,
+      <code>expect(...).not.toThrow()</code> 压根碰不到它。</p>
+    <p><b>所以真正的回归守卫是「等到转换结果」那条。</b> 两条都留着,
+      但测试里已经写明谁在守门 —— 记错了,下次有人删掉「等结果」那条
+      会以为回归还有人守。</p>
+  </div>
+  <div class="box b-ok">
+    <p><b>现状:9 条运行时断言 + 10 条源码级断言,两层都在。</b></p>
   </div>
   <p>变异验证(2026-08-18 实跑):</p>
   <table>

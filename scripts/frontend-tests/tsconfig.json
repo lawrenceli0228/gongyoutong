@@ -5,17 +5,49 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "types": ["node"],
+    // hant-convert.tsx 里**没有 JSX**,但 TS 对 .tsx 后缀一律要求这个开关
+    // (不设就报 TS6142: '--jsx' is not set)。设了不改变任何行为 ——
+    // 没有 JSX 可转。测试文件本身用 createElement 写,也不依赖它。
+    "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+
+    // ---------------------------------------------------------------------
+    // 为什么要 paths:被测的覆盖件躺在 ../frontend-overrides/,
+    // 那个目录**没有 node_modules**。TS(和 Vite)都从文件所在目录往上找依赖,
+    // 找不到就报 TS2307 / "Failed to resolve import"。
+    //
+    // 在此之前没碰到,是因为之前所有被测覆盖件都是**零依赖**的
+    // (checkin-lib / supervision-lib / lang-lib,头注都写着这条约束)。
+    // hant-convert.tsx 是第一个 import react 的,于是 tsconfig 与
+    // vitest.config.ts **两边都要**给它指路 —— 两处同一个根因,改一处要想着另一处。
+    // ---------------------------------------------------------------------
+    "baseUrl": ".",
+    "paths": {
+      // 覆盖件里写的是前端的路径别名 "@/lib/xxx"
+      "@/lib/*": ["../frontend-overrides/*"],
+      // 让包外的文件也能解析到本包装的这几个依赖。
+      // ⚠️ **@types 要排在前面**:显式 paths 会短路 TS 平时「先 pkg/index.d.ts
+      //    再 @types/pkg」那套查找,只指 ./node_modules/react 的话它找到的是
+      //    纯 JS 的 index.js,报 TS7016(隐式 any),而报错文案还会建议你
+      //    「给 DefinitelyTyped 发 PR」—— 完全指向错误的方向。
+      "react": ["./node_modules/@types/react", "./node_modules/react"],
+      "react-dom": [
+        "./node_modules/@types/react-dom",
+        "./node_modules/react-dom"
+      ],
+      "opencc-js/cn2t": ["./node_modules/opencc-js/types/full.d.ts"]
+    }
   },
   "include": [
     "*.ts",
     "../frontend-overrides/checkin-lib.ts",
     "../frontend-overrides/supervision-lib.ts",
-    "../frontend-overrides/lang-lib.ts"
+    "../frontend-overrides/lang-lib.ts",
+    "../frontend-overrides/hant-convert.tsx"
   ]
 }
