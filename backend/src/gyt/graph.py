@@ -132,8 +132,10 @@ API 核实结论（2026-08-05 实测，逐个从 PyPI 下 wheel 解包读源码�
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
+from langchain_core.messages import SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph_supervisor import create_supervisor
@@ -145,6 +147,8 @@ from gyt.agents.report import build_report_agent
 from gyt.agents.safety import SAFETY_AGENT_NAME, build_safety_agent
 from gyt.agents.schedule import SCHEDULE_AGENT_NAME, build_schedule_agent
 from gyt.config import get_settings
+from gyt.core.run_context import project_from_config
+from gyt.db.projects import get_project
 
 # 导入模块而非函数：单测要用 monkeypatch.setattr(llm, "get_chat_model", ...) 把模型换成假的，
 # 写成 from gyt.core.llm import get_chat_model 的话名字会在导入时绑死，打桩就失效了。
@@ -385,8 +389,69 @@ def render_roster(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> str:
 
 
 def build_supervisor_prompt(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> str:
-    """拼出 supervisor 的中文系统提示词（纯函数，不碰任何全局状态）。"""
+    """拼出 supervisor 的**静态**中文系统提示词（纯函数，不碰任何全局状态）。
+
+    「当前工地」这类每轮都会变的现场信息不在这里 —— 它随 config 逐轮变化，
+    由 build_supervisor_prompt_runnable 在调模型前动态续到这段后面。
+    """
     return _SUPERVISOR_PROMPT_TEMPLATE.format(roster=render_roster(specs))
+
+
+def render_current_project(config: RunnableConfig | None) -> str:
+    """把「用户此刻在顶栏选中的工地」渲染成一段提示词，逐轮拼到静态提示后面。
+
+    为什么要有这段(修的就是「图纸同事说得出当前工地、supervisor 却说查不到」这个矛盾):
+    「当前工地」只存在 config.configurable[gyt_project_id] 里,原本**只有** cad / knowledge
+    的工具去读它、并能从库里查出工地名;supervisor 的提示词是静态的、从来拿不到它,
+    于是被直接问「当前项目是不是 X」时,它既没有这条现场信息、又没有哪位同事专管
+    「报当前工地名」,只能按「做不了、不许瞎猜」如实回绝 —— 而同一套系统里图纸同事
+    却张口就报得出工地名。这段就是把这条现场信息也交到 supervisor 手上,让它对
+    「确认工地本身」的问题能直接答,和子 Agent 看到的是同一个「当前工地」。
+
+    工地名从库里现查(get_project),与 cad / knowledge 走的是同一份真相;查不到 / 没选
+    都给一句能指导用户下一步的话,绝不编一个工地名。
+    """
+    project_id = project_from_config(config)
+    if not project_id:
+        return (
+            "# 当前工地\n\n"
+            "用户还没在顶栏选中「当前工地」。凡是要落到某个工地的具体数据"
+            "(图纸、规范、任务)时,先提醒他到顶栏选一个工地,别替他猜是哪个。"
+        )
+    row = get_project(project_id)
+    if row is None:
+        # 选中的工地在库里查无 —— 多半刚被删。不要报编号里的乱码给师傅,给可操作的话。
+        return (
+            "# 当前工地\n\n"
+            "用户顶栏选中的工地在库里查不到了(可能刚被删)。请提醒他重新到顶栏选一个工地。"
+        )
+    return (
+        "# 当前工地\n\n"
+        f"用户现在选中的工地是「{row.name}」。他说「当前工地 / 当前项目」时指的就是它 —— "
+        "这是你**已经知道**的现场信息,像「今天几号」一样。\n"
+        "所以像「当前项目是不是 X」「现在这个工地叫啥」这种只是**确认工地本身**的问题,"
+        "你直接回答就行,不用、也不该派同事去查(没有哪位同事专管报工地名)。\n"
+        "但工地里的**具体数据**——有哪些图纸、有哪些任务、规范怎么规定——照旧派给对应同事,"
+        "别自己答。"
+    )
+
+
+def build_supervisor_prompt_runnable(
+    specs: Sequence[AgentSpec] = AGENT_REGISTRY,
+) -> Callable[[dict[str, Any], RunnableConfig], list[Any]]:
+    """把「静态提示 + 逐轮的当前工地」组装成 create_supervisor 收的 prompt 可调用体。
+
+    签名必须是 ``(state, config: RunnableConfig)``:langgraph 的 RunnableCallable 按参数名
+    + 注解决定要不要把 config 注进来(``config`` 且注解为 RunnableConfig 才注),写漏了
+    config 就永远拿不到当前工地。返回「系统消息 + 原 messages」,与库对 prompt 可调用体的约定一致。
+    """
+    static_prompt = build_supervisor_prompt(specs)
+
+    def supervisor_prompt(state: dict[str, Any], config: RunnableConfig) -> list[Any]:
+        system = f"{static_prompt}\n\n{render_current_project(config)}"
+        return [SystemMessage(content=system), *state["messages"]]
+
+    return supervisor_prompt
 
 
 def _validate_registry(specs: Sequence[AgentSpec]) -> None:
@@ -463,7 +528,9 @@ def build_graph(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> CompiledStateGra
     builder = create_supervisor(
         agents=agents,
         model=llm.get_chat_model("text"),
-        prompt=build_supervisor_prompt(specs),
+        # 可调用体而非静态字符串:每轮把「当前工地」现查现拼到提示后面(见该函数说明),
+        # 修「supervisor 说不出当前工地、子 Agent 却说得出」的矛盾。
+        prompt=build_supervisor_prompt_runnable(specs),
         supervisor_name=SUPERVISOR_NAME,
         output_mode=OUTPUT_MODE,
         # ⚠️ 必须保持开启(显式写出来防止有人再"优化"掉)。
@@ -503,6 +570,8 @@ __all__ = [
     "AgentSpec",
     "build_graph",
     "build_supervisor_prompt",
+    "build_supervisor_prompt_runnable",
     "graph",
+    "render_current_project",
     "render_roster",
 ]
