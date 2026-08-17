@@ -656,7 +656,8 @@ T0   把探针结论补进本双件套                     <u>✅ 已做(2026-08
 T1   转换点定死为 (c),头注画三点位对比图        见 04.6
 T2   姓名走 C(接受转换)+ 改 D12 措辞           见 09 定案 #5,两处头注同步
 T3   加 jsdom + 渲染层断言(徽章 / 编号 / 姓名) <i>06 唯一 critical gap</i>
-T4   量 opencc-js gzipped 体积,超 100KB 裁子集
+T4   量 opencc-js gzipped 体积                    <u>✅ 已做,见 05.1</u>
+     结论:<b>不裁子集,改成 lazy load 全量档</b>
 T5   lang-lib.ts 判别 + shouldConvert
      <i>⚠️ Human 消息恒 false;目标语 == 简体时原样返回(零开销)</i>
 T6   受控词跳过规则(镜像表里的词不转),防双重转换
@@ -681,6 +682,56 @@ T7   useMemo + 把「4000 字几毫秒」写进注释
 
 <i>已作废</i>   SpeakUserLanguage 用于繁體 / 甲 / 甲′ / 乙 / 丙 / 丁 五档
          → 提示词那条路探针否掉了(04.5)。中间件只在第二批为<b>英文</b>保留。</pre>
+
+  <h3>5.1 T4 实测:不裁子集,改成 lazy load(2026-08-17)</h3>
+  <p><code>opencc-js@1.4.1</code> 实测:</p>
+  <table>
+    <thead><tr><th>模块</th><th>原始</th><th>gzip</th></tr></thead>
+    <tbody>
+      <tr><td><code>dist/esm/cn2t.js</code>(现成入口)</td>
+        <td class="n">1067.5 K</td><td class="n"><b>438.4 K</b></td></tr>
+      <tr><td>└ <code>dict/STPhrases.js</code></td>
+        <td class="n">980.0 K</td><td class="n"><b>394.1 K</b> ← 占 90%</td></tr>
+      <tr><td><code>esm-lib/core.js</code></td><td class="n">15.0 K</td><td class="n">3.9 K</td></tr>
+      <tr><td><code>dict/STCharacters.js</code></td><td class="n">31.8 K</td><td class="n">19.0 K</td></tr>
+      <tr><td><code>dict/HKVariants.js</code> + <code>HKVariantsPhrases.js</code></td>
+        <td class="n">6.7 K</td><td class="n">2.6 K</td></tr>
+    </tbody>
+  </table>
+  <p>原以为可以裁掉 <code>STPhrases</code>(方案里定了「只做字形转换,术语表等 W11」),
+    组一个 <b>25.5 KB</b> 的精简档。<b>实测否掉了</b> —— 拿本仓真实语料
+    (提示词正文 + <code>messages.py</code>,316 行 / 11,200 字)对比:</p>
+<pre><b>0.58% 的字不一致 —— 但错的全是要害词</b></pre>
+  <table>
+    <thead><tr><th>原文</th><th>精简档</th><th>全量档</th></tr></thead>
+    <tbody>
+      <tr><td><b>签发</b></td><td><span class="no">籤發</span> ← 抽籤的籤,错字</td>
+        <td><span class="yes">簽發</span></td></tr>
+      <tr><td><b>复查</b></td><td><span class="no">復查</span> ← 错字</td>
+        <td><span class="yes">複查</span></td></tr>
+      <tr><td>复检</td><td><span class="no">復檢</span></td><td><span class="yes">複檢</span></td></tr>
+      <tr><td>下周三</td><td><span class="no">下周三</span> ← 没转</td>
+        <td><span class="yes">下週三</span></td></tr>
+      <tr><td>合并</td><td><span class="no">合並</span></td><td><span class="yes">合併</span></td></tr>
+      <tr><td>标注</td><td><span class="no">標注</span></td><td><span class="yes">標註</span></td></tr>
+    </tbody>
+  </table>
+  <div class="box b-bad">
+    <span class="hd">🔴 STPhrases 不是术语表,是「一简对多繁」的消歧表</span>
+    <p>复→復/複/复、周→周/週、签→籤/簽 —— 单字表选不出来,靠词组表消歧。
+      而<b>「簽發」和「複查」正是监理链的两个核心动作</b>,0.58% 精准砸在要害词上。</p>
+    <p>(真正的<b>术语</b>转换在 <code>to.hkp</code> 那一层:实测「鼠标」两档都是「鼠標」,
+      没变成「滑鼠」。所以术语那层确实可以留给 W11 —— 2.4 那条判断没错,
+      错的是「<code>STPhrases</code> 属于术语层」这个归类。)</p>
+  </div>
+  <div class="box b-ok">
+    <span class="hd">定案:不裁子集,改成 lazy load 全量档</span>
+    <p><b>300 KB 预算管的是首屏</b>;438 KB 是繁體用户<b>切换语言时一次性</b>拉、
+      之后浏览器缓存 → <b>首屏零成本</b>。用动态 <code>import()</code>,
+      简体用户一个字节都不下;切换瞬间给个 loading 态(几秒,一次)。</p>
+    <p><span class="no">不许</span>为了省体积回去用精简档 —— 那等于把「簽發」写成「籤發」,
+      而这个错<b>没有任何测试会发现</b>(转换器本身没坏,只是选错了字)。</p>
+  </div>
 
   <h3>并行化</h3>
   <p><b>第一批:单泳道,没有并行机会。</b> 全部落在
