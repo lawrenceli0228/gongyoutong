@@ -33,10 +33,31 @@ import { describe, expect, it } from "vitest";
 const OVERRIDES = join(import.meta.dirname, "..", "frontend-overrides");
 const read = (name: string) => readFileSync(join(OVERRIDES, name), "utf8");
 
+/**
+ * 剥掉注释,只留代码。
+ *
+ * **负向断言必须走这个** —— 本仓的注释密度很高,而且经常**引用被禁的写法**
+ * 来解释为什么禁(比如 hant-convert.tsx 的头注里就写着 `setConverter(conv)`
+ * 那个崩过的写法)。直接扫全文的话,解释文字自己会把断言弄红,
+ * 而人会以为代码坏了 —— 2026-08-18 已经这么误报过一次。
+ *
+ * 只剥「行首(允许缩进)的 // 注释」和块注释:不动 `https://` 这种行内双斜杠。
+ */
+function codeOf(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
 const markdownText = read("markdown-text.tsx");
 const toolCalls = read("tool-calls.tsx");
 const ai = read("ai.tsx");
 const hantConvert = read("hant-convert.tsx");
+
+const markdownTextCode = codeOf(markdownText);
+const toolCallsCode = codeOf(toolCalls);
+const aiCode = codeOf(ai);
+const hantConvertCode = codeOf(hantConvert);
 
 describe("① 徽章表必须由 withHantKeys 派生", () => {
   it("markdown-text.tsx 从 lang-lib 取词表并调 withHantKeys", () => {
@@ -59,14 +80,14 @@ describe("② markdown-text.tsx 不许自己转换", () => {
     // frontend/src/components/thread/agent-inbox/components/state-view.tsx
     // frontend/src/components/thread/agent-inbox/components/inbox-item-input.tsx
     // 那两个显示的是原始 state,转成繁體是错的。
-    expect(markdownText).not.toContain("hant-convert");
-    expect(markdownText).not.toContain("useHantText");
+    expect(markdownTextCode).not.toContain("hant-convert");
+    expect(markdownTextCode).not.toContain("useHantText");
   });
 
   it("🔴 也不 import opencc —— 转换器只许出现在 hant-convert.tsx 一处", () => {
-    expect(markdownText).not.toContain("opencc");
-    expect(toolCalls).not.toContain("opencc");
-    expect(ai).not.toContain("opencc");
+    expect(markdownTextCode).not.toContain("opencc");
+    expect(toolCallsCode).not.toContain("opencc");
+    expect(aiCode).not.toContain("opencc");
   });
 });
 
@@ -83,7 +104,7 @@ describe("③ ai.tsx 必须真的接上转换", () => {
 
   it("传给 useHantText 的角色是 \"ai\" —— 用户发言绝不能走这条路", () => {
     expect(ai).toMatch(/useHantText\([^)]*"ai"/s);
-    expect(ai).not.toMatch(/useHantText\([^)]*"human"/s);
+    expect(aiCode).not.toMatch(/useHantText\([^)]*"human"/s);
   });
 });
 
@@ -101,8 +122,19 @@ describe("懒加载不许被改成静态 import", () => {
     // 精简档实测把「签发」转成「籤發」、「复查」转成「復查」,
     // 而那两个是监理链的核心动作(方案 §5.1)。
     expect(hantConvert).toContain("opencc-js/cn2t");
-    expect(hantConvert).not.toContain("opencc-js/core");
-    expect(hantConvert).not.toContain("STCharacters");
+    expect(hantConvertCode).not.toContain("opencc-js/core");
+    expect(hantConvertCode).not.toContain("STCharacters");
+  });
+
+  it("🔴 转换器不许进 useState —— 2026-08-18 真机崩过一次", () => {
+    // 病因:setConverter(conv) 里 conv 是函数,React 把它当 updater
+    // (setState(prev => next))去调 conv(null) → opencc 里 null.length → 整页崩成
+    // "Application error: a client-side exception has occurred"。
+    // 结构性修法是「模块级存转换器 + state 只存计数器」,所以 state 里永远不是函数。
+    expect(hantConvertCode).not.toContain("setConverter");
+    expect(hantConvertCode).not.toMatch(/useState<\s*Converter/);
+    // 正面钉住现在的形状:state 只是个数字计数器
+    expect(hantConvert).toMatch(/useState\(0\)/);
   });
 
   it("拉字典失败要退化成恒等函数,不许抛", () => {

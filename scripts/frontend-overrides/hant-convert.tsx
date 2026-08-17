@@ -105,17 +105,28 @@ export async function loadHantConverter(): Promise<Converter> {
  */
 export function useHantText(text: string, role: MessageRole, lang: Lang): string {
   const wanted = shouldConvert(role, lang);
-  const [converter, setConverter] = useState<Converter | null>(() => cached);
+
+  // 🔴 **转换器不许进 useState。** 2026-08-18 真机崩过一次,原因值得写下来:
+  //
+  //    setConverter(conv)   // conv 是个函数
+  //
+  // React 把「传给 setState 的函数」当成 **updater**(setState(prev => next)),
+  // 于是它去调 conv(上一个 state) = conv(null) → opencc 里 null.length → TypeError,
+  // 整页崩成 "Application error: a client-side exception has occurred"。
+  // 堆栈里的 basicStateReducer 就是那一层。
+  //
+  // 打补丁的写法是 setConverter(() => conv)。**这里不那么修** —— 转换器本来就是
+  // 模块级单例,塞进 state 是多余的。改成「模块级存转换器 + state 只存一个计数器」,
+  // 那个坑就**结构上不可能再踩**(state 里永远不是函数)。
+  // conversion-seam.test.ts 有一条断言钉着「不许把转换器塞进 state」。
+  const [, bumpVersion] = useState(0);
 
   useEffect(() => {
-    if (!wanted) return;
-    if (cached) {
-      setConverter(cached);
-      return;
-    }
+    if (!wanted || cached) return;
     let alive = true;
-    void loadHantConverter().then((conv) => {
-      if (alive) setConverter(conv);
+    void loadHantConverter().then(() => {
+      // 只是催一次重渲染;转换器本身在模块级的 cached 里。
+      if (alive) bumpVersion((n) => n + 1);
     });
     return () => {
       alive = false;
@@ -124,9 +135,12 @@ export function useHantText(text: string, role: MessageRole, lang: Lang): string
 
   // useMemo 不是优化,是**别每次重渲染都重跑字典查找**。
   // 量过了(方案 §4 性能那条):一条 200 字答话几毫秒,20 轮历史也在噪声里 ——
-  // 所以**不要**再往上加缓存层,那会把结果塞进 state,复杂度不值。
+  // 所以**不要**再往上加缓存层。
+  //
+  // 依赖里放 `cached` 而不是某个 state:字典拉到之后 cached 从 null 变成函数,
+  // 引用变了 → useMemo 重算。bumpVersion 负责把这次重渲染触发出来。
   return useMemo(() => {
-    if (!wanted || !converter) return text;
-    return converter(text);
-  }, [text, wanted, converter]);
+    if (!wanted || !cached) return text;
+    return cached(text);
+  }, [text, wanted, cached]);
 }
