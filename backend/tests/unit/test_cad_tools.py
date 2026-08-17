@@ -15,7 +15,19 @@ from gyt.agents.cad import tools
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind
 from gyt.db import projects as db
-from tests.unit._dxf_fixtures import make_broken_dxf, make_gbk_dxf
+from tests.unit._dxf_fixtures import (
+    _find_cjk_font,
+    make_broken_dxf,
+    make_gbk_dxf,
+    make_scanned_pdf,
+    make_tianzheng_dxf,
+    make_vector_pdf,
+)
+
+# 缺 CJK 字体的环境跳过 PDF 相关用例(造不了带中文的矢量 PDF)。
+_needs_cjk = pytest.mark.skipif(
+    _find_cjk_font() is None, reason="环境缺 CJK 字体,造不了带中文的矢量 PDF 样例"
+)
 
 
 @pytest.fixture
@@ -102,6 +114,129 @@ async def test_损坏DXF返回FILE_CORRUPT(tmp_path, monkeypatch):
     result = await tools.parse_drawing.ainvoke({"drawing": "坏图"})
     assert result["ok"] is False
     assert result["error_code"] == "FILE_CORRUPT"
+
+
+# --- PDF 图纸(预览 + 读图上文字;结构化查询如实拒)---------------------------
+
+
+@pytest.fixture
+def pdf_env(tmp_path, monkeypatch):
+    """把一张矢量 PDF 预注册成「首层平面图PDF」,供工具层断言 PDF 分流。"""
+    make_vector_pdf(tmp_path / "vec.pdf")
+    drawing_id = artifacts.register(
+        tmp_path / "vec.pdf", kind=ArtifactKind.DRAWING, original_name="plan.pdf"
+    )
+    monkeypatch.setattr(tools, "get_demo_drawings", lambda: {"首层平面图PDF": drawing_id})
+    return {"id": drawing_id, "name": "首层平面图PDF"}
+
+
+@_needs_cjk
+async def test_parse_drawing认PDF给页数与能力说明(pdf_env):
+    result = await tools.parse_drawing.ainvoke({"drawing": "首层平面图PDF"})
+    assert result["ok"] is True
+    assert result["data"]["format"] == "pdf"
+    assert result["data"]["page_count"] == 1
+    assert result["data"]["has_text"] is True
+    assert "PDF" in result["user_msg"]
+    assert "预览" in result["user_msg"]  # 说清能做的两样之一
+
+
+@_needs_cjk
+async def test_read_view_params读出PDF图上文字(pdf_env):
+    # PDF 的看家能力:把图上文字如实抽出来答问。
+    result = await tools.read_view_params.ainvoke({"drawing": "首层平面图PDF"})
+    assert result["ok"] is True
+    assert result["data"]["format"] == "pdf"
+    texts = " ".join(a["text"] for a in result["data"]["annotations"])
+    assert "标高 ±0.000" in texts
+    assert "客厅 3600" in texts
+
+
+@_needs_cjk
+async def test_query_dimension对PDF如实说读不了(pdf_env):
+    result = await tools.query_dimension.ainvoke({"drawing": "首层平面图PDF"})
+    assert result["ok"] is False
+    assert result["error_code"] == "EMPTY_RESULT"
+    assert "PDF" in result["user_msg"]
+
+
+@_needs_cjk
+async def test_layer_stats对PDF如实说没有图层对象(pdf_env):
+    result = await tools.layer_stats.ainvoke({"drawing": "首层平面图PDF"})
+    assert result["ok"] is False
+    assert result["error_code"] == "EMPTY_RESULT"
+    assert "PDF" in result["user_msg"]
+
+
+@_needs_cjk
+async def test_list_components对PDF如实说没有构件对象(pdf_env):
+    result = await tools.list_components.ainvoke({"drawing": "首层平面图PDF"})
+    assert result["ok"] is False
+    assert result["error_code"] == "EMPTY_RESULT"
+
+
+@_needs_cjk
+async def test_render_preview对PDF出PNG(pdf_env):
+    result = await tools.render_preview.ainvoke({"drawing": "首层平面图PDF"})
+    assert result["ok"] is True
+    assert result["data"]["format"] == "pdf"
+    path = artifacts.resolve(result["data"]["png_id"])
+    assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+@_needs_cjk
+async def test_扫描PDF读文字时如实说是扫描件(tmp_path, monkeypatch):
+    make_scanned_pdf(tmp_path / "scan.pdf")
+    sid = artifacts.register(
+        tmp_path / "scan.pdf", kind=ArtifactKind.DRAWING, original_name="scan.pdf"
+    )
+    monkeypatch.setattr(tools, "get_demo_drawings", lambda: {"扫描图": sid})
+    result = await tools.read_view_params.ainvoke({"drawing": "扫描图"})
+    assert result["ok"] is False
+    assert result["error_code"] == "EMPTY_RESULT"
+    assert "扫描件" in result["user_msg"]
+
+
+# --- 天正图(TCH_* 私有构件)------------------------------------------------
+
+
+@pytest.fixture
+def tianzheng_env(tmp_path, monkeypatch):
+    """把一张天正图预注册成「天正楼层图」,供工具层断言不再误判、并给出导出步骤。"""
+    make_tianzheng_dxf(tmp_path / "tz.dxf")
+    drawing_id = artifacts.register(
+        tmp_path / "tz.dxf", kind=ArtifactKind.DRAWING, original_name="tz.dxf"
+    )
+    monkeypatch.setattr(tools, "get_demo_drawings", lambda: {"天正楼层图": drawing_id})
+    return {"id": drawing_id, "name": "天正楼层图"}
+
+
+async def test_天正图不再误判为FILE_CORRUPT且给导出步骤(tianzheng_env):
+    # 回归核心:旧代码把天正图当「文件传坏了」。现在应成功、如实说是天正图、并给 T3 导出步骤。
+    result = await tools.parse_drawing.ainvoke({"drawing": "天正楼层图"})
+    assert result["ok"] is True
+    assert result["data"]["tianzheng"]["detected"] is True
+    msg = result["user_msg"]
+    assert "天正" in msg
+    assert "图形导出" in msg and "T3" in msg  # 正确步骤交给了用户
+    assert "传坏" not in msg  # 不再是误诊那句
+
+
+async def test_天正图查标注给的是导出指引而非图上没标(tianzheng_env):
+    # 天正的标注锁在私有构件里,不能对用户说「图上没标」—— 要说清是天正、给导出路。
+    result = await tools.query_dimension.ainvoke({"drawing": "天正楼层图"})
+    assert result["ok"] is False
+    assert result["error_code"] == "EMPTY_RESULT"
+    assert "天正" in result["user_msg"]
+    assert "图上没标" not in result["user_msg"]
+
+
+async def test_天正图概览标出私有构件计数(tianzheng_env):
+    result = await tools.list_components.ainvoke({"drawing": "天正楼层图"})
+    assert result["ok"] is True
+    assert result["data"]["tianzheng"]["detected"] is True
+    # 私有构件按人话计数报出来:3 墙、2 柱。
+    assert "墙" in result["user_msg"] and "柱" in result["user_msg"]
 
 
 # --- query_dimension ---------------------------------------------------------
