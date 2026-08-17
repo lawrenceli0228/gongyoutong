@@ -484,9 +484,17 @@ apply_override "api-key.tsx" "src/lib/api-key.tsx"
 #    (2026-08-16 W9·S6:install_new_file 五 → 七,加了监理那两件。)
 #    (2026-08-16 W10·S3:install_new_file 七 → 八,加了 supervision-entry.tsx
 #     那个常驻入口。apply_override 仍是十二 —— 那次只改了已有的 thread-index.tsx。)
+#    (2026-08-17 W12·第一批:install_new_file 八 → 九,加了 lang-lib.ts
+#     那个三语判别库。apply_override 会在转换点落地时动 ai.tsx / markdown-text.tsx,
+#     但它们本来就在十二件里,所以那个数**不变**。)
 #    数法:grep -cE '^\s*apply_override ' scripts/setup-frontend.sh
 #          grep -cE '^\s*install_new_file ' scripts/setup-frontend.sh
 install_new_file "checkin-lib.ts" "src/lib/checkin-lib.ts"
+# W12 三语切换(第一批:繁體答话)。纯 TS 零依赖的判别库 ——
+# 判「用户在打什么字」+ 判「这条要不要转」。转换器本身是懒加载的,不在这个文件里
+# (理由见 lang-lib.ts 头注:opencc-js 的 cn2t 是 438 KB gzipped,
+#  而 300 KB 的预算管的是首屏)。
+install_new_file "lang-lib.ts" "src/lib/lang-lib.ts"
 install_new_file "qrcode.tsx" "src/components/thread/qrcode.tsx"
 install_new_file "checkin.tsx" "src/components/thread/checkin.tsx"
 # W7 CAD/knowledge(队友分支):项目 / 图纸 / 资料上传面板与状态卡片。

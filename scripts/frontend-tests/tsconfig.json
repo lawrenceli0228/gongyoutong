@@ -15,6 +15,7 @@
   "include": [
     "*.ts",
     "../frontend-overrides/checkin-lib.ts",
-    "../frontend-overrides/supervision-lib.ts"
+    "../frontend-overrides/supervision-lib.ts",
+    "../frontend-overrides/lang-lib.ts"
   ]
 }

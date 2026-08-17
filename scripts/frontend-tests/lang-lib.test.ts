@@ -1,0 +1,185 @@
+/**
+ * lang-lib.ts(scripts/frontend-overrides/)的单测。
+ * 跑法:cd scripts/frontend-tests && pnpm install && pnpm vitest run
+ *
+ * 锁的都是**静默出错**的东西:
+ *   · 用户发言被转 → human.tsx 的 refPattern 匹配不上 → 照片不渲染成图,退回裸 hex,零报错;
+ *   · 「显式优先」被改成「永远往回扫」→ 用户点了 English 却仍收到简体,按钮像没反应;
+ *   · 目标语是简体时也走转换 → 空转,而且把 opencc 那 438 KB 拉给了不需要的人;
+ *   · 判别字集里混进歧义字 → 误判,而误判的表现只是「答话语言偶尔不对」。
+ */
+
+import { describe, expect, it } from "vitest";
+
+import {
+  DEFAULT_LANG,
+  detectInput,
+  HANS_CHARS,
+  HANT_CHARS,
+  LANGS,
+  resolveLang,
+  SCRIPT_PAIRS,
+  shouldConvert,
+} from "../frontend-overrides/lang-lib";
+
+// ---------------------------------------------------------------------------
+// 判别字集本身的完整性
+// ---------------------------------------------------------------------------
+
+describe("判别字集", () => {
+  it("每一项恰好两个字(左简右繁)", () => {
+    const bad = SCRIPT_PAIRS.filter((p) => [...p].length !== 2);
+    expect(bad).toEqual([]);
+  });
+
+  it("简体侧与繁體侧完全不相交 —— 相交就说明收进了两边通用的歧义字", () => {
+    const overlap = [...HANS_CHARS].filter((c) => HANT_CHARS.has(c));
+    expect(overlap).toEqual([]);
+  });
+
+  it("两侧都没有重复字 —— 重复会让计数偏向那一边", () => {
+    expect(HANS_CHARS.size).toBe(SCRIPT_PAIRS.length);
+    expect(HANT_CHARS.size).toBe(SCRIPT_PAIRS.length);
+  });
+
+  it("刻意排除的一简对多繁歧义字不在表里", () => {
+    // 这些字**两边都在用**(繁體也写「干活」「后面」),收进来会误判。
+    // 名单与 lang-lib.ts 头注那段互指,改一处两处一起。
+    for (const ch of ["干", "发", "面", "里", "云", "后", "几", "复"]) {
+      expect(HANS_CHARS.has(ch), `${ch} 不该在简体判别集里`).toBe(false);
+      expect(HANT_CHARS.has(ch), `${ch} 不该在繁體判别集里`).toBe(false);
+    }
+  });
+
+  it("HANS_CHARS / HANT_CHARS 是从 SCRIPT_PAIRS 派生的,不是手写的第二份", () => {
+    expect([...HANS_CHARS].join("")).toBe(SCRIPT_PAIRS.map((p) => p[0]).join(""));
+    expect([...HANT_CHARS].join("")).toBe(SCRIPT_PAIRS.map((p) => p[1]).join(""));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectInput —— 判别向量
+// ---------------------------------------------------------------------------
+
+describe("detectInput 判别向量", () => {
+  it("繁體工地提问判成繁體", () => {
+    expect(detectInput("幫我記一條:明天上午整改臨邊防護")).toBe("zh-Hant");
+    expect(detectInput("今天還有哪些任務沒做完?")).toBe("zh-Hant");
+    expect(detectInput("鋼筋複檢那條改到週五")).toBe("zh-Hant");
+  });
+
+  it("简体工地提问判成简体", () => {
+    expect(detectInput("帮我记一条:明天上午整改临边防护")).toBe("zh-Hans");
+    expect(detectInput("今天还有哪些任务没做完?")).toBe("zh-Hans");
+  });
+
+  it("英文提问判成英文", () => {
+    expect(detectInput("What tasks are still open today?")).toBe("en");
+    expect(detectInput("Add a task: fix the edge protection")).toBe("en");
+  });
+
+  it("🔴 简繁同形的短句判不出来 —— 这是常态,返回 null 交给兜底链", () => {
+    // 「好」「收到」在简繁里逐字相同;8 类违规项里也有一半同形。
+    for (const s of ["好", "好的", "收到", "未戴安全帽", "消防通道堵塞"]) {
+      expect(detectInput(s), `「${s}」应判不出来`).toBeNull();
+    }
+  });
+
+  it("空串 / 纯数字 / 纯符号 判不出来,且不抛", () => {
+    for (const s of ["", "   ", "12345", "!!!???", "T1 T2 T3"]) {
+      expect(detectInput(s)).toBeNull();
+    }
+  });
+
+  it("简繁混排按多数决 —— 粘贴来的文本会这样", () => {
+    // 繁體侧 3 个判别字(這/個/務)对简体侧 2 个(这/条)
+    expect(detectInput("這個任務 和 这条")).toBe("zh-Hant");
+    // 反过来:简体侧 3 个(这/个/务)对繁體侧 2 个(這/條)
+    expect(detectInput("这个任务 和 這條")).toBe("zh-Hans");
+  });
+
+  it("打平时判不出来 —— 不许偏向任何一边", () => {
+    // 繁體侧 2(這/個)vs 简体侧 2(这/条):打平
+    expect(detectInput("這個 和 这条")).toBeNull();
+  });
+
+  it("汉字优先于拉丁 —— 中文里夹英文缩写不该判成英文", () => {
+    expect(detectInput("把 T1 這條銷了")).toBe("zh-Hant");
+    expect(detectInput("把 T1 这条销了")).toBe("zh-Hans");
+  });
+
+  it("null / undefined 不抛", () => {
+    expect(detectInput(undefined as unknown as string)).toBeNull();
+    expect(detectInput(null as unknown as string)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveLang —— 三层兜底链,顺序不许反
+// ---------------------------------------------------------------------------
+
+describe("resolveLang 兜底链", () => {
+  it("🔴 显式选择优先于往回扫 —— 用户点了按钮系统不许当没看见", () => {
+    // 全程简体聊了十轮,点了 English,再打「ok」。
+    // 只往回扫的话会找到十轮简体,把显式选择覆盖掉。
+    const tenSimplified = Array.from({ length: 10 }, () => "帮我记一条任务");
+    expect(resolveLang("en", ["ok", ...tenSimplified])).toBe("en");
+    expect(resolveLang("zh-Hant", tenSimplified)).toBe("zh-Hant");
+  });
+
+  it("没显式选择时,末条判得出来就用末条", () => {
+    expect(resolveLang(null, ["今天還有哪些任務?", "帮我记一条"])).toBe("zh-Hant");
+  });
+
+  it("🔴 末条判不出来就往回扫 —— 第二句只打「好」要沿用上一句的语言", () => {
+    expect(resolveLang(null, ["好", "幫我記一條:整改臨邊防護"])).toBe("zh-Hant");
+    expect(resolveLang(null, ["好", "帮我记一条:整改临边防护"])).toBe("zh-Hans");
+  });
+
+  it("整条线程都判不出来 → 落 DEFAULT_LANG", () => {
+    expect(resolveLang(null, ["好", "收到", "12345"])).toBe(DEFAULT_LANG);
+  });
+
+  it("线程为空 → 落 DEFAULT_LANG(首条是纯图片时就是这样)", () => {
+    expect(resolveLang(null, [])).toBe(DEFAULT_LANG);
+  });
+
+  it("DEFAULT_LANG 是繁體(定案 #1:香港官方语言 + 本地工友为主)", () => {
+    expect(DEFAULT_LANG).toBe("zh-Hant");
+  });
+
+  it("LANGS 三个值齐全且不重复", () => {
+    expect([...LANGS].sort()).toEqual(["en", "zh-Hans", "zh-Hant"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldConvert —— 两条硬约束
+// ---------------------------------------------------------------------------
+
+describe("shouldConvert 硬约束", () => {
+  it("🔴 用户发言恒不转 —— 转了 human.tsx 的照片编号正则就匹配不上", () => {
+    // (照片编号:…) 是后端 uploads.py 拼进去的简体;转成「照片編號」之后
+    // refPattern 抓不到 → 照片不渲染成图,退回一段裸 hex,而且零报错。
+    for (const lang of LANGS) {
+      expect(shouldConvert("human", lang), `human + ${lang} 必须为 false`).toBe(false);
+    }
+  });
+
+  it("🔴 目标语是简体时不转 —— 空转,而且会把 438 KB 的 opencc 拉给不需要的人", () => {
+    expect(shouldConvert("ai", "zh-Hans")).toBe(false);
+  });
+
+  it("目标语是英文时不转 —— 英文走提示词那条路,不是字形转换(第二批)", () => {
+    expect(shouldConvert("ai", "en")).toBe(false);
+  });
+
+  it("只有「AI 消息 + 繁體」这一种组合要转", () => {
+    expect(shouldConvert("ai", "zh-Hant")).toBe(true);
+
+    const combos = (["human", "ai"] as const).flatMap((role) =>
+      LANGS.map((lang) => [role, lang, shouldConvert(role, lang)] as const),
+    );
+    expect(combos.filter(([, , yes]) => yes)).toEqual([["ai", "zh-Hant", true]]);
+  });
+});
