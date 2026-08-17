@@ -16,6 +16,12 @@ COMPOSE        := docker compose
 COMPOSE_BASE_FILE := docker-compose.yml
 COMPOSE_DEV_FILE  := docker-compose.dev.yml
 COMPOSE_DEV       := $(COMPOSE) -f $(COMPOSE_BASE_FILE) -f $(COMPOSE_DEV_FILE)
+# 稳态档:在 dev 之上再叠一层,把 --no-reload 加回来。
+# 手工点界面 / 演示 / 真机验收走它 —— 理由见 $(COMPOSE_NORELOAD_FILE) 顶部
+# (macOS 的 VirtioFS 会持续产生假的文件变更事件,进程每 10 秒重启一次,
+#  于是识图那种 20-60 秒的长请求永远做不完,而**日志里一行报错都没有**)。
+COMPOSE_NORELOAD_FILE := docker-compose.noreload.yml
+COMPOSE_STABLE    := $(COMPOSE_DEV) -f $(COMPOSE_NORELOAD_FILE)
 # 覆盖率量哪些包。eval 也在内:它是三条评测门槛的执行者,判错分比模型答错更致命,
 # 不上锁的话 W2 改 runner 时覆盖率掉光也不会有一条 CI 变红。与 pyproject 的 addopts 同源。
 COV_PACKAGES   := gyt eval
@@ -121,7 +127,7 @@ TEST_IN_CONTAINER = sh -c 'cmp -s $(IMAGE_LOCK_PATH) $(HOST_LOCK_PATH) || { echo
 # 所有目标都得在这儿登记,一个都不能漏:漏了的目标一旦和同名文件/目录撞上,
 # make 会认为"文件已存在且是最新的"而直接跳过,现象是命令看着跑了其实什么都没干。
 # (build-knowledge 就漏过一次 —— 合并 knowledge agent 时忘了加。)
-.PHONY: help setup dev dev-docker test test-docker cov build-knowledge eval eval-smoke \
+.PHONY: help setup dev dev-docker dev-docker-stable test test-docker cov build-knowledge eval eval-smoke \
         lint lint-ci fmt up down e2e frontend serve-artifacts attendance-clean test-frontend
 
 help: ## 打印所有可用目标
@@ -173,6 +179,29 @@ dev-docker: ## 容器里起后端,改 backend/src 的 .py 自动重载(本机装
 	@echo "[没反应] 宿主文件系统不传文件变更事件时(WSL2/网络盘常见),改用轮询重来:"
 	@echo "         GYT_WATCH_POLLING=1 make dev-docker"
 	@echo "[看日志] $(COMPOSE_DEV) logs -f backend"
+	@echo "[停掉]   make down"
+
+dev-docker-stable: ## 容器里起后端,**关掉热重载**(手工点界面 / 演示 / 真机验收走这条)
+	@# 与 dev-docker 的分工只有一条:那边改 .py 自动重载,这边不。
+	@#
+	@# 什么时候必须走这条(2026-08-16 实测):macOS 上 Docker Desktop 的绑定挂载
+	@# 会**持续产生假的文件变更事件**(日志每 10 秒一次 "12 changes detected",
+	@# 而容器里 find -newermt 查下去一个文件都没真变)。进程于是每 10 秒重启一次,
+	@# 识图那种 20-60 秒的长请求永远做不完 —— 后端其实干完了、隐患已经进库,
+	@# 但 SSE 流断了,界面永远停在「正在忙」。
+	@#
+	@# 🔴 **日志里没有任何一行报错。** 别指望从日志看出来,直接换这条。
+	@#
+	@# 代价:改 backend/ 下的 .py 不再自动生效,要重启(秒级,不重建镜像):
+	@#     $(COMPOSE_STABLE) up -d --no-deps --force-recreate backend
+	@# 手工点界面时这个代价是零 —— 那会儿本来就不该有人在改代码。
+	@$(PREPARE_DATA_DIR)
+	@$(CHECK_ENV_KEYS)
+	$(COMPOSE_STABLE) up -d --build
+	@echo "[已启动] 后端 API:$(BACKEND_URL)    健康检查:$(BACKEND_URL)/ok"
+	@echo "[稳态]   热重载已关。改了 backend/ 下的 .py 之后手动重启(秒级,不重建镜像):"
+	@echo "         $(COMPOSE_STABLE) up -d --no-deps --force-recreate backend"
+	@echo "[看日志] $(COMPOSE_STABLE) logs -f backend"
 	@echo "[停掉]   make down"
 
 test: ## 跑单元/集成测试(不含 E2E,秒级)

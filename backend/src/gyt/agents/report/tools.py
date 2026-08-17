@@ -4,12 +4,13 @@
 数据保真:隐患内容**不经过任何 LLM 转抄**
 ---------------------------------------------------------------------------
 巡检记录是要留档、可能用于追责的文档,里面的隐患项错一个字就是另一份文件。
-所以本工具只收 artifact_id,内部**重新调用** safety 的 analyze_site_photo:
+所以本工具只收 artifact_id,内部**重新跑一遍** safety 的识别:
 
     render_inspection_report(artifact_id)
-        │ analyze_site_photo(artifact_id)   ← 提示词已冻结 + 键算在图片内容上
-        │                                     → 必然命中磁盘缓存:零成本,
-        │                                       且与 safety 刚讲给用户的判断逐字节一致
+        │ _recognize(artifact_id)   ← safety 的「只识别、不登记」那一半;
+        │                             提示词已冻结 + 缓存键算在图片内容上
+        │                             → 必然命中磁盘缓存:零成本,
+        │                               且与 safety 刚讲给用户的判断逐字节一致
         ▼ envelope.data(五键契约:label/violations/severity/max_severity/note)
     python-docx 渲染 → artifacts.register(REPORT) → 报告编号
 
@@ -17,26 +18,44 @@
 32 位编号从上文搬进工具参数 —— 搬错一位立刻 NOT_FOUND 报错,
 **不可能产出一份内容错误却看起来正常的文档**。这比让模型转抄隐患清单安全一个量级。
 
+⚠️ **为什么复调的是 ``_recognize`` 而不是 ``analyze_site_photo``**(W9 S3 改的):
+W9 起 ``analyze_site_photo`` = 识别 + **把违规项登记成 pending 隐患**,幂等键是
+``(project_id, photo_sha256, item)``。而这条复调**不带 config** —— 它是工具内部的
+一次直调,LangGraph 的 configurable 到不了这里,``project_from_config`` 会取到空串。
+于是 safety 那次登记进「工地A」、report 这次登记进 ``''``:**同一张照片的同一个隐患,
+台账里两行,一行还是无主的**,而且全程零报错。改调 ``_recognize`` 之后,
+**保真性质一个字没变** —— 仍是同一个纯函数、仍命中同一份缓存、仍是那五个键 ——
+变的只是不再重复登记一遍。
+
 依赖方向说明:report → safety 的 import 是**有意的**,英雄链本身就是这条耦合
-(拍照识违规 → 自动出记录)。别为了"解耦"把 analyze 抽到 core 去 ——
+(拍照识违规 → 自动出记录)。别为了"解耦"把识别抽到 core 去 ——
 它的提示词、缓存维度、词表守卫全长在 safety 包里,搬家只会制造第二真相源。
+
+另外两条 import(W9 S2 抽公共件时加的,方案 §11 的 S2 泳道):
+
+  · ``agents/supervision/docgen`` —— docx 骨架(标题/元信息表/各节/免责句)
+    与六种监理文书共用(D8)。这里只负责「巡检记录填什么」,版式归那边。
+    ⚠️ 免责句是**必填参数**,巡检记录传自己的 ``_DISCLAIMER``,不许套上监理
+    文书那句「总监签字后生效」—— 两者定位不同,详见 docgen 里的说明。
+  · ``attendance/receipt`` —— 全仓唯一的业务时间权威(香港时区)。以前这里
+    走 ``datetime.now(UTC).astimezone()``,那是**宿主时区**:容器 TZ 是
+    Asia/Shanghai、本机可能是任意时区,数值一致纯属巧合(方案 §6.3)。
 """
 
 from __future__ import annotations
 
-import io
 import logging
-from datetime import UTC, datetime
 from typing import Any, Final
 
-from docx import Document
-from docx.shared import Pt
 from langchain_core.tools import tool
 
-from gyt.agents.safety.tools import analyze_site_photo
+from gyt.agents.safety.tools import _recognize
+from gyt.agents.supervision import docgen
+from gyt.attendance.receipt import make_snapshot
 from gyt.config import get_settings
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind
+from gyt.core.doc_no import new_report_no
 from gyt.core.errors import Envelope, ErrorCode, fail, ok, tool_guard
 
 logger = logging.getLogger(__name__)
@@ -66,59 +85,63 @@ def _render_docx(
     *,
     photo_id: str,
     report_no: str,
+    generated_at: str,
     data: dict[str, Any],
     settings: Any,
 ) -> bytes:
-    """按巡检记录模板渲染 docx,返回文件字节。纯函数式:不落盘、不改入参。"""
+    """按巡检记录模板渲染 docx,返回文件字节。纯函数式:不落盘、不改入参。
+
+    版式(标题 / 元信息表 / 各节 / 免责句)在 ``supervision/docgen.py``,与六种
+    监理文书共用;这里只决定「巡检记录填什么」。W9 S2 抽骨架时逐项对齐了原来的
+    渲染顺序与措辞,产出结构与 2026-08-16 之前**一致**。
+
+    ``generated_at`` 由调用方从香港时间权威取,和 ``report_no`` 里的时刻同源
+    —— 不在这里现取 now,理由见 ``render_inspection_report`` 里的注释。
+    """
     label = str(data.get("label") or "")
     violations: list[str] = list(data.get("violations") or [])
     severity: dict[str, str] = dict(data.get("severity") or {})
     note = str(data.get("note") or "")
 
-    doc = Document()
-    doc.add_heading("工地安全巡检记录", level=0)
-
-    meta = doc.add_table(rows=4, cols=2)
-    meta.style = "Table Grid"
-    rows = [
-        ("记录编号", report_no),
-        ("生成时间", datetime.now(UTC).astimezone().strftime("%Y-%m-%d %H:%M")),
-        ("照片编号", photo_id),
-        ("巡检结论", LABEL_ZH.get(label, f"{label or '(空)'}(待人工确认)")),
+    sections: list[docgen.Section] = [
+        docgen.TableSection(
+            heading="隐患明细",
+            header=("序号", "隐患项", "级别"),
+            rows=tuple(
+                (str(index), item, severity.get(item, "待定级"))
+                for index, item in enumerate(violations, start=1)
+            ),
+            empty_note="本次巡检未发现受控清单内的隐患。",
+        )
     ]
-    for (key, value), row in zip(rows, meta.rows, strict=True):
-        row.cells[0].text = key
-        row.cells[1].text = value
-
-    doc.add_heading("隐患明细", level=1)
-    if violations:
-        table = doc.add_table(rows=1 + len(violations), cols=3)
-        table.style = "Table Grid"
-        for cell, head in zip(table.rows[0].cells, ("序号", "隐患项", "级别"), strict=True):
-            cell.text = head
-        for index, item in enumerate(violations, start=1):
-            cells = table.rows[index].cells
-            cells[0].text = str(index)
-            cells[1].text = item
-            cells[2].text = severity.get(item, "待定级")
-    else:
-        doc.add_paragraph("本次巡检未发现受控清单内的隐患。")
-
+    # 备注为空就整节不出 —— 一个空的「现场备注」小标题会让人以为备注被吞了。
     if note:
-        doc.add_heading("现场备注与待复核事项", level=1)
-        doc.add_paragraph(note)
-
-    doc.add_heading("生成信息", level=1)
-    doc.add_paragraph(
-        f"识别模型:{settings.model_vision} / 提示词版本:{settings.prompt_version}。"
-        "隐患判定与级别由系统按固定规则直出,未经人工改写。"
+        sections.append(docgen.TextSection(heading="现场备注与待复核事项", body=note))
+    sections.append(
+        docgen.TextSection(
+            heading="生成信息",
+            body=(
+                f"识别模型:{settings.model_vision} / 提示词版本:{settings.prompt_version}。"
+                "隐患判定与级别由系统按固定规则直出,未经人工改写。"
+            ),
+        )
     )
-    tail = doc.add_paragraph(_DISCLAIMER)
-    tail.runs[0].font.size = Pt(9)
 
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    return buffer.getvalue()
+    return docgen.render_document(
+        title="工地安全巡检记录",
+        meta=(
+            ("记录编号", report_no),
+            ("生成时间", generated_at),
+            ("照片编号", photo_id),
+            ("巡检结论", LABEL_ZH.get(label, f"{label or '(空)'}(待人工确认)")),
+        ),
+        sections=sections,
+        # 巡检记录用自己那句免责("AI 初筛 vs 持证安全员现场判定"),**不是**监理
+        # 文书那句"总监签字后生效" —— 它没有签字这一环。docgen 把 disclaimer 做成
+        # 必填无默认,就是为了让"漏传参数于是悄悄套上另一句"在结构上不可能发生。
+        disclaimer=_DISCLAIMER,
+        # 同理不传签字栏:巡检记录不需要签字生效。
+    )
 
 
 @tool("render_inspection_report", description=_RENDER_DESCRIPTION)
@@ -127,15 +150,15 @@ async def render_inspection_report(artifact_id: str) -> Envelope:
     """生成一张照片的巡检记录 docx,登记为 REPORT 产物。
 
     artifact_id
-      │ 编号不合法/照片不存在/识别失败 ──▶ 原样透传 safety 工具的失败信封
-      ▼ analyze_site_photo(缓存必中,数据与 safety 口径逐字节一致)
+      │ 编号不合法/照片不存在/识别失败 ──▶ 原样透传 safety 识别的失败信封
+      ▼ _recognize(缓存必中,数据与 safety 口径逐字节一致,**不重复登记隐患**)
     五键契约 data
       ▼ python-docx 渲染 + artifacts.register(REPORT)
     ok(data={report_id, filename, label, violations, severity, max_severity})
     """
     settings = get_settings()
 
-    analysis = await analyze_site_photo.ainvoke({"artifact_id": (artifact_id or "").strip()})
+    analysis = await _recognize((artifact_id or "").strip())
     if not isinstance(analysis, dict) or not analysis.get("ok"):
         # 失败信封原样透传:里面的 user_msg 已经是中文人话(编号不对/照片没了/模型超时),
         # 在这里重新包装一层只会把「该怎么办」的信息越包越模糊。
@@ -145,12 +168,30 @@ async def render_inspection_report(artifact_id: str) -> Envelope:
 
     data: dict[str, Any] = dict(analysis.get("data") or {})
     cleaned = (artifact_id or "").strip()
+    # 时间只取**一个快照**,记录编号里的时刻和文档里「生成时间」那一行同源。
+    # 各取一次 now 的话跨秒/跨午夜时两处会对不上,而这是一份要留档、可能用于
+    # 追责的文件 —— 同一份文件上写着两个时间,追责时先被质疑的是文件本身
+    # (attendance/receipt.py 头注「单一快照」的原话,那边四处时间同理)。
+    #
+    # 快照来自香港时间权威。以前这里是 datetime.now(UTC).astimezone(),那是
+    # **宿主时区**:容器 TZ=Asia/Shanghai、本机可能是任意时区,数值一致纯属
+    # 巧合,而 make test 在同为 UTC+8 的本机全绿也发现不了(方案 §6.3)。
+    #
     # 记录编号用「GYT-日期-时刻」而不是产物编号:产物编号要注册后才有,而正文
     # 渲染在注册之前(注册需要文件字节)。时间戳号人念得出来、电话里报得清,
     # 产物编号(32 位 hex)在返回值里一并给出,两者都能唯一定位这份文件。
-    report_no = datetime.now(UTC).astimezone().strftime("GYT-%Y%m%d-%H%M%S")
+    # ⚠️ 这个格式与 __init__.py 的 REPORT_RECEIPT_PATTERN 绑死,改格式两处一起改
+    # —— 生成器现在住在 core/doc_no.py 的 new_report_no(),那儿有完整说明。
+    snap = make_snapshot()
+    report_no = new_report_no(snap)
 
-    payload = _render_docx(photo_id=cleaned, report_no=report_no, data=data, settings=settings)
+    payload = _render_docx(
+        photo_id=cleaned,
+        report_no=report_no,
+        generated_at=snap.display,
+        data=data,
+        settings=settings,
+    )
     filename = f"巡检记录_{report_no}.docx"
     report_id = artifacts.register(payload, kind=ArtifactKind.REPORT, original_name=filename)
     stored = artifacts.resolve(report_id)

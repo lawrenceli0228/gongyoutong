@@ -61,7 +61,16 @@ AGENT_NONE: Final[str] = "none"
 """路由集里「不该派给任何子 Agent」的取值。模型没派活时也归一到它。"""
 
 ROUTING_AGENTS: Final[frozenset[str]] = frozenset(
-    {"safety", "inspection", "knowledge", "schedule", "cad", "attendance", AGENT_NONE}
+    {
+        "safety",
+        "inspection",
+        "knowledge",
+        "schedule",
+        "cad",
+        "attendance",
+        "supervision",
+        AGENT_NONE,
+    }
 )
 """路由集 expected_agent 的合法取值,**与 eval/README.md 的 routing 小节同源,要改一起改**。
 
@@ -69,7 +78,9 @@ ROUTING_AGENTS: Final[frozenset[str]] = frozenset(
 而报出的失败原因是「派错人了」—— 把矛头指向模型。routing 门槛是三套里最高的 90%,
 20 条里错标 2 条就直接把上限压到 90%,团队会以为是 Supervisor 不行而去反复改提示词。
 
-**这里必须恰好等于「可被路由到的集合」= `graph.AGENT_REGISTRY` 的五个 name + none。**
+**这里必须恰好等于「可被路由到的集合」= `graph.AGENT_REGISTRY` 里**每一个** name + none。**
+(刻意不写死个数:这句话原来写着「五个 name」,attendance(W7)与 supervision(W9)
+先后落地之后它就过期了 —— 而过期的数字比没有数字更误导人,会让人以为多出来的那个是错的。)
 2026-08-11 从这张表里删掉了 `report`,因为它给白名单开了个口子:
 `report` 不在 `AGENT_REGISTRY` 里,它只是英雄链 `inspection` 子图**内部**的第二跳
 (`graph.py` 的 `add_edge(safety, "report")` 硬边),`transfer_to_report` 这条路根本不存在;

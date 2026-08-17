@@ -58,8 +58,11 @@ REPORT_AGENT_NAME = "report"
 REPORT_DIR = Path(__file__).parent
 
 REPORT_RECEIPT_PATTERN = r"GYT-\d{8}-\d{6}"
-"""巡检记录编号的样子。与 tools.py:151 的 ``strftime("GYT-%Y%m%d-%H%M%S")`` 同源,
+"""巡检记录编号的样子。与 ``core/doc_no.py`` 的 ``new_report_no()`` 同源,
 **要改一起改** —— 那边换了格式而这边没跟,守卫就会漏掉所有编造。
+(生成端 W9 之前在 ``agents/report/tools.py`` 里裸拼 strftime,2026-08-16 收进
+doc_no;那边六种监理文书的编号都带类型段与随机尾,**故意与本正则互不匹配** ——
+`test_doc_no.py` 有守门断言钉着,别为了「统一」给巡检记录也加类型段。)
 
 写死位数(8 位日期 + 6 位时刻)而不是 ``GYT-\\S+``:宽模式会把工友随口说的
 「那个 GYT-什么来着」也算成报了编号,反而误伤。

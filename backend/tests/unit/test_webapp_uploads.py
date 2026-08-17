@@ -19,6 +19,8 @@ from starlette.testclient import TestClient
 
 from gyt.config import get_settings
 from gyt.core import artifacts, project_fs
+from gyt.core.doc_no import DocKind, new_doc_no
+from gyt.db import hazards
 from gyt.db import projects as db
 
 _DXF = b"0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nEOF\n"
@@ -469,6 +471,85 @@ def test_删项目_级联清图纸文档目录(client: TestClient, fake_ingest_d
 def test_删项目_不存在_404(client: TestClient, fake_ingest_delete: list) -> None:
     resp = client.delete("/projects/no-such")
     assert resp.status_code == 404
+
+
+def _hazard_of(project_id: str, *, sha: str = "sha-1", item: str = "未戴安全帽") -> str:
+    """在某个项目下登记一条隐患,返回编号(编号由 core/doc_no.py 现摇,不手拼)。"""
+    return hazards.create(
+        hazard_no=new_doc_no(DocKind.HAZARD),
+        project_id=project_id,
+        photo_sha256=sha,
+        photo_id="photo-x",
+        item=item,
+        severity="一般",
+        grade=hazards.GRADE_NORMAL,
+        grading_version="1",
+        needs_grading=False,
+    ).row.hazard_no
+
+
+def test_删项目_名下隐患转未归属而不是跟着项目消失(
+    client: TestClient, fake_ingest_delete: list
+) -> None:
+    """🔴 隐患挂着已签发的法律文书与证据链,**删项目不许把它们一起带走**
+    (``db/hazards.py`` 的 ``delete_pending`` 注释:确认过的隐患不许被删,证据链不能凭一次
+    点击消失 —— 而删项目正是一次点击)。
+
+    也不许原样留着:``hazards.project_id`` 是 ``NOT NULL DEFAULT ''`` 且**没有外键**,
+    项目一删它就指向一个不存在的项目 —— 既不在「未归属」桶里(它非空)、也不在项目列表里
+    (项目没了),**彻底找不到**,而库里它还是「在办」。所以要摘成空串(D6 那个可见的桶)。
+    """
+    pid = _make_project(client)
+    别家 = _hazard_of("other-site", sha="sha-别家")
+    在办 = _hazard_of(pid, sha="sha-在办")
+    hazards.confirm(在办)
+    hazards.mark_notified(
+        在办, "2026-12-31", docs=[hazards.DocDraft("notice", "GYT-TZ-9001", artifact_id="a" * 32)]
+    )
+
+    resp = client.delete(f"/projects/{pid}")
+
+    assert resp.status_code == 200
+    assert db.get_project(pid) is None
+    assert resp.json()["data"]["hazards"] == 1
+    assert "未归属" in resp.json()["user_msg"]  # 得让人知道那批文书没跟着没了
+    row = hazards.fetch(在办)
+    assert row is not None
+    assert row.project_id == ""  # 摘到未归属那一桶,监理还看得见、还能接着处置
+    assert row.status == hazards.STATUS_NOTIFIED  # 状态一点没动
+    assert [d.doc_no for d in hazards.docs_of([在办])] == ["GYT-TZ-9001"]  # 文书还挂着
+    assert [r.hazard_no for r in hazards.list_rows(project_id="")] == [在办]
+    assert [r.hazard_no for r in hazards.list_rows(project_id="other-site")] == [别家]
+
+
+def test_删项目_隐患摘不动时整个删除作废且什么都没动(
+    client: TestClient, fake_ingest_delete: list
+) -> None:
+    """极小概率:同一张照片、同一个违规项既在这个工地下登记过、又在未归属那堆里躺着一条,
+    摘过去就撞幂等键 ``UNIQUE (project_id, photo_sha256, item)``。
+
+    这时宁可**整个删除作废** —— 摘一半剩一半就是留下一批找不到的隐患,而界面上显示
+    「项目已删除」。所以摘隐患必须是删除编排的**第一步**:这条用例连图纸都要断言还在,
+    那正是"排在最前面"这件事的判据(挪到后面的话,这里的图纸文件已经没了)。
+    """
+    pid = _make_project(client)
+    d = _upload_drawing(client, pid)
+    带项目的 = _hazard_of(pid, sha="同一张照片")
+    _hazard_of("", sha="同一张照片")  # 未归属那堆里已经有同款
+
+    resp = client.delete(f"/projects/{pid}")
+
+    assert resp.status_code == 409
+    assert resp.json()["error_code"] == "CONFLICT"
+    assert "没删" in resp.json()["user_msg"]  # 明确告诉人:这次什么都没发生
+    # 一样都没动:项目还在、图纸行与文件还在、产物还在、隐患还挂在原项目上
+    assert db.get_project(pid) is not None
+    assert db.get_drawing_by_id(d["drawing_id"]) is not None
+    assert artifacts.resolve(d["artifact_id"]).is_file()
+    assert (get_settings().projects_dir / pid).is_dir()
+    row = hazards.fetch(带项目的)
+    assert row is not None
+    assert row.project_id == pid
 
 
 # ---------------------------------------------------------------------------

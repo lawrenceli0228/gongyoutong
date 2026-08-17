@@ -23,20 +23,26 @@ GOOD_DATA = {"label": "not_site", "violations": [], "note": "办公室"}
 
 
 class _FakeTool:
-    """替身:模拟 analyze_site_photo 这个 BaseTool 的 .ainvoke 入口。"""
+    """替身:模拟 safety 的 ``_recognize`` —— 它是**普通协程函数**,直接 await 调用。
+
+    W9 之前这里替的是 ``analyze_site_photo`` 那个 BaseTool(走 ``.ainvoke(payload)``)。
+    换成 ``_recognize`` 是因为那个工具现在还会**把违规项登记进隐患台账**,
+    而评测每行都新 register 一份同图副本、30 张照片内容各不相同,幂等键一条都拦不住
+    —— 跑一轮全量就往生产台账灌 30 条幽灵隐患(见 hooks.run_safety_row 的说明)。
+    """
 
     def __init__(self, envelope: Any) -> None:
         self.envelope = envelope
-        self.seen: list[dict[str, Any]] = []
+        self.seen: list[str] = []
 
-    async def ainvoke(self, payload: dict[str, Any]) -> Any:
-        self.seen.append(payload)
+    async def __call__(self, artifact_id: str) -> Any:
+        self.seen.append(artifact_id)
         return self.envelope
 
 
 def _patch_tool(monkeypatch: pytest.MonkeyPatch, envelope: Any) -> _FakeTool:
     fake = _FakeTool(envelope)
-    monkeypatch.setattr(hooks, "analyze_site_photo", fake)
+    monkeypatch.setattr(hooks, "_recognize", fake)
     return fake
 
 
@@ -63,9 +69,9 @@ async def test_正常路径把信封里的data交给判分(
     result = await run_safety_row({"id": "S29", "image": "photo_29.jpg"})
 
     assert result == GOOD_DATA
-    # 传给工具的必须是 32 位 hex 的产物编号,不是文件名
+    # 传给识别的必须是 32 位 hex 的产物编号,不是文件名
     assert len(fake.seen) == 1
-    assert len(fake.seen[0]["artifact_id"]) == 32
+    assert len(fake.seen[0]) == 32
 
 
 @pytest.mark.parametrize("value", ["", "   ", None])
@@ -134,6 +140,45 @@ async def test_工具没返回信封时也炸(monkeypatch: pytest.MonkeyPatch, t
 
     with pytest.raises(EvalRunnerError, match="没返回信封"):
         await run_safety_row({"id": "S01", "image": "a.jpg"})
+
+
+async def test_跑评测不许往隐患台账写一行(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """**守门断言(W9 D14):评测只给识别打分,不许留下任何业务痕迹。**
+
+    这条刻意**不打桩 `_recognize`** —— 走真识别路径(只换掉模型),否则测的就是替身
+    而不是接线板。要是哪天有人把 hooks 改回调 ``analyze_site_photo``:
+
+        30 行 × 每行一次 artifacts.register(照片内容各不相同,幂等键一条都拦不住)
+        = 每跑一轮全量,真实隐患台账多 30 条没人拍过的「待确认隐患」
+
+    待确认列表、整改率、超期清单全被污染,而评测报告一切正常、一句警告都没有。
+    """
+    import io as _io
+
+    from langchain_core.messages import AIMessage
+    from PIL import Image
+
+    from gyt.core import llm
+    from gyt.db import hazards
+
+    photos = _patch_photos_dir(monkeypatch, tmp_path)
+    buffer = _io.BytesIO()
+    Image.new("RGB", (48, 32), (120, 140, 90)).save(buffer, format="JPEG")
+    (photos / "photo_01.jpg").write_bytes(buffer.getvalue())
+
+    async def fake_ainvoke(*_args: Any, **_kwargs: Any) -> AIMessage:
+        return AIMessage(content='{"label":"violation","violations":["未戴安全帽"],"note":"x"}')
+
+    monkeypatch.setattr(llm, "get_chat_model", lambda *_a, **_k: object())
+    monkeypatch.setattr(llm, "ainvoke", fake_ainvoke)
+
+    data = await run_safety_row({"id": "S01", "image": "photo_01.jpg"})
+
+    assert data["violations"] == ["未戴安全帽"], "判分要的那份结构化输出照常拿到"
+    # 只识别的那一半连登记侧的键都不该有 —— 有了就说明走的是带登记的工具
+    assert "hazards" not in data and "failed_items" not in data
+    assert hazards.list_rows() == [], "评测跑一轮就在台账里留了隐患 —— 那是幽灵数据"
+    assert hazards.list_ingest_failures() == []
 
 
 def test_RUNNERS表的套名都是runner认识的() -> None:

@@ -287,6 +287,13 @@ class Settings(BaseSettings):
     # **不许删**(W7 §3.9)。1 小时远大于任何一次请求的寿命,又远小于留存天数。
     attendance_cleanup_min_age_h: float = Field(default=1.0, gt=0)
 
+    # --- 监理隐患(W9)-----------------------------------------------------
+    # supervision Agent 列清单时最多列多少条(**只是列出来的行数,不是筛出来的条数**:
+    # 「一共还有几条」照实报,截断只影响清单长度,见 agents/supervision/tools.py)。
+    # 这是**上下文闸**不是业务上限:一屏几百行隐患既挤爆模型上下文,人也读不完 ——
+    # 真要逐条看走界面。50 远大于一次巡检能出的隐患数。
+    supervision_list_max_rows: int = Field(default=50, ge=1)
+
     # --- 知识库(RAG)-----------------------------------------------------
     # 方案 B 启动预置:开则起服务时若规范索引缺失/有改动,自动建库(agents/knowledge/ingest)。
     # **默认 False**——两个原因:① 保护测试(测试 chroma_dir 是 tmp,一开必触发 2.2GB 建库);

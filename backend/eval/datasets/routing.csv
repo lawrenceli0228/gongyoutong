@@ -25,3 +25,10 @@ R23,positive,张三这个月来了几天,attendance,最典型的出勤天数问�
 R24,positive,今天工地都谁到了,attendance,当天点名式问法
 R25,positive,李四昨天几点打的卡,attendance,单人单日明细
 R26,positive,"上周都有谁来过,各来了几天",attendance,"不出现「打卡」「考勤」二字也要认得出;「来了几天」是 D16 点名的危险词,盯它别被 schedule 钓走"
+R27,positive,这个月还有几条隐患没销,supervision,"最典型的隐患台账问法;「没销」的宾语是隐患不是任务"
+R28,positive,待确认的隐患有几条,supervision,"D17 的待确认态 —— 只有它答得上来,别的 Agent 连这个词都没有"
+R29,positive,GYT-H-20260816-090000-1a2b 这条隐患复查了吗,supervision,"用户自己把隐患编号打进来(编号溯源守卫放宽到用户发言,走的正是这条路)"
+R30,positive,昨天那个临边的隐患该怎么处置,supervision,"要的是处置建议;带「临边」但既不是条文问题也不是看照片"
+R31,positive,那条严重隐患的暂停令签了没,supervision,"查文书签发状态;签发本身走界面,不该期望 Agent 去签"
+R32,positive,"记一下:明天上午整改临边防护",schedule,"⚠️ 对抗行:含「整改」但要的是记任务。被 supervision 钓走 = 真机验收 C3 翻车的预演"
+R33,positive,复检钢筋那条任务改到周五,schedule,"⚠️ 对抗行:「复检」听着像复查,但宾语是任务、动作是改期 —— supervision 只查不排期"

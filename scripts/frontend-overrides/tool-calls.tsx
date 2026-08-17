@@ -12,6 +12,13 @@
  *
  * 改成:默认一行中文摘要(「转给 安全巡检员」),点一下才展开原始细节。
  * 细节没有删掉 —— 讲技术架构时展开来看,恰恰是多智能体协作的证据。
+ *
+ * 除了折叠,本文件还负责**把「有东西可下、可确认」这件事从灰行里捞出来**,
+ * 现在一共三张卡(判据各不相同,详见 ToolResult 里那段「三条分支」):
+ *   · 巡检记录卡(W3)—— 按工具名认 render_inspection_report;
+ *   · 监理文书下载卡(W9)—— 按返回值里的 `documents` 数组渲染 N 张;
+ *   · 隐患台账卡(W9)—— 按返回值里的 `hazards` 数组,同时是监理处置面板的入口。
+ * 没有这些卡,产物就只是折叠 JSON 里的一个字符串:点不开、下不到,而且不报错。
  */
 
 import { AIMessage, ToolMessage } from "@langchain/langgraph-sdk";
@@ -26,6 +33,13 @@ import {
   ExternalLink,
   Copy,
 } from "lucide-react";
+import { HazardIntakeCard, SupervisionDocCards } from "../supervision";
+import {
+  documentsFromToolData,
+  failedItemsFromToolData,
+  HAZARD_SOURCE_TOOLS,
+  hazardsFromToolData,
+} from "@/lib/supervision-lib";
 
 /** 子 Agent 的中文名。加新 Agent 时往这里补一行,不补也不会坏(会退回显示英文名)。
  *  导出给 ai.tsx 覆盖件用(子 Agent 正文折叠行也要念中文名)。 */
@@ -40,6 +54,10 @@ export const AGENT_NAMES: Record<string, string> = {
   schedule: "任务管理",
   cad: "图纸查询",
   report: "报告生成",
+  // W9 的 supervision Agent(S5 泳道落地)。它**只查、只建议** —— 改状态和出文书
+  // 全部走 HTTP 端点,不经 LLM(方案 §5.1:法律行为不能由概率性系统单方面触发)。
+  // 这一行现在补上,是为了 S5 一挂进 AGENT_REGISTRY,界面上不会冒出「转给 supervision」。
+  supervision: "监理处置",
 };
 
 /** 业务工具的中文名。
@@ -74,11 +92,22 @@ const TOOL_NAMES: Record<string, string> = {
   render_preview: "出图纸预览",
   // knowledge(规范检索)
   search_regulation: "查规范条文",
+  // supervision(监理处置 —— **只读那三件**,方案 §5.1。写入不走工具:
+  // 签发通知单/暂停令是法律行为,由界面直连 HTTP 端点触发,LLM 一步都不经过)
+  list_hazards: "查隐患清单",
+  get_hazard: "查隐患详情",
+  suggest_disposal: "看该怎么处置",
   // ping(链路自检,不是业务工具)
   echo: "回声自检",
 };
 
-/** 巡检记录工具名。它的返回值要单独渲染成卡片,不能只折进灰行,理由见 ARTIFACT_BASE。 */
+/** 巡检记录工具名。它的返回值要单独渲染成卡片,不能只折进灰行,理由见 ARTIFACT_BASE。
+ *
+ * ⚠️ **这个常量只服务巡检记录那一张卡,别再往它身上加第二种文书**(W9 之前它是
+ * 「工具名 → 卡片」的唯一判据,于是监理那六种文书在界面上一个出口都没有:
+ * 点不开、下不到,而且不会报错 —— 方案 §6.5 点名的就是这一行)。
+ * 新的文书走的是另一条判据:**看返回值里有没有 `documents` 数组**,与本常量无关,
+ * 两条分支互不影响 —— 详见下面 ToolResult 里那段「三条分支」的注释。 */
 const REPORT_TOOL_NAME = "render_inspection_report";
 
 /**
@@ -367,15 +396,65 @@ export function ToolResult({ message }: { message: ToolMessage }) {
   // 摘要就写「已接手」;业务工具则说「返回结果」。
   const done = /^transfer(_back)?_to_/.test(name) ? "已接手" : "已返回结果";
 
-  // 巡检记录额外出一张卡片。灰行照旧保留 —— 展开原始信封正是多智能体协作的证据。
+  /**
+   * ── 三条互不影响的卡片分支 ────────────────────────────────────────────
+   *
+   * ① 巡检记录:判据是**工具名** === render_inspection_report(W3 就有的那条,
+   *    一个字节都没动 —— 它是已上线的演示主链);
+   * ② 监理文书:判据是**返回值里有 `documents` 数组**(W9,契约 Codex#16 冻结的形状)。
+   *    它按数组渲染 **N 张**下载卡 —— 「N 张卡」与「N 份文书」天然对齐,
+   *    三份里少出一份当场看得出来。定死形状就是为了避免静默丢件;
+   * ③ 隐患台账:判据是**返回值里有 `hazards` 数组**且工具在 HAZARD_SOURCE_TOOLS 里
+   *    (现在只有 analyze_site_photo 会带,S5 的 supervision 只读工具随后)。
+   *    这张卡是**监理处置面板唯一的入口**。
+   *
+   * 🔴 为什么 ② 不会误伤 ①:`render_inspection_report` 的信封里
+   *    只有 report_no / filename / path / violations / max_severity / label
+   *    (见 agents/report/tools.py),**没有 `documents` 这个键** —— 分支 ② 对它
+   *    结构上就不可能命中。③ 同理:它还额外要求工具名在白名单里。
+   *    三条各判各的、各渲各的卡,谁都不吃掉谁,灰行也照旧保留(展开原始信封
+   *    正是多智能体协作的证据)。
+   *
+   * 🔴 这里用的两个解析函数**都不抛异常**(supervision-lib 里那条注释:渲染路径上
+   *    抛出去 = 整条消息白屏,而它们只负责一张附加卡片)。别换成 parseActionEnvelope
+   *    那个严格版 —— 那一份是给「人刚点了签发」的 HTTP 路径用的。
+   */
+  const envelopeData = isJson && parsed?.ok === true ? parsed.data : null;
+
   const report: ReportData | null =
     isJson && name === REPORT_TOOL_NAME && parsed?.ok === true && parsed?.data
       ? (parsed.data as ReportData)
       : null;
 
+  const documents = documentsFromToolData(envelopeData);
+  const hazards = (HAZARD_SOURCE_TOOLS as readonly string[]).includes(name)
+    ? hazardsFromToolData(envelopeData)
+    : [];
+  const failedItems = (HAZARD_SOURCE_TOOLS as readonly string[]).includes(name)
+    ? failedItemsFromToolData(envelopeData)
+    : [];
+
   return (
     <>
       {report && <ReportCard data={report} />}
+      {documents.length > 0 && (
+        <div className="mx-auto w-full max-w-3xl">
+          {/* artifactBase 由这里传下去,supervision.tsx **不自己读 process.env** ——
+              NEXT_PUBLIC_ARTIFACT_BASE 那条链(CLAUDE.md 同源清单)断在任何一环
+              都不报错,少一个读者就少一处能断的地方。 */}
+          <SupervisionDocCards
+            documents={documents}
+            artifactBase={ARTIFACT_BASE}
+          />
+        </div>
+      )}
+      {(hazards.length > 0 || failedItems.length > 0) && (
+        <HazardIntakeCard
+          hazards={hazards}
+          failedItems={failedItems}
+          artifactBase={ARTIFACT_BASE}
+        />
+      )}
       <Trace
         label={`${text} · ${done}`}
         icon={<Check className="h-3.5 w-3.5 shrink-0 text-emerald-500" />}

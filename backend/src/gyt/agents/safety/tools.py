@@ -26,6 +26,38 @@ Agent 本体用 create_gyt_agent(purpose="text") 走 DeepSeek,只有这一个工
     Kimi 视觉模型 → JSON → 解析 → Envelope 信封
 
 ===========================================================================
+「识别」与「登记」拆成两半(W9 方案 §6.2 的 D14 / D17)
+---------------------------------------------------------------------------
+    _recognize(artifact_id) ──► 五键判断        ← **纯函数,零副作用**
+         ▲                          ▲
+         │                          │
+  analyze_site_photo          report 的保真复调 / eval/hooks.py
+  (工具:识别 + 登记 pending)     (只要那份判断,**不许再登记一遍**)
+
+为什么非拆不可 —— 不拆的两个具体后果,都不报错:
+
+  ① `report/tools.py` 为了数据保真会**拿同一个 artifact_id 重调一次识别**。若登记
+     长在 `analyze_site_photo` 里,而复调**不带 config** → `project_id` 取到空串,
+     于是 safety 那次登记进「工地A」、report 那次登记进空串:**同一张照片同一个隐患,
+     台账里两行,一行还无主。** 所以 report 改调 `_recognize`。
+  ② `eval/hooks.py` 的 safety 套每行都重新 `artifacts.register` 一份同图副本,
+     幂等键(照片内容 sha256)也拦不住不同内容的 30 张图 —— `make eval SUITE=safety`
+     每跑一次就往**生产台账**灌 30 条幽灵隐患。所以它也只调 `_recognize`。
+
+登记侧的三条硬约定(方案 §6.2,与 `db/hazards.py` 的建表注释同源):
+
+  · **幂等键 = (project_id, photo_sha256, item)**,`photo_sha256` 是**照片内容**的哈希,
+    **不是 artifact_id** —— `core/artifacts.py` 用 `uuid4().hex` 发号,同一张照片重传
+    就是新号,彩排三轮会得三批隐患。哈希算在 `artifacts.resolve()` 拿回的**原始字节**上,
+    不是 `_prepare_image` 压缩后的字节:压缩结果随 `photo_compress_*` 配置变,
+    调一次参数全库的幂等键就漂了。
+  · **落 `pending`**(D17):自动登记的东西还没有人确认过,不算整改率、不进超期清单、
+    不能被升级。监理在界面上确认才转 `open`。
+  · **写库失败不堵死主路径**(D10):识别结果照常 `ok` 返回,失败项进 `failed_items`,
+    并往 `hazard_ingest_failures` 记一行。连那张表都写不进(整个 sqlite 挂了)时,
+    退化为**只有日志** —— 方案 §6.2 认了这个退化,别以为还有别的兜底。
+
+===========================================================================
 两处**刻意不做**的事,改之前先读完这段
 ---------------------------------------------------------------------------
 ① 不过滤模型输出的违规项。
@@ -45,26 +77,37 @@ Agent 本体用 create_gyt_agent(purpose="text") 走 DeepSeek,只有这一个工
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
 import io
 import json
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from PIL import Image
 
 from gyt.agents.safety.severity import grade, worst
+
+# 定级第二跳(severity → 监理口径的 grade)。import 方向 safety → supervision 不成环:
+# supervision/grading.py 只 import safety/severity.py(纯表)与 db/hazards.py,碰不到本模块。
+from gyt.agents.supervision.grading import grade_of
+from gyt.attendance.receipt import make_snapshot
 from gyt.config import ALLOWED_IMAGE_EXT, get_settings
 from gyt.core import artifacts, llm
 from gyt.core.base_agent import load_prompt
+from gyt.core.doc_no import DocKind, generate_unique
 from gyt.core.errors import Envelope, ErrorCode, fail, ok, tool_guard
 from gyt.core.llm import LLMCallError, MissingAPIKeyError
+from gyt.core.run_context import project_from_config
+from gyt.db import hazards
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +137,16 @@ MIME_BY_EXT: Final[dict[str, str]] = {
 KEY_LABEL: Final[str] = "label"
 KEY_VIOLATIONS: Final[str] = "violations"
 KEY_NOTE: Final[str] = "note"
+KEY_HAZARDS: Final[str] = "hazards"
+KEY_FAILED_ITEMS: Final[str] = "failed_items"
+LABEL_VIOLATION: Final[str] = "violation"
+"""三态里唯一会产生隐患的那一档。
+
+`compliant` / `not_site` **一条都不登记** —— 前者是"看过了没问题",后者压根不是现场,
+给它们建台账行等于往整改率里掺噪声。词表外的野 label(模型没守格式,见文件顶部②)
+也一律不登记:不认识就不写库,和 severity 对词表外违规项的处理是同一个原则。
+"""
+
 OUTPUT_KEYS: Final[tuple[str, ...]] = (KEY_LABEL, KEY_VIOLATIONS, KEY_NOTE)
 """模型输出契约的三个字段名。**vision_prompt.md 里必须逐字出现这三个名字。**
 
@@ -336,15 +389,22 @@ _ANALYZE_DESCRIPTION = (
     "看一张工地现场照片,判断是不是工地、有没有安全违规。"
     "参数 artifact_id 是照片的产物编号(32 位十六进制),由用户上传照片后系统给出。"
     "返回 label(violation 有违规 / compliant 合规 / not_site 不是工地)、"
-    "violations(违规项清单)、note(判断依据与看不清的地方)。"
+    "violations(违规项清单)、note(判断依据与看不清的地方);"
+    "发现的违规项还会被登记成「待确认」隐患,编号在返回的 hazards 里,等监理确认后才进入正式流程。"
     "只有这个工具能看到照片,你自己看不到 —— 判断照片必须调它。"
 )
 
 
-@tool("analyze_site_photo", description=_ANALYZE_DESCRIPTION)
 @tool_guard
-async def analyze_site_photo(artifact_id: str) -> Envelope:
-    """看一张工地照片,返回结构化的安全判断。
+async def _recognize(artifact_id: str) -> Envelope:
+    """看一张工地照片,返回结构化的安全判断。**纯函数:不写库、不落盘、零副作用。**
+
+    三个调用方:``analyze_site_photo``(识别完接着登记)、``report/tools.py`` 的保真复调、
+    ``eval/hooks.py`` 的 safety 套。后两个**只要这份判断,不许带上登记**(理由见文件顶部)。
+
+    它不是工具、不进 ``SAFETY_TOOLS``,但仍然挂 ``@tool_guard``:三个调用方历史上拿到的
+    都是「永不抛异常的信封」,把这条保证挪走会让 eval 的报告从一句中文原因变成一段
+    Python traceback,而 report 那边则从「透传 safety 的中文失败」变成笼统的「系统开小差了」。
 
     流程与各步的失败出口:
 
@@ -492,8 +552,10 @@ async def analyze_site_photo(artifact_id: str) -> Envelope:
     # severity / max_severity 是给下游(Agent 话术、W3 的 Report/Schedule)用的
     # **确定性字段**:由 severity.py 的映射表算出,不经过模型,同一违规项永远同一级。
     # 键恒存在(空 dict / None),下游不用做"有没有这个键"的分支。
-    # ⚠️ 这份 data 就是 safety → report 的交接契约:label / violations / severity /
-    #    max_severity / note 五个键。改任何一个键名都是改契约,要连着 W3 一起动。
+    # ⚠️ 这五个键是 safety → report 的交接契约:label / violations / severity /
+    #    max_severity / note。改任何一个键名都是改契约,要连着 report 一起动。
+    #    W9 起 analyze_site_photo 会在这份 data 上**再补两个键**(hazards / failed_items),
+    #    但那两个是登记侧的产物,不属于识别 —— 所以它们不在这里,而在下面那层。
     return ok(
         data={
             KEY_LABEL: label,
@@ -504,6 +566,187 @@ async def analyze_site_photo(artifact_id: str) -> Envelope:
         },
         user_msg=_summarize(label, violations),
     )
+
+
+# ---------------------------------------------------------------------------
+# 登记那一半 —— 把识别出的违规项写成 pending 隐患(W9 D14 / D17)
+#
+# 全是**同步阻塞**的 sqlite / 磁盘操作,调用方一律用 asyncio.to_thread 包一层:
+# 直接在事件循环里跑 sqlite,blockbuster 会抛 BlockingError,被 tool_guard 兜成
+# INTERNAL 失败信封 —— 现象是「识图工具没返回结果」,和识别本身一点关系都没有。
+# ---------------------------------------------------------------------------
+
+
+def _hazard_no_taken(candidate: str) -> bool:
+    """撞库判据:这个隐患编号库里有没有。交给 ``doc_no.generate_unique`` 当 ``exists`` 用。
+
+    查不到就返回 False;库连不上时**原样把异常抛出去**(不吞成"撞了")——
+    ``generate_unique`` 的契约第 2 条点名了这件事:吞掉会白白烧掉重试次数,
+    最后报一个「编号都被占了」,而排查的人会去翻编号表,真正的毛病在连接上。
+    """
+    return hazards.fetch(candidate) is not None
+
+
+def _record_failure(*, project_id: str, photo_id: str, item: str, reason: str) -> None:
+    """记一行「这个违规项没能写进台账」。**本函数自己绝不抛**。
+
+    连 ``hazard_ingest_failures`` 都写不进(整个 sqlite 挂了)时就只剩这条日志 ——
+    方案 §6.2 明确认了这个退化,别以为后面还有别的兜底。
+    ``reason`` 是给排查的人看的内部细节(异常类型 + 消息),**不进任何面向工友的文案**。
+    """
+    try:
+        hazards.record_ingest_failure(
+            project_id=project_id, photo_id=photo_id, item=item, reason=reason
+        )
+    except Exception:  # noqa: BLE001 —— 失败表也写不进就只能记日志,不能反过来炸掉主路径
+        logger.exception(
+            "隐患登记失败、连失败表也写不进:project=%r photo=%s item=%s", project_id, photo_id, item
+        )
+
+
+def _ingest_hazards(
+    *, project_id: str, photo_id: str, violations: Sequence[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """把这次识别出的违规项逐条登记成 ``pending`` 隐患,返回 (已登记, 失败项)。
+
+    **同步阻塞**(sqlite + 读文件),调用方负责 to_thread。
+
+        violations
+          │ 去重保序 —— 模型偶尔把同一项说两遍,而幂等键决定了台账里本来就只会有一行;
+          │             回执里报两条一模一样的待确认项,只会让监理以为真有两处
+          ▼ artifacts.resolve(photo_id).read_bytes() → sha256
+        幂等键的第二节
+          │ 照片读不回来(被清理了 / 磁盘坏)──▶ 整批算失败,但**识别结果照常返回**
+          ▼ 逐项:severity → grade_of → 摇编号 → hazards.create
+        Registration(row, created)
+          │ 任一项写库失败 ──▶ 该项进 failed_items + 记一行 hazard_ingest_failures,
+          │                    **其余项继续**(一条坏行不该带走整张照片的登记)
+          ▼
+        ([{hazard_no, item, grade, status, needs_grading}, …], [失败的 item, …])
+
+    ⚠️ 报出去的编号一律取 ``create(...).row.hazard_no`` 而**不是**刚摇出来的那个:三元组
+    已存在时 ``create`` 什么都不插,回的是**首次登记时的号**(D14)。用刚摇的那个 = 给工友
+    一个库里根本不存在的编号,他拿去查会扑空,而这里不会有任何报错。
+    """
+    # dict.fromkeys 去重且保序(Python 3.7+ 的 dict 有序);violations 本身仍然原样透传,
+    # 那份是诊断信号,不在这里动(见文件顶部①)。
+    items = list(dict.fromkeys(violations))
+    if not items:
+        return [], []
+
+    try:
+        digest = hashlib.sha256(artifacts.resolve(photo_id).read_bytes()).hexdigest()
+    except Exception as exc:  # noqa: BLE001 —— 读不回照片就登记不了,但不该连识别结果一起毁掉
+        logger.warning("隐患登记取不到照片字节:photo=%s —— %s", photo_id, exc)
+        reason = f"读取照片字节失败:{type(exc).__name__}: {exc}"
+        for item in items:
+            _record_failure(project_id=project_id, photo_id=photo_id, item=item, reason=reason)
+        return [], items
+
+    levels = grade(items)  # 逐项 severity(词表外 → 待定级),确定性映射,不经过模型
+    # 整批共用一个时间快照:同一张照片的 N 条隐患是**一次动作**,编号里的时刻该对得齐。
+    # (跨秒时各取各的 now,同一次识别会显示成两个时间点 —— doc_no.new_doc_no 的原话。)
+    snap = make_snapshot()
+
+    registered: list[dict[str, Any]] = []
+    failed: list[str] = []
+    for item in items:
+        level = levels[item]
+        grading = grade_of(level)  # severity → 监理口径 grade + needs_grading + 版本快照
+        try:
+            # generate_unique 已经把绝大多数撞号挡在写库之前;它与 create 之间仍有一个
+            # 理论窗口,真撞上时 hazard_no 的 UNIQUE 会抛 IntegrityError,落到下面的
+            # except 里变成一条 failed_items —— 不静默、不硬写一个重号上去。
+            hazard_no = generate_unique(DocKind.HAZARD, _hazard_no_taken, snap=snap)
+            row = hazards.create(
+                hazard_no=hazard_no,
+                project_id=project_id,
+                photo_sha256=digest,
+                photo_id=photo_id,
+                item=item,
+                severity=level,
+                grade=grading.grade,
+                grading_version=grading.version,
+                needs_grading=grading.needs_grading,
+            ).row
+        except Exception as exc:  # noqa: BLE001 —— D10:一项写不进不该堵死整条识别路径
+            logger.warning(
+                "隐患登记失败:project=%r photo=%s item=%s —— %s", project_id, photo_id, item, exc
+            )
+            failed.append(item)
+            _record_failure(
+                project_id=project_id,
+                photo_id=photo_id,
+                item=item,
+                reason=f"{type(exc).__name__}: {exc}",
+            )
+            continue
+        registered.append(
+            {
+                "hazard_no": row.hazard_no,
+                "item": row.item,
+                "grade": row.grade,
+                "status": row.status,
+                "needs_grading": bool(row.needs_grading),
+            }
+        )
+    return registered, failed
+
+
+@tool("analyze_site_photo", description=_ANALYZE_DESCRIPTION)
+@tool_guard
+async def analyze_site_photo(artifact_id: str, *, config: RunnableConfig) -> Envelope:
+    """识别一张工地照片,并把发现的违规项登记成**待确认**隐患。
+
+        _recognize(artifact_id)
+          │ 任一步失败 ──────────▶ 原样透传失败信封(登记这一半一步都不跑)
+          ▼ 五键 data
+        label == "violation" ?
+          │ 否(compliant / not_site / 野 label)──▶ hazards=[] failed_items=[]
+          ▼ 是
+        asyncio.to_thread(_ingest_hazards)   ← sqlite + 读文件都是阻塞 IO
+          ▼
+        ok(data={…五键…, "hazards": [...], "failed_items": [...]})
+
+    ⚠️ ``config`` 的注解必须**恰好**是 ``RunnableConfig``:langchain 按
+    ``param.annotation is RunnableConfig`` 判定要不要注入,写成 ``RunnableConfig | None``
+    会漏掉 —— 表现是 config 永远拿不到、``project_id`` 恒为空串,于是**所有工地的隐患
+    全挤进"未归属"那一堆**,而且不会有任何报错(``core/run_context.py`` 头注有原话)。
+
+    ⚠️ 这里返回的 data 比 ``_recognize`` **多两个键**,那是 safety → report 的交接契约
+    的扩展(方案 §6.2:「data 从五键变多键 = 改了交接契约」)。report 侧按 ``.get()``
+    取值,多出来的键它不看 —— 但改键名之前仍要回去看一眼 ``report/tools.py``。
+    """
+    envelope = await _recognize(artifact_id)
+    data = envelope.get("data")
+    if not envelope.get("ok") or not isinstance(data, dict):
+        return envelope
+
+    enriched: dict[str, Any] = {**data, KEY_HAZARDS: [], KEY_FAILED_ITEMS: []}
+    violations = list(data.get(KEY_VIOLATIONS) or [])
+    # 两个键**恒存在**(没隐患就是空列表),下游不用做"有没有这个键"的分支 ——
+    # 与上面 severity/max_severity 恒存在是同一条约定。
+    if data.get(KEY_LABEL) == LABEL_VIOLATION and violations:
+        project_id = project_from_config(config)  # 没选工地 = 空串(D6),不是 None
+        registered, failed = await asyncio.to_thread(
+            _ingest_hazards,
+            project_id=project_id,
+            photo_id=(artifact_id or "").strip(),
+            violations=violations,
+        )
+        enriched[KEY_HAZARDS] = registered
+        enriched[KEY_FAILED_ITEMS] = failed
+        logger.info(
+            "照片 %s 登记隐患:project=%r 成功 %d 条、失败 %d 条",
+            (artifact_id or "").strip(),
+            project_id,
+            len(registered),
+            len(failed),
+        )
+
+    # user_msg 原样沿用识别那句 —— 「登记了几条待确认」属于监理台账的话术,归 S4 的
+    # supervision 界面说,别在工友的识图回执里塞一句他这会儿用不上的流程话。
+    return ok(data=enriched, user_msg=str(envelope.get("user_msg") or ""))
 
 
 def _severity_rank(level: str) -> int:
@@ -549,9 +792,15 @@ if _MISSING_MIME:  # pragma: no cover —— 配置写错才会走到,正常永�
 
 __all__ = [
     "CACHE_EXTRA",
+    "KEY_FAILED_ITEMS",
+    "KEY_HAZARDS",
+    "LABEL_VIOLATION",
     "MIME_BY_EXT",
     "OUTPUT_KEYS",
     "SAFETY_TOOLS",
     "ImageRejected",
     "analyze_site_photo",
 ]
+# ``_recognize`` 刻意不进 __all__:它是「只识别、不登记」这条内部通道,给 report 的保真
+# 复调与 eval/hooks 用,不是对外能力。两处都写明式 import(from ... import _recognize),
+# 谁在用一 grep 就见底 —— 放进 __all__ 反而像是在邀请更多人跳过登记那一半。

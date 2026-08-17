@@ -69,7 +69,8 @@
      按首答判据这两种都会被顶替 —— 反问被吃掉就是对话死锁。
 
 编号溯源之所以精准:``GYT-日期-时刻`` 是**工具**生成的
-(agents/report/tools.py:151 的 ``strftime("GYT-%Y%m%d-%H%M%S")``),
+(``core/doc_no.py`` 的 ``new_report_no()``;W9 之前生成端在 ``agents/report/tools.py``
+里裸拼 ``strftime``,2026-08-16 收进 doc_no 统一走 Asia/Hong_Kong 时间权威),
 模型没有任何合法理由自己造一个。所以「报了编号却没有出处」= 一定在编,
 而反问和拒答压根不含编号,零误伤。
 ===========================================================================
@@ -184,7 +185,8 @@ def _message_text(message: BaseMessage) -> str:
 
 
 class RequireReceiptSource(AgentMiddleware):
-    """输出里报出的凭证编号,必须在本回合的工具结果里真的出现过,否则就是编的。
+    """输出里报出的凭证编号,必须有出处 —— 本回合的工具结果,或用户自己说的话
+    (两种出处的完整推演见下面的 ``_sourced``),否则就是编的。
 
     为什么是这个判据而不是「首答必须调工具」,见模块顶部「两种判据,别混用」。
     一句话:编号由工具生成,模型没有合法理由自己造;而反问、如实拒答这些
@@ -193,7 +195,7 @@ class RequireReceiptSource(AgentMiddleware):
     判定与处置:
 
         模型输出里没有编号            ──► 放行(反问 / 拒答 / 正在调工具都走这里)
-        编号全都能在工具结果里找到      ──► 放行(这是在念真回执)
+        编号全都找得到出处            ──► 放行(在念真回执 / 在复述用户给的号)
         报了编号但找不到出处          ──► 附 nudge 重试一次
                                         └─► 还是编 ──► 用 give_up_message 顶替
 
@@ -237,10 +239,34 @@ class RequireReceiptSource(AgentMiddleware):
         return found
 
     def _sourced(self, messages: list[BaseMessage]) -> set[str]:
-        """本回合工具结果里真实出现过的编号 —— 唯一合法的出处。"""
+        """编号的**两种**合法出处:工具结果,以及**用户自己说的话**。
+
+        ⚠️ 只扫这两类,**AIMessage 永远不算出处** —— 模型上一轮编的号,不能成为
+        这一轮继续编的依据(那正是 few-shot 自我模仿那条失效路径)。
+
+        为什么把 HumanMessage 也算进来(2026-08-16,W9 方案 §5.3 的「第三种判据」):
+        supervision 泳道的用户会**自己把隐患编号打进来**——「GYT-H-… 那条复查了吗」。
+        原来只扫 ToolMessage 的话,模型原样带上这个编号会被判成编造,
+        于是一句完全正确的回答被 give_up 文案顶替掉。而用户报的号本来就是用户给的,
+        模型复述它不是编造:真查不到,工具会如实回「台账里没有这条」。
+
+        **对 report 侧是零影响**,这一点必须成立(``test_require_tool.py`` 有一条
+        专门钉住):巡检记录号是 report 调完工具才生成的,工友手上没有、也不会
+        打进聊天框 —— 他要么发照片,要么说「出巡检记录」。
+
+        ⚠️ 由此多出一条约束:**nudge 里绝不许出现完整的编号样例**。它是以
+        ``HumanMessage`` 追加进请求的,写了样例就等于给模型递一个"合法出处"。
+        (当前实现下还兜得住:``wrap_model_call`` 比对用的 ``messages`` 是**追加之前**
+        那份列表,nudge 不在里面。但别把安全性押在这个细节上,两处都别写编号。)
+
+        还有一条前提在 ``core/focus.py``:用户消息与工具结果都必须活着走到这一层。
+        Focus 现在只滤 supervisor 的纯文本 AIMessage,这两类原样保留 ——
+        哪天它为省 token 把工具结果或用户消息一起滤了,这里会空,
+        **真回执会被判成编造顶替掉**(CLAUDE.md 同源清单里点名的那条)。
+        """
         found: set[str] = set()
         for m in messages:
-            if isinstance(m, ToolMessage):
+            if isinstance(m, ToolMessage | HumanMessage):
                 found.update(self.pattern.findall(_message_text(m)))
         return found
 

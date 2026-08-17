@@ -36,7 +36,11 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
-from gyt.agents.safety.tools import analyze_site_photo
+# 只识别、**不登记**那一半(W9 D14)。别改回 analyze_site_photo:那个工具会把违规项
+# 写进隐患台账,而 safety 套每行都新 register 一份同图副本 —— 幂等键
+# (project_id, photo_sha256, item)对 30 张**内容各不相同**的照片一条都拦不住,
+# 于是 `make eval SUITE=safety` 每跑一次,生产台账就多 30 条没人拍过的「待确认隐患」。
+from gyt.agents.safety.tools import _recognize
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind
 
@@ -78,7 +82,7 @@ class EvalRunnerError(RuntimeError):
 
 
 async def run_safety_row(row: Mapping[str, str]) -> Any:
-    """跑安全集的一行:把照片登记成产物 → 调识图工具 → 交出结构化判断。
+    """跑安全集的一行:把照片登记成产物 → 调**识别**那一半 → 交出结构化判断。
 
         row["image"] = "photo_01.jpg"
               │ 拼到 <仓库根>/data/demo/photos/
@@ -86,7 +90,7 @@ async def run_safety_row(row: Mapping[str, str]) -> Any:
         artifacts.register(...)  → artifact_id
               │
               ▼
-        analyze_site_photo(artifact_id) → Envelope
+        _recognize(artifact_id) → Envelope        ← **不是** analyze_site_photo
               │ ok=False ─────────▶ raise EvalRunnerError(中文原因)
               ▼ ok=True
         Envelope["data"] = {"label","violations","note"}   ← scorers.score_safety 读这个
@@ -95,6 +99,11 @@ async def run_safety_row(row: Mapping[str, str]) -> Any:
     而重复登记**不影响缓存命中** —— 视觉缓存的键算在图片**内容**上,
     artifact_id 一个字都不参与(这一点由 test_换一张照片不会错误命中上一张的缓存 反证)。
     代价只是 artifacts 目录里多几份同图副本,30 张小图,无所谓。
+
+    ⚠️ 但**登记那一半不能跟着跑**:评测只是在给识别打分,不是在真做巡检。
+    走 ``analyze_site_photo`` 的话,每跑一轮全量就往真实隐患台账里灌 30 条
+    没人拍过的 pending 隐患(照片内容各不相同,幂等键拦不住),
+    整改率、待确认列表、超期清单全被污染。这就是 W9 D14 拆两半的直接动因之一。
     """
     name = str(row.get(COLUMN_IMAGE) or "").strip()
     if not name:
@@ -109,10 +118,10 @@ async def run_safety_row(row: Mapping[str, str]) -> Any:
         )
 
     artifact_id = artifacts.register(photo, kind=ArtifactKind.PHOTO, original_name=photo.name)
-    envelope = await analyze_site_photo.ainvoke({"artifact_id": artifact_id})
+    envelope = await _recognize(artifact_id)
 
     if not isinstance(envelope, Mapping):
-        raise EvalRunnerError(f"工具没返回信封,而是 {type(envelope).__name__}。")
+        raise EvalRunnerError(f"识别没返回信封,而是 {type(envelope).__name__}。")
     if not envelope.get("ok"):
         raise EvalRunnerError(
             f"识图工具返回失败({envelope.get('error_code')}):{envelope.get('user_msg')}"

@@ -13,8 +13,13 @@
 
 **「不 import 任何具体 Agent」这条约束属于 `runner.py`,不属于整个包。**
 这段以前写的是「本包刻意不 import 任何具体 Agent」,而同一个包里的 hooks.py
-第一件事就是 `from gyt.agents.safety.tools import analyze_site_photo` ——
+第一件事就是 `from gyt.agents.safety.tools import _recognize` ——
 按那句话去理解,会以为 hooks.py 写错了地方。真实分工是:
+
+(符号名 2026-08-16 W9 S3 改过:原先 import 的是 `analyze_site_photo`,
+现在那个工具会**顺带把隐患登记进台账**,而评测每行都重新 `artifacts.register`、
+幂等键拦不住 —— 跑一次 `make eval SUITE=safety` 就往生产台账灌 30 条无主幽灵。
+所以评测改调只识别、不登记的那一半 `_recognize`。别改回去。)
 
   · runner.py  一个 Agent 都不 import,被测对象靠 `--runners 模块:属性` 注入
     (见 runner.load_runners)。所以没配 API Key 也能跑它自己的单元测试。
