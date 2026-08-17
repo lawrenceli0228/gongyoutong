@@ -22,6 +22,7 @@ from pathlib import Path
 
 import ezdxf
 import matplotlib
+import pypdfium2 as pdfium
 from ezdxf.addons.drawing import Frontend, RenderContext
 from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
@@ -35,6 +36,10 @@ matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Noto San
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 _DPI = 150
+
+# PDF 栅格化的缩放倍率:PDF 页以 72pt/英寸为基准,×2 ≈ 144 DPI,和上面 DXF 的 150 DPI 相当,
+# 施工图上的细线/小字也看得清,又不至于让预览图太大。
+_PDF_RENDER_SCALE = 2.0
 
 # 白底 + 黑线:DXF 里图元多是 ACI 7(随背景取黑/白的自适应色)。默认背景是黑、7 号
 # 画成白线;我们要出的是白底 PNG,不改配色的话就是白线画在白底上 —— 一片空白。
@@ -69,4 +74,22 @@ def to_png(path: Path) -> bytes:
     return buf.getvalue()
 
 
-__all__ = ["to_png"]
+def pdf_to_png(path: Path) -> bytes:
+    """把一张 PDF 图纸的**首页**栅格化成 PNG,返回字节。阻塞函数:调用方负责 to_thread 包。
+
+    只出首页(MVP:施工图 PDF 一份多为单页,多页的先看第一页,够定位)。
+    文件损坏/加密打不开时不吞异常,让 pypdfium2 抛给工具层翻成 FILE_CORRUPT。
+    """
+    doc = pdfium.PdfDocument(str(path))
+    try:
+        page = doc[0]
+        bitmap = page.render(scale=_PDF_RENDER_SCALE)
+        pil_image = bitmap.to_pil()
+        buf = io.BytesIO()
+        pil_image.save(buf, format="png")
+        return buf.getvalue()
+    finally:
+        doc.close()
+
+
+__all__ = ["pdf_to_png", "to_png"]

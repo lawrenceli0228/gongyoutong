@@ -27,10 +27,11 @@ from typing import Any, Final
 import ezdxf
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+from pypdf.errors import PyPdfError
 
 from gyt.agents.cad import index, render
 from gyt.agents.cad.demo_registry import get_demo_drawings
-from gyt.config import ALLOWED_CAD_EXT, get_settings
+from gyt.config import ALLOWED_DRAWING_EXT, get_settings
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind, ArtifactNotFound
 from gyt.core.errors import Envelope, ErrorCode, fail, ok, tool_guard
@@ -44,6 +45,58 @@ _PREVIEW_NAME: Final[str] = "preview.png"
 
 # 视图类型的人话标签(drawings.view_type ∈ plan/elevation/section)。
 _VIEW_CN: Final[dict[str, str]] = {"plan": "平面图", "elevation": "立面图", "section": "剖面图"}
+
+# 天正私有构件类型(parse 检出的 TCH_*)→ 人话构件名。认不出的落回原类型名,不假装认得。
+_TCH_CN: Final[dict[str, str]] = {
+    "TCH_WALL": "墙",
+    "TCH_COLUMN": "柱",
+    "TCH_WINDOW": "窗",
+    "TCH_DOOR": "门",
+    "TCH_OPENING": "洞口",
+    "TCH_STAIR": "楼梯",
+    "TCH_AXIS": "轴线",
+    "TCH_DIM": "标注",
+    "TCH_TEXT": "文字",
+    "TCH_BALCONY": "阳台",
+    "TCH_RAILING": "栏杆",
+    "TCH_ROOF": "屋顶",
+}
+
+# 交给用户的「把天正图变成能读的图」的正确步骤 —— 三条路,从推荐到应急。
+# 这段是给工地/设计院的人照着做的:天正把墙/柱/门窗锁在私有构件里,连正版 AutoCAD 不装
+# 天正插件也看不到几何;唯一的路是在天正里把它们导成普通 AutoCAD 图元。
+_TIANZHENG_STEPS: Final[str] = (
+    "要我读得了几何,得先在天正里把私有构件导成普通 AutoCAD 图元(下面三条路,优先用第①条):"
+    "① 天正菜单「文件布图 → 图形导出」(命令 TEXP),弹出的保存类型选「低版本 AutoCAD(2004/2007)」"
+    "或直接选 *.dxf —— 墙/柱/门窗会被转成双线、块、圆弧等基本图元,几何保留得最好;"
+    "② 或用「另存为」选「天正3(T3)格式」,效果接近、操作更快;"
+    "③ 应急:全选后输 X(EXPLODE)回车炸开(天正对象是嵌套的,可能要连炸两次)再另存 DXF —— "
+    "这条常丢标注数值、把文字打散,能不用就别用。"
+    "导出后把新的 DXF 重新上传,图层、构件、标注就都能正常查了。"
+)
+
+
+def _is_pdf(idx: dict[str, Any]) -> bool:
+    """索引是不是 PDF 图纸(vs DXF)。老索引没有 format 字段时按 DXF 处理(兼容)。"""
+    return idx.get("format") == "pdf"
+
+
+# PDF 图纸做不了结构化查询(图层/构件/标注读数)时的统一说法 —— 指路到「能做的两样」。
+_PDF_STRUCTURED_UNAVAILABLE: Final[str] = (
+    "这是 PDF 图纸,里面没有图层/构件/标注这些结构化对象(那是 DXF 才有的),"
+    "所以这项查不了。PDF 上能做两样:出预览图看整张图,或读图上写的文字(标高、房间名、标注数字等)。"
+)
+
+
+def _tianzheng(idx: dict[str, Any]) -> dict[str, Any]:
+    """从索引里取天正检出结果;老索引没有这个字段时给个「未检出」的兜底。"""
+    return idx.get("tianzheng") or {"detected": False, "component_kinds": {}}
+
+
+def _tianzheng_summary(component_kinds: dict[str, int]) -> str:
+    """把 {TCH_WALL: 66, ...} 说成「66 墙、34 门窗…」,按数量降序,认不出的用原类型名。"""
+    ordered = sorted(component_kinds.items(), key=lambda kv: (-kv[1], kv[0]))
+    return "、".join(f"{count} {_TCH_CN.get(kind, kind)}" for kind, count in ordered)
 
 
 # --- 图名解析与展示名 ---------------------------------------------------------
@@ -136,8 +189,8 @@ async def _load_index(
         )
 
     ext = str(meta.get("ext", "")).lower()
-    if ext not in ALLOWED_CAD_EXT:
-        kinds = "、".join(sorted(ALLOWED_CAD_EXT))
+    if ext not in ALLOWED_DRAWING_EXT:
+        kinds = "、".join(sorted(ALLOWED_DRAWING_EXT))
         return (
             None,
             drawing_id,
@@ -149,7 +202,9 @@ async def _load_index(
 
     settings = get_settings()
     size = int(meta.get("size_bytes", 0))
-    if size > settings.drawing_max_mb * _BYTES_PER_MB:
+    # PDF 图纸用文档上限、DXF 用图纸上限(两者当前都放到 100MB,但口径分开、别写死一个)。
+    limit_mb = settings.document_max_mb if ext == ".pdf" else settings.drawing_max_mb
+    if size > limit_mb * _BYTES_PER_MB:
         return (
             None,
             drawing_id,
@@ -157,7 +212,7 @@ async def _load_index(
                 ErrorCode.FILE_TOO_LARGE,
                 user_msg=(
                     f"这张图纸有 {size / _BYTES_PER_MB:.1f}MB,超过了 "
-                    f"{settings.drawing_max_mb:.0f}MB 的上限,先精简一下再看。"
+                    f"{limit_mb:.0f}MB 的上限,先精简一下再看。"
                 ),
             ),
         )
@@ -173,15 +228,15 @@ async def _load_index(
                 user_msg=f"这张图纸的文件不见了。现在能看的有:{_drawings_hint()}。",
             ),
         )
-    except ezdxf.DXFError as exc:  # DXFStructureError 等都是它的子类
+    except (ezdxf.DXFError, PyPdfError) as exc:  # DXF/PDF 两条线的解析异常都在这里收口
         logger.info("图纸 %s 解析失败:%s", drawing_id, exc)
         return (
             None,
             drawing_id,
             fail(
                 ErrorCode.FILE_CORRUPT,
-                user_msg="这张图纸打不开,可能文件传坏了或不是标准 DXF,换一张再看。",
-                detail=f"ezdxf 解析 {drawing_id} 失败:{type(exc).__name__}: {exc}",
+                user_msg="这张图纸打不开,可能文件传坏了或格式不标准(DXF/PDF),换一张再看。",
+                detail=f"解析 {drawing_id} 失败:{type(exc).__name__}: {exc}",
             ),
         )
     return idx, drawing_id, None
@@ -270,9 +325,43 @@ async def parse_drawing(drawing: str, *, config: RunnableConfig) -> Envelope:
         return error
     assert idx is not None
 
+    name = _display_name(drawing_id)
+
+    if _is_pdf(idx):
+        # PDF 图纸没有图层/图元的概念,概览换成「几页、能不能读文字」,并说清能做的两样。
+        page_count = int(idx.get("page_count", 0))
+        has_text = bool(idx.get("has_text", False))
+        if has_text:
+            tail = (
+                "能出预览图,也能读图上写的文字(标高、房间名、标注数字等)。"
+                "图层/构件/标注读数是 DXF 专有,PDF 给不了。"
+            )
+        else:
+            tail = "看着像扫描件,读不到文字;能出预览图看整张,但图上文字/图层/构件都读不了。"
+        return ok(
+            data={"format": "pdf", "page_count": page_count, "has_text": has_text},
+            user_msg=f"{name}是 PDF 图纸,共 {page_count} 页。{tail}",
+        )
+
     layers_count = len(idx["layers"])
     entities_total = sum(idx["entities_by_kind"].values())
-    name = _display_name(drawing_id)
+    tz = _tianzheng(idx)
+
+    if tz["detected"]:
+        # 天正图:如实说清「构件锁在私有格式里、我读不到几何」,并给出导出 T3 的正确步骤。
+        # 不再假装这是一张普通图 —— 图层数/图元数照给(那些是真的),但重点是那句「先导出」。
+        summary = _tianzheng_summary(tz["component_kinds"])
+        user_msg = (
+            f"{name}是天正(TArch)格式的图,里面含 {summary} —— 这些是天正私有构件,"
+            f"锁在它自家格式里,我现在读不到它们的几何(正版 AutoCAD 不装天正插件也一样看不到)。"
+            f"{_TIANZHENG_STEPS}"
+        )
+    else:
+        user_msg = (
+            f"{name}看过了:{layers_count} 个图层、{entities_total} 个图元"
+            f"(单位 {idx['units_label']})。能问尺寸、构件、图层了。"
+        )
+
     return ok(
         data={
             "layers_count": layers_count,
@@ -281,11 +370,9 @@ async def parse_drawing(drawing: str, *, config: RunnableConfig) -> Envelope:
             "dxf_version": idx["dxf_version"],
             "units_label": idx["units_label"],
             "bounds": idx["bounds"],
+            "tianzheng": tz,
         },
-        user_msg=(
-            f"{name}看过了:{layers_count} 个图层、{entities_total} 个图元"
-            f"(单位 {idx['units_label']})。能问尺寸、构件、图层了。"
-        ),
+        user_msg=user_msg,
     )
 
 
@@ -306,6 +393,17 @@ async def query_dimension(drawing: str, target: str = "", *, config: RunnableCon
         return error
     assert idx is not None
 
+    if _is_pdf(idx):
+        # PDF 没有 DIMENSION 对象,读不了标注读数 —— 如实说,并指路到「读参数/看图上文字」。
+        return fail(
+            ErrorCode.EMPTY_RESULT,
+            user_msg=(
+                f"{_display_name(drawing_id)}是 PDF 图纸,没有可读的标注对象。"
+                "图上标注的数字如果是文字,可以用『读参数/看图上文字』去问;"
+                "但结构化的标注读数只有 DXF 图能给。"
+            ),
+        )
+
     dims: list[dict[str, Any]] = idx["dimensions"]
     key = (target or "").strip()
     if key:
@@ -317,6 +415,13 @@ async def query_dimension(drawing: str, target: str = "", *, config: RunnableCon
 
     name = _display_name(drawing_id)
     if not matched:
+        tz = _tianzheng(idx)
+        if not dims and tz["detected"]:
+            # 天正图读不到标注,不是「图上没标」,是标注锁在 TCH_* 私有构件里 —— 别误导用户。
+            return fail(
+                ErrorCode.EMPTY_RESULT,
+                user_msg=f"{name}是天正图,标注是天正私有构件,我读不到它的读数。{_TIANZHENG_STEPS}",
+            )
         # 如实说做不了,别硬编(落地文档 6.2 的核心):图上没标就是没标。
         if not dims:
             hint = f"{name}上没有任何标注尺寸,"
@@ -362,6 +467,12 @@ async def list_components(
     if error is not None:
         return error
     assert idx is not None
+
+    if _is_pdf(idx):
+        return fail(
+            ErrorCode.EMPTY_RESULT,
+            user_msg=f"{_display_name(drawing_id)}——{_PDF_STRUCTURED_UNAVAILABLE}",
+        )
 
     layers: list[dict[str, Any]] = idx["layers"]
     blocks: list[dict[str, Any]] = idx["blocks"]
@@ -414,9 +525,17 @@ async def list_components(
     # 都没填:给全图概览。
     block_desc = "、".join(f"{b['name']}({b['insert_count']})" for b in blocks) or "没有自定义块"
     kind_desc = "、".join(f"{k} {v}" for k, v in by_kind.items())
+    tz = _tianzheng(idx)
+    # 天正图:构件是 TCH_* 私有对象(会出现在图元类型分布里),不是普通块,提示先导出 T3。
+    tz_note = (
+        f" 其中 {_tianzheng_summary(tz['component_kinds'])} 是天正私有构件,我读不到几何 —— "
+        f"{_TIANZHENG_STEPS}"
+        if tz["detected"]
+        else ""
+    )
     return ok(
-        data={"blocks": blocks, "entities_by_kind": by_kind},
-        user_msg=f"{name}的构件块:{block_desc};图元类型分布:{kind_desc}。",
+        data={"blocks": blocks, "entities_by_kind": by_kind, "tianzheng": tz},
+        user_msg=f"{name}的构件块:{block_desc};图元类型分布:{kind_desc}。{tz_note}",
     )
 
 
@@ -435,15 +554,23 @@ async def layer_stats(drawing: str, *, config: RunnableConfig) -> Envelope:
         return error
     assert idx is not None
 
+    if _is_pdf(idx):
+        return fail(
+            ErrorCode.EMPTY_RESULT,
+            user_msg=f"{_display_name(drawing_id)}——{_PDF_STRUCTURED_UNAVAILABLE}",
+        )
+
     layers: list[dict[str, Any]] = idx["layers"]
     name = _display_name(drawing_id)
     # 非空图层排前面、按图元数降序,让「主力图层」一眼可见。
     ordered = sorted(layers, key=lambda ly: ly["entity_count"], reverse=True)
     nonempty = [ly for ly in ordered if ly["entity_count"] > 0]
     head = "、".join(f"{ly['name']}({ly['entity_count']})" for ly in nonempty[:5]) or "各层都是空的"
+    # 天正图的图层名/计数能读(组码 8),但墙/柱几何还锁着 —— 顺带提示一句,别让用户以为能查几何。
+    tz_note = f" 另外这是天正图,{_TIANZHENG_STEPS}" if _tianzheng(idx)["detected"] else ""
     return ok(
         data={"layers": ordered, "layers_count": len(layers)},
-        user_msg=f"{name}共 {len(layers)} 个图层,主要有:{head}。",
+        user_msg=f"{name}共 {len(layers)} 个图层,主要有:{head}。{tz_note}",
     )
 
 
@@ -463,6 +590,30 @@ async def render_preview(drawing: str, *, config: RunnableConfig) -> Envelope:
     assert idx is not None
 
     name = _display_name(drawing_id)
+
+    if _is_pdf(idx):
+        # PDF 走 pypdfium2 栅格化首页,没有「图元太多」这道 matplotlib 专属的拦阻。
+        path = await asyncio.to_thread(artifacts.resolve, drawing_id)
+        try:
+            png_bytes = await asyncio.to_thread(render.pdf_to_png, path)
+        except PyPdfError as exc:
+            logger.info("PDF 图纸 %s 渲染失败:%s", drawing_id, exc)
+            return fail(
+                ErrorCode.FILE_CORRUPT,
+                user_msg="这张 PDF 图纸渲染不出来,可能文件有问题,换一张再试。",
+                detail=f"pdf render {drawing_id} 失败:{type(exc).__name__}: {exc}",
+            )
+        png_id = await asyncio.to_thread(
+            artifacts.register, png_bytes, kind=ArtifactKind.OTHER, original_name=_PREVIEW_NAME
+        )
+        return ok(
+            data={"png_id": png_id, "format": "pdf", "page_count": int(idx.get("page_count", 0))},
+            user_msg=(
+                f"{name}的预览图渲染好了(首页,编号 {png_id})。"
+                "注:预览图暂时不在聊天里直接显示,这个编号先留着备用。"
+            ),
+        )
+
     # 渲染前先按图元数拦一道:真实工程图上千图元,matplotlib 逐个画会卡几分钟(实测 268s),
     # 而且大地坐标系的真图渲染出来常是空白。超阈值就**不渲染、如实说**,别硬撑到超时。
     entities_total = sum(idx["entities_by_kind"].values())
@@ -545,11 +696,38 @@ async def read_view_params(drawing: str, *, config: RunnableConfig) -> Envelope:
     name = row.title if row is not None else _display_name(drawing_id)
     view_label = _VIEW_CN.get(view_type or "", "图纸")
 
+    if _is_pdf(idx):
+        # PDF 的看家能力:把图上抽到的文字(标高、房间名、标注数字)如实报出来。没抽到就说扫描件。
+        pdf_annotations: list[dict[str, Any]] = idx.get("annotations", [])
+        if not pdf_annotations:
+            return fail(
+                ErrorCode.EMPTY_RESULT,
+                user_msg=(
+                    f"{name}是 PDF 图纸,但读不到任何文字(像扫描件)。"
+                    "能出预览图看整张,图上的文字读不了。"
+                ),
+            )
+        ann_shown = "、".join(a["text"] for a in pdf_annotations[:8])
+        return ok(
+            data={"format": "pdf", "view_type": view_type, "annotations": pdf_annotations},
+            user_msg=(
+                f"{name}({view_label},PDF)读到图上文字 {len(pdf_annotations)} 条:{ann_shown}。"
+                "这些是图上写着的字(含标高/房间名等),没写的读不了;图层/构件/标注读数 PDF 给不了。"
+            ),
+        )
+
     dims: list[dict[str, Any]] = idx["dimensions"]
     annotations: list[dict[str, Any]] = idx.get("annotations", [])
     units = idx["units_label"]
 
     if not dims and not annotations:
+        tz = _tianzheng(idx)
+        if tz["detected"]:
+            # 天正图:标注/文字锁在 TCH_* 私有构件里,不是「没写」——给导出步骤,别误判。
+            return fail(
+                ErrorCode.EMPTY_RESULT,
+                user_msg=f"{name}是天正图,标注和文字都是天正私有构件,我读不到。{_TIANZHENG_STEPS}",
+            )
         # 图上既没标注也没文字 → 如实说做不了,别硬编(同 query_dimension 的红线)。
         return fail(
             ErrorCode.EMPTY_RESULT,

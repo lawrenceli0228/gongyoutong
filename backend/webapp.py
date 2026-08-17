@@ -35,7 +35,7 @@ from starlette.routing import Route
 
 from gyt.agents.knowledge import ingest, store
 from gyt.checkin_api import CHECKIN_ROUTES
-from gyt.config import ALLOWED_CAD_EXT, get_settings
+from gyt.config import ALLOWED_DRAWING_EXT, get_settings
 from gyt.core import artifacts, project_fs
 from gyt.core.artifacts import ArtifactKind
 from gyt.db import hazards
@@ -183,10 +183,11 @@ async def create_project(request: Request) -> JSONResponse:
 
 
 async def upload_drawing(request: Request) -> JSONResponse:
-    """POST /projects/{project_id}/drawings —— 上传一张 DXF 图纸并入库。
+    """POST /projects/{project_id}/drawings —— 上传一张图纸(DXF 或 PDF)并入库。
 
-    multipart:file(.dxf)、view_type(plan/elevation/section)、title(可省=文件名主干)、floor(可选)。
-    落地 → 注册产物 → 写 drawings 行,一条龙。
+    multipart:file(.dxf/.pdf)、view_type(plan/elevation/section)、title(可省=文件名主干)、floor(可选)。
+    落地 → 注册产物 → 写 drawings 行,一条龙。CAD Agent 后续按后缀分流:DXF 走结构化解析,
+    PDF 出预览 + 读图上文字(图层/构件/标注读数是 DXF 专有)。
     """
     pid = request.path_params["project_id"]
     form = await request.form()
@@ -196,22 +197,29 @@ async def upload_drawing(request: Request) -> JSONResponse:
     title = str(form.get("title") or "").strip()
 
     if upload is None or not hasattr(upload, "filename"):
-        return _fail(400, "没收到图纸文件,请选一个 .dxf 再传。", "INVALID_INPUT")
+        return _fail(400, "没收到图纸文件,请选一个 .dxf 或 .pdf 再传。", "INVALID_INPUT")
     filename = upload.filename or ""
     if view_type not in db.VIEW_TYPES:
         return _fail(
             400, "要标明这是平面图、立面图还是剖面图(plan/elevation/section)。", "INVALID_INPUT"
         )
-    if PurePosixPath(filename).suffix.lower() not in ALLOWED_CAD_EXT:
-        return _fail(415, "只收 DXF 图纸(.dxf);DWG 请先离线转成 DXF 再传。", "FILE_UNSUPPORTED")
+    ext = PurePosixPath(filename).suffix.lower()
+    if ext not in ALLOWED_DRAWING_EXT:
+        return _fail(
+            415,
+            "只收 DXF(.dxf)或 PDF(.pdf)图纸;DWG 请先离线转成 DXF 再传。"
+            "PDF 图纸能出预览、能读图上文字,但图层/构件/标注读数只有 DXF 给得了。",
+            "FILE_UNSUPPORTED",
+        )
 
     payload = await upload.read()
-    max_bytes = int(get_settings().drawing_max_mb * _BYTES_PER_MB)
-    if len(payload) > max_bytes:
+    # PDF 图纸按文档上限、DXF 按图纸上限(两者当前都是 100MB,口径分开、别写死一个)。
+    limit_mb = get_settings().document_max_mb if ext == _PDF_EXT else get_settings().drawing_max_mb
+    if len(payload) > int(limit_mb * _BYTES_PER_MB):
         return _fail(
             413,
-            f"这张图纸有 {len(payload) / _BYTES_PER_MB:.1f}MB,超过 "
-            f"{get_settings().drawing_max_mb:.0f}MB 上限,先精简再传。",
+            f"这张图纸有 {len(payload) / _BYTES_PER_MB:.1f}MB,"
+            f"超过 {limit_mb:.0f}MB 上限,先精简再传。",
             "FILE_TOO_LARGE",
         )
     if not title:

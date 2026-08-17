@@ -31,7 +31,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from gyt.agents.cad import parse
+from gyt.agents.cad import parse, parse_pdf
 from gyt.config import get_settings
 from gyt.core import artifacts
 
@@ -78,7 +78,10 @@ def write(drawing_id: str, data: dict[str, Any]) -> None:
         # 下一个人排查时会以为索引写坏了。
         tmp.unlink(missing_ok=True)
         raise
-    logger.info("已写入 CAD 索引 %s(%d 图层)", drawing_id, len(data.get("layers", [])))
+    if data.get("format") == "pdf":
+        logger.info("已写入 CAD 索引 %s(PDF,%d 页)", drawing_id, data.get("page_count", 0))
+    else:
+        logger.info("已写入 CAD 索引 %s(%d 图层)", drawing_id, len(data.get("layers", [])))
 
 
 def read(drawing_id: str) -> dict[str, Any] | None:
@@ -111,7 +114,12 @@ async def ensure_index(drawing_id: str) -> dict[str, Any]:
         return cached
 
     path = await asyncio.to_thread(artifacts.resolve, drawing_id)  # 可能抛 ArtifactNotFound
-    parsed = await asyncio.to_thread(parse.parse_dxf, path)  # 可能抛 ezdxf 异常
+    # 按后缀分流:.pdf 走 pypdf 抽文字(可能抛 pypdf.errors.PyPdfError),
+    # 其余(.dxf)走 ezdxf 结构化解析(可能抛 ezdxf 异常)。两类异常都由工具层接住翻 FILE_CORRUPT。
+    if path.suffix.lower() == ".pdf":
+        parsed = await asyncio.to_thread(parse_pdf.parse_pdf, path)
+    else:
+        parsed = await asyncio.to_thread(parse.parse_dxf, path)
     # source_artifact_id 是索引级信息,parse 不认得 id,这里补上再落盘。
     parsed["source_artifact_id"] = drawing_id
     await asyncio.to_thread(write, drawing_id, parsed)

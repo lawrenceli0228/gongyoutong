@@ -44,7 +44,12 @@ ENV_PREFIX: Final[str] = "GYT_"
 # 免得后端背上一个又重又不稳的 DWG 解析依赖。
 ALLOWED_IMAGE_EXT: Final[frozenset[str]] = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 ALLOWED_DOC_EXT: Final[frozenset[str]] = frozenset({".pdf", ".docx", ".txt", ".md"})
+# ALLOWED_CAD_EXT 专指「ezdxf 能结构化解析的」——图层/构件/标注读数只有这一支给得了。
 ALLOWED_CAD_EXT: Final[frozenset[str]] = frozenset({".dxf"})
+# ALLOWED_DRAWING_EXT 是「图纸上传/CAD Agent 认」的全集:DXF + PDF。
+# PDF 图纸(多为 AutoCAD/天正「打印成 PDF」的矢量件)只能出预览 + 读图上文字,
+# **拿不到结构化图层/构件/标注对象**(那是 DXF 专有)——工具层按后缀分流、如实说清。
+ALLOWED_DRAWING_EXT: Final[frozenset[str]] = ALLOWED_CAD_EXT | frozenset({".pdf"})
 
 # 派生目录/文件名。集中在这里,避免"uploads"这种字符串散落各处。
 _UPLOADS_SUBDIR: Final[str] = "uploads"

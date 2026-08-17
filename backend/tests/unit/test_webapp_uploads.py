@@ -148,7 +148,7 @@ def test_传图_非法view_type_400(client: TestClient) -> None:
     assert resp.json()["error_code"] == "INVALID_INPUT"
 
 
-def test_传图_非dxf_415(client: TestClient) -> None:
+def test_传图_非dxf非pdf_415(client: TestClient) -> None:
     pid = _make_project(client)
 
     resp = client.post(
@@ -159,6 +159,26 @@ def test_传图_非dxf_415(client: TestClient) -> None:
 
     assert resp.status_code == 415
     assert resp.json()["error_code"] == "FILE_UNSUPPORTED"
+
+
+def test_传图_PDF图纸也收并入库(client: TestClient) -> None:
+    # 上传口只按后缀+大小放行,不解析;PDF 图纸走和 DXF 同一条落地→注册→入库的路。
+    pid = _make_project(client)
+    pdf_bytes = b"%PDF-1.4\n%mock pdf drawing\n"
+
+    resp = client.post(
+        f"/projects/{pid}/drawings",
+        files={"file": ("首层平面图.pdf", pdf_bytes, "application/pdf")},
+        data={"view_type": "plan", "title": "首层平面图"},
+    )
+
+    assert resp.status_code == 201
+    data = resp.json()["data"]
+    landed = get_settings().projects_dir / pid / "drawings" / "plan" / "首层平面图.pdf"
+    assert landed.read_bytes() == pdf_bytes
+    assert data["rel_path"] == "drawings/plan/首层平面图.pdf"
+    row = db.get_drawing_by_id(data["drawing_id"])
+    assert row is not None and row.view_type == "plan" and row.title == "首层平面图"
 
 
 def test_传图_缺文件_400(client: TestClient) -> None:
