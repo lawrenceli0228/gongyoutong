@@ -40,6 +40,12 @@ import {
   HAZARD_SOURCE_TOOLS,
   hazardsFromToolData,
 } from "@/lib/supervision-lib";
+// W12:定级徽章键收简繁两套。词表唯一真相在 lang-lib,别在本文件里再抄一份。
+import {
+  SEVERITY_WORDS,
+  SEVERITY_WORDS_HANT,
+  withHantKeys,
+} from "@/lib/lang-lib";
 
 /** 子 Agent 的中文名。加新 Agent 时往这里补一行,不补也不会坏(会退回显示英文名)。
  *  导出给 ai.tsx 覆盖件用(子 Agent 正文折叠行也要念中文名)。 */
@@ -146,13 +152,29 @@ function artifactUrl(path: string): string | null {
   return `${ARTIFACT_BASE}/${segs.slice(-2).map(encodeURIComponent).join("/")}`;
 }
 
-/** 定级徽章配色。四个取值来自 agents/safety/severity.py,别自由发挥。 */
-const SEVERITY_CHIP: Record<string, string> = {
-  重大: "bg-red-50 text-red-700 ring-red-200",
-  较大: "bg-amber-50 text-amber-700 ring-amber-200",
-  一般: "bg-sky-50 text-sky-700 ring-sky-200",
-  待定级: "bg-gray-100 text-gray-500 ring-gray-200",
-};
+/**
+ * 定级徽章配色。四个取值来自 `agents/safety/severity.py:36-39`,别自由发挥。
+ *
+ * **简繁两套键都收**(W12,2026-08-17)。词表与繁體镜像的唯一真相在
+ * `@/lib/lang-lib` 的 `SEVERITY_WORDS` / `SEVERITY_WORDS_HANT`;
+ * `badge-keys.test.ts` 用真转换器钉着「繁體项 === s2hk(简体项)」。
+ * 变形两处:较→較、待定级→待定級,另两个同形。
+ *
+ * 理由与 markdown-text.tsx 的 STATUS_CHIPS 同源:后端常量虽是简体,
+ * 但**经模型转述**才到界面,而模型本来就有 25%-75% 的概率吐繁體 ——
+ * 所以「只认简体键」这个 bug 在 W12 之前就存在。
+ */
+const SEVERITY_CHIP: Record<string, string> = withHantKeys(
+  SEVERITY_WORDS,
+  SEVERITY_WORDS_HANT,
+  (word) =>
+    ({
+      重大: "bg-red-50 text-red-700 ring-red-200",
+      较大: "bg-amber-50 text-amber-700 ring-amber-200",
+      一般: "bg-sky-50 text-sky-700 ring-sky-200",
+      待定级: "bg-gray-100 text-gray-500 ring-gray-200",
+    })[word] ?? "bg-gray-100 text-gray-500 ring-gray-200",
+);
 
 type ReportData = {
   report_no?: string;

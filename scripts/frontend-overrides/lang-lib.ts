@@ -227,6 +227,91 @@ export function shouldConvert(role: MessageRole, target: Lang): boolean {
   return target === "zh-Hant";
 }
 
+// ---------------------------------------------------------------------------
+// 徽章受控词 —— 简体是权威,繁體是**派生镜像**
+// ---------------------------------------------------------------------------
+
+/**
+ * 这两组词为什么要集中在这儿(而不是各自留在 tsx 里)。
+ *
+ * ```
+ * 模型写出这些词                    前端拿它当**精确匹配的键**去查徽章样式
+ *      │                                        │
+ *      ├─ 状态四词:agents/schedule/prompt.md:63 明文规定
+ *      │   「已逾期 / 未完成 / 已完成」三种;没期限的写「没定期限」
+ *      │   —— 是**提示词让模型照抄**的,不是工具返回的字段
+ *      │                                        │
+ *      └─ 定级四词:agents/safety/severity.py:36-39 的四个 Final 常量
+ *          —— 后端常量,但同样**经模型转述**才到界面
+ *                                               ▼
+ *                        markdown-text.tsx / tool-calls.tsx 整格精确匹配
+ * ```
+ *
+ * 🔴 **这里有一个 W12 之前就存在的 bug,不是转换引入的。**
+ * 探针实测(方案 §4.5):模型本来就有 **25%-75% 的概率自己吐繁體**。
+ * 而那两张表原来只有简体键 —— 所以**今天**,模型写「沒定期限」的时候
+ * 徽章就已经静默不上色了。W12 只是把偶发变成系统性。
+ *
+ * 所以两张表都收简繁两套键。这同时让**转换点插在哪都不影响徽章** ——
+ * 约束从「记住别挪转换点」(靠人记)变成「表里有两种写法」(可测)。
+ *
+ * ⚠️ **繁體那一组不许手写。** 它必须逐项等于 `s2hk(简体项)`,
+ *    由 scripts/frontend-tests/badge-keys.test.ts 用真转换器钉住 ——
+ *    手写的话哪天词表改了没人会发现,而表现只是「徽章偶尔不上色」。
+ */
+
+/** 任务状态四词(简体权威)。出处:`agents/schedule/prompt.md:63`。 */
+export const TASK_STATUS_WORDS: readonly string[] = [
+  "已逾期",
+  "未完成",
+  "已完成",
+  "没定期限",
+];
+
+/** 任务状态四词的繁體镜像。**派生自上面那组,别手写** —— 只有「没→沒」一处变形。 */
+export const TASK_STATUS_WORDS_HANT: readonly string[] = [
+  "已逾期",
+  "未完成",
+  "已完成",
+  "沒定期限",
+];
+
+/** 隐患定级四词(简体权威)。出处:`agents/safety/severity.py:36-39`。 */
+export const SEVERITY_WORDS: readonly string[] = [
+  "重大",
+  "较大",
+  "一般",
+  "待定级",
+];
+
+/** 定级四词的繁體镜像。**派生,别手写** —— 变形两处:较→較、级→級。 */
+export const SEVERITY_WORDS_HANT: readonly string[] = [
+  "重大",
+  "較大",
+  "一般",
+  "待定級",
+];
+
+/**
+ * 把「简体键 → 样式」的表扩成「简繁两套键 → 同一样式」。
+ *
+ * 两组词等长是前提(测试钉着)。繁體与简体同形时会写同一个键两次,
+ * 后写覆盖前写、值相同,所以无害。
+ */
+export function withHantKeys(
+  simplified: readonly string[],
+  traditional: readonly string[],
+  styleOf: (word: string) => string,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  simplified.forEach((word, i) => {
+    const style = styleOf(word);
+    out[word] = style;
+    out[traditional[i]] = style;
+  });
+  return out;
+}
+
 /**
  * 姓名会被转,这是**定案不是 bug**(方案 §9.0 定案 #5 / §9.3)。
  *

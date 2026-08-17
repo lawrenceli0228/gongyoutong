@@ -36,6 +36,10 @@ import { useQueryState, parseAsBoolean } from "nuqs";
 import { GenericInterruptView } from "./generic-interrupt";
 import { useArtifact } from "../artifact";
 import { MessageSquareText } from "lucide-react";
+import { useMemo } from "react";
+// W12:繁體答话。判定归 lang-lib(纯函数、可单测),拉字典归 hant-convert(懒加载)。
+import { resolveLang } from "@/lib/lang-lib";
+import { useHantText } from "@/lib/hant-convert";
 
 function CustomComponent({
   message,
@@ -229,9 +233,38 @@ export function AssistantMessage({
     return false;
   })();
 
-  const displayString = turnHasVisibleAgentTable
+  const strippedString = turnHasVisibleAgentTable
     ? stripLedgerEcho(contentString)
     : contentString;
+
+  // ===========================================================================
+  // W12 第一批:按用户输入的语言答话(目前只做繁體)
+  // ---------------------------------------------------------------------------
+  // 为什么转换在**这里**,而不在 markdown-text.tsx 里面:
+  //   `MarkdownText` 有四个消费者,其中两个是**上游的英文调试界面**
+  //   (agent-inbox 的 state-view / inbox-item-input)。放进 markdown-text
+  //   会把它们也转了 —— 那是我们不拥有的表面,而且转它是错的。
+  //
+  // 为什么繁體要靠转换而不是靠提示词:探针 155 次真调用实测,
+  //   靠提示词让模型换繁體在**需要调工具的 Agent** 上只有 25%-60%
+  //   (门槛 80%),五个档位试遍都不够 —— CLAUDE.md「提示词只是概率性生效,
+  //   结构件才兜得住」的第四次应验。方案 §4.5。
+  //
+  // 语种怎么定:显式选择(第二批才有切换器,现在恒 null)→ 往回扫本线程的
+  //   用户发言 → 落 DEFAULT_LANG。「第二句只打好」靠往回扫那一层。
+  //   用户发言本身**永不转换**(shouldConvert 对 human 恒 false)——
+  //   human.tsx 的 `(照片编号:…)` 正则是简体的,转了照片就不渲染成图。
+  // ===========================================================================
+  const userTextsNewestFirst = useMemo(
+    () =>
+      thread.messages
+        .filter((m) => m.type === "human")
+        .map((m) => getContentString(m.content))
+        .reverse(),
+    [thread.messages],
+  );
+  const lang = resolveLang(null, userTextsNewestFirst);
+  const displayString = useHantText(strippedString, "ai", lang);
 
   // 「Transferring back to supervisor」是 langgraph_supervisor 注入的**收工信号**,
   // 后端必须保留(关掉会让 supervisor 复转直至熔断,graph.py 有血泪注释)。
