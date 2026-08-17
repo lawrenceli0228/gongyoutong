@@ -198,3 +198,60 @@ async def test_config无当前工地时仍只查全局(monkeypatch):
     )
 
     assert captured["where"] == {"scope": "global"}
+
+
+# ---------------------------------------------------------------------------
+# 同源守卫:引用行与「查不到」措辞必须留在中文(W12 定案 甲,2026-08-18)
+# ---------------------------------------------------------------------------
+
+
+def test_引用形态与拒答措辞在提示词里仍是中文() -> None:
+    """`eval/scorers.py` 用**中文写死的两张表**给 rag 判分,提示词必须跟它对齐。
+
+    哪天有人「顺手」把 knowledge 的引用行或拒答句翻成英文(英文答话上线后
+    这个诱惑很大),后果是两个方向的:
+
+      · ``NO_ANSWER_MARKERS`` 认不出英文拒答 → **老实拒答被判成失败**(误伤);
+      · ``CITATION_SHAPES`` 认不出英文引用 → **嘴上说查不到却编了个英文出处,
+        判分会放它过去**(放行编造,比误伤更糟)。
+
+    而 ``rag.csv`` 20 行全是中文提问,**评测永远走不到英文那条路** ——
+    所以这个退化不会被任何分数暴露出来。这条测试是那个约定唯一的自动化守卫。
+    """
+    import re
+
+    from eval.scorers import CITATION_SHAPES, NO_ANSWER_MARKERS
+
+    from gyt.agents.knowledge import KNOWLEDGE_DIR
+    from gyt.core.base_agent import load_prompt
+
+    body = load_prompt(KNOWLEDGE_DIR)
+
+    # ① **钉那个模板本身**,不是「文件里随便哪儿有中文引用形态」。
+    #
+    # ⚠️ 这条一开始写的就是后者(`any(re.search(shape, body) …)`),而它是个
+    #    **假守卫**:2026-08-18 变异验证时把模板真翻成 `— Per <source>, p. <page>`,
+    #    测试照绿 —— 因为提示词里还留着中文**示例**
+    #    (「—— 依据《建筑施工安全检查标准》第 45 页」)和「说话方式」那节的
+    #    「(《…》第 X 页)」,示例自己把断言满足了。
+    #    驱动模型行为的是模板,不是示例,所以要钉模板的占位符形态。
+    template = "《<source>》第 <page> 页"
+    assert template in body, (
+        f"knowledge 提示词里的引用模板 `{template}` 没了 —— 很可能被翻成了英文。"
+        "后果见本测试 docstring:no_answer 行会**放行编造**。"
+    )
+    # 模板本身还得是 CITATION_SHAPES 认得的形态(两边同源的那一半)
+    assert any(re.search(shape, template) for shape in CITATION_SHAPES), (
+        "引用模板与 scorers.CITATION_SHAPES 对不上了 —— 改了一边没改另一边。"
+    )
+
+    # ② 拒答措辞必须落在 NO_ANSWER_MARKERS 白名单里(提示词让模型照说的那句)
+    assert any(marker in body for marker in NO_ANSWER_MARKERS), (
+        "knowledge 提示词里已经没有 NO_ANSWER_MARKERS 里的规定措辞了 —— "
+        "老实拒答会被 rag 判分当成失败。"
+    )
+
+    # ③ 正面钉住那条例外说明还在:它是给下一个人看的唯一线索
+    assert "任何语言下都写中文" in body or "仍写中文" in body, (
+        "「英文模式下引用与拒答保持中文」这条例外的说明没了。说明一没,下一个人一定会去翻译它。"
+    )
