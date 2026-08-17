@@ -258,19 +258,19 @@ def test_前端格式也支持下划线写法的mime() -> None:
     assert len(ids) == 1
 
 
-def test_传PDF时给出准确的话而不是让人转成JPG() -> None:
+def test_传PDF时引导去资料归档面板而不是让人转成JPG() -> None:
     """上传按钮上明写着「Upload PDF or Image」,所以用户真的会传 PDF。
 
-    看规范文档是 knowledge Agent 的活 —— 它**已经在册**(2026-08-09 起),
-    没接的是「上传的 PDF → 增量入库」那一段(详见 uploads.py 该分支的注释)。
-    所以这时候仍然要拒,但说「请转成 JPG 或 PNG」
-    是**错的** —— 他传 PDF 本来就是这个按钮允许的操作,那句话会让他以为自己搞错了。
+    聊天窗口当场看图仍只认 DXF(PDF 图纸走「资料归档」面板,那里 PDF/DXF 都收)——
+    所以这时候仍然要拒,但要给**准确的指路**:是图纸就去资料归档面板。
+    说「请转成 JPG 或 PNG」是**错的** —— 他传 PDF 本来就是这个按钮允许的操作,
+    那句话会让他以为自己搞错了。
     """
     state = {
         "messages": [
             HumanMessage(
                 content=[
-                    {"type": "text", "text": "看看这个规范"},
+                    {"type": "text", "text": "解析这张图"},
                     {"type": "file", "mimeType": "application/pdf", "data": "JVBERi0="},
                 ],
                 id="u1",
@@ -280,7 +280,7 @@ def test_传PDF时给出准确的话而不是让人转成JPG() -> None:
 
     rewritten = ingest_uploads(state)["messages"][1]
     assert "PDF" in rewritten.content
-    assert "还没做好" in rewritten.content
+    assert "资料归档" in rewritten.content  # 指路到那个接 PDF 图纸的面板
     assert "转成 JPG 或 PNG" not in rewritten.content
 
 
