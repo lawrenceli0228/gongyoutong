@@ -92,6 +92,12 @@ dependencies = [
     # 注意实际解析出来会带 +cpu 本地版本号后缀(2.13.0+cpu),PEP 440 下它 >= 2.13.0,区间成立。
     "torch>=2.13.0,<3",
     "pypdf>=6.15.0,<7",
+    # pypdfium2:把 PDF 图纸页栅格化成 PNG 预览(CAD Agent 的 render.pdf_to_png 用)。
+    # 选它不选 PyMuPDF(fitz)是**许可证**决定的:PyMuPDF 是 AGPL,商用有传染性;
+    # pypdfium2 是 Google PDFium 的绑定,BSD/Apache-2.0,纯 wheel、无系统二进制依赖
+    # (不像 pdf2image 要 poppler —— 那正是 Windows 上的老麻烦)。只做栅格化,不抽文字
+    # (文字仍走上面的 pypdf,已验证能抽中文)。
+    "pypdfium2>=4.30,<5",
     # langchain 1.x 把 text splitter 拆成独立小包(纯 Python,不带重依赖),
     # 不再随 langchain 伞包进来,得显式声明。要 langchain-core>=1.2.31,<2 —— 与本仓 1.5.3 兼容。
     "langchain-text-splitters>=1.1.2,<2",
@@ -104,6 +110,9 @@ dev = [
     "pytest-asyncio>=1.4.0,<2",
     "pytest-cov>=7.1.0,<8",
     "ruff>=0.16.1,<0.17",
+    # fpdf2:测试里就地造带中文文字的矢量 PDF 样例(延续 _dxf_fixtures 的「就地造样、
+    # 自洽、不联网」打法,不往仓库塞二进制样例)。纯 Python,仅测试用,不进线上镜像。
+    "fpdf2>=2.8,<3",
 ]
 
 # ---------------------------------------------------------------------------

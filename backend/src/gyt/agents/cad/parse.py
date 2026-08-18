@@ -74,6 +74,33 @@ _DIM_KIND: dict[int, str] = {
 # dim.dxf.text 取这些值表示「用实测值,没手改」——此时展示文字 = 格式化后的实测。
 _AUTO_DIM_TEXT = frozenset({"<>", "", None})
 
+# 认不出所在图层时的默认层名(AutoCAD 的 0 层),不硬编成别的。
+_DEFAULT_LAYER = "0"
+
+
+def _layer_of(entity: Any) -> str:
+    """读图元所在图层,对天正私有构件(``TCH_*``)这类代理实体做防御式兜底。
+
+    普通图元有标准 ``layer`` 属性,直接取。天正的墙/柱/门窗是私有构件,ezdxf 认不得,
+    当**未知代理实体**(``DXFTagStorage``)加载 —— 它不暴露 ``.dxf.layer``,而且连
+    ``.dxf.get("layer", "0")`` 都会抛 ``DXFAttributeError``(``dxf`` 命名空间会校验属性名,
+    未知属性直接抛、不给默认值)。这类实体的图层(组码 8)藏在原始标签的 ``AcDbEntity``
+    子类里,退回去扫一遍捞出来;实在没有(有的代理连图层都不带)就落到默认层 ``0``。
+
+    这是「三处扫实体都假设每个实体都有 ``.dxf.layer``」那个真 bug 的收口:天正图不再让
+    ``_scan_modelspace`` 崩掉,进而不再被工具层误判成「文件传坏了」(FILE_CORRUPT)。
+    """
+    dxf = entity.dxf
+    if dxf.hasattr("layer"):
+        return str(dxf.layer)
+    xtags = getattr(entity, "xtags", None)  # 只有 DXFTagStorage(代理实体)才有
+    if xtags is not None:
+        for subclass in xtags.subclasses:
+            for tag in subclass:
+                if tag.code == 8:  # 组码 8 在图元里恒为图层名
+                    return str(tag.value)
+    return _DEFAULT_LAYER
+
 
 def _units_label(insunits: int) -> str:
     return _UNITS_LABEL.get(insunits, f"单位码{insunits}")
@@ -99,7 +126,7 @@ def _scan_modelspace(msp: Any) -> tuple[Counter, dict[str, Counter], Counter]:
     insert_by_block: Counter = Counter()
     for entity in msp:
         kind = entity.dxftype()
-        layer = str(entity.dxf.layer)
+        layer = _layer_of(entity)  # 天正代理实体也兜得住,不再 KeyError/DXFAttributeError
         by_kind[kind] += 1
         per_layer.setdefault(layer, Counter())[kind] += 1
         if kind == "INSERT":
@@ -165,7 +192,7 @@ def _dimensions(msp: Any) -> list[dict[str, Any]]:
             {
                 "text": text,
                 "measurement": round(measurement, 4) if measurement is not None else None,
-                "layer": str(dim.dxf.layer),
+                "layer": _layer_of(dim),
                 "kind": kind,
             }
         )
@@ -186,7 +213,7 @@ def _texts(msp: Any, limit: int = 200) -> list[dict[str, Any]]:
         else:
             text = str(entity.dxf.text).strip()
         if text:
-            out.append({"text": text, "layer": str(entity.dxf.layer)})
+            out.append({"text": text, "layer": _layer_of(entity)})
         if len(out) >= limit:
             break
     return out
@@ -216,7 +243,13 @@ def parse_dxf(path: Path) -> dict[str, Any]:
     by_kind, per_layer, insert_by_block = _scan_modelspace(msp)
     insunits = int(doc.header.get("$INSUNITS", 0))
 
+    # 天正(TArch)私有构件按 TCH_* 类型出现在 by_kind 里。检出它们,让工具层能对用户说
+    # 「这是天正图、先导出 T3」,而不是把读不到几何当成「文件坏了」。detect 只认 TCH_ 前缀
+    # (天正专有),不把泛化的 ACAD_PROXY_ENTITY 也算进来 —— 那可能来自别家插件,不好乱指。
+    tianzheng_kinds = {k: int(v) for k, v in sorted(by_kind.items()) if k.startswith("TCH_")}
+
     return {
+        "format": "dxf",  # 索引格式判别:工具层按它在 dxf/pdf 两条线间分流
         "encoding": str(doc.output_encoding),
         "dxf_version": str(doc.dxfversion),
         "insunits": insunits,
@@ -227,6 +260,10 @@ def parse_dxf(path: Path) -> dict[str, Any]:
         "dimensions": _dimensions(msp),
         "annotations": _texts(msp),
         "bounds": _bounds(msp),
+        "tianzheng": {
+            "detected": bool(tianzheng_kinds),
+            "component_kinds": tianzheng_kinds,
+        },
     }
 
 

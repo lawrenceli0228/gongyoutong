@@ -296,6 +296,71 @@ def test_render_roster_每个登记项一行(graph_module: GraphFixture) -> None
 
 
 # ===========================================================================
+# 当前工地：supervisor 也要拿得到「用户此刻选中的工地」
+# 修的是「图纸同事说得出当前工地、supervisor 却说查不到」这个矛盾。
+# ===========================================================================
+
+
+def test_当前工地_选中且库里有_supervisor直接报得出工地名(
+    graph_module: GraphFixture,
+) -> None:
+    from gyt.db import projects as db
+
+    db.create_project("gyt-sc", "遂川垃圾处理中心", "SC")
+
+    section = graph_module.module.render_current_project(
+        {"configurable": {"gyt_project_id": "gyt-sc"}}
+    )
+
+    # 报得出工地名,且明说「确认工地本身」可以直接答、不用派人
+    assert "遂川垃圾处理中心" in section
+    assert "直接回答" in section
+    # 但工地里的具体数据仍要派同事 —— 别把「有哪些图纸」也自己答了
+    assert "派给对应同事" in section
+
+
+def test_当前工地_没选_提示去顶栏选而不是瞎猜(graph_module: GraphFixture) -> None:
+    for config in ({}, {"configurable": {}}, {"configurable": {"gyt_project_id": ""}}, None):
+        section = graph_module.module.render_current_project(config)
+        assert "顶栏" in section
+        # 没选工地时绝不能编一个工地名
+        assert "遂川" not in section
+
+
+def test_当前工地_选了但库里查无_给可操作的话不报乱码编号(
+    graph_module: GraphFixture,
+) -> None:
+    # 选中的工地已被删:库里查不到。不能把内部编号甩给师傅,要给「重新选」的话。
+    section = graph_module.module.render_current_project(
+        {"configurable": {"gyt_project_id": "gyt-deleted"}}
+    )
+
+    assert "顶栏" in section
+    assert "gyt-deleted" not in section
+
+
+def test_当前工地_拼在静态提示之后(graph_module: GraphFixture) -> None:
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from gyt.db import projects as db
+
+    db.create_project("gyt-sc", "遂川垃圾处理中心", "SC")
+    prompt_fn = graph_module.module.build_supervisor_prompt_runnable()
+
+    messages = prompt_fn(
+        {"messages": [HumanMessage(content="当前项目是遂川垃圾处理中心吧")]},
+        {"configurable": {"gyt_project_id": "gyt-sc"}},
+    )
+
+    # 第一条是系统消息,静态红线与动态工地名都在里面;原用户消息原样跟在后面
+    system = messages[0]
+    assert isinstance(system, SystemMessage)
+    assert "自己不干活" in system.content  # 静态红线还在
+    assert "遂川垃圾处理中心" in system.content  # 动态工地名接上了
+    assert isinstance(messages[-1], HumanMessage)
+
+
+# ===========================================================================
 # ping 的 echo 工具：链路最末端那一环
 # ===========================================================================
 

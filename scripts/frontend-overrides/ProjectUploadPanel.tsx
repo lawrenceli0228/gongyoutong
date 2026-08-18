@@ -387,7 +387,7 @@ function ArchiveDrawer() {
   }
 
   async function uploadDrawing() {
-    if (!dwgFile) return toast.error("請選一張 .dxf 圖紙");
+    if (!dwgFile) return toast.error("請選一張 .dxf 或 .pdf 圖紙");
     if (!projectId) return toast.error("先選或建一個項目");
     if (!viewType) return toast.error("請選平面 / 立面 / 剖面");
     setBusy(true);
@@ -396,7 +396,7 @@ function ArchiveDrawer() {
       fd.append("file", dwgFile);
       fd.append("view_type", viewType);
       if (floor.trim()) fd.append("floor", floor.trim());
-      fd.append("title", title.trim() || dwgFile.name.replace(/\.dxf$/i, ""));
+      fd.append("title", title.trim() || dwgFile.name.replace(/\.(dxf|pdf)$/i, ""));
       const resp = await fetch(
         `${API_URL}/projects/${encodeURIComponent(projectId)}/drawings`,
         { method: "POST", headers: authHeaders(), body: fd },
@@ -445,7 +445,7 @@ function ArchiveDrawer() {
     setDwgFile(f);
     if (f) {
       setViewType(guessViewType(f.name));
-      setTitle((prev) => prev || f.name.replace(/\.dxf$/i, ""));
+      setTitle((prev) => prev || f.name.replace(/\.(dxf|pdf)$/i, ""));
     }
   }
 
@@ -563,7 +563,7 @@ function ArchiveDrawer() {
                     (tab === "drawing" ? "text-[#5FAE8E]" : "text-[#A2ABA6]")
                   }
                 >
-                  DXF 文件
+                  DXF / PDF 文件
                 </div>
               </button>
               <button onClick={() => setTab("doc")} className={bigChoice(tab === "doc")}>
@@ -601,7 +601,7 @@ function ArchiveDrawer() {
               >
                 <input
                   type="file"
-                  accept=".dxf"
+                  accept=".dxf,.pdf"
                   className="hidden"
                   onChange={(e) => pickDrawing(e.target.files?.[0] ?? null)}
                 />
@@ -609,7 +609,7 @@ function ArchiveDrawer() {
                   <span className="font-bold text-[#1B2420]">{dwgFile.name}</span>
                 ) : (
                   <>
-                    拖入 .dxf,或 <span className="font-bold text-[#0E9F6E]">點擊選擇</span>
+                    拖入 .dxf / .pdf,或 <span className="font-bold text-[#0E9F6E]">點擊選擇</span>
                   </>
                 )}
               </label>

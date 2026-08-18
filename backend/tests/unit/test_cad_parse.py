@@ -6,7 +6,12 @@ import pytest
 from ezdxf.lldxf.const import DXFStructureError
 
 from gyt.agents.cad import parse
-from tests.unit._dxf_fixtures import make_broken_dxf, make_gbk_dxf, make_plain_dxf
+from tests.unit._dxf_fixtures import (
+    make_broken_dxf,
+    make_gbk_dxf,
+    make_plain_dxf,
+    make_tianzheng_dxf,
+)
 
 
 def test_普通图解析出图层与图元数(tmp_path):
@@ -63,6 +68,38 @@ def test_未知单位码给出兜底标签(tmp_path):
     doc.saveas(tmp_path / "weird.dxf")
     result = parse.parse_dxf(tmp_path / "weird.dxf")
     assert result["units_label"] == "单位码99"
+
+
+def test_天正图不再崩且图层从代理实体读得出(tmp_path):
+    # 回归:旧代码 str(entity.dxf.layer) 对 TCH_* 代理实体抛 DXFAttributeError,
+    # 冒到工具层被误判成 FILE_CORRUPT。现在应正常解析,且从组码 8 兜出图层名。
+    make_tianzheng_dxf(tmp_path / "tz.dxf")
+    result = parse.parse_dxf(tmp_path / "tz.dxf")
+
+    by_kind = result["entities_by_kind"]
+    assert by_kind["TCH_WALL"] == 3
+    assert by_kind["TCH_COLUMN"] == 2
+    assert by_kind["LINE"] == 1  # 普通 AXIS 线照常读到
+    # 代理实体的图层没丢:退回扫 xtags 的组码 8 捞出来的。
+    layers_with_entities = {ly["name"] for ly in result["layers"] if ly["entity_count"] > 0}
+    assert {"WALL-TCH", "COL-TCH", "AXIS"} <= layers_with_entities
+
+
+def test_天正图被检出并列出私有构件类型(tmp_path):
+    make_tianzheng_dxf(tmp_path / "tz.dxf")
+    result = parse.parse_dxf(tmp_path / "tz.dxf")
+
+    tz = result["tianzheng"]
+    assert tz["detected"] is True
+    assert tz["component_kinds"] == {"TCH_WALL": 3, "TCH_COLUMN": 2}
+
+
+def test_普通图tianzheng字段为未检出(tmp_path):
+    make_plain_dxf(tmp_path / "plain.dxf")
+    result = parse.parse_dxf(tmp_path / "plain.dxf")
+
+    assert result["tianzheng"]["detected"] is False
+    assert result["tianzheng"]["component_kinds"] == {}
 
 
 def test_图上文字TEXT被抽进annotations(tmp_path):
