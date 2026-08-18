@@ -144,3 +144,107 @@ export function useHantText(text: string, role: MessageRole, lang: Lang): string
     return cached(text);
   }, [text, wanted, cached]);
 }
+
+// ---------------------------------------------------------------------------
+// 界面侧:**恒繁體**,与答话的「跟着用户走」是两条独立的规则
+// ---------------------------------------------------------------------------
+
+/**
+ * 图 3:界面为什么走另一条路,以及**哪些字不走这条路**
+ * ---------------------------------------------------------------------------
+ * 负责人 2026-08-18 定案:**界面恒繁體**(中建国际在港,现场语言是繁體),
+ * 答话仍跟着用户打的字走。两条规则互不影响,所以这里没有 `lang` 参数。
+ *
+ * ```
+ *   静态文案(按钮/占位符/提示句)  ──▶ **源码里就写成繁體**,不经本文件
+ *        └ 理由:走运行时的话,首屏就要拉 438 KB 字典,
+ *          「简体用户一个字节都不下」当场作废(§5.2 刚实测过)
+ *
+ *   后端给的显示文本                ──▶ 本文件的 useHantUI / hantSync
+ *   (status_display / user_msg /       └ 这些字运行时才存在,源码里没法转
+ *    due_display / doc_type_display)
+ *
+ *   本地兜底表(HAZARD_STATUS_ZH /   ──▶ 也走 useHantUI
+ *    DOC_TYPE_ZH / GRADE_* / SCOPES)   └ 它们同时是**送后端的值**或**后端返回值的镜像**,
+ *                                         源码里转了会 400 / 匹配不上(登记在
+ *                                         scripts/frontend-tests/hant-keep-hans.mjs)
+ * ```
+ *
+ * 🔴 **别把这个 hook 铺到常驻界面上。** 面板是点开才挂载的,字典跟着面板走;
+ *    铺到主页面 = 每个用户首屏都拉字典,包括从不开面板的简体工友。
+ */
+
+/** 预热:面板挂载时叫一次,让字典跟面板一起在路上,而不是等第一条文本渲染。 */
+export function ensureHantConverter(): void {
+  if (!cached) void loadHantConverter();
+}
+
+/**
+ * 尽力而为的同步转换 —— 给**命令式**场景用(toast、window.confirm、拼文件名)。
+ *
+ * 字典还没到位时原样返回简体。这是刻意的:命令式调用没有「等一下再重渲染」
+ * 这回事,宁可这一次显示简体,也不能让一句提示语消失或者卡住。
+ * 面板挂载时的 `ensureHantConverter()` 让这种情况基本只出现在开面板后的头一瞬。
+ */
+export function hantSync<T extends string | null | undefined>(text: T): T {
+  if (!text) return text;
+  if (!cached) {
+    void loadHantConverter();
+    return text;
+  }
+  return cached(text) as T;
+}
+
+/**
+ * 界面文本 → 繁體。空值原样返回(后端字段常是 null,别在每个调用点写三元)。
+ *
+ * ⚠️ 是 hook,**必须无条件调用** —— 不许写在 if 里、不许写在 map 回调里。
+ *    要转一个数组,用 `useHantUIAll`。
+ */
+export function useHantUI<T extends string | null | undefined>(text: T): T {
+  const [, bumpVersion] = useState(0);
+
+  // 与 useHantText 同一个理由:转换器是模块级单例,**不许进 state**
+  // (进了 React 会把它当 updater 调掉,2026-08-18 真机崩过一次)。
+  useEffect(() => {
+    if (cached) return;
+    let alive = true;
+    void loadHantConverter().then(() => {
+      if (alive) bumpVersion((n) => n + 1);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  return useMemo(() => {
+    if (!text || !cached) return text;
+    return cached(text) as T;
+  }, [text, cached]);
+}
+
+/**
+ * 一次转一组 —— 给「按钮清单」这种场景(四颗筛子、两档定级)。
+ *
+ * 存在的理由是 hooks 规则:`items.map((s) => useHantUI(s))` 是违法的
+ * (回调里调 hook,数量还会随数据变),而这正是最容易写出来的那一版。
+ */
+export function useHantUIAll(items: readonly string[]): string[] {
+  const [, bumpVersion] = useState(0);
+
+  useEffect(() => {
+    if (cached) return;
+    let alive = true;
+    void loadHantConverter().then(() => {
+      if (alive) bumpVersion((n) => n + 1);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  return useMemo(() => {
+    if (!cached) return [...items];
+    return items.map((s) => cached!(s));
+  }, [items, cached]);
+}
