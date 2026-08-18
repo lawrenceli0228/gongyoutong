@@ -780,6 +780,52 @@ T7   useMemo + 把「4000 字几毫秒」写进注释
       而这个错<b>没有任何测试会发现</b>(转换器本身没坏,只是选错了字)。</p>
   </div>
 
+  <h3>5.2 「简体零开销」的<b>运行时</b>证据 —— 补的是 5.1 缺的那一半(2026-08-18)</h3>
+  <p>5.1 量的是<b>打包层</b>(chunk 多大、在不在首屏清单里)。但打包层量得再准,
+    也答不了那句真正的承诺:<b>跑起来的时候,简体会话到底有没有触发那个
+    <code>import()</code>。</b></p>
+  <div class="box b-warn">
+    <span class="hd">收口前这条只有推理,没有证据</span>
+    <p>单测覆盖的是 <code>shouldConvert</code> 返回 false、hook 原样返回同一个引用。
+      但单测里 <code>cached</code> 已被前面的用例填过,<b>它想验也验不到「有没有发起加载」</b>。
+      本仓这个会话已经栽过一次同款:334 条测试全绿的时候真机崩页(见 6.2.2)。</p>
+  </div>
+  <p>所以补了一组<b>对照实验</b>。两次都是整页导航、同一个 dev 构建、同一个浏览器会话,
+    唯一变量是线程里用户打的是简体还是繁體:</p>
+  <table>
+    <thead><tr><th>请求</th><th>繁體线程</th><th>简体线程</th></tr></thead>
+    <tbody>
+      <tr><td><code>chunks/webpack.js</code></td>
+        <td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td><code>chunks/main-app.js</code></td>
+        <td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td><code>chunks/app-pages-internals.js</code></td>
+        <td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td><code>chunks/app/layout.js</code></td>
+        <td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td><code>chunks/app/page.js</code></td>
+        <td class="yes">✅</td><td class="yes">✅</td></tr>
+      <tr><td><b><code>…opencc-js_dist_esm_cn2t_js.js</code></b>(1,145,010 B)</td>
+        <td class="yes">✅ 拉了</td><td class="no">❌ 没有</td></tr>
+      <tr><td>console 错误</td><td class="n">0</td><td class="n">0</td></tr>
+    </tbody>
+  </table>
+  <p>两条 trace <b>只差这一个 chunk</b>,承诺兑现。答话字形同时核过
+    (同一次导航,<code>document.body.innerText</code>):</p>
+<pre>繁體线程:台賬裏還有 2 條沒完成 / 任務號·任務·期限·狀態 /
+          整改巡檢隱患(高空作業未系安全帶等) / 8月19日(週三)
+简体线程:今天还有 1 条任务没做完。T2 清点脚手架扣件，期限是今天（8月18日周二），还没销。</pre>
+  <p>(上面那句「未<b>系</b>安全帶」是原样抄的实测输出,不是笔误 —— <code>to.hkp</code>
+    这一档把「系」留成了「系」而不是「繫」。系/繫 属于 2.4 说的一简对多繁,
+    香港用法里两写都有,不影响可读。真要统一到「繫」得进术语白名单,归 W11。)</p>
+  <div class="box b-bad">
+    <span class="hd">🔴 正对照不是可选项</span>
+    <p>「没看到 opencc 请求」这种<b>负结果</b>单独拿出来什么都不证明 ——
+      懒加载压根没接上、chunk 换了名字、dev 模式把它内联了,现象一模一样都是「grep 不到」。
+      <b>先证明繁體那条真的会拉,简体那条的「没拉」才是证据。</b>
+      下次改转换点后回归,两条都要跑。</p>
+  </div>
+
   <h3>并行化</h3>
   <p><b>第一批:单泳道,没有并行机会。</b> 全部落在
     <code>scripts/frontend-overrides/</code> 一个目录里,2-3 个文件,而且
