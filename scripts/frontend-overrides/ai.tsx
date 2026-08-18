@@ -305,8 +305,16 @@ export function AssistantMessage({
                     <MessageSquareText className="h-3.5 w-3.5 shrink-0 text-gray-400" />
                   }
                 >
+                  {/* 🔴 这里必须是 displayString 不是 contentString。
+                      2026-08-18 对抗复审抓到:折叠里用原文、下面那条 <MarkdownText>
+                      用转过的,于是**同一个 Agent 的同一句话**,折叠起来是简体、
+                      带表格时是繁體。工友看到的是「有时候变字」,没有任何报错。
+
+                      对子 Agent 消息 turnHasVisibleAgentTable 恒 false
+                      (上面那个函数直接 return false),所以
+                      strippedString === contentString,两条路本来就该同一份。 */}
                   <div className="py-1 whitespace-pre-wrap break-words text-gray-600">
-                    {contentString}
+                    {displayString}
                   </div>
                 </Trace>
               ) : (
@@ -352,8 +360,13 @@ export function AssistantMessage({
                 onSelect={(branch) => thread.setBranch(branch)}
                 isLoading={isLoading}
               />
+              {/* 复制按钮拿的也得是 displayString —— **所见即所复制**。
+                  用 contentString 的话:屏幕上是繁體,点复制粘出来是简体,
+                  而人一般不会去核对粘贴结果的字形,只会在别处发现「怎么变了」。
+                  顺带:displayString 是裁掉 supervisor 表格复读之后的那份,
+                  屏幕上显示的就是它,复制它才对得上。 */}
               <CommandBar
-                content={contentString}
+                content={displayString}
                 isLoading={isLoading}
                 isAiMessage={true}
                 handleRegenerate={() => handleRegenerate(parentCheckpoint)}

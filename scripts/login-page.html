@@ -24,14 +24,55 @@
 
   视觉方向:安全标识牌。刻意**不做深色** —— 工地师傅是在户外太阳底下看手机的,
   深色屏在强光下读不了。所以是高对比浅色 + 安全警示黄 + 45° 警示斜纹。
+
+  ============================================================================
+  语言:给人看的字**一律繁體(香港)**;注释一律简体(2026-08-18 / W12)
+  ----------------------------------------------------------------------------
+  依据与界面那批同一条:中建国际在港施工,而这一页是港方用户看到的**第一屏**。
+  W12 那次界面繁體化把 `scripts/frontend-overrides/` 整个转了,却**整页漏掉了这里**
+  —— 不是判过出局,是方案全文 grep 不到 "login-page",没人想起它。
+
+  ⚠️ 改这一页的文字**不许手打繁體**。一简对多繁会静默打错字(「复工令」的復 /
+     「复查」的複 是两个字),而错的繁體没有任何东西会报。规矩是先用简体把话想清楚,
+     再过工具:
+         cd scripts/frontend-tests
+         node -e "import('opencc-js').then(m=>{const c=m.Converter({from:'cn',to:'hk'});
+                  console.log(c(process.argv[1]))})" '你的简体句子'
+
+  🔴 工具也会选错字,已知一处踩在 PICS 里:整句转「凭证照片保存 90 天后自动删除」
+     会得到「90 天后自動刪除」—— opencc 的词组表里「天后」是神明/歌后那个词,
+     于是那个「后」不转。正确写法是「90 天**後**自動刪除」。
+     修法是**分段转**(「…保存 90 天」+「后自动删除。」各转一次再拼),
+     不是手打。凡是句子里出现「天后 / 签X / 复X」,转完回来核一眼。
+
+  ⚠️ 守卫覆盖:`scripts/frontend-tests/hant-ui-strings.test.ts` 有一条**正则**扫本文件
+     (html 里没有 TS 的 AST 可用,只能退让到正则;完整的退让理由与盲区清单写在
+     那条测试的头注里)。它扫两样:**文本节点** + `placeholder` / `aria-label` /
+     `title` / `alt` 这几个显示类**属性值**。它抓不住的,与本页直接相关的有三条:
+
+       ① **`<script>` 里的字符串**。本页最下面那两行就在盲区里:
+              peek.textContent = showing ? '顯示' : '隱藏';
+              peek.setAttribute('aria-label', showing ? '顯示口令' : '隱藏口令');
+          它们是点过「顯示」之后才出现的字,首屏看不到 —— 人工过页面最容易漏这种。
+          改那两行只能靠自己回来核一眼。(为什么不扫:脚本里全是简体 JS 注释,
+          正则分不开注释和字符串,硬扫的下场是守卫永远红、最后被人删掉。)
+       ② 上面那张显示属性表**之外**的属性值。往页面上加新的显示属性,
+          要回那条测试里把属性名加进 DISPLAY_ATTRS。
+       ③ 「转成了**错的**繁體」。判据是「s2hk(v) !== v」,而 s2hk 对已经是繁體
+          字形的串恒等 —— 上面那个「90 天后」正是这一档,守卫一声不吭。
+          覆盖件那边还有 `hant-verify-diff.mjs` 做溯源兜底,而它只比 .ts/.tsx,
+          **本文件不在它的范围里**,这一档在这儿是彻底没人守的。
+
+     另外判据对**英文**同样恒等 —— 一整句 "Please try again." 在它眼里永远「已到位」。
+     这条不是本页特有的,整套繁體守卫都这样。
 -->
-<html lang="zh-CN">
+<html lang="zh-HK">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
 <meta name="color-scheme" content="light">
-<title>工友通 · 内测登录</title>
+<title>工友通 · 內測登錄</title>
 <style>
   :root{
     /* 混凝土色系 —— 刻意带一点暖(色相偏黄),纯灰读起来像没选过 */
@@ -68,8 +109,16 @@
       linear-gradient(90deg, rgba(23,21,15,.045) 1px, transparent 1px);
     background-size:28px 28px;
     color:var(--ink);
-    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",
-                "Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",sans-serif;
+    /* 🔴 字体表跟着 lang="zh-HK" 一起改成**港标繁體优先**(2026-08-18)。
+       只把文字转成繁體、字体表还留着 SC 那几款的话:SC 是简体字形表,
+       拿它渲染繁體字会落到**大陆规范字形**(骨/者/直/戶 这类笔形与港标不同)——
+       页面照开、字也认得出来,只是每个字都「长得不太对」,港方一眼看得出、
+       又说不上哪儿怪,而且**没有任何报错**。
+       末尾保留 SC 一档是兜底:装不上港标字体的机器,有字总比方框强。 */
+    font-family:-apple-system,BlinkMacSystemFont,
+                "PingFang HK","PingFang TC","Hiragino Sans CNS",
+                "Noto Sans CJK HK","Noto Sans CJK TC","Source Han Sans HK",
+                "Microsoft JhengHei","PingFang SC","Noto Sans CJK SC",sans-serif;
     -webkit-text-size-adjust:100%;
   }
 
@@ -232,30 +281,30 @@
   <main class="card">
     <div class="hazard" aria-hidden="true"></div>
     <div class="body">
-      <span class="eyebrow">内测环境</span>
+      <span class="eyebrow">內測環境</span>
       <h1>工友通</h1>
-      <p class="sub">建筑工地多智能体助手。<br>这是内部测试环境,需要口令才能进。</p>
+      <p class="sub">建築工地多智能體助手。<br>這是內部測試環境,需要口令才能進。</p>
 
-      <p class="err" id="err" role="alert">口令不对,再试一次。<br>注意区分大小写。</p>
+      <p class="err" id="err" role="alert">口令不對,再試一次。<br>注意區分大小寫。</p>
 
       <form action="/login" method="post" novalidate>
         <!-- 登录成功后要去的地方。空着就是回首页 —— 与加这个字段之前的行为一致。
              值由下面那段 JS 从当前 URL 的 ?next= 里取,服务端不做模板渲染。 -->
         <input type="hidden" id="next" name="next" value="">
-        <label for="pw">访问口令</label>
+        <label for="pw">訪問口令</label>
         <div class="field">
           <input id="pw" name="pw" type="password"
                  autocomplete="current-password"
                  autocapitalize="off" autocorrect="off" spellcheck="false"
-                 placeholder="粘贴或输入口令" required autofocus>
-          <button type="button" class="peek" id="peek" aria-label="显示口令">显示</button>
+                 placeholder="粘貼或輸入口令" required autofocus>
+          <button type="button" class="peek" id="peek" aria-label="顯示口令">顯示</button>
         </div>
-        <button type="submit" class="go">进 入</button>
+        <button type="submit" class="go">進 入</button>
       </form>
 
       <p class="foot">
-        没有口令?<b>找发你这个链接的人要。</b><br>
-        这里不开放注册 —— 口令是人工发放的。
+        沒有口令?<b>找發你這個鏈接的人要。</b><br>
+        這裏不開放註冊 —— 口令是人工發放的。
       </p>
 
       <!-- PICS 六项(W7 T12,PDPO 第486章):用途 / 是否自愿 / 不提供的后果 /
@@ -264,16 +313,20 @@
            这个欠账登记在 TODOS.md 的 TODO-37,交付真实客户前必须补实。
            ⚠️ 第 4 项「转交」的措辞经过核实别乱改:查询链会把姓名/时间/地盘
            发给境外模型服务商是事实(W7 §1.7 订正过「跨境已解决」是错的);
-           自拍与精确位置不进模型也是事实(D15 的直连接口)。两句都不许说过头。 -->
+           自拍与精确位置不进模型也是事实(D15 的直连接口)。两句都不许说过头。
+           🔴 2026-08-18 这六条转成了繁體 —— **只转字形,一个字都没增删改**。
+           这是 PDPO 第486章下的法律文本:措辞是对外担责任的,改一个词就是改一次承诺。
+           (转的时候踩到 opencc 一个坑:第 5 条「90 天后」整句转会得到「天后」那个
+           不该转的「后」。分段转修的,详见文件头注那段。) -->
       <details class="pics">
-        <summary>个人资料收集声明(打卡功能)</summary>
+        <summary>個人資料收集聲明(打卡功能)</summary>
         <ol>
-          <li><b>收集目的:</b>班组内部考勤记录。打卡时会收集你的姓名、所在地盘、打卡时间、一张自拍照,以及(如你允许)手机定位。</li>
-          <li><b>是否自愿:</b>提供与否出于自愿;定位可以单独拒绝,拒绝后仍能打卡。</li>
-          <li><b>不提供的后果:</b>不提供姓名和自拍就无法使用打卡功能;不影响使用系统的其它功能。</li>
-          <li><b>可能转交给谁:</b>使用「查考勤」问答功能时,姓名、打卡时间与地盘名会提交给境外的人工智能模型服务商用于生成回答;<b>自拍照与精确定位不会提交给模型</b>。除此之外不向其他方转交。</li>
-          <li><b>查阅与更正:</b>你有权查阅及更正自己的打卡记录与照片,向班组管理员提出即可。凭证照片保存 90 天后自动删除。</li>
-          <li><b>负责人:</b>本系统管理员(联系方式见班组内公告)。</li>
+          <li><b>收集目的:</b>班組內部考勤記錄。打卡時會收集你的姓名、所在地盤、打卡時間、一張自拍照,以及(如你允許)手機定位。</li>
+          <li><b>是否自願:</b>提供與否出於自願;定位可以單獨拒絕,拒絕後仍能打卡。</li>
+          <li><b>不提供的後果:</b>不提供姓名和自拍就無法使用打卡功能;不影響使用系統的其它功能。</li>
+          <li><b>可能轉交給誰:</b>使用「查考勤」問答功能時,姓名、打卡時間與地盤名會提交給境外的人工智能模型服務商用於生成回答;<b>自拍照與精確定位不會提交給模型</b>。除此之外不向其他方轉交。</li>
+          <li><b>查閲與更正:</b>你有權查閲及更正自己的打卡記錄與照片,向班組管理員提出即可。憑證照片保存 90 天後自動刪除。</li>
+          <li><b>負責人:</b>本系統管理員(聯繫方式見班組內公告)。</li>
         </ol>
       </details>
     </div>
@@ -310,8 +363,8 @@
   peek.addEventListener('click', function () {
     var showing = pw.type === 'text';
     pw.type = showing ? 'password' : 'text';
-    peek.textContent = showing ? '显示' : '隐藏';
-    peek.setAttribute('aria-label', showing ? '显示口令' : '隐藏口令');
+    peek.textContent = showing ? '顯示' : '隱藏';
+    peek.setAttribute('aria-label', showing ? '顯示口令' : '隱藏口令');
     pw.focus();
   });
 </script>

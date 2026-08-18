@@ -106,6 +106,36 @@ describe("③ ai.tsx 必须真的接上转换", () => {
     expect(ai).toMatch(/useHantText\([^)]*"ai"/s);
     expect(aiCode).not.toMatch(/useHantText\([^)]*"human"/s);
   });
+
+  /**
+   * 🔴 **接上了转换 ≠ 所有上屏路径都用它。** 2026-08-18 对抗复审抓到两处漏网:
+   *
+   *   :308  折叠里 `<div …>{contentString}</div>`   ← 未转换的原文
+   *   :356  `<CommandBar content={contentString}>`   ← 复制按钮拿的也是原文
+   *
+   * 上面那三条断言全绿的时候这两处就是坏的 —— 它们只钉「`displayString` 是
+   * `useHantText` 的返回值」,钉不住「屏幕上的每一处都用 `displayString`」。
+   *
+   * 坏法:同一个 Agent 的同一句话,**折叠起来是简体、带表格时是繁體**;
+   * 屏幕上是繁體而点复制粘出来是简体。两者都没有报错。
+   *
+   * 判据只能是「`contentString` 不许出现在渲染位置」——
+   * 它作为中间变量参与计算(`stripLedgerEcho(contentString)`、
+   * `contentString.length` 之类)是正常的,所以不能一刀切禁掉这个标识符。
+   */
+  it("🔴 contentString 不许直接上屏 —— 上屏的每一处都得是 displayString", () => {
+    // JSX 表达式插值:{contentString}
+    expect(
+      aiCode,
+      "折叠区把未转换的 contentString 直接渲染了 —— 同一句话折叠时简体、带表格时繁體",
+    ).not.toMatch(/\{\s*contentString\s*\}/);
+
+    // 组件属性:content={contentString} / children={contentString} 等
+    expect(
+      aiCode,
+      "有组件属性拿了未转换的 contentString —— 最典型的是复制按钮:屏幕繁體、粘贴简体",
+    ).not.toMatch(/\b(content|children|text|value)=\{\s*contentString\s*\}/);
+  });
 });
 
 describe("懒加载不许被改成静态 import", () => {

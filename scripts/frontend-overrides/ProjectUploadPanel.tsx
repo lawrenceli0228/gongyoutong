@@ -37,14 +37,13 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 
 import { getApiKey } from "@/lib/api-key";
-// 界面恒繁體(负责人 2026-08-18 定案)。分两条路,别混:
-//   · 静态文案(按钮 / 占位符 / toast 兜底句)——**源码里直接写繁體**,不经这里;
-//   · 后端回来的 `user_msg` —— 运行时才存在,源码里没法转,只能走 hantSync。
-// 🔴 字典是懒加载的 438 KB,**只在面板打开时**预热(ensureHantConverter)。
-//    本文件导出的顶栏三件(ProjectSwitcher / LibraryButton /「📂 资料归档」)是**常驻**的,
-//    谁要是把预热或 useHantUI 挪到它们的渲染路径上,等于让每个用户首屏都拉字典 ——
-//    包括从不开面板的简体工友。那条「简体一个字节都不下」是实测过的承诺。
-import { ensureHantConverter, hantSync } from "@/lib/hant-convert";
+// 界面恒繁體(负责人 2026-08-18 定案),但本文件**一个转换器都不用**,是刻意的:
+//   · 静态文案(按钮 / 占位符 / toast 兜底句)——**源码里直接写繁體**,零运行时;
+//   · 后端回来的 `user_msg` —— **一律不转**(W12 复审定案,理由见 createProject 那处)。
+// 两条都不需要转换器,所以连 438 KB 的字典都不该被这个面板拉起来。
+// ⚠️ 本文件导出的顶栏三件(ProjectSwitcher / LibraryButton /「📂 资料归档」)是**常驻**的 ——
+//    以后真要加运行时转换,先回答「它在用户没点任何东西的时候会不会被挂上」:
+//    会 = 每个用户首屏都拉字典,包括从不开面板的简体工友。那条承诺是实测过的。
 import { cn } from "@/lib/utils";
 
 // 记住上次选中的工地(localStorage 键)。刻意不自动默认第一个项目 —— 那是「你在项目2、
@@ -347,15 +346,6 @@ function ArchiveDrawer() {
     if (docScope === "global") setDocType("regulation");
   }, [docScope]);
 
-  // 抽屉一打开就把繁體字典拉起来(438 KB,懒加载)。预热是为了下面那几句 toast:
-  // 它们要转**后端回来的 user_msg**,而 hantSync 是同步的 —— 字典没到位就只能原样
-  // 吐简体,而那一下正好是「传完第一份图纸」那句最想看的回执。
-  // 🔴 必须判 open:ArchiveDrawer 是被 ArchiveProvider **无条件挂着**的
-  //    (靠底下 `if (!open) return null` 收场),不判就等于每个用户首屏都拉字典。
-  useEffect(() => {
-    if (open) ensureHantConverter();
-  }, [open]);
-
   async function createProject() {
     if (!newName.trim()) {
       toast.error("項目名不能為空");
@@ -370,19 +360,26 @@ function ArchiveDrawer() {
       });
       const env = await readEnvelope(resp);
       if (resp.ok) {
-        // 🔴 `env.user_msg` 是**后端拼的简体人话**,运行时才存在 —— 源码里转不了,
-        // 只能在这儿过 hantSync。兜底句是我们自己的文案,已经是繁體;
-        // 整个表达式一起包着不会转坏(hantSync 对繁體输入是恒等)。
-        // 以后再往这个文件加带 user_msg 的 toast,记得照样包一层,
-        // 漏了的表现是繁體界面里蹦出一句简体回执,**不会有任何报错**。
-        toast.success(hantSync(env?.user_msg ?? "項目建好了"));
+        // 🔴 `env.user_msg` **一律不过繁體转换器**(W12 复审定案)。
+        //
+        // 这个文件里的 user_msg 内插的是**用户自己起的项目名 / 自己传的文件名**
+        // (webapp.py:180/235/344 那几句 `f"项目「{name}」建好了"`):
+        //     转换器会把「恒昌 3 期」写成「恆昌 3 期」、把文件名里的字一起换掉,
+        //     于是回执里的名字跟他刚才亲手打进去的那个对不上 —— 而这**一行报错都没有**。
+        // 整句转换在原理上分不出「系统写的字」和「内插的用户数据」,分不出的时候
+        // 默认转是危险的那一侧,所以整条 user_msg 通道都不转,与后端同一口径。
+        //
+        // 兜底句是我们自己的文案,源码里就写成繁體 —— 它本来就不需要转。
+        // 守卫在 scripts/frontend-tests/hant-ui-strings.test.ts(实参里出现
+        // user_msg / userMsg 就报),别再包回去。
+        toast.success(env?.user_msg ?? "項目建好了");
         setNewName("");
         setNewCode("");
         setShowNew(false);
         await reloadProjects();
         if (env?.data?.id) setProjectId(env.data.id);
       } else {
-        toast.error(hantSync(env?.user_msg ?? "建項目失敗"));
+        toast.error(env?.user_msg ?? "建項目失敗");
       }
     } finally {
       setBusy(false);
@@ -406,13 +403,13 @@ function ArchiveDrawer() {
       );
       const env = await readEnvelope(resp);
       if (resp.ok) {
-        toast.success(hantSync(env?.user_msg ?? "圖紙上傳成功"));
+        toast.success(env?.user_msg ?? "圖紙上傳成功");
         setDwgFile(null);
         setTitle("");
         setFloor("");
         setViewType("");
       } else {
-        toast.error(hantSync(env?.user_msg ?? "圖紙上傳失敗"));
+        toast.error(env?.user_msg ?? "圖紙上傳失敗");
       }
     } finally {
       setBusy(false);
@@ -434,10 +431,10 @@ function ArchiveDrawer() {
       const resp = await fetch(url, { method: "POST", headers: authHeaders(), body: fd });
       const env = await readEnvelope(resp);
       if (resp.ok) {
-        toast.success(hantSync(env?.user_msg ?? "資料上傳成功"));
+        toast.success(env?.user_msg ?? "資料上傳成功");
         setDocFile(null);
       } else {
-        toast.error(hantSync(env?.user_msg ?? "資料上傳失敗"));
+        toast.error(env?.user_msg ?? "資料上傳失敗");
       }
     } finally {
       setBusy(false);
@@ -777,11 +774,12 @@ async function apiDelete(path: string, body?: unknown): Promise<boolean> {
     });
     const env = await readEnvelope(resp);
     if (resp.ok) {
-      // 同样是后端来的简体人话,过 hantSync;兜底句已是繁體(理由见 createProject 那处)。
-      toast.success(hantSync(env?.user_msg ?? "已刪除"));
+      // 同样是后端来的人话,**不转**;兜底句已是繁體(理由见 createProject 那处)。
+      // 这里的 user_msg 内插的是用户自己起的项目名 / 自己传的文件名。
+      toast.success(env?.user_msg ?? "已刪除");
       return true;
     }
-    toast.error(hantSync(env?.user_msg ?? "刪除失敗"));
+    toast.error(env?.user_msg ?? "刪除失敗");
     return false;
   } catch {
     toast.error("刪除失敗,後端起了嗎?");
@@ -857,7 +855,7 @@ export function LibraryButton() {
       const resp = await fetch(`${API_URL}/library`, { headers: authHeaders() });
       const env = await readEnvelope(resp);
       if (resp.ok && env?.data) setData(env.data as LibraryData);
-      else if (!silent) toast.error(hantSync(env?.user_msg ?? "拉取資料庫失敗"));
+      else if (!silent) toast.error(env?.user_msg ?? "拉取資料庫失敗");
     } catch {
       if (!silent) toast.error("拉取資料庫失敗,後端起了嗎?");
     } finally {
@@ -865,12 +863,8 @@ export function LibraryButton() {
     }
   }, []);
 
-  // 与归档抽屉同一个理由:抽屉打开才预热繁體字典(要转 load / apiDelete 里那几句
-  // 后端 user_msg)。🔴 顶栏那颗「📚 资料库」按钮是常驻的,预热**只能挂在 open 上**,
-  // 挪到组件顶层就等于每个用户首屏拉 438 KB。
   useEffect(() => {
     if (!open) return;
-    ensureHantConverter();
     void load();
   }, [open, load]);
 

@@ -205,6 +205,61 @@ export function findRuntimeConversionCalls(filePath) {
   return [...hits].sort();
 }
 
+/**
+ * 找出运行时转换函数的**每一处调用及其实参源码**。
+ *
+ * `findRuntimeConversionCalls` 只回答「这个文件转不转」(治的是首屏拉字典);
+ * 这一件回答「**转的是什么**」—— 治的是「把用户数据一起转了」。
+ *
+ * 每处返回两样,**用途不同、别混**:
+ *   · `names` —— 实参子树里所有**标识符 / 属性名 / 字符串字面量**,判据落在它上面;
+ *   · `arg`   —— 实参的源码原文,只用来写报错里那一行,让人一眼看见改哪儿。
+ *
+ * 🔴 判据为什么不直接用 `arg` 那段原文:注释可能长在**表达式中间**
+ *    (`useHantUI(hazard.item /* 不是 user_msg *\/)`),那样守卫会被一句解释弄红。
+ *    本仓已经栽过一次同款(见上面 findRuntimeConversionCalls 的注释),
+ *    而「守卫永远红」的下场是它被人删掉。标识符是 AST 节点,注释不是 —— 这条路上
+ *    这个问题结构上不存在。字符串字面量一起收,是为了 `env["user_msg"]` 那种写法。
+ */
+export function findConversionCallArgs(filePath) {
+  const text = readFileSync(filePath, "utf8");
+  const sf = ts.createSourceFile(
+    filePath,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    filePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const out = [];
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const fn = node.expression.text;
+      if (RUNTIME_CONVERT_FNS.includes(fn)) {
+        for (const arg of node.arguments) {
+          const { line } = sf.getLineAndCharacterOfPosition(arg.getStart(sf));
+          const names = [];
+          const collect = (n) => {
+            if (ts.isIdentifier(n) || ts.isPrivateIdentifier(n)) names.push(n.text);
+            else if (ts.isStringLiteralLike(n)) names.push(n.text);
+            ts.forEachChild(n, collect);
+          };
+          collect(arg);
+          out.push({
+            file: basename(filePath),
+            line: line + 1,
+            fn,
+            arg: arg.getText(sf),
+            names,
+          });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return out;
+}
+
 /** 扫整个 frontend-overrides/。 */
 export function scanAll(dir = OVERRIDES_DIR) {
   const files = readdirSync(dir)

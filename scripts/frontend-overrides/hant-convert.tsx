@@ -160,14 +160,25 @@ export function useHantText(text: string, role: MessageRole, lang: Lang): string
  *        └ 理由:走运行时的话,首屏就要拉 438 KB 字典,
  *          「简体用户一个字节都不下」当场作废(§5.2 刚实测过)
  *
- *   后端给的显示文本                ──▶ 本文件的 useHantUI / hantSync
- *   (status_display / user_msg /       └ 这些字运行时才存在,源码里没法转
- *    due_display / doc_type_display)
+ *   后端给的**枚举 / 生成值**        ──▶ 本文件的 useHantUI / hantSync
+ *   (status_display / due_display /    └ 这些字运行时才存在,源码里没法转;
+ *    doc_type_display / result_display)   而它们整句都是系统写的,转全句是安全的
  *
  *   本地兜底表(HAZARD_STATUS_ZH /   ──▶ 也走 useHantUI
  *    DOC_TYPE_ZH / GRADE_* / SCOPES)   └ 它们同时是**送后端的值**或**后端返回值的镜像**,
  *                                         源码里转了会 400 / 匹配不上(登记在
  *                                         scripts/frontend-tests/hant-keep-hans.mjs)
+ *
+ *   🔴 后端 Envelope 的 `user_msg`   ──▶ **一律不转**,原样上屏
+ *        └ 2026-08-18 复审定案。它**不是纯系统文案,内插了用户数据**:
+ *          工友姓名、用户自己起的项目名与文件名、没折过的用户原话。实例 ——
+ *              attendance/messages.py 的 missing_glyphs():
+ *                「「𠮶」这几个字画不进凭证」   而转换器把 𠮶 转成 嗰
+ *              → 工友「王𠮶」被告知他名字里根本没有的一个字。这句话存在的
+ *                全部意义就是点名是哪个字,点错了他只能反复重试反复失败。
+ *          整句转换在原理上分不出「系统写的字」和「内插的用户数据」,而分不出时
+ *          **默认转是危险的那一侧** —— 与本仓「后端一律不转」同一口径。
+ *          守卫:hant-ui-strings.test.ts 扫这三个函数的实参,出现 user_msg / userMsg 就报。
  * ```
  *
  * 🔴 **别把这个 hook 铺到常驻界面上。** 面板是点开才挂载的,字典跟着面板走;

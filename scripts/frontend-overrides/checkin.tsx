@@ -64,9 +64,11 @@ import {
   sha256Hex,
   withSubmitDeadline,
 } from "@/lib/checkin-lib";
-// 只有 CheckinDialog(面板)用它;常驻的 CheckinEntry 一行都不许碰 —— 理由见
-// 下面 problemText 那段注释,以及 hant-convert.tsx 的「图 3」。
-import { useHantUI } from "@/lib/hant-convert";
+// ⚠️ **本文件不 import hant-convert,是刻意的。** 打卡这条链上屏的字只有两种:
+//   · 本文件自己写的提示句 —— 源码里已经是繁體,零运行时;
+//   · 后端 Envelope 的 `user_msg` —— **一律不转**,理由在下面 problem 那段 JSX 注释里
+//     (那些句子内插了工友自己的姓名,转了会把名字里的字改掉)。
+// 两种都不需要转换器,所以这里连字典都不该被拉起来。
 import { CheckinQrPanel } from "./qrcode";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 
@@ -748,28 +750,6 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  // ── 后端来的字:上屏这一处转繁體(W12)──────────────────────────────
-  //
-  // 下面两处上屏的字**可能不是本文件写的**:normalizeError 认出 Envelope 时
-  // 会把后端的 user_msg 原样透传(checkin-lib.ts 的 ① 分支),而后端那份
-  // (backend/src/gyt/attendance/messages.py)是**简体、且刻意不跟着界面改** ——
-  // 水印、docx、库里存的都靠它。运行时才存在的字源码里转不了,只能在上屏这一处转。
-  //
-  // 本地那些文案已经是繁體,再过一遍转换器是恒等 —— 所以不分流、一律过一道:
-  // 分流就要在每个 setProblem 处判断「这句是谁写的」,漏一处就是繁體界面里
-  // 冒出一句简体,而那**没有任何报错**。
-  //
-  // 🔴 为什么敢在这儿拉字典:本组件是**面板**,点开才挂载,438 KB 的字典跟着
-  //    面板走。常驻动作条上的 CheckinEntry 一个字节都不下 —— 那条
-  //    「简体工友首屏不下字典」的承诺就是这么保住的(hant-convert.tsx 图 3)。
-  //
-  // ⚠️ **姓名与地盤名不走这条路**(ReceiptCard / RecentRow 里印的是原值):
-  //    它们是人自己填的、Base64URL 编进 header 存进库的**值**,前端擅自换字形 =
-  //    屏幕上的名字跟台账里那条对不上,而两边都不会报错
-  //    (attendance/messages.py 头注:后端这一侧任何情况下不进转换)。
-  const problemText = useHantUI(problem?.message ?? null);
-  const recentErrorText = useHantUI(recentError);
-
   const showCameraView = hasCamera && cameraState !== "failed" && !pairTookOver;
 
   // ⚠️ 必须 portal 到 body,**不能就地渲染**。就地渲染时这个对话框的祖先链是:
@@ -955,8 +935,27 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
 
                 {problem && (
                   <div className="flex flex-col gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
-                    {/* 转过繁體的那份(可能是后端 user_msg),不是 problem.message 原文 */}
-                    <div className="text-[13px] text-red-700">{problemText}</div>
+                    {/* 🔴 **这一句永远不许过繁體转换器。**(W12 定案:后端 Envelope 的
+                        `user_msg` 一律不转,与本仓「后端一律不转」同一口径。)
+
+                        这句话可能不是本文件写的:normalizeError 认出 Envelope 时会把
+                        后端的 user_msg 原样透传(checkin-lib.ts 的 ① 分支),而
+                        `attendance/messages.py` 那些句子**内插了工友自己的数据**。
+                        最要命的是 `missing_glyphs()` —— 它的 docstring 原话就是
+                        「字符原样回显、不做任何转换(它们多半正是姓名里的字)」:
+
+                            实测转换器:𠮶 → 嗰   恒 → 恆   㛿 → 𡠹
+                            于是「王𠮶」师傅打卡,屏幕告诉他「「嗰」这几个字画不进凭证」
+                            —— 他名字里根本没有这个字。
+
+                        这句话存在的全部意义就是**点名是哪个字**,点错了他只能反复重试
+                        反复失败,而**一行报错都不会有**。整句转换在原理上分不出
+                        「系统写的字」和「内插的用户数据」,分不出的时候默认转是危险的
+                        那一侧 —— 所以整条 user_msg 通道都不转。
+
+                        本文件自己写的那几句(「先拍一張再打卡。」)源码里就是繁體,
+                        本来就不需要转。守卫在 hant-ui-strings.test.ts。 */}
+                    <div className="text-[13px] text-red-700">{problem.message}</div>
                     {problem.conflict && (
                       <Button
                         variant="outline"
@@ -984,10 +983,10 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
 
         <div className="flex flex-col gap-2">
           <div className="text-sm font-medium text-gray-700">最近打卡</div>
-          {/* 判据仍看 recentError 原值(转换是恒等长度无关的,有值就有值),
-              上屏的是转过繁體的那份 —— 它可能是后端 user_msg */}
+          {/* 同上:这一句也可能是后端 user_msg(normalizeError 的 ① 分支),**不转** ——
+              完整理由见上面 problem 那段。 */}
           {recentError ? (
-            <div className="text-[12px] text-gray-400">{recentErrorText}</div>
+            <div className="text-[12px] text-gray-400">{recentError}</div>
           ) : recent === null ? (
             <div className="text-[12px] text-gray-400">正在取…</div>
           ) : recent.length === 0 ? (

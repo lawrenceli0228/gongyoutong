@@ -1103,11 +1103,16 @@ TypeError: Cannot read properties of null (reading 'length')
   <table>
     <thead><tr><th>不做</th><th>理由</th></tr></thead>
     <tbody>
-      <tr><td><b>监理面板 417 行</b></td><td>占前端一半;监理是本地专业人士,繁體/英文本来就读得懂</td></tr>
+      <tr><td><s>监理面板 417 行</s> <span class="yes">已做</span></td>
+        <td><s>占前端一半;监理是本地专业人士,繁體/英文本来就读得懂</s>
+          ✅ 负责人 2026-08-18 定案 <b>甲:保留繁體面板</b>。下面那条理由
+          <b>没有被推翻,而是被判定可接受</b> —— 「文书正文语言固化」转为 W11 待决项(TODO-50)</td></tr>
       <tr><td><b>六种法定文书标题</b></td><td><span class="no">🔴 W11 正要换掉它们</span> —— 调研结论是《工程暂停令》在香港没有法律对应物。现在三语化,W11 一来就重做</td></tr>
       <tr><td><b>六种法定文书正文</b></td><td>英文版法定文书是<b>法律翻译</b>,不是 i18n</td></tr>
       <tr><td>文书文件名三语</td><td>跟着文书走;但留 TODO —— 英文 Windows 上中文文件名可能乱码,而<b>这条链断了不报错</b></td></tr>
-      <tr><td><code>ProjectUploadPanel.tsx</code> 106 行</td><td>项目管理是管理员操作,频次低</td></tr>
+      <tr><td><s><code>ProjectUploadPanel.tsx</code> 106 行</s> <span class="yes">已做</span></td>
+        <td><s>项目管理是管理员操作,频次低</s> 这条没有实质障碍(不像监理面板那条),
+          定「界面恒繁體」时一并做了</td></tr>
       <tr><td><b>三处拒绝句</b></td><td>见 3.5,<b>永久不做</b></td></tr>
       <tr><td>库里存量中文迁移</td><td><code>UNIQUE(…, item)</code> 用了 <code>item</code>,迁移 = 重复登记</td></tr>
       <tr><td><code>vision_prompt.md</code></td><td>动一字 = 视觉缓存 22 分钟</td></tr>
@@ -1118,12 +1123,30 @@ TypeError: Cannot read properties of null (reading 'length')
   </table>
 
   <h3>监理那批为什么更难,而不只是更大</h3>
+  <div class="box b-ok">
+    <span class="hd">✅ 负责人 2026-08-18 定案:甲 —— 保留繁體面板</span>
+    <p>经过:<code>bd1b8f9</code> 把整个监理面板繁體化了,<b>越过了下面这条明写的禁令
+      而当时没有回应它</b> —— 那是流程失误,不是技术判断失误。对抗复审抓出来后交回拍板。</p>
+    <p><b>定案的含义(三条,别只记第一条):</b></p>
+    <p><b>①</b> 面板保持繁體。依据:监理<b>签的是 docx、看的是面板</b>,
+      面板是操作界面不是文书本身;而 4.55 已经为规范书名接受过同一形态。<br>
+      <b>②</b> 「文书正文用哪种语言固化」转为 <b>W11 待决项</b>(TODO-50),不是「已解决」——
+      下面那段推理<b>没有被推翻</b>,只是被判定为可接受,所以原文原样留着。<br>
+      <b>③</b> 这个不一致现在是<b>已知且被接受</b>的状态,所以它必须在<b>代码里也看得见</b> ——
+      <code>supervision.tsx</code> 的 <code>HazardRow</code> 里有一整段红字注释指回这里。
+      只记在方案里不够:下一个人读的是代码。</p>
+    <p>附带好处(次要理由):繁體面板让「香港工地在签简体法律文书」这件事<b>变得可见</b>。
+      那本来就先于本方案存在,以前只是没人看得见。</p>
+  </div>
 <pre>屏幕上        :<u>臨邊無防護   嚴重   已出具暫停令</u>
 已签发的 docx :<i>临边无防护   严重   已出具暂停令</i>   <b>← 固化在文件里,改不了</b></pre>
   <div class="box b-bad">
     <p><b>监理签的是那份 docx,屏幕上显示的是另一套字。</b> 对一份要签字、要归档、
       后面跟着停工与索赔的法律文书,屏幕与文件不一致是<b>实质问题</b>,不是观感问题。</p>
     <p>所以监理那批得<b>先决定「文书用哪种语言固化」</b>,而那是 W11 的题。</p>
+    <p><span class="no">🔴 在那之前不许</span>为了「对齐屏幕」顺手把
+      <code>documents.py</code> 的正文模板或 <code>DOC_TITLE_ZH</code> 转成繁體 ——
+      那两处进 docx、进库、进唯一索引,而且 <b>W11 正要换掉这六个标题</b>,先转很可能白做。</p>
   </div>
 </section>
 

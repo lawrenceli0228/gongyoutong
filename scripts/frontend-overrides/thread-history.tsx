@@ -548,9 +548,10 @@ export default function ThreadHistory() {
               <PanelRightClose className="size-5" />
             )}
           </Button>
-          <h1 className="text-xl font-semibold tracking-tight">
-            Thread History
-          </h1>
+          {/* 上游原文 "Thread History"。桌面侧栏与手机抽屉各一份,
+              两处必须同字 —— 同一个东西在两条路径上叫两个名字,工友会以为是两个功能。
+              ⚠️ 英文残留那套繁體守卫抓不到(判据 s2hk(v)!==v 对英文恒等)。 */}
+          <h1 className="text-xl font-semibold tracking-tight">歷史記錄</h1>
         </div>
         {threadsLoading ? (
           <ThreadHistoryLoading />
@@ -573,7 +574,8 @@ export default function ThreadHistory() {
             className="flex lg:hidden"
           >
             <SheetHeader>
-              <SheetTitle>Thread History</SheetTitle>
+              {/* 与上面桌面侧栏那个标题**同字**,见那里的注释。 */}
+              <SheetTitle>歷史記錄</SheetTitle>
             </SheetHeader>
             <ThreadList
               threads={threads}

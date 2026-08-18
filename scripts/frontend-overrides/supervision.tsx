@@ -166,7 +166,11 @@ import {
  * 🔴 字典是懒加载的 438 KB,**只在面板/组件里用**:面板点开才挂载,字典跟着面板走。
  * 铺到常驻主界面 = 每个用户首屏都拉,包括从不开面板的简体工友。
  */
-import { ensureHantConverter, useHantUI, useHantUIAll } from "@/lib/hant-convert";
+// ⚠️ 转的只有「枚举 / 生成值」这一类(状态名、级别、文书类型、筛子词表)。
+// **后端 Envelope 的 `user_msg` 一律不转**(W12 复审定案)—— 它内插了用户数据
+// (工友姓名、项目名、文件名、隐患描述),整句转换在原理上分不出哪一半是系统写的字,
+// 而分不出时默认转是危险的那一侧。守卫在 scripts/frontend-tests/hant-ui-strings.test.ts。
+import { ensureHantConverter, hantSync, useHantUI, useHantUIAll } from "@/lib/hant-convert";
 
 /**
  * 举手到可确认之间的静默期。**与 thread-history.tsx 的 ARM_QUIET_MS 同一个数、
@@ -764,17 +768,11 @@ function HazardEvidence({
   artifactBase: string;
   onRetry: () => void;
 }) {
-  /**
-   * 🔴 两个 hook **必须排在下面那几处 early return 之前、而且无条件调用** ——
-   * hooks 规则不许「有时调有时不调」,而这个组件三态各有一条 return。
-   * 三态里用不上的那一档喂空串,`useHantUI` 对空值原样返回。
-   *
-   * 转的两句都是**后端来的**:`message` 是后端 user_msg 或 normalizeError 的固定中文,
-   * `userMsg` 是后端 `_detail_user_msg` 拼的那句总结(「已签 3 份文书,复查过 1 次…」)。
-   */
-  const message = useHantUI(state?.phase === "unreadable" ? state.message : "");
-  const userMsgText = useHantUI(state?.phase === "ready" ? state.userMsg : "");
-
+  // 🔴 这两句上屏的字**都不过繁體转换器**(W12 复审定案:后端 Envelope 的 user_msg
+  // 一律不转)。`message` 是后端 user_msg 或 normalizeError 的固定中文,
+  // `userMsg` 是后端 `_detail_user_msg` 拼的那句总结 —— 两句都可能内插用户数据
+  // (隐患描述、项目名、文件名),整句转换分不出哪一半是系统写的字。
+  // 本地兜底那几句(SUPERVISION_MESSAGES.*)源码里已经是繁體,不需要转。
   if (!state || state.phase === "loading") {
     return (
       <div className="flex items-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-4 text-[12px] text-gray-500">
@@ -794,7 +792,7 @@ function HazardEvidence({
               监理以为文书没签出来,回头再签一份。后半句是后端的人话或
               normalizeError 那几句固定中文,原样上屏。 */}
           <div className="text-[13px] leading-snug text-red-700">
-            這條的文書和複查記錄沒讀出來(不是沒有,是沒讀到)。{message}
+            這條的文書和複查記錄沒讀出來(不是沒有,是沒讀到)。{state.message}
           </div>
         </div>
         <Button size="sm" variant="outline" onClick={onRetry} className="pointer-coarse:min-h-11">
@@ -813,8 +811,8 @@ function HazardEvidence({
     <div className="flex flex-col gap-2">
       {/* 后端拼好的那句总结原样上屏。「这条复查了吗」是监理翻这一页最常问的一句,
           后端 `_detail_user_msg` 就是专为它写的 —— 前端再算一遍等于把判据抄成第二份。 */}
-      {userMsgText && (
-        <div className="text-[12px] leading-snug text-gray-600">{userMsgText}</div>
+      {state.userMsg && (
+        <div className="text-[12px] leading-snug text-gray-600">{state.userMsg}</div>
       )}
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-gray-400 tabular-nums">
@@ -959,13 +957,10 @@ function SharedReinspectPhotoField({
 }) {
   /** 整屏只有一格,所以 id 是定值 —— 不再拼隐患编号(拼了反而像每行各有一个)。 */
   const inputId = "gyt-shared-photo-file";
-  /**
-   * 传失败那句话。三个来源里有一个是**后端的** `user_msg`(413「照片太大了(12.4 MB),
-   * 上限 10MB」、400「不是照片文件」),所以这一处必须过转换;另两个来源
-   * (`normalizeError` 的固定中文、本地预检那句)源码里已经是繁體,再转一遍是幂等的。
-   * hook 无条件调用,`failed` 之外的档喂空串。
-   */
-  const failMessage = useHantUI(upload?.phase === "failed" ? upload.message : "");
+  // 传失败那句话**不过繁體转换器**(W12 复审定案:后端 user_msg 一律不转)。
+  // 三个来源里有一个是后端的 `user_msg`(413「照片太大了(12.4 MB),上限 10MB」、
+  // 400「不是照片文件」),它可能内插用户数据;另两个来源(`normalizeError` 的
+  // 固定中文、本地预检那句 PHOTO_MESSAGES)源码里已经是繁體,本来就不用转。
   /** 传好之后那张图在产物库里的地址 —— 与证据链里的复查照片走的是同一条取件路。 */
   const storedUrl =
     upload?.phase === "done" ? documentUrl({ artifact_id: upload.photoId }, artifactBase) : null;
@@ -1039,7 +1034,7 @@ function SharedReinspectPhotoField({
             </div>
             {/* 后端那句人话(或本地预检那句)原样上屏,不重新包装成「上传失败」——
                 「照片太大了(12.4 MB),上限 10MB」能让人自己解决,「上传失败」不能。 */}
-            <div className="mt-0.5 text-[12px] leading-snug text-red-700">{failMessage}</div>
+            <div className="mt-0.5 text-[12px] leading-snug text-red-700">{upload.message}</div>
             <div className="mt-0.5 truncate text-[12px] text-gray-500">{upload.draft.label}</div>
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <Button
@@ -1355,7 +1350,31 @@ function HazardRow({
   //   · dueText      —— `due_display` 是后端排的人话;`due_date` 是 ISO 日期、没有汉字
   //   · gradeLabels  —— 与 `GRADE_CHOICES` **按下标配对**;送后端和比较用的仍是原值
   //   · confirmText  —— `confirmPrompt` 里插了 `hazard.item`(后端字),所以整句要过
-  //   · failureText  —— 后端的 user_msg 原样上屏那条路
+  //
+  // ⚠️ `failure`(后端的 user_msg 原样上屏那条路)**故意不在这份名单里** ——
+  //    W12 复审定案:user_msg 一律不转,理由见下面它上屏那处的注释。
+  //
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔴 屏幕上是繁體,而**已签发的 docx 正文仍是简体** —— 这是**已知且被接受**的状态
+  // ───────────────────────────────────────────────────────────────────────────
+  //   屏幕上(下面这几行转出来的):臨邊無防護   嚴重   《工程暫停令》
+  //   docx 正文与标题(后端出的)  :临边无防护   严重   《工程暂停令》
+  //       └ agents/supervision/documents.py 的正文模板 + core/doc_no.DOC_TITLE_ZH
+  //
+  // **监理签的是那份 docx,看的是这块面板。** 方案 §7.1 当初据此判定
+  // 「监理面板不许先做」;`bd1b8f9` 越过了那条禁令(流程失误,当时没回应它),
+  // 复审抓出后交负责人拍板 —— **2026-08-18 定案「甲:保留繁體面板」**。
+  //
+  // 定案的含义是**可接受,不是已解决**:
+  //   · 依据:面板是操作界面不是文书本身;§4.55 已为规范书名接受过同一形态
+  //   · 「文书正文用哪种语言固化」转为 **W11 待决项**,§7.1 的推理原样留着没被推翻
+  //   · 附带好处:繁體面板让「香港工地在签简体法律文书」这件事**变得可见** ——
+  //     那本来就先于本方案存在,以前只是没人看得见
+  //
+  // ⚠️ 所以**别顺手把 documents.py 或 DOC_TITLE_ZH 也转了来「对齐」** ——
+  //    那两处进 docx、进库、进唯一索引,动它们是 W11 的题,不是观感修正。
+  //    同理:`doc.filename` 下面有单独一条红字钉着不许转(它要和盘上那份对得上)。
+  // ═══════════════════════════════════════════════════════════════════════════
   const itemText = useHantUI(hazard.item);
   const severityText = useHantUI(hazard.severity);
   const gradeText = useHantUI(hazard.grade);
@@ -1366,7 +1385,6 @@ function HazardRow({
   // 它对认不出的动作会落到最后那个 return(上报主管部门那句),而这句话是人在按下
   // 不可撤销的那一下之前唯一读的东西,拼错了比抛异常还坏(异常至少看得见)。
   const confirmText = useHantUI(armedAction ? confirmPrompt(armedAction, hazard) : "");
-  const failureText = useHantUI(failure);
 
   return (
     <div className="flex flex-col gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5">
@@ -1655,8 +1673,12 @@ function HazardRow({
 
       {failure && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-[13px] text-red-700">
-          {/* 后端的人话原样上屏,只多过一道繁體(三条硬拦、状态机拒绝那几句都在后端拼)。 */}
-          {failureText}
+          {/* 🔴 后端的人话**原样上屏,一个字都不转**(W12 复审定案:user_msg 一律不转)。
+              批量确认失败那条走的是 `result.failed[].reason`,而后端拼这些句子时
+              会把隐患描述、项目名这类**用户/现场数据**内插进去 —— 整句过转换器
+              在原理上分不出哪一半是系统写的字,而分不出时默认转是危险的那一侧。
+              本地兜底那几句(SUPERVISION_MESSAGES.*)源码里已经是繁體。 */}
+          {failure}
         </div>
       )}
 
@@ -2549,7 +2571,15 @@ export function SupervisionPanel({
         if (action === "reinspect") {
           setUsedPhotos((prev) => ({ ...prev, [hazard.hazard_no]: photoId }));
         }
-        const docLine = describeDocuments(parsed.documents);
+        // 🔴 只有 `docLine` 这一支要过转换器,另外两支都不许过:
+        //   · `parsed.user_msg` —— 后端的人话,**一律不转**(W12 复审定案,理由见
+        //     banner 上屏那处:它内插了隐患编号 / 描述 / 项目名这些用户数据);
+        //   · `"已完成。"`     —— 本地兜底,源码里就是繁體。
+        // 而 `docLine` 是 `describeDocuments` 拿 `DOC_TYPE_ZH` 拼的 —— 那张表是
+        // 后端 `core/doc_no.DOC_TITLE_ZH` 的**镜像,必须留简体**(改了就跟后端对不上),
+        // 所以它只能在这儿、在拼好之后转一次。不转的表现是这一条兜底路径上
+        // 冒出一句「已出稿 1 份:工程暂停令」的简体,**没有任何报错**。
+        const docLine = hantSync(describeDocuments(parsed.documents));
         setBanner({
           tone: "ok",
           text: parsed.user_msg || docLine || "已完成。",
@@ -2578,11 +2608,11 @@ export function SupervisionPanel({
   //   ⚠️ 「在办」「待确认」简繁不同形,「超期」「全部」同形 —— 别以为同形的那两个
   //      不用管,顺序是按下标配对的。
   // · scopeLabel  —— 空清单那句「「在辦」这一档里没有隐患」里那个词,同一个理由。
-  // · bannerText / loadText —— 后端 user_msg 原样上屏那两条路。
+  //
+  // ⚠️ `banner.text` 与 `loadMessage`(后端 user_msg 原样上屏那两条路)**不在这儿转** ——
+  //    W12 复审定案:user_msg 一律不转。理由见它们各自上屏那处。
   const scopeLabels = useHantUIAll(HAZARD_SCOPES);
   const scopeLabel = useHantUI(scope);
-  const bannerText = useHantUI(banner?.text ?? "");
-  const loadText = useHantUI(loadMessage);
 
   if (typeof document === "undefined") return null;
 
@@ -2676,8 +2706,12 @@ export function SupervisionPanel({
                 : "rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700"
             }
           >
-            {/* 后端的 user_msg 原样上屏,只多过一道繁體。 */}
-            {bannerText}
+            {/* 🔴 后端的 user_msg **原样上屏,一个字都不转**(W12 复审定案)。
+                后端拼这句时会把隐患编号、隐患描述、项目名内插进去,整句转换
+                在原理上分不出哪一半是系统写的字。本地兜底那几句源码里已是繁體;
+                `docLine` 那一支是由 `DOC_TYPE_ZH`(受控枚举,必须留简体)拼出来的,
+                所以它在**构造处**单独过了一道 hantSync —— 见 setBanner 那里。 */}
+            {banner.text}
           </div>
         )}
 
@@ -2815,8 +2849,10 @@ export function SupervisionPanel({
                 <AlertTriangle className="mt-0.5 size-4 shrink-0 text-red-600" />
                 <div className="text-[13px] leading-snug text-red-700">
                   {/* 这一句一律是人话:后端的 user_msg,或 normalizeError 那几句固定中文。
-                      **绝不要写成「台账里没有隐患」** —— 那正是这个分支存在的全部意义。 */}
-                  隱患清單沒讀出來。{loadText}
+                      **绝不要写成「台账里没有隐患」** —— 那正是这个分支存在的全部意义。
+                      🔴 user_msg 那一支**不转繁體**(W12 复审定案),normalizeError 那几句
+                      源码里已经是繁體 —— 两支都不需要转换器。 */}
+                  隱患清單沒讀出來。{loadMessage}
                 </div>
               </div>
               <Button

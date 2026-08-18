@@ -11,6 +11,20 @@ export interface MultimodalPreviewProps {
   size?: "sm" | "md" | "lg";
 }
 
+// --------------------------------------------------------------------------
+// 🔴 这个文件里的英文残留(W12,2026-08-18 人工扫出来的)
+// --------------------------------------------------------------------------
+// 界面已经整体恒繁體,但本文件曾有 8 条英文上屏:4 个 aria-label(读屏用户**听到**
+// 的就是 "Remove image")、1 条 JSX 正文("Unsupported file type")、
+// 3 条缺文件名时的兜底显示("uploaded image" / "PDF file" / "DXF drawing")。
+//
+// ⚠️ W12 那套繁體守卫**一条都报不出来**:`hant-ui-strings.test.ts` 的判据是
+//    `s2hk(v) !== v`,而 s2hk 对英文恒等 —— 英文在它眼里永远「已经到位」。
+//    英文残留只能靠人扫,写新文案时别指望守卫。
+//
+// ⚠️ aria-label 是这里最容易被跳过的一档:它不上屏,肉眼过一遍页面看不见,
+//    只有读屏用户会撞上 —— 一个全繁體的界面里突然念一句英文。
+
 export const MultimodalPreview: React.FC<MultimodalPreviewProps> = ({
   block,
   removable = false,
@@ -32,7 +46,7 @@ export const MultimodalPreview: React.FC<MultimodalPreviewProps> = ({
       <div className={cn("relative inline-block", className)}>
         <Image
           src={url}
-          alt={String(block.metadata?.name || "uploaded image")}
+          alt={String(block.metadata?.name || "上傳的圖片")}
           className={imgClass}
           width={size === "sm" ? 16 : size === "md" ? 32 : 48}
           height={size === "sm" ? 16 : size === "md" ? 32 : 48}
@@ -42,7 +56,7 @@ export const MultimodalPreview: React.FC<MultimodalPreviewProps> = ({
             type="button"
             className="absolute top-1 right-1 z-10 rounded-full bg-gray-500 text-white hover:bg-gray-700"
             onClick={onRemove}
-            aria-label="Remove image"
+            aria-label="移除這張圖片"
           >
             <XIcon className="h-4 w-4" />
           </button>
@@ -54,7 +68,7 @@ export const MultimodalPreview: React.FC<MultimodalPreviewProps> = ({
   // PDF block
   if (block.type === "file" && block.mimeType === "application/pdf") {
     const filename =
-      block.metadata?.filename || block.metadata?.name || "PDF file";
+      block.metadata?.filename || block.metadata?.name || "PDF 文件";
     return (
       <div
         className={cn(
@@ -81,7 +95,7 @@ export const MultimodalPreview: React.FC<MultimodalPreviewProps> = ({
             type="button"
             className="ml-2 self-start rounded-full bg-gray-200 p-1 text-teal-700 hover:bg-gray-300"
             onClick={onRemove}
-            aria-label="Remove PDF"
+            aria-label="移除這份 PDF"
           >
             <XIcon className="h-4 w-4" />
           </button>
@@ -91,7 +105,7 @@ export const MultimodalPreview: React.FC<MultimodalPreviewProps> = ({
   }
 
   // GYT 方案 A:DXF 图纸块。按 mimeType=image/vnd.dxf 或 filename .dxf 认,
-  // 渲染成一张「图纸」小卡片(否则会落到下面的「Unsupported file type」)。
+  // 渲染成一张「图纸」小卡片(否则会落到最下面那张「这种文件传不了」的兜底卡)。
   if (
     block.type === "file" &&
     (block.mimeType === "image/vnd.dxf" ||
@@ -99,7 +113,7 @@ export const MultimodalPreview: React.FC<MultimodalPreviewProps> = ({
         .toLowerCase()
         .endsWith(".dxf"))
   ) {
-    const filename = block.metadata?.filename || "DXF drawing";
+    const filename = block.metadata?.filename || "未命名";
     return (
       <div
         className={cn(
@@ -126,7 +140,7 @@ export const MultimodalPreview: React.FC<MultimodalPreviewProps> = ({
             type="button"
             className="ml-2 self-start rounded-full bg-gray-200 p-1 text-blue-700 hover:bg-gray-300"
             onClick={onRemove}
-            aria-label="Remove drawing"
+            aria-label="移除這份圖紙"
           >
             <XIcon className="h-4 w-4" />
           </button>
@@ -144,13 +158,13 @@ export const MultimodalPreview: React.FC<MultimodalPreviewProps> = ({
       )}
     >
       <File className="h-5 w-5 flex-shrink-0" />
-      <span className="truncate text-xs">Unsupported file type</span>
+      <span className="truncate text-xs">這種文件傳不了</span>
       {removable && (
         <button
           type="button"
           className="ml-2 rounded-full bg-gray-200 p-1 text-gray-500 hover:bg-gray-300"
           onClick={onRemove}
-          aria-label="Remove file"
+          aria-label="移除這份文件"
         >
           <XIcon className="h-4 w-4" />
         </button>
