@@ -9,6 +9,9 @@
  *   · 判别字集里混进歧义字 → 误判,而误判的表现只是「答话语言偶尔不对」。
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -21,6 +24,7 @@ import {
   resolveLang,
   SCRIPT_PAIRS,
   shouldConvert,
+  stripArtifactRefs,
 } from "../frontend-overrides/lang-lib";
 // 判「简体侧是不是真的简体」必须用真转换器,不能用字表 —— 理由见下面那条
 // 「每个字对的简体侧在 hk 档下必须真的会变」。
@@ -217,5 +221,66 @@ describe("shouldConvert 硬约束", () => {
       LANGS.map((lang) => [role, lang, shouldConvert(role, lang)] as const),
     );
     expect(combos.filter(([, , yes]) => yes)).toEqual([["ai", "zh-Hant", true]]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 后端拼进来的产物编号块 —— 判语种前必须摘掉(2026-08-18 真人试用抓到)
+// ---------------------------------------------------------------------------
+
+describe("产物编号块不许污染语种判别", () => {
+  /**
+   * 🔴 这条盯的是一个**已上线过的**缺陷。
+   *
+   * `core/uploads.py` 把上传的图纸改写成 `(图纸编号:<32位hex>)` 拼进用户消息,
+   * 而「图」「纸」都在 SCRIPT_PAIRS 里 —— 凭空给用户投两张简体票。
+   * 实测五条真实港式短句翻掉四条,表现是**港方工友传张图纸,答话就变简体**,
+   * 而且没有任何报错。
+   */
+  it("🔴 港式短句 + 传图纸,判别不许被翻成简体", () => {
+    const REF = "(图纸编号:0123456789abcdef0123456789abcdef)";
+    for (const phrase of ["呢張係咩", "check 下呢張", "這張圖有冇問題"]) {
+      expect(detectInput(phrase), `「${phrase}」本身该判繁體`).toBe("zh-Hant");
+      expect(
+        detectInput(phrase + REF),
+        `「${phrase}」拼上图纸编号块之后被判成了别的 —— 编号块是后端拼的,不该参与判别`,
+      ).toBe("zh-Hant");
+    }
+  });
+
+  it("只传文件不打字 → 判不出,落默认语种(而不是被标记带成简体)", () => {
+    expect(detectInput("(图纸编号:0123456789abcdef0123456789abcdef)")).toBeNull();
+    expect(detectInput("(照片编号:0123456789abcdef0123456789abcdef)")).toBeNull();
+    // resolveLang 的兜底链把它接到 DEFAULT_LANG —— 传图不打字就是繁體答话
+    expect(resolveLang(null, ["(图纸编号:abc)"])).toBe(DEFAULT_LANG);
+  });
+
+  it("摘编号块不许伤到用户自己打的字", () => {
+    expect(stripArtifactRefs("睇下呢張圖(图纸编号:abc)").trim()).toBe("睇下呢張圖");
+    // 全角括号、全角冒号、多个编号顿号分隔 —— uploads.py 都产得出来
+    expect(stripArtifactRefs("帮我看看（照片编号：abc、def）有问题吗").trim()).toBe(
+      "帮我看看有问题吗",
+    );
+    // 没有编号块时原样返回
+    expect(stripArtifactRefs("今天还有哪些任务没做完?")).toBe("今天还有哪些任务没做完?");
+  });
+
+  it("🔴 同源:摘的词必须与 human.tsx 的 refPattern 用的是同两个词", () => {
+    // human.tsx 的 refPattern 形参类型是 `"照片" | "图纸"`,它拿这两个词拼正则去
+    // 捞编号渲染图片。哪天有人改了那边的词(或后端 uploads.py 改了措辞),
+    // 这条会红 —— 否则表现只是「偶尔判错语种」,永远查不到这儿。
+    const human = readFileSync(
+      fileURLToPath(new URL("../frontend-overrides/human.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(human, "human.tsx 的 refPattern 形参词变了").toMatch(
+      /refPattern\s*=\s*\(word:\s*"照片"\s*\|\s*"图纸"\)/,
+    );
+    for (const word of ["照片", "图纸"]) {
+      expect(
+        stripArtifactRefs(`前${`(${word}编号:abc)`}后`),
+        `lang-lib 摘不掉「${word}编号」这种块`,
+      ).toBe("前后");
+    }
   });
 });

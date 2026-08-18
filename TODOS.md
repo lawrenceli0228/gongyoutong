@@ -1371,6 +1371,39 @@ docker exec gyt-backend cat /app/langgraph.json                  → **连 http 
   它牵扯 `report` 与 `hazards` 的关系(docx 在 `artifacts` 里,不在 `hazard_docs` 里,
   现有详情接口捞不到),该单独想清楚。**在它修好之前,整条 `ARTIFACT_BASE` 同源链
   只有监理这一半是活的。**
+
+  > 🔴 **2026-08-18 真人试用修正了这条的措辞 —— 原来写的「不可达」不准。**
+  >
+  > 负责人原话:「没有巡检记录,**我看到了但是又消失了**」。
+  > 所以不是「一张都没渲染出来过」,是 **渲染过、跑完就掉**:
+  > 流式过程中 `useStream` 会把子 Agent 的工具返回推上来 → 卡片出现;
+  > 一跑完,界面按**持久化状态**重渲染,而那条工具返回不在里面 → 卡片消失。
+  >
+  > 当天把那条线程的状态整个拉出来数过,证据是硬的:
+  >
+  > ```
+  > 42 条消息,12 条 tool —— 而这 12 条全是 transfer_to_* / transfer_back_to_supervisor
+  >   [37] tool  transfer_to_inspection
+  >   [38] ai    report      巡检记录出好了,编号 GYT-20260818-121438
+  >   [40] tool  transfer_back_to_supervisor
+  >   [41] ai    supervisor  巡检记录已经出好了…
+  >        ⚠️ 没有一条 render_inspection_report 的 ToolMessage
+  > ```
+  >
+  > 交接消息能活下来,是因为它们由 **supervisor 那一层**产生;
+  > 子 Agent 的工具返回被 `output_mode="last_message"` 丢掉了。
+  >
+  > **文件本身一直是好的**(当天核过:`600f6214…docx`,37,472 字节,
+  > 原名 `巡检记录_GYT-20260818-121438.docx`,取件 HTTP 200)——
+  > 丢的只是那张卡,不是那份记录。
+  >
+  > **为什么这条措辞值钱**:「从来没显示过」会让人去查渲染条件、查 CSS;
+  > 「显示过然后掉了」直接指向**流式状态 vs 持久化状态的差异**,
+  > 排查方向完全不同。别再改回去。
+  >
+  > ⚠️ 顺带一条容易误判的:当天负责人先撞到的是**照片**打不开
+  > (「照片暫時打不開」),那个跟本条**无关** —— 只是 `make serve-artifacts`
+  > 没起。而且那张卡能渲染出来本身证明 `(照片编号:…)` 的正则是好的。
 - **四个前端覆盖件超 800 行**:`supervision.tsx` 1402、`supervision-lib.ts` ~1230、
   `checkin.tsx` 1046、`ProjectUploadPanel.tsx` 1047、`checkin-lib.ts` 914。
   **一起拆,别只拆一个** —— 只拆一个是 churn 而不是原则;而且拆错的失败模式
