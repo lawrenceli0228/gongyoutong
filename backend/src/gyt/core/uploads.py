@@ -81,8 +81,10 @@ EXT_BY_MIME: Final[dict[str, str]] = {
 _UNSUPPORTED_HINT: Final[str] = "(这张图的格式暂时打不开,请转成 JPG 或 PNG 再传一次)"
 
 _PDF_HINT: Final[str] = (
-    "(你传的是 PDF —— 看规范文档的功能还没做好,现在只能看现场照片。"
-    "如果 PDF 里就是照片,麻烦先截个图再传)"
+    "(你传的是 PDF。聊天窗口当场看图暂时只认 DXF。"
+    "如果这是**图纸**,请用右上角「📂 资料归档」面板上传 —— 那里图纸支持 PDF 和 DXF,"
+    "归档进去后就能查图层/构件、出预览、读图上文字。"
+    "如果 PDF 里其实是现场照片,麻烦先截个图再传)"
 )
 
 _DRAWING_TOO_LARGE_HINT: Final[str] = "(你传的图纸太大了,先精简一下再传一次)"
