@@ -27,11 +27,19 @@ const AGENT_TO_CARD: Record<string, string> = {
   knowledge: "knowledge",
 };
 
+// 界面恒繁體(负责人 2026-08-18 定案:中建国际在港,现场语言是繁體)。
+// 🔴 `key` 与上面 AGENT_TO_CARD 的键**都是后端 Agent 名 / 内部卡片号,一律留英文**,
+//    转了就再也匹配不上、卡片永远不亮,而且**一行报错都不会有**。
+// 这三段中文只是给人看的字,所以**源码里就写成繁體**、不走运行时转换:
+// 这四张卡是常驻主界面(thread-index.tsx 里无条件挂一次),挂 useHantUI 等于
+// 让每个用户首屏都拉 438 KB 字典 —— 包括从不看繁體的简体工友
+// (那条红线见 hant-convert.tsx 的「图 3」)。
+// 「排期」简繁同形,所以它看着没改,不是漏了。
 const CARDS: { key: string; name: string; emoji: string; idle: string; busy: string }[] = [
-  { key: "safety", name: "识隐患", emoji: "📷", idle: "拍照识别现场隐患", busy: "正在看这张照片有没有隐患…" },
-  { key: "schedule", name: "排期", emoji: "📋", idle: "记任务 / 改期限 / 查进度", busy: "正在记任务…" },
-  { key: "cad", name: "图纸", emoji: "📐", idle: "读 DXF 尺寸·标高·构件", busy: "正在读图纸参数…" },
-  { key: "knowledge", name: "规范", emoji: "📖", idle: "查消防 / 防火 / 安全条文", busy: "正在查规范…" },
+  { key: "safety", name: "識隱患", emoji: "📷", idle: "拍照識別現場隱患", busy: "正在看這張照片有沒有隱患…" },
+  { key: "schedule", name: "排期", emoji: "📋", idle: "記任務 / 改期限 / 查進度", busy: "正在記任務…" },
+  { key: "cad", name: "圖紙", emoji: "📐", idle: "讀 DXF 尺寸·標高·構件", busy: "正在讀圖紙參數…" },
+  { key: "knowledge", name: "規範", emoji: "📖", idle: "查消防 / 防火 / 安全條文", busy: "正在查規範…" },
 ];
 
 /** 从流里推断"当前活跃的子 Agent";not loading → null(全待命)。推不出也返回 null,不乱亮。 */
@@ -67,10 +75,10 @@ export function GytStatusCards() {
         {active ? (
           <span className="flex items-center gap-2 text-[#0E9F6E]">
             <span className="h-2 w-2 animate-pulse rounded-full bg-[#0E9F6E]" />
-            已经交给 <b className="text-[#1B2420]">{activeName}</b> 在处理…
+            已經交給 <b className="text-[#1B2420]">{activeName}</b> 在處理…
           </span>
         ) : (
-          <span className="text-[#9AA5A0]">有事就问工友通 · 谁在忙谁就亮</span>
+          <span className="text-[#9AA5A0]">有事就問工友通 · 誰在忙誰就亮</span>
         )}
       </div>
 

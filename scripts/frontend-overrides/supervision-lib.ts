@@ -263,24 +263,48 @@ export function isDownloadableDoc(doc: Pick<SupervisionDoc, "doc_type">): boolea
 export class SupervisionContractError extends Error {}
 
 /**
+ * 整改期限的例句。🔴 **必须留简体 —— 它不是「字」是「值」。**
+ *
+ * 它是给人**照抄进输入框**的原话,抄完那一格原话原样送后端,由
+ * `agents/schedule/dates.py` 解析;而那边的正则从头到尾只认简体:
+ *     _NEXT_WEEKS_RE   = (下下周|下周)([一二三四五六日天1-7])
+ *     _DAYS_RE         = (.+)天[后内]
+ *     _BARE_WEEKDAY_RE = (?:周|星期|礼拜)([一二三四五六日天1-7])
+ * 后端也没有任何繁→简归一化(全仓 grep 过)。
+ *
+ * 转成「下週三」的症状不是静默,是**更糟的一种可见错**:监理照着屏幕上的例句
+ * 打进去,被回一句「这个日期我算不准」—— 而他刚刚照着系统教的写法写的,
+ * 屏幕上没有任何线索说该换成哪一种写法,只会反复试、反复被拒。
+ *
+ * 与 supervision.tsx 的 `DUE_PHRASE_EXAMPLES` / `DUE_PHRASE_SAMPLE` 是**同一条约束**
+ * (那两处是输入框上方的例句与 placeholder,这一处是「期限没填」时的报错)。
+ * 拆成独立常量而不是把整句登记进豁免表:那样整句都不再受「默认繁體」守卫管,
+ * 下次有人改这句措辞时漏转繁體不会有人发现 —— 现在只有例句这一小截豁免。
+ *
+ * ⚠️ 留简体只是两害相权,**不是修好了**:HK 监理自己打「下週三」照样会被拒。
+ * 真正的修法在后端入口做一次繁→简归一化,已作为欠账回报。
+ */
+const DUE_PHRASE_EXAMPLES = "「明天」「3天后」「下周三」「月底」";
+
+/**
  * 前端这份固定文案。后端 Envelope 的 `user_msg` 到了前端**原样透传**,
  * 不在这里改写 —— 三条硬拦、状态机拒绝的那几句都是后端写好的人话,
  * 前端重新包装一层只会把「该去定级」说成「操作失败」。
  */
 export const SUPERVISION_MESSAGES = Object.freeze({
-  network: "连不上服务器。检查网络,再试一次。",
-  authFailed: "登录信息不对或已过期。刷新页面重新进一次;还不行就找管理员对一下口令。",
+  network: "連不上服務器。檢查網絡,再試一次。",
+  authFailed: "登錄信息不對或已過期。刷新頁面重新進一次;還不行就找管理員對一下口令。",
   notFound:
-    "监理处置接口还没开通(接口不存在)。请管理员确认后端已更新到带监理功能的版本。",
-  conflict: "这一步现在做不了(状态可能刚被别人改过),刷新一下再看。",
-  rateLimited: "操作太频繁,歇几秒再试。",
-  serverError: "服务器出错了,稍等再试;一直这样就找管理员。",
+    "監理處置接口還沒開通(接口不存在)。請管理員確認後端已更新到帶監理功能的版本。",
+  conflict: "這一步現在做不了(狀態可能剛被別人改過),刷新一下再看。",
+  rateLimited: "操作太頻繁,歇幾秒再試。",
+  serverError: "服務器出錯了,稍等再試;一直這樣就找管理員。",
   badEnvelope:
-    "服务器返回的内容格式不对。文书可能已经出了,先别重复点 —— 找管理员查一下台账。",
-  missingDue: "得写明整改期限(比如「明天」「3天后」「下周三」「月底」)。",
-  badPhotoId: "复查照片编号不对:要 32 位的编号(在聊天记录里那张照片下面能看到)。",
-  badGrade: "级别只能选「一般」或「严重」。",
-  noSelection: "先勾选要确认的隐患。",
+    "服務器返回的內容格式不對。文書可能已經出了,先別重複點 —— 找管理員查一下台賬。",
+  missingDue: `得寫明整改期限(比如${DUE_PHRASE_EXAMPLES})。`,
+  badPhotoId: "複查照片編號不對:要 32 位的編號(在聊天記錄裏那張照片下面能看到)。",
+  badGrade: "級別只能選「一般」或「嚴重」。",
+  noSelection: "先勾選要確認的隱患。",
 });
 
 export interface NormalizedError {
@@ -302,7 +326,7 @@ function messageForStatus(status: number): string {
   if (status === 409) return SUPERVISION_MESSAGES.conflict;
   if (status === 429) return SUPERVISION_MESSAGES.rateLimited;
   if (status >= 500) return SUPERVISION_MESSAGES.serverError;
-  return `服务器返回了看不懂的内容(HTTP ${status}),稍后再试。`;
+  return `服務器返回了看不懂的內容(HTTP ${status}),稍後再試。`;
 }
 
 function tryParseJsonObject(text: string): Record<string, unknown> | null {
@@ -472,7 +496,7 @@ function toHazardBrief(entry: unknown): HazardBrief | null {
   if (!hazardNo) return null;
   return {
     hazard_no: hazardNo,
-    item: textOf(rec, "item") || "(未写明事项)",
+    item: textOf(rec, "item") || "(未寫明事項)",
     grade: textOf(rec, "grade"),
     status: textOf(rec, "status") || "pending",
     needs_grading: rec.needs_grading === true,
@@ -639,13 +663,13 @@ export const ACTION_ENDPOINT: Readonly<Record<DisposalAction, SupervisionEndpoin
  * 只写「否决」的话,人会以为跟「驳回」一样还能翻出来看。
  */
 export const ACTION_LABEL: Readonly<Record<DisposalAction, string>> = Object.freeze({
-  grade: "人工定级",
-  notice: "签发监理通知单",
-  suspend: "签发暂停令(三份)",
-  reinspect: "登记复查结论",
-  resume: "签发工程复工令",
-  escalate: "上报主管部门",
-  reject: "否决(误报,删掉)",
+  grade: "人工定級",
+  notice: "簽發監理通知單",
+  suspend: "簽發暫停令(三份)",
+  reinspect: "登記複查結論",
+  resume: "簽發工程復工令",
+  escalate: "上報主管部門",
+  reject: "否決(誤報,刪掉)",
 });
 
 /**
@@ -760,22 +784,22 @@ export function confirmPrompt(action: DisposalAction, hazard: HazardBrief): stri
   if (action === "reject") {
     return (
       // 这句话是拿去弹框的,里面不许写 markdown 记号(** 会原样显示成星号)。
-      `要把隐患「${hazard.item}」(${hazard.hazard_no})从台账里删掉吗?\n\n` +
-      "这一条会整行删掉,不是标记成已处理 —— 删了就找不回来了。\n" +
-      "只有还没确认的隐患能这么删;确实是隐患的,请改用「确认」。"
+      `要把隱患「${hazard.item}」(${hazard.hazard_no})從台賬裏刪掉嗎?\n\n` +
+      "這一條會整行刪掉,不是標記成已處理 —— 刪了就找不回來了。\n" +
+      "只有還沒確認的隱患能這麼刪;確實是隱患的,請改用「確認」。"
     );
   }
   if (action === "suspend") {
     return (
-      `要为隐患「${hazard.item}」(${hazard.hazard_no})一次签发三份文书吗?\n` +
-      "《监理通知单》+《工程暂停令》+《致建设单位报告》\n\n" +
-      "暂停令是法律文书,签字盖章后据以停工。系统里不能撤销,签错只能另走复查/升级流程。"
+      `要為隱患「${hazard.item}」(${hazard.hazard_no})一次簽發三份文書嗎?\n` +
+      "《監理通知單》+《工程暫停令》+《致建設單位報告》\n\n" +
+      "暫停令是法律文書,簽字蓋章後據以停工。系統裏不能撤銷,簽錯只能另走複查/升級流程。"
     );
   }
   return (
-    `要为隐患「${hazard.item}」(${hazard.hazard_no})出具《监理报告》报建设主管部门吗?\n\n` +
-    "这是对施工单位的正式指控,举证链是「通知过 + 期限到了 + 复查过 + 仍未整改」。\n" +
-    "系统里不能撤销。"
+    `要為隱患「${hazard.item}」(${hazard.hazard_no})出具《監理報告》報建設主管部門嗎?\n\n` +
+    "這是對施工單位的正式指控,舉證鏈是「通知過 + 期限到了 + 複查過 + 仍未整改」。\n" +
+    "系統裏不能撤銷。"
   );
 }
 
@@ -796,7 +820,7 @@ export function confirmBody(hazardNos: readonly string[]): { hazard_nos: string[
     throw new SupervisionContractError(SUPERVISION_MESSAGES.noSelection);
   }
   if (nos.length > MAX_CONFIRM_BATCH) {
-    throw new SupervisionContractError(`一次最多确认 ${MAX_CONFIRM_BATCH} 条,分几次来。`);
+    throw new SupervisionContractError(`一次最多確認 ${MAX_CONFIRM_BATCH} 條,分幾次來。`);
   }
   return { hazard_nos: nos };
 }
@@ -823,7 +847,7 @@ export interface ActionInput {
 export function actionBody(action: DisposalAction, input: ActionInput): Record<string, unknown> {
   const hazardNo = input.hazardNo.trim();
   if (!hazardNo) {
-    throw new SupervisionContractError("没说是哪条隐患(缺隐患编号)。");
+    throw new SupervisionContractError("沒説是哪條隱患(缺隱患編號)。");
   }
   const body: Record<string, unknown> = { hazard_no: hazardNo };
 
@@ -849,7 +873,7 @@ export function actionBody(action: DisposalAction, input: ActionInput): Record<s
 
   if (actionNeedsPhoto(action)) {
     if (input.result !== "pass" && input.result !== "fail") {
-      throw new SupervisionContractError("复查结论只能是合格或不合格,得由人来下。");
+      throw new SupervisionContractError("複查結論只能是合格或不合格,得由人來下。");
     }
     const photoId = (input.afterPhotoId ?? "").trim().toLowerCase();
     if (!ARTIFACT_ID_PATTERN.test(photoId)) {
@@ -1455,9 +1479,9 @@ export const PHOTO_MAX_BYTES = PHOTO_MAX_MB * 1024 * 1024;
  */
 export const PHOTO_MESSAGES = Object.freeze({
   /** 0 字节。多半是选图时文件还没从 iCloud/网盘下下来。 */
-  emptyFile: "这个文件是空的(0 字节),没法当照片用。换一张再试。",
+  emptyFile: "這個文件是空的(0 字節),沒法當照片用。換一張再試。",
   /** MIME 明摆着不是图片(选到了 PDF、视频之类)。 */
-  notAnImage: "选中的不是照片文件。用「拍照 / 选图」重新拍一张,或者从相册里挑一张照片。",
+  notAnImage: "選中的不是照片文件。用「拍照 / 選圖」重新拍一張,或者從相冊裏挑一張照片。",
   /**
    * HEIC / HEIF。**必须单独说一句**:它是真照片,人看不出有什么不对
    * (iPhone 设置成「保留原片」时从相册选图就是这个格式),而后端的魔数闸
@@ -1465,16 +1489,16 @@ export const PHOTO_MESSAGES = Object.freeze({
    * 每张都被拒 —— 所以这句必须给出唯一那条走得通的路:**现拍一张**。
    */
   heicNotSupported:
-    "这张是 iPhone 的 HEIC 格式,系统这边打不开。用「拍照 / 选图」现拍一张就行,现拍出来的格式没问题。",
+    "這張是 iPhone 的 HEIC 格式,系統這邊打不開。用「拍照 / 選圖」現拍一張就行,現拍出來的格式沒問題。",
   /**
    * 传上去了、也回了 200,但回执里没有能用的照片编号。
    *
    * 话要说清「先别用这张」:不说的话,人看到「传成功了」的直觉是接着点复查结论,
    * 而那时手上根本没有编号 —— 下一步会被自己人拦住,而拦的那句话指向聊天记录。
    */
-  badEnvelope: "照片好像传上去了,但服务器没回编号 —— 这张先别用,重传一次。",
+  badEnvelope: "照片好像傳上去了,但服務器沒回編號 —— 這張先別用,重傳一次。",
   /** 折叠的手填编号那一格里打了半截东西。 */
-  badManualId: "这不像照片编号:要 32 位,只有数字和 a 到 f 这几个字母。",
+  badManualId: "這不像照片編號:要 32 位,只有數字和 a 到 f 這幾個字母。",
 });
 
 /**
@@ -1497,7 +1521,7 @@ function formatBytes(size: number): string {
   if (!Number.isFinite(size) || size < 0) return "大小不明";
   if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   if (size >= 1024) return `${Math.round(size / 1024)} KB`;
-  return `${Math.trunc(size)} 字节`;
+  return `${Math.trunc(size)} 字節`;
 }
 
 /** 文件名显示上限(字符数)。超了掐中间 —— 理由见 `describePhotoFile`。 */
@@ -1530,7 +1554,7 @@ function shortenFileName(name: string): string {
  * 看着像界面坏了。
  */
 export function describePhotoFile(file: { name: string; size: number }): string {
-  return `${shortenFileName(file.name) || "(没有文件名)"} · ${formatBytes(file.size)}`;
+  return `${shortenFileName(file.name) || "(沒有文件名)"} · ${formatBytes(file.size)}`;
 }
 
 /**
@@ -1542,7 +1566,7 @@ export function describePhotoFile(file: { name: string; size: number }): string 
 export function photoSizeProblem(file: { size: number }): string | null {
   if (!Number.isFinite(file.size) || file.size <= 0) return PHOTO_MESSAGES.emptyFile;
   if (file.size > PHOTO_MAX_BYTES) {
-    return `照片太大了(${formatBytes(file.size)}),上限 ${PHOTO_MAX_MB}MB。换一张小一点的再传。`;
+    return `照片太大了(${formatBytes(file.size)}),上限 ${PHOTO_MAX_MB}MB。換一張小一點的再傳。`;
   }
   return null;
 }
@@ -1710,14 +1734,14 @@ export const SHARED_PHOTO_MESSAGES = Object.freeze({
    * 而人此刻的眼睛在第 5 行那颗灰按钮上,照着那句话会在原地找不到东西可点。
    * 所以这一句的要害是**「在上面那一格」这五个字**,改措辞时别把方位丢了。
    */
-  waiting: "先在上面那一格拍一张这次复查的照片,才能下结论。",
+  waiting: "先在上面那一格拍一張這次複查的照片,才能下結論。",
   /** 正在传(还没有编号)。**等待是有尽头的,得说出来**,不然人不知道自己在等什么。 */
-  uploading: "上面那张照片还在传,传完就能下结论。",
+  uploading: "上面那張照片還在傳,傳完就能下結論。",
   /**
    * 传失败。🔴 **绝不许说成「还没传」** —— 那样人以为自己忘了点,再点一次重来一遍,
    * 而真正的原因(太大 / 不是照片 / 接口没开通)一次都没被看见。
    */
-  failed: "上面那张照片没传上去。先在上面重传一次,或者换一张。",
+  failed: "上面那張照片沒傳上去。先在上面重傳一次,或者換一張。",
   /**
    * 这一行刚拿这张登记过复查了。
    *
@@ -1725,15 +1749,15 @@ export const SHARED_PHOTO_MESSAGES = Object.freeze({
    * 判「不合格」的那一条会回到可复查,而它上面还挂着刚才那张 —— 让它再用一次
    * 等于拿**上一轮**的照片当这一轮「整改后」的证据,而屏幕上一切正常。
    */
-  alreadyUsed: "这一条刚用上面那张登记过复查了。要再复查一次,先在上面换一张新拍的照片。",
+  alreadyUsed: "這一條剛用上面那張登記過複查了。要再複查一次,先在上面換一張新拍的照片。",
   /** 这一行用的是共用那张(常态,说得轻)。 */
-  usesShared: "复查照片:用上面那张共用的",
+  usesShared: "複查照片:用上面那張共用的",
   /** 🔴 这一行用的**不是**共用那张 —— 必须显眼,理由见 `photoSourceOf` 头注。 */
-  usesOwn: "这一条用的不是上面那张共用的,是下面填的这个编号。",
+  usesOwn: "這一條用的不是上面那張共用的,是下面填的這個編號。",
   /** 上面还没传共用照片,而这一行自己填了编号 —— 没有「共用那张」可对照,话就别提它。 */
-  usesOwnAlone: "这一条用下面填的这个编号的照片。",
+  usesOwnAlone: "這一條用下面填的這個編號的照片。",
   /** 共用那张现在一条隐患都没管着。 */
-  coversNothing: "这张暂时没有隐患在用 —— 下面每条要么填了自己的编号,要么刚用它登记过复查。",
+  coversNothing: "這張暫時沒有隱患在用 —— 下面每條要麼填了自己的編號,要麼剛用它登記過複查。",
 });
 
 /**
@@ -1891,6 +1915,6 @@ export function hazardsUsingSharedPhoto(
 export function describeSharedPhotoCoverage(count: number): string {
   if (!Number.isFinite(count) || count <= 0) return SHARED_PHOTO_MESSAGES.coversNothing;
   // 1 条时不说「都」——「都」在中文里预设了复数,一条时读起来像界面算错了。
-  if (count === 1) return "下面这 1 条隐患的复查结论用这张。";
-  return `下面 ${count} 条隐患的复查结论都用这张。`;
+  if (count === 1) return "下面這 1 條隱患的複查結論用這張。";
+  return `下面 ${count} 條隱患的複查結論都用這張。`;
 }

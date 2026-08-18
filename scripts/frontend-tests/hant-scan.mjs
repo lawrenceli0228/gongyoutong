@@ -90,7 +90,25 @@ function describeContext(node) {
   return ts.SyntaxKind[p.kind];
 }
 
-/** 扫一个文件,返回所有含汉字的字面量 / JSX 文本。注释不在 AST 里,天然不入选。 */
+/**
+ * 这个标识符是不是**对象字面量 / 类型的键**(而不是变量名、属性访问)。
+ *
+ * 只收「键」这一种位置:变量名和属性访问也可能带汉字,但那些是代码不是数据,
+ * 收进来只会让登记表被无意义的条目撑爆,最后被人整条关掉。
+ */
+function isChineseObjectKey(node) {
+  if (!ts.isIdentifier(node)) return false;
+  const p = node.parent;
+  if (!p) return false;
+  const isKeyPosition =
+    (ts.isPropertyAssignment(p) && p.name === node) ||
+    (ts.isPropertySignature(p) && p.name === node) ||
+    (ts.isShorthandPropertyAssignment(p) && p.name === node) ||
+    (ts.isEnumMember(p) && p.name === node);
+  return isKeyPosition && HAN.test(node.text);
+}
+
+/** 扫一个文件,返回所有含汉字的字面量 / JSX 文本 / 对象键。注释不在 AST 里,天然不入选。 */
 export function scanFile(filePath) {
   const text = readFileSync(filePath, "utf8");
   const sf = ts.createSourceFile(
@@ -114,6 +132,20 @@ export function scanFile(filePath) {
       raw = node.text;
     } else if (ts.isJsxText(node)) {
       raw = node.text;
+    } else if (isChineseObjectKey(node)) {
+      // 🔴 不带引号的对象键 —— 2026-08-18 补的盲区,补之前它**完全不可见**。
+      //
+      // CJK 是合法的 JS 标识符字符,所以 `{ 重大: "…", 较大: "…" }` 里那几个键
+      // 是 `Identifier` 节点,不是 `StringLiteral` —— 扫描器一个都扫不到。
+      //
+      // 实例:supervision.tsx 的 `SEVERITY_CHIP` 四个键(重大/较大/一般/待定级),
+      // 它们拿后端返回的 `severity` 做精确查表。手改成繁體的话:
+      //   · 「还是简体」那条守卫看不见它 → 绿
+      //   · 「参与匹配的位置」那条也看不见它 → 绿
+      //   · 徽章静默掉色(查不到样式,落 ?? 的灰底),控制台干净
+      // 也就是**两道守卫一起沉默**。补上之后它落在 `object-key` 这个语法位置上,
+      // 而 `object-key` 在守卫②的 RISKY 名单里 —— 必须登记才能过。
+      raw = node.text;
     }
 
     if (raw != null && HAN.test(raw)) {
@@ -135,6 +167,42 @@ export function scanFile(filePath) {
   };
   visit(sf);
   return out;
+}
+
+/** 运行时转换的四个出口。挂在常驻界面上 = 首屏拉 438 KB 字典。 */
+export const RUNTIME_CONVERT_FNS = Object.freeze([
+  "useHantUI",
+  "useHantUIAll",
+  "hantSync",
+  "ensureHantConverter",
+]);
+
+/**
+ * 找出一个文件里**真正调用**了哪几个运行时转换函数。
+ *
+ * ⚠️ 必须走 AST:`grep` 会把解释「为什么这儿刻意不挂」的注释也算进去 ——
+ *    2026-08-18 就这么误报过一次(GytStatusCards.tsx 的第 34 行注释)。
+ *    注释不是 AST 节点,这个问题在这里结构上不存在。
+ */
+export function findRuntimeConversionCalls(filePath) {
+  const text = readFileSync(filePath, "utf8");
+  const sf = ts.createSourceFile(
+    filePath,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    filePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const hits = new Set();
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const name = node.expression.text;
+      if (RUNTIME_CONVERT_FNS.includes(name)) hits.add(name);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return [...hits].sort();
 }
 
 /** 扫整个 frontend-overrides/。 */

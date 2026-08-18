@@ -50,20 +50,20 @@ import {
 /** 子 Agent 的中文名。加新 Agent 时往这里补一行,不补也不会坏(会退回显示英文名)。
  *  导出给 ai.tsx 覆盖件用(子 Agent 正文折叠行也要念中文名)。 */
 export const AGENT_NAMES: Record<string, string> = {
-  supervisor: "调度中枢",
-  safety: "安全巡检员",
+  supervisor: "調度中樞",
+  safety: "安全巡檢員",
   // inspection 是「巡检出记录」英雄链(safety ─硬边→ report)编译成的子图。
   // 漏了这一行的代价很具体:它是演示第一跳,界面上会显示英文「转给 inspection」。
-  inspection: "巡检出记录",
-  ping: "连通性自检",
-  knowledge: "规范检索",
-  schedule: "任务管理",
-  cad: "图纸查询",
-  report: "报告生成",
+  inspection: "巡檢出記錄",
+  ping: "連通性自檢",
+  knowledge: "規範檢索",
+  schedule: "任務管理",
+  cad: "圖紙查詢",
+  report: "報告生成",
   // W9 的 supervision Agent(S5 泳道落地)。它**只查、只建议** —— 改状态和出文书
   // 全部走 HTTP 端点,不经 LLM(方案 §5.1:法律行为不能由概率性系统单方面触发)。
   // 这一行现在补上,是为了 S5 一挂进 AGENT_REGISTRY,界面上不会冒出「转给 supervision」。
-  supervision: "监理处置",
+  supervision: "監理處置",
 };
 
 /** 业务工具的中文名。
@@ -82,29 +82,29 @@ export const AGENT_NAMES: Record<string, string> = {
  */
 const TOOL_NAMES: Record<string, string> = {
   // safety / report(英雄链)
-  analyze_site_photo: "查看现场照片",
-  render_inspection_report: "生成巡检记录",
+  analyze_site_photo: "查看現場照片",
+  render_inspection_report: "生成巡檢記錄",
   // schedule(任务台账)
-  add_task: "记任务",
-  list_tasks: "查任务清单",
+  add_task: "記任務",
+  list_tasks: "查任務清單",
   reschedule_task: "改期限",
-  finish_task: "任务销项",
+  finish_task: "任務銷項",
   // cad(看图纸)
-  list_drawings: "查图纸清单",
-  parse_drawing: "看图纸概览",
-  query_dimension: "查标注尺寸",
-  list_components: "数图上构件",
-  layer_stats: "查图层清单",
-  render_preview: "出图纸预览",
+  list_drawings: "查圖紙清單",
+  parse_drawing: "看圖紙概覽",
+  query_dimension: "查標註尺寸",
+  list_components: "數圖上構件",
+  layer_stats: "查圖層清單",
+  render_preview: "出圖紙預覽",
   // knowledge(规范检索)
-  search_regulation: "查规范条文",
+  search_regulation: "查規範條文",
   // supervision(监理处置 —— **只读那三件**,方案 §5.1。写入不走工具:
   // 签发通知单/暂停令是法律行为,由界面直连 HTTP 端点触发,LLM 一步都不经过)
-  list_hazards: "查隐患清单",
-  get_hazard: "查隐患详情",
-  suggest_disposal: "看该怎么处置",
+  list_hazards: "查隱患清單",
+  get_hazard: "查隱患詳情",
+  suggest_disposal: "看該怎麼處置",
   // ping(链路自检,不是业务工具)
-  echo: "回声自检",
+  echo: "回聲自檢",
 };
 
 /** 巡检记录工具名。它的返回值要单独渲染成卡片,不能只折进灰行,理由见 ARTIFACT_BASE。
@@ -163,6 +163,14 @@ function artifactUrl(path: string): string | null {
  * 理由与 markdown-text.tsx 的 STATUS_CHIPS 同源:后端常量虽是简体,
  * 但**经模型转述**才到界面,而模型本来就有 25%-75% 的概率吐繁體 ——
  * 所以「只认简体键」这个 bug 在 W12 之前就存在。
+ *
+ * 🔴 **下面那张内表的四个键必须留简体,界面繁體化那一批不许顺手转它。**
+ * 看 `withHantKeys` 的实现:它只拿**简体词**去调 styleOf(繁體那一套键是它自己
+ * 在外面配上同一份样式的)。把内表的键改成繁體 → styleOf 一个都查不到 →
+ * 全落到 `??` 后面那个灰底默认色,「较大」「待定级」两档静默掉色,
+ * 而徽章照旧显示、控制台干净、测试全绿。
+ * 另外这四个键是**标识符不是字符串字面量**,hant-scan.mjs 走 AST 扫不到它们 ——
+ * 守卫不会替你拦这一手,只能靠这段注释。
  */
 const SEVERITY_CHIP: Record<string, string> = withHantKeys(
   SEVERITY_WORDS,
@@ -203,7 +211,7 @@ function summarize(name: string): Summary {
   const to = name.match(/^transfer_to_(.+)$/);
   if (to) {
     const who = AGENT_NAMES[to[1]] ?? to[1];
-    return { icon: "handoff", text: `转给 ${who}` };
+    return { icon: "handoff", text: `轉給 ${who}` };
   }
   return { icon: "tool", text: TOOL_NAMES[name] ?? name };
 }
@@ -311,7 +319,7 @@ export function ToolCalls({
                   ))}
                 </dl>
               ) : (
-                <div className="text-gray-400">（无参数）</div>
+                <div className="text-gray-400">（無參數）</div>
               )}
             </div>
           </Trace>
@@ -350,19 +358,25 @@ function ReportCard({ data }: { data: ReportData }) {
         <FileText className="mt-0.5 h-5 w-5 shrink-0 text-orange-600" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="font-medium text-gray-900">巡检记录</span>
+            <span className="font-medium text-gray-900">巡檢記錄</span>
             <span className="font-mono text-[13px] text-gray-600">
               {data.report_no}
             </span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[13px] text-gray-600">
             <span>
-              {count > 0 ? `共 ${count} 处隐患` : "未发现受控清单内的隐患"}
+              {count > 0 ? `共 ${count} 處隱患` : "未發現受控清單內的隱患"}
             </span>
             {chip && (
               <span
                 className={`inline-flex items-center rounded-full px-2 py-0.5 text-[12px] font-medium ring-1 ring-inset ${chip}`}
               >
+                {/* 「最高」简繁同形;`severity` 是**模型转述**过来的原文,简繁都可能,
+                    这里**刻意不转**:运行时转换器要拉 438 KB 字典,按 W12 方案 §5.2
+                    只许挂在点开才加载的面板上,聊天主界面是常驻的,铺上去等于
+                    每个从不看面板的简体工友首屏都白下一份。
+                    功能上不吃亏 —— SEVERITY_CHIP 简繁两套键都收,上色不受影响,
+                    代价只是这两个字偶尔跟着模型显示成简体。 */}
                 最高 {severity}
               </span>
             )}
@@ -376,7 +390,7 @@ function ReportCard({ data }: { data: ReportData }) {
                 className="inline-flex items-center gap-1.5 rounded-md bg-orange-600 px-2.5 py-1 text-[13px] font-medium text-white transition-colors hover:bg-orange-700"
               >
                 <ExternalLink className="h-3.5 w-3.5" />
-                打开文档
+                打開文檔
               </a>
             )}
             <button
@@ -389,11 +403,11 @@ function ReportCard({ data }: { data: ReportData }) {
               ) : (
                 <Copy className="h-3.5 w-3.5" />
               )}
-              {copied ? "已复制" : "复制路径"}
+              {copied ? "已複製" : "複製路徑"}
             </button>
           </div>
           <div className="mt-1.5 text-[11px] text-gray-400">
-            打不开?先在仓库根执行{" "}
+            打不開?先在倉庫根執行{" "}
             <code className="font-mono">make serve-artifacts</code>
           </div>
         </div>
@@ -416,7 +430,7 @@ export function ToolResult({ message }: { message: ToolMessage }) {
   const { text } = summarize(name);
   // 交接类的结果没有信息量(永远是 "Successfully transferred to X"),
   // 摘要就写「已接手」;业务工具则说「返回结果」。
-  const done = /^transfer(_back)?_to_/.test(name) ? "已接手" : "已返回结果";
+  const done = /^transfer(_back)?_to_/.test(name) ? "已接手" : "已返回結果";
 
   /**
    * ── 三条互不影响的卡片分支 ────────────────────────────────────────────

@@ -120,16 +120,16 @@ export class CheckinContractError extends Error {}
  * 两边都要动)。后端 Envelope 的 user_msg 到了前端**原样透传**,不在这里改写。
  */
 export const CHECKIN_MESSAGES = Object.freeze({
-  network: "连不上服务器。检查手机信号或 Wi-Fi,再试一次。",
-  authFailed: "登录信息不对或已过期。刷新页面重新进一次;还不行就找管理员对一下口令。",
-  tooLarge: "照片太大,传不上去。退出重拍一张再试。",
-  rateLimited: "打卡太频繁,歇几秒再试。",
-  notFound: "打卡服务还没开通(接口不存在)。请管理员确认后端已更新到带打卡的版本。",
-  conflict: "这次打卡的信息和之前那次对不上。",
-  serverError: "服务器出错了,稍等再试;一直这样就找管理员。",
-  badReceipt: "服务器返回的凭证格式不对,先截图记下时间,找管理员核对台账。",
+  network: "連不上服務器。檢查手機信號或 Wi-Fi,再試一次。",
+  authFailed: "登錄信息不對或已過期。刷新頁面重新進一次;還不行就找管理員對一下口令。",
+  tooLarge: "照片太大,傳不上去。退出重拍一張再試。",
+  rateLimited: "打卡太頻繁,歇幾秒再試。",
+  notFound: "打卡服務還沒開通(接口不存在)。請管理員確認後端已更新到帶打卡的版本。",
+  conflict: "這次打卡的信息和之前那次對不上。",
+  serverError: "服務器出錯了,稍等再試;一直這樣就找管理員。",
+  badReceipt: "服務器返回的憑證格式不對,先截圖記下時間,找管理員核對台賬。",
   insecureContext:
-    "这个页面不是 https 打开的,浏览器不给算照片指纹,打卡发不出去。请用 https(或 localhost)打开本站再试。",
+    "這個頁面不是 https 打開的,瀏覽器不給算照片指紋,打卡發不出去。請用 https(或 localhost)打開本站再試。",
 });
 
 // ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ function bytesToBase64Url(bytes: Uint8Array): string {
 function base64UrlToBytes(value: string): Uint8Array {
   // 无填充编码里长度 mod 4 == 1 不可能出现(1 字节编 2 字符、2 字节编 3 字符)
   if (value.length % 4 === 1) {
-    throw new CheckinContractError("名称字段不是合法的 Base64URL");
+    throw new CheckinContractError("名稱字段不是合法的 Base64URL");
   }
   const bytes: number[] = [];
   let buffer = 0;
@@ -173,7 +173,7 @@ function base64UrlToBytes(value: string): Uint8Array {
   for (const ch of value) {
     const sextet = BASE64URL_REVERSE.get(ch);
     if (sextet === undefined) {
-      throw new CheckinContractError("名称字段不是合法的 Base64URL");
+      throw new CheckinContractError("名稱字段不是合法的 Base64URL");
     }
     buffer = (buffer << 6) | sextet;
     bitCount += 6;
@@ -206,12 +206,12 @@ function hasControlChar(text: string): boolean {
  */
 export function encodeNameForHeader(name: string): string {
   if (hasControlChar(name)) {
-    throw new CheckinContractError("名称里有换行或控制字符,请去掉再试");
+    throw new CheckinContractError("名稱裏有換行或控制字符,請去掉再試");
   }
   const raw = new TextEncoder().encode(name);
   if (raw.length > MAX_NAME_BYTES) {
     throw new CheckinContractError(
-      `名称太长(${raw.length} 字节,上限 ${MAX_NAME_BYTES}),请写短一点`,
+      `名稱太長(${raw.length} 字節,上限 ${MAX_NAME_BYTES}),請寫短一點`,
     );
   }
   return bytesToBase64Url(raw);
@@ -227,21 +227,21 @@ export function encodeNameForHeader(name: string): string {
 export function decodeNameFromHeader(value: string): string {
   if (value.length > MAX_NAME_BYTES * 2) {
     // Base64 撑 4/3,×2 是宽松上界(与后端 decode_name 同一判据)
-    throw new CheckinContractError("名称字段过长");
+    throw new CheckinContractError("名稱字段過長");
   }
   const raw = base64UrlToBytes(value);
   if (raw.length > MAX_NAME_BYTES) {
-    throw new CheckinContractError("名称字段过长");
+    throw new CheckinContractError("名稱字段過長");
   }
   let text: string;
   try {
     // fatal: 非法 UTF-8 必须抛,不许悄悄换成 U+FFFD —— 那等于把乱码当名字收下
     text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
   } catch {
-    throw new CheckinContractError("名称字段不是合法的 UTF-8");
+    throw new CheckinContractError("名稱字段不是合法的 UTF-8");
   }
   if (hasControlChar(text)) {
-    throw new CheckinContractError("名称字段含控制字符");
+    throw new CheckinContractError("名稱字段含控制字符");
   }
   return text;
 }
@@ -332,7 +332,7 @@ export function buildGeoHeader(result: GeoResult): string {
   if (result.status !== "ok") return result.status;
   const numbers = [result.lat, result.lon, result.accuracyM];
   if (numbers.some((n) => !Number.isFinite(n))) {
-    throw new CheckinContractError("坐标不是有限数字 —— 这是程序错误,不是你的问题");
+    throw new CheckinContractError("座標不是有限數字 —— 這是程序錯誤,不是你的問題");
   }
   return ["ok", ...numbers.map(String)].join(GEO_SEPARATOR);
 }
@@ -392,23 +392,23 @@ export function buildCheckinHeaders(
 ): Record<string, string> {
   const eventId = input.eventId.trim();
   if (!eventId || eventId.length > MAX_EVENT_ID_LEN) {
-    throw new CheckinContractError("打卡编号不对 —— 这是程序错误,刷新页面再试");
+    throw new CheckinContractError("打卡編號不對 —— 這是程序錯誤,刷新頁面再試");
   }
   // header 值必须 ASCII;顺带把空格/控制字符挡掉。newEventId() 只产出这个字符集。
   if (!/^[A-Za-z0-9_-]+$/.test(eventId)) {
-    throw new CheckinContractError("打卡编号含非法字符 —— 这是程序错误,刷新页面再试");
+    throw new CheckinContractError("打卡編號含非法字符 —— 這是程序錯誤,刷新頁面再試");
   }
   const worker = input.worker.trim();
   if (!worker) {
-    throw new CheckinContractError("请先填姓名再打卡");
+    throw new CheckinContractError("請先填姓名再打卡");
   }
   // 镜像后端 validate_digest_hex:定长 + 纯十六进制,归一化成小写
   const digest = input.digestHex.trim().toLowerCase();
   if (digest.length !== DIGEST_HEX_LEN || !/^[0-9a-f]+$/.test(digest)) {
-    throw new CheckinContractError("照片指纹不对 —— 这是程序错误,重拍一张再试");
+    throw new CheckinContractError("照片指紋不對 —— 這是程序錯誤,重拍一張再試");
   }
   if (!CHECKIN_SOURCES.includes(input.source)) {
-    throw new CheckinContractError("拍照来源不对 —— 这是程序错误");
+    throw new CheckinContractError("拍照來源不對 —— 這是程序錯誤");
   }
   const site = (input.site ?? "").trim();
   // 配对头:可省,**而且格式不对就当没有,这里一个错都不抛**。
@@ -468,7 +468,7 @@ export function newEventId(): string {
       hex.slice(20),
     ].join("-");
   }
-  throw new CheckinContractError("这台浏览器太老,生成不了打卡编号,换个浏览器试试");
+  throw new CheckinContractError("這台瀏覽器太老,生成不了打卡編號,換個瀏覽器試試");
 }
 
 /**
@@ -572,7 +572,7 @@ function messageForStatus(status: number): string {
   if (status === 413) return CHECKIN_MESSAGES.tooLarge;
   if (status === 429) return CHECKIN_MESSAGES.rateLimited;
   if (status >= 500) return CHECKIN_MESSAGES.serverError;
-  return `服务器返回了看不懂的内容(HTTP ${status}),稍后再试。`;
+  return `服務器返回了看不懂的內容(HTTP ${status}),稍後再試。`;
 }
 
 function tryParseJsonObject(text: string): Record<string, unknown> | null {
@@ -802,7 +802,7 @@ export function normalizePairId(value: string | null | undefined): string | null
  */
 export function newPairId(): string {
   if (!globalThis.crypto?.getRandomValues) {
-    throw new CheckinContractError("这台浏览器生成不了配对码,换个浏览器再试");
+    throw new CheckinContractError("這台瀏覽器生成不了配對碼,換個瀏覽器再試");
   }
   // 存下来再调会丢 this(浏览器里是 "Illegal invocation"),所以照原样从 crypto 上调
   const bytes = globalThis.crypto.getRandomValues(new Uint8Array(PAIR_HEX_LEN / 2));
@@ -843,8 +843,8 @@ export function advancePairState(current: PairState, incoming: PairState): PairS
  * 只会让他以为卡没打成。
  */
 export const PAIR_MESSAGES: Readonly<Record<PairState, string>> = Object.freeze({
-  waiting: "用手机扫这个码,在手机上拍照打卡",
-  scanned: "手机已经扫上了 —— 请在手机上拍一张自拍",
+  waiting: "用手機掃這個碼,在手機上拍照打卡",
+  scanned: "手機已經掃上了 —— 請在手機上拍一張自拍",
   done: "✅ 已打卡成功",
 });
 

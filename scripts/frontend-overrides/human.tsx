@@ -173,7 +173,7 @@ function ArtifactPhoto({ id }: { id: string }) {
       <div className="flex max-w-[16rem] items-start gap-2 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-left">
         <ImageOff className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
         <div className="min-w-0">
-          <div className="text-[13px] text-gray-600">照片暂时打不开</div>
+          <div className="text-[13px] text-gray-600">照片暫時打不開</div>
           <div className="mt-0.5 font-mono text-[11px] break-all text-gray-400 select-all">
             {id}
           </div>
@@ -185,9 +185,9 @@ function ArtifactPhoto({ id }: { id: string }) {
               这与 CLAUDE.md 里 `rm -f backend/data/...` 那条踩过的坑是同一个形状:
               **一条恒定的错误指引,比不给指引贵得多。** */}
           <div className="mt-1 text-[11px] leading-snug text-gray-400">
-            照片本身没丢。两种可能:取件的服务没起(仓库根执行{" "}
+            照片本身沒丟。兩種可能:取件的服務沒起(倉庫根執行{" "}
             <code className="font-mono">make serve-artifacts</code>
-            ),或者这台机器上没有这份文件(数据目录被清过,或者照片是别的机器传的)。
+            ),或者這台機器上沒有這份文件(數據目錄被清過,或者照片是別的機器傳的)。
           </div>
         </div>
       </div>
@@ -200,7 +200,7 @@ function ArtifactPhoto({ id }: { id: string }) {
         href={byIdUrl(id)}
         target="_blank"
         rel="noreferrer"
-        title="点开看大图"
+        title="點開看大圖"
       >
         {/* 用原生 <img> 而不是 next/image:next/image 要求把远端主机写进
             next.config.mjs 的 images.remotePatterns,而产物服务的端口是可改的
@@ -223,7 +223,7 @@ function ArtifactPhoto({ id }: { id: string }) {
           留着它的理由见下面 `bodyText` 那段注释 —— 编号是取件凭证,不能只剩图。 */}
       <figcaption
         className="font-mono text-[11px] break-all text-gray-400 select-all"
-        title="照片编号"
+        title="照片編號"
       >
         {id}
       </figcaption>
@@ -236,8 +236,15 @@ function ArtifactPhoto({ id }: { id: string }) {
  *
  * **不塞 <img>** —— 浏览器渲染不了 DXF,塞进去必然是个裂图标,还会让人以为图纸坏了。
  * 给一片可点开的文件片就行,点开走同一个 by-id 端点(交给浏览器下载 / 另存)。
- * 长相刻意跟 MultimodalPreview 里 DXF 那条分支对齐(File 图标 + 蓝色 + 「图纸」二字),
+ * 长相刻意跟 MultimodalPreview 里 DXF 那条分支对齐(File 图标 + 蓝色 + 「圖紙」二字),
  * 这样上传那一瞬间和事后翻历史看到的是同一个东西。
+ *
+ * ⚠️ 下面那个「圖紙」是**纯显示标签**,跟本文件里另外三处「图纸」不是一回事 ——
+ *    那三处(refPattern 的类型标注 ×2、takeRefs 的实参)要匹配后端拼进消息的简体标记,
+ *    一个字都不能动。豁免表按语法位置卡着这条边界(contexts: LiteralType / call:takeRefs),
+ *    所以这里改成繁體守卫是认的。
+ *    2026-08-18 之前豁免只按「文件 + 串」登记,把这个标签一起盖住过 ——
+ *    表现正是「上传显示圖紙、翻历史显示图纸」,而上面那句「刻意对齐」就此失效。
  */
 function ArtifactDrawing({ id }: { id: string }) {
   return (
@@ -245,12 +252,12 @@ function ArtifactDrawing({ id }: { id: string }) {
       href={byIdUrl(id)}
       target="_blank"
       rel="noreferrer"
-      title="点开取图纸文件"
+      title="點開取圖紙文件"
       className="flex max-w-[16rem] items-start gap-2 rounded-md border border-gray-200 bg-gray-100 px-3 py-2 text-left transition-colors hover:bg-gray-200"
     >
       <FileIcon className="mt-0.5 h-5 w-5 shrink-0 text-blue-700" />
       <div className="min-w-0">
-        <div className="text-sm text-gray-800">图纸</div>
+        <div className="text-sm text-gray-800">圖紙</div>
         <div className="mt-0.5 font-mono text-[11px] break-all text-gray-500">
           {id}
         </div>
@@ -418,7 +425,7 @@ export function HumanMessage({
                     {/* 图纸片没有 onError 可挂(不是 <img>),所以把那句提示常驻。
                         措辞与 tool-calls.tsx 巡检记录卡片底下那行保持一致。 */}
                     <div className="text-[11px] text-gray-400">
-                      打不开?先在仓库根执行{" "}
+                      打不開?先在倉庫根執行{" "}
                       <code className="font-mono">make serve-artifacts</code>
                     </div>
                   </>

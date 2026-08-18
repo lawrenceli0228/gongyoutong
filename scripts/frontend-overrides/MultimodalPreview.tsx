@@ -119,7 +119,7 @@ export const MultimodalPreview: React.FC<MultimodalPreviewProps> = ({
           className={cn("min-w-0 flex-1 text-sm break-all text-gray-800")}
           style={{ wordBreak: "break-all", whiteSpace: "pre-wrap" }}
         >
-          {`图纸 ${String(filename)}`}
+          {`圖紙 ${String(filename)}`}
         </span>
         {removable && (
           <button

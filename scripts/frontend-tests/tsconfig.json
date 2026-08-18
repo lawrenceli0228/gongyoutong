@@ -16,6 +16,14 @@
     "forceConsistentCasingInFileNames": true,
     "allowImportingTsExtensions": true,
 
+    // 界面繁體化那套工具(hant-scan.mjs / hant-keep-hans.mjs / hant-verify-diff.mjs)
+    // 是**纯 .mjs**,故意的:它们要能被 `node xxx.mjs` 直接跑(出清册、做溯源比对),
+    // 而本仓没有 TS 的运行时。allowJs 让 tsc 读进来做类型推断,
+    // 于是 hant-ui-strings.test.ts 里 `scanAll()` 的返回值不再是 any。
+    //
+    // checkJs 留 false:那三个文件不按 strict 写,开了会为了让工具过检而改工具,本末倒置。
+    "allowJs": true,
+
     // ---------------------------------------------------------------------
     // 为什么要 paths:被测的覆盖件躺在 ../frontend-overrides/,
     // 那个目录**没有 node_modules**。TS(和 Vite)都从文件所在目录往上找依赖,
@@ -45,6 +53,9 @@
   },
   "include": [
     "*.ts",
+    // 繁體化工具链(见上面 allowJs 那段)。漏了这行的表现不是报错而是**静默降级**:
+    // import 进来的东西全是 any,测试里写错字段名也不报。
+    "*.mjs",
     "../frontend-overrides/checkin-lib.ts",
     "../frontend-overrides/supervision-lib.ts",
     "../frontend-overrides/lang-lib.ts",

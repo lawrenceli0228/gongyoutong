@@ -37,6 +37,22 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { scanFile, s2hk } from "./hant-scan.mjs";
+import { TOOL_MISCONVERT } from "./hant-keep-hans.mjs";
+
+/**
+ * 把 `s2hk` 的产出再过一遍「工具选错字」登记表。
+ *
+ * 不这么做的话,溯源器会把**正确的人工修正**报成剩菜:
+ * `s2hk("…签错…")` 给的是「籤錯」,而盘上写的是「簽錯」(签字的签,才对)。
+ * 报成剩菜的下场不是没人管,而是有人照工具回改 —— 那正好把对的改错。
+ */
+function expectedHant(oldValue) {
+  let want = s2hk(oldValue);
+  for (const fix of Object.values(TOOL_MISCONVERT)) {
+    if (want.includes(fix.wrong)) want = want.replaceAll(fix.wrong, fix.right);
+  }
+  return want;
+}
 
 const OVERRIDES_REL = "scripts/frontend-overrides";
 const OVERRIDES_DIR = fileURLToPath(
@@ -89,7 +105,7 @@ for (const f of files) {
   const added = new Set([...newVals].filter((v) => !oldVals.has(v)));
 
   for (const r of removed) {
-    const want = s2hk(r);
+    const want = expectedHant(r);
     if (added.has(want)) {
       added.delete(want);
       pairs += 1;

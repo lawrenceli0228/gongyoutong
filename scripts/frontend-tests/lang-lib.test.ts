@@ -16,11 +16,15 @@ import {
   detectInput,
   HANS_CHARS,
   HANT_CHARS,
+  HANT_EXTRA,
   LANGS,
   resolveLang,
   SCRIPT_PAIRS,
   shouldConvert,
 } from "../frontend-overrides/lang-lib";
+// 判「简体侧是不是真的简体」必须用真转换器,不能用字表 —— 理由见下面那条
+// 「每个字对的简体侧在 hk 档下必须真的会变」。
+import { s2hk } from "./hant-scan.mjs";
 
 // ---------------------------------------------------------------------------
 // 判别字集本身的完整性
@@ -39,7 +43,14 @@ describe("判别字集", () => {
 
   it("两侧都没有重复字 —— 重复会让计数偏向那一边", () => {
     expect(HANS_CHARS.size).toBe(SCRIPT_PAIRS.length);
-    expect(HANT_CHARS.size).toBe(SCRIPT_PAIRS.length);
+    // 繁體侧 = 字对右半 + 港台异形(HANT_EXTRA)。加法而不是等号,
+    // 因为 hk 档下有些繁體字根本配不成对(见 lang-lib.ts 的 HANT_EXTRA 头注)。
+    expect(HANT_CHARS.size).toBe(SCRIPT_PAIRS.length + HANT_EXTRA.length);
+    // HANT_EXTRA 不许和字对右半重复 —— 重复了 Set 会吞掉,上面那条就白断言了
+    const fromPairs = new Set(SCRIPT_PAIRS.map((p) => p[1]));
+    for (const ch of HANT_EXTRA) {
+      expect(fromPairs.has(ch), `${ch} 已经在字对右半里了,别在 HANT_EXTRA 再写一遍`).toBe(false);
+    }
   });
 
   it("刻意排除的一简对多繁歧义字不在表里", () => {
@@ -53,7 +64,32 @@ describe("判别字集", () => {
 
   it("HANS_CHARS / HANT_CHARS 是从 SCRIPT_PAIRS 派生的,不是手写的第二份", () => {
     expect([...HANS_CHARS].join("")).toBe(SCRIPT_PAIRS.map((p) => p[0]).join(""));
-    expect([...HANT_CHARS].join("")).toBe(SCRIPT_PAIRS.map((p) => p[1]).join(""));
+    expect([...HANT_CHARS].join("")).toBe(
+      SCRIPT_PAIRS.map((p) => p[1]).join("") + HANT_EXTRA.join(""),
+    );
+  });
+
+  /**
+   * 🔴 这条是 2026-08-18 补的,补的原因是它当天抓出了一个**已上线的缺陷**。
+   *
+   * 本项目的转换档是 `cn → hk`(香港),而香港常用字字形表跟台湾不一样。
+   * 字对表当初是按「台式繁體」凭印象写的,于是收进了一对**在香港根本不成立**的:
+   *
+   *     "户戶"   ← hk("户") === "户"  香港的繁體正文里就写「户」(「用户」)
+   *
+   * 后果:**港人打「用户」被算成一张简体票**,答话可能因此掉回简体。
+   * 没有报错,只有偶尔「我明明打繁體它却用简体答」。
+   *
+   * 判据用真转换器,不用字表 —— 简体侧必须**真的会变**,才谈得上「简体独有」。
+   */
+  it("🔴 每个字对的简体侧,在 hk 档下必须真的会变(否则它不是简体独有字)", () => {
+    const notSimplifiedOnly = SCRIPT_PAIRS.filter((p) => s2hk(p[0]) === p[0]);
+    expect(
+      notSimplifiedOnly,
+      "这些字对的左半在 cn→hk 下原样不变,说明它在香港的繁體正文里也这么写 —— " +
+        "收进 HANS_CHARS 会把港人的输入误判成简体。" +
+        "要么删掉这一对,要么把繁體侧那个字挪进 HANT_EXTRA(「戶」就是这么处理的)。",
+    ).toEqual([]);
   });
 });
 

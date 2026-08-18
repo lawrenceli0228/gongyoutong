@@ -149,6 +149,24 @@ import {
   supervisionUrl,
   toggleSelected,
 } from "@/lib/supervision-lib";
+/**
+ * 界面恒繁體(负责人 2026-08-18 定案:中建国际在港,现场语言是繁體)。
+ *
+ * 本文件里**静态文案已经在源码里写成繁體**,这三件只管两种源码转不了的字:
+ *   ① **后端来的显示文本** —— `status_display` / `due_display` / `result_display` /
+ *      `user_msg` / `item` / `severity` / `grade`。它们运行时才存在;
+ *   ② **本地那几张兜底表** —— `HAZARD_STATUS_ZH` / `DOC_TYPE_ZH` / `HAZARD_SCOPES` /
+ *      `GRADE_*`。那些表的**值必须留简体**(送后端 / 跟后端返回值比 / 当对象键,
+ *      逐条理由在 scripts/frontend-tests/hant-keep-hans.mjs),所以只能在**上屏那一处**转。
+ *
+ * 🔴 ①②必须走**同一道**转换。状态徽章那一行是 `status_display || hazardStatusZh(status)`
+ * —— 两条路供同一颗徽章的字,只有都过这一道,工友才不会看见「点一下确认、
+ * 徽章的字忽然换了一种写法」。
+ *
+ * 🔴 字典是懒加载的 438 KB,**只在面板/组件里用**:面板点开才挂载,字典跟着面板走。
+ * 铺到常驻主界面 = 每个用户首屏都拉,包括从不开面板的简体工友。
+ */
+import { ensureHantConverter, useHantUI, useHantUIAll } from "@/lib/hant-convert";
 
 /**
  * 举手到可确认之间的静默期。**与 thread-history.tsx 的 ARM_QUIET_MS 同一个数、
@@ -163,6 +181,18 @@ const GRADE_CHIP: Record<string, string> = {
   [GRADE_SEVERE]: "bg-red-50 text-red-700 ring-red-200",
   [GRADE_NORMAL]: "bg-sky-50 text-sky-700 ring-sky-200",
 };
+
+/**
+ * 定级那两颗按钮的取值,顺序就是屏幕上的顺序(轻的在左)。
+ *
+ * 提到模块级是为了**引用稳定** —— `useHantUIAll` 内部 `useMemo` 的依赖里有这个数组,
+ * 在渲染里写 `[GRADE_NORMAL, GRADE_SEVERE]` 的话每次渲染都是新引用、memo 每次作废。
+ *
+ * 🔴 **数组里放的必须是简体原值**:它同时要送后端(`grade` 字段)、要跟后端返回值比
+ * (`已判级别 === grade`)、还要当 `GRADE_CHIP` 的键。上屏的繁體另取一份
+ * (`useHantUIAll(GRADE_CHOICES)`),两者按下标配对 —— 别合并成一张「繁體数组」。
+ */
+const GRADE_CHOICES = [GRADE_NORMAL, GRADE_SEVERE] as const;
 
 /**
  * 现场判定档次的徽章配色。四个取值来自 agents/safety/severity.py。
@@ -186,10 +216,32 @@ const SEVERITY_CHIP: Record<string, string> = {
  * 而真实后果正好相反。W10 接上 reject 时它一度就是这么写的。
  */
 const CONFIRM_BUTTON_LABEL: Readonly<Record<string, string>> = Object.freeze({
-  suspend: "确认签发",
-  escalate: "确认签发",
-  reject: "确认删掉",
+  suspend: "確認簽發",
+  escalate: "確認簽發",
+  reject: "確認刪掉",
 });
+
+/**
+ * 整改期限那一格的例句。🔴 **这两条必须留简体,界面繁體化时是唯一的例外。**
+ *
+ * 它们不是「给人看的字」,是**让人照抄进输入框的原话** —— 而那格原话原样送后端,
+ * 由 `agents/schedule/dates.py` 解析,那边的词表和正则**从头到尾只认简体**
+ * (`_NEXT_WEEKS_RE` 是 `(下下周|下周)`、`_DAYS_RE` 是 `(.+)天[后内]`、
+ * `_BARE_WEEKDAY_RE` 收的是 `周|星期|礼拜`),后端也**没有任何繁→简归一化**。
+ *
+ * 转成「下週三」的下场:监理照着屏幕上的例句打进去 → 正则一条都匹配不上 →
+ * 后端回一句「这个日期我算不准」。而他刚刚是**照着系统教的写法**写的,
+ * 屏幕上没有任何线索说明该换成哪种写法,只会反复试、反复被拒。
+ * 「3天后」的「后」同理(opencc 把「天后」当成天后娘娘那个词,本来就不转,
+ * 但别有人「顺手修成 3天後」—— 那样也匹配不上)。
+ *
+ * ⚠️ 真正的修法在后端(入口处做一次繁→简归一化),不在这里。在那之前,
+ * 例句留简体只是**两害相权**:HK 监理自己打「下週三」照样会被拒。已回报为欠账。
+ * 登记在 scripts/frontend-tests/hant-keep-hans.mjs。
+ */
+const DUE_PHRASE_EXAMPLES = "明天 / 3天后 / 下周三 / 月底";
+/** 同上 —— 输入框 placeholder 里那个单独的例子。 */
+const DUE_PHRASE_SAMPLE = "下周三";
 
 /** 状态徽章配色:能动的暖色、收尾的灰、出事的红。认不出的状态退回灰色,不炸。 */
 const STATUS_CHIP: Record<string, string> = {
@@ -307,6 +359,13 @@ function Chip({ tone, children }: { tone: string; children: React.ReactNode }) {
  * 少一个读者就少一处能断的地方,所以规矩不变:**读只在链路的根上读一次,
  * 面板与卡片一律收 props**。这两条链路各自的根一个是 tool-calls.tsx、
  * 一个是 supervision-entry.tsx,不要再多第三个。
+ *
+ * ⚠️ **它有两个调用方,而繁體字典跟着调用方走**(W12 界面繁體化):
+ *   · 面板里那两处(证据链 / 「本次出的文书」)—— 点开才挂载,字典跟着面板,这是想要的;
+ *   · tool-calls.tsx 那处 —— 长在**聊天流**里。它今天不可达(supervisor 的
+ *     `output_mode="last_message"` 把工具返回丢了),所以不构成首屏开销;
+ *     哪天那条路通了,`IssuedDocCard` 里的 `useHantUI` 会在聊天流里触发一次
+ *     438 KB 的懒加载 —— 那时要重新想一遍这张卡该不该转,别默认照旧。
  */
 export function SupervisionDocCards({
   documents,
@@ -332,7 +391,7 @@ export function SupervisionDocCards({
           「签字盖章」是凭空制造一个不存在的手续。 */}
       {有文书 && (
         <div className="text-[12px] text-gray-500">
-          下面这些都是出稿,要总监理工程师签字盖章后才是正式文件。
+          下面這些都是出稿,要總監理工程師簽字蓋章後才是正式文件。
         </div>
       )}
       {/* 顺序原样照抄后端给的(= 挂进台账的先后),**不按类型分组** ——
@@ -355,7 +414,7 @@ export function SupervisionDocCards({
           等于凭空制造一个不存在的问题。 */}
       {有文书 && (
         <div className="text-[11px] text-gray-400">
-          打不开?本机要先在仓库根执行 <code className="font-mono">make serve-artifacts</code>
+          打不開?本機要先在倉庫根執行 <code className="font-mono">make serve-artifacts</code>
         </div>
       )}
     </div>
@@ -374,12 +433,21 @@ export function SupervisionDocCards({
 function IssuedDocCard({ doc, artifactBase }: { doc: SupervisionDoc; artifactBase: string }) {
   const url = documentUrl(doc, artifactBase);
   const issuedAt = formatHkMoment(doc.created_at ?? "");
+  /**
+   * 🔴 **只转上屏这一份,`doc.filename` 一个字都不许碰**(见下面 title 那处)。
+   * `docTypeZh` 那张表同时被拿去**拼文件名兜底**(`${docTypeZh(t)}_${no}.docx`),
+   * 而后端 `_filename()` 拼的是简体那份 —— 表本身留简体、上屏这一处转,
+   * 是这两个用途唯一能同时满足的形状。
+   */
+  const docTypeText = useHantUI(docTypeZh(doc.doc_type));
+  /** 违规项名(「高空作业未系安全带」)是后端来的字,8 类受控词里有 5 类简繁不同形。 */
+  const hazardItemText = useHantUI(doc.hazard_item);
   return (
     <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50/40 px-3 py-2.5">
       <FileText className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          <span className="font-medium text-gray-900">{docTypeZh(doc.doc_type)}</span>
+          <span className="font-medium text-gray-900">{docTypeText}</span>
           {/* 编号 select-all:监理要在电话里报它、上报时按它排证据链,
               一点就能整串复制(同 checkin.tsx 凭证卡片的做法)。 */}
           <span className="font-mono text-[13px] break-all text-gray-600 select-all">
@@ -390,7 +458,7 @@ function IssuedDocCard({ doc, artifactBase }: { doc: SupervisionDoc; artifactBas
               时刻一律走 formatHkMoment:它禁止用 new Date 换算,理由在那个函数头注
               (浏览器时区一偏,追责用的时刻就差八小时)。 */}
           {issuedAt && (
-            <span className="text-[11px] text-gray-400 tabular-nums">签发 {issuedAt}</span>
+            <span className="text-[11px] text-gray-400 tabular-nums">簽發 {issuedAt}</span>
           )}
         </div>
         {/* 🔴 这份是**给哪条隐患**的。
@@ -407,7 +475,7 @@ function IssuedDocCard({ doc, artifactBase }: { doc: SupervisionDoc; artifactBas
             可能有同一个违规项的两条隐患(不同工位),光看名字分不开。 */}
         {doc.hazard_item && (
           <div className="mt-0.5 text-[12px] text-gray-600">
-            针对:{doc.hazard_item}
+            針對:{hazardItemText}
             {doc.hazard_no && (
               <span className="ml-1.5 font-mono text-[11px] text-gray-400 select-all">
                 {doc.hazard_no}
@@ -433,19 +501,25 @@ function IssuedDocCard({ doc, artifactBase }: { doc: SupervisionDoc; artifactBas
               // `?? undefined`:`filename` 可以是 null(复查记录行),而 title 只收
               // string | undefined。走到这个分支时 url 非空、也就一定是文书行、
               // 文件名一定有 —— 但类型上证不了,所以在这儿收口而不是在上面断言。
+              //
+              // 🔴 **这一处绝不许过 useHantUI。** 它不是给人读的标签,是**盘上那份
+              // docx 真实的名字**:后端 `_filename()` 拼的是简体,这里显示繁體的话,
+              // 监理按 title 上的名字去归档目录里找那份文件会找不到,而卡片、
+              // 下载、控制台一切正常(取件走 artifact_id,不走名字)——
+              // 没有任何一处会报错,只有对账那天才发现。
               title={doc.filename ?? undefined}
               // pointer-coarse:戴手套的手指按不中 28px 的链接(同 checkin.tsx 那颗关闭按钮)
               className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-2.5 py-1 text-[13px] font-medium text-white transition-colors hover:bg-amber-700 pointer-coarse:min-h-11 pointer-coarse:px-4"
             >
               <ExternalLink className="h-3.5 w-3.5" />
-              打开文书
+              打開文書
             </a>
           ) : (
             // artifact_id 为空 = 文书签发了(编号已进台账)但取不了件。
             // **绝不渲染死链接**:点了没反应和「文件真没了」在界面上分不开
             // (同 checkin-lib.receiptImageUrl 那条规矩)。
             <span className="text-[12px] text-red-600">
-              这份文书没有取件编号,下不了 —— 编号已进台账,找管理员按编号取。
+              這份文書沒有取件編號,下不了 —— 編號已進台賬,找管理員按編號取。
             </span>
           )}
         </div>
@@ -486,7 +560,9 @@ function ReinspectionLine({
    * `hazard_docs.result` 的 CHECK 是「可以为 NULL」,历史行/补录行真的可能没结论,
    * 念成不合格 = 在没有结论的情况下对外声称施工方复查没过(后端 tools 那边修过同款)。
    */
-  const verdict = doc.result_display?.trim() || "没记结论";
+  // 后端那份过一道繁體(`scoping.result_zh` 给的是简体「合格 / 不合格」);
+  // 兜底那句源码里已经是繁體,所以只把后端来的那半边喂进去。
+  const verdict = useHantUI(doc.result_display?.trim()) || "沒記結論";
   /**
    * 颜色只看机器值 `result`,**文字只看 `result_display`**。
    * 拿英文值挑配色不算「上屏」(屏幕上出现的仍是中文),而拿中文去比配色
@@ -528,10 +604,10 @@ function ReinspectionLine({
           的占位框 —— `PhotoThumb` 的 onError 兜着,不会留一个破图。
           旁边那颗「打开」与编号本身都留着:预览是**多一道**,不是替代 ——
           追责时要报的是编号,要看原图大小的是那颗按钮。 */}
-      {photoUrl && <PhotoThumb src={photoUrl} alt={`第 ${ordinal} 次复查的照片`} />}
+      {photoUrl && <PhotoThumb src={photoUrl} alt={`第 ${ordinal} 次複查的照片`} />}
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[13px]">
-          <span className="font-medium text-gray-900">第 {ordinal} 次复查</span>
+          <span className="font-medium text-gray-900">第 {ordinal} 次複查</span>
           <span className="text-gray-700">{verdict}</span>
           {checkedAt && (
             <span className="text-[11px] text-gray-400 tabular-nums">{checkedAt}</span>
@@ -542,7 +618,7 @@ function ReinspectionLine({
             <>
               <Camera className="size-3.5 shrink-0 text-gray-400" />
               {/* 「复查照片」四个字不许简写成「照片」,理由见本组件头注。 */}
-              <span className="text-gray-500">复查照片</span>
+              <span className="text-gray-500">複查照片</span>
               <span className="font-mono text-[11px] break-all text-gray-500 select-all">
                 {doc.photo_id}
               </span>
@@ -554,7 +630,7 @@ function ReinspectionLine({
                   className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-0.5 text-[12px] text-gray-700 transition-colors hover:bg-gray-50 pointer-coarse:min-h-11 pointer-coarse:px-3"
                 >
                   <ExternalLink className="size-3" />
-                  打开
+                  打開
                 </a>
               )}
             </>
@@ -563,7 +639,7 @@ function ReinspectionLine({
             // **是台账层面的异常**,不是「这次没拍」。说出来 —— 证据链缺一环,
             // 而缺的正是「整改后长什么样」那一张,事后没法举证。
             <span className="text-red-600">
-              这次复查没留照片编号 —— 证据链缺一环,找管理员查台账。
+              這次複查沒留照片編號 —— 證據鏈缺一環,找管理員查台賬。
             </span>
           )}
         </div>
@@ -675,11 +751,22 @@ function HazardEvidence({
   artifactBase: string;
   onRetry: () => void;
 }) {
+  /**
+   * 🔴 两个 hook **必须排在下面那几处 early return 之前、而且无条件调用** ——
+   * hooks 规则不许「有时调有时不调」,而这个组件三态各有一条 return。
+   * 三态里用不上的那一档喂空串,`useHantUI` 对空值原样返回。
+   *
+   * 转的两句都是**后端来的**:`message` 是后端 user_msg 或 normalizeError 的固定中文,
+   * `userMsg` 是后端 `_detail_user_msg` 拼的那句总结(「已签 3 份文书,复查过 1 次…」)。
+   */
+  const message = useHantUI(state?.phase === "unreadable" ? state.message : "");
+  const userMsgText = useHantUI(state?.phase === "ready" ? state.userMsg : "");
+
   if (!state || state.phase === "loading") {
     return (
       <div className="flex items-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-4 text-[12px] text-gray-500">
         <LoaderCircle className="size-4 animate-spin" />
-        正在读这条的文书和复查记录…
+        正在讀這條的文書和複查記錄…
       </div>
     );
   }
@@ -694,18 +781,18 @@ function HazardEvidence({
               监理以为文书没签出来,回头再签一份。后半句是后端的人话或
               normalizeError 那几句固定中文,原样上屏。 */}
           <div className="text-[13px] leading-snug text-red-700">
-            这条的文书和复查记录没读出来(不是没有,是没读到)。{state.message}
+            這條的文書和複查記錄沒讀出來(不是沒有,是沒讀到)。{message}
           </div>
         </div>
         <Button size="sm" variant="outline" onClick={onRetry} className="pointer-coarse:min-h-11">
           <RefreshCcw className="mr-1 size-3.5" />
-          重试
+          重試
         </Button>
       </div>
     );
   }
 
-  const { detail, userMsg } = state;
+  const { detail } = state;
   const foundAt = formatHkMoment(detail.foundAt);
   const closedAt = formatHkMoment(detail.closedAt ?? "");
 
@@ -713,13 +800,15 @@ function HazardEvidence({
     <div className="flex flex-col gap-2">
       {/* 后端拼好的那句总结原样上屏。「这条复查了吗」是监理翻这一页最常问的一句,
           后端 `_detail_user_msg` 就是专为它写的 —— 前端再算一遍等于把判据抄成第二份。 */}
-      {userMsg && <div className="text-[12px] leading-snug text-gray-600">{userMsg}</div>}
+      {userMsgText && (
+        <div className="text-[12px] leading-snug text-gray-600">{userMsgText}</div>
+      )}
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-gray-400 tabular-nums">
         {/* 发现时刻是证据链的第一环(「什么时候发现的」),而它只有详情端点会给。
             拿不到就整格不出现 —— 摆一个「发现时间 —」看着像库里没记。 */}
-        {foundAt && <span>发现 {foundAt}</span>}
-        {closedAt && <span>销项 {closedAt}</span>}
+        {foundAt && <span>發現 {foundAt}</span>}
+        {closedAt && <span>銷項 {closedAt}</span>}
       </div>
 
       {detail.documents.length > 0 ? (
@@ -728,7 +817,7 @@ function HazardEvidence({
         // 「真的没有」这一档:话要说满,让人一眼看出这是**台账的事实**,
         // 不是上面那种「没读到」。两句话在屏幕上必须一眼分得开(颜色、图标、措辞全不同)。
         <div className="rounded-lg border border-dashed border-gray-300 px-3 py-3 text-[12px] text-gray-500">
-          这条还没签过任何文书,也还没登记过复查 —— 台账里就是空的。
+          這條還沒簽過任何文書,也還沒登記過複查 —— 台賬裏就是空的。
         </div>
       )}
     </div>
@@ -799,7 +888,7 @@ function PhotoThumb({ src, alt }: { src: string; alt: string }) {
     return (
       <div className="flex size-20 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-gray-300 bg-gray-50 text-center">
         <ImageOff className="size-5 text-gray-400" />
-        <span className="px-1 text-[10px] leading-tight text-gray-400">这张预览不出来</span>
+        <span className="px-1 text-[10px] leading-tight text-gray-400">這張預覽不出來</span>
       </div>
     );
   }
@@ -857,13 +946,20 @@ function SharedReinspectPhotoField({
 }) {
   /** 整屏只有一格,所以 id 是定值 —— 不再拼隐患编号(拼了反而像每行各有一个)。 */
   const inputId = "gyt-shared-photo-file";
+  /**
+   * 传失败那句话。三个来源里有一个是**后端的** `user_msg`(413「照片太大了(12.4 MB),
+   * 上限 10MB」、400「不是照片文件」),所以这一处必须过转换;另两个来源
+   * (`normalizeError` 的固定中文、本地预检那句)源码里已经是繁體,再转一遍是幂等的。
+   * hook 无条件调用,`failed` 之外的档喂空串。
+   */
+  const failMessage = useHantUI(upload?.phase === "failed" ? upload.message : "");
   /** 传好之后那张图在产物库里的地址 —— 与证据链里的复查照片走的是同一条取件路。 */
   const storedUrl =
     upload?.phase === "done" ? documentUrl({ artifact_id: upload.photoId }, artifactBase) : null;
 
   return (
     <div className="flex flex-col gap-2 rounded-xl border border-gray-200 bg-gray-50/60 px-3 py-2.5">
-      <div className="text-[12px] font-medium text-gray-700">这次复查的照片</div>
+      <div className="text-[12px] font-medium text-gray-700">這次複查的照片</div>
 
       {/* 文件选择框**始终挂着**(靠 htmlFor 触发),三种状态下的「换一张」共用它。
           按状态条件渲染的话,每换一次状态 input 就重建一次,选到一半的对话框会被吞掉。 */}
@@ -895,42 +991,42 @@ function SharedReinspectPhotoField({
             }`}
           >
             <Camera className="size-5" />
-            拍整改后的照片
+            拍整改後的照片
           </Label>
           {/* 传之前就把「它管着哪几条」说清楚 —— 不说的话,人看见一个孤零零的上传框
               会以为它只管第一条,于是拍完第一张又去找第二个框(而第二个框已经没有了)。
               后半句是这次改造的红线:共用的是**照片**,不是**结论**。 */}
           <div className="text-[11px] leading-snug text-gray-500">
-            {coverage}结论仍然一条一条下。
+            {coverage}結論仍然一條一條下。
           </div>
         </>
       ) : upload.phase === "uploading" ? (
         // 底色用白:外面那圈已经是浅灰了,再套一层同色的话边框看不出来,
         // 三态里就少了「颜色」这一维(见 `PhotoUpload` 头注:三样一起变才读得出)。
         <div className="flex items-start gap-3 rounded-xl border border-gray-200 bg-white px-3 py-2.5">
-          <PhotoThumb src={upload.draft.previewUrl} alt="正在上传的复查照片" />
+          <PhotoThumb src={upload.draft.previewUrl} alt="正在上傳的複查照片" />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5 text-[13px] font-medium text-gray-700">
               <LoaderCircle className="size-4 animate-spin" />
-              正在上传照片…
+              正在上傳照片…
             </div>
             <div className="mt-0.5 truncate text-[12px] text-gray-500">{upload.draft.label}</div>
-            <div className="mt-1 text-[11px] text-gray-400">传完才能下复查结论,稍等一下。</div>
+            <div className="mt-1 text-[11px] text-gray-400">傳完才能下複查結論,稍等一下。</div>
           </div>
         </div>
       ) : upload.phase === "failed" ? (
         // 🔴 红边 + 红字 + 警告图标 + 「这张还没传上去」这句话,四样一起上 ——
         //    见 `PhotoUpload` 头注:失败长得像「还没传」的话,人会以为自己忘了点。
         <div className="flex items-start gap-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2.5">
-          <PhotoThumb src={upload.draft.previewUrl} alt="没能上传的复查照片" />
+          <PhotoThumb src={upload.draft.previewUrl} alt="沒能上傳的複查照片" />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5 text-[13px] font-medium text-red-700">
               <AlertTriangle className="size-4 shrink-0" />
-              这张还没传上去
+              這張還沒傳上去
             </div>
             {/* 后端那句人话(或本地预检那句)原样上屏,不重新包装成「上传失败」——
                 「照片太大了(12.4 MB),上限 10MB」能让人自己解决,「上传失败」不能。 */}
-            <div className="mt-0.5 text-[12px] leading-snug text-red-700">{upload.message}</div>
+            <div className="mt-0.5 text-[12px] leading-snug text-red-700">{failMessage}</div>
             <div className="mt-0.5 truncate text-[12px] text-gray-500">{upload.draft.label}</div>
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <Button
@@ -941,7 +1037,7 @@ function SharedReinspectPhotoField({
                 className="pointer-coarse:min-h-11"
               >
                 <RefreshCcw className="mr-1 size-3.5" />
-                重新上传这张
+                重新上傳這張
               </Button>
               <Label
                 htmlFor={inputId}
@@ -951,18 +1047,18 @@ function SharedReinspectPhotoField({
                 }`}
               >
                 <Camera className="size-3.5" />
-                换一张
+                換一張
               </Label>
             </div>
           </div>
         </div>
       ) : (
         <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2.5">
-          <PhotoThumb src={upload.draft.previewUrl} alt="已上传的复查照片" />
+          <PhotoThumb src={upload.draft.previewUrl} alt="已上傳的複查照片" />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5 text-[13px] font-medium text-emerald-800">
               <Check className="size-4 shrink-0" />
-              照片已上传,可以下复查结论了
+              照片已上傳,可以下複查結論了
             </div>
             <div className="mt-0.5 truncate text-[12px] text-gray-500">{upload.draft.label}</div>
             {/* 编号仍然摆出来,但它现在是**结果**不是**输入** —— 监理要在电话里报它、
@@ -985,7 +1081,7 @@ function SharedReinspectPhotoField({
                 }`}
               >
                 <Camera className="size-3.5" />
-                换一张
+                換一張
               </Label>
               {storedUrl && (
                 // 走产物出口取一遍 —— 多一道核对:这张确实进了产物库、取得回来。
@@ -997,7 +1093,7 @@ function SharedReinspectPhotoField({
                   className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1 text-[12px] text-gray-700 transition-colors hover:bg-gray-50 pointer-coarse:min-h-11 pointer-coarse:px-4"
                 >
                   <ExternalLink className="size-3" />
-                  打开
+                  打開
                 </a>
               )}
             </div>
@@ -1090,15 +1186,15 @@ function RowPhotoChoice({
           type="button"
           onClick={() => setManualOpen((open) => !open)}
           aria-expanded={manualOpen}
-          title={manualOpen ? undefined : "这一条要用别的照片:填它的编号,填了就不吃上面那张"}
+          title={manualOpen ? undefined : "這一條要用別的照片:填它的編號,填了就不吃上面那張"}
           className="cursor-pointer text-[11px] text-gray-400 underline-offset-2 transition-colors hover:text-gray-600 hover:underline pointer-coarse:min-h-11"
         >
-          {manualOpen ? "收起" : "这条用别的照片"}
+          {manualOpen ? "收起" : "這條用別的照片"}
         </button>
         {manualOpen && (
           <div className="mt-1.5 flex flex-col gap-1">
             <Label htmlFor={manualId} className="text-[12px]">
-              照片编号(32 位,在聊天里那张图下面)
+              照片編號(32 位,在聊天裏那張圖下面)
             </Label>
             <Input
               id={manualId}
@@ -1120,7 +1216,7 @@ function RowPhotoChoice({
                 「怎么回到共用那张」得有人说 —— 不说的话,填错了的人只会再去找一颗
                 「取消」按钮,而正确做法就是把这一格清空。 */}
             <div className="text-[11px] text-gray-400">
-              留空就用上面那张共用的照片。
+              留空就用上面那張共用的照片。
             </div>
           </div>
         )}
@@ -1233,6 +1329,32 @@ function HazardRow({
   /** 展开区的 id —— 给 `aria-controls` 用。隐患编号只含字母数字和连字符,直接拼安全。 */
   const evidenceId = `gyt-evidence-${hazard.hazard_no}`;
 
+  // ── 上屏文字的繁體化(界面恒繁體)。**一律只转显示的那一份,原值全部留着** ──────
+  //
+  // 🔴 这一段每一条底下都有一个「原值还在被谁用」,漂了就静默出错:
+  //   · itemText     —— 只显示。8 类受控违规项里 5 类简繁不同形(临边无防护 / 用电隐患 …)
+  //   · severityText —— 原值 `hazard.severity` 还要当 `SEVERITY_CHIP` 的键(较大→較大 会丢配色)
+  //   · gradeText    —— 原值 `hazard.grade` 还要当 `GRADE_CHIP` 的键(严重→嚴重 会丢配色)
+  //   · statusText   —— 后端 `status_display` 与本地兜底表**两条路供同一颗徽章**,
+  //                     所以整个表达式一起过转换,不是只转其中一条 —— 只转一条的表现是
+  //                     「点一下确认,徽章的字忽然换了一种写法」(patchHazard 会丢掉
+  //                     status_display,渲染当场从左边回落到右边)
+  //   · dueText      —— `due_display` 是后端排的人话;`due_date` 是 ISO 日期、没有汉字
+  //   · gradeLabels  —— 与 `GRADE_CHOICES` **按下标配对**;送后端和比较用的仍是原值
+  //   · confirmText  —— `confirmPrompt` 里插了 `hazard.item`(后端字),所以整句要过
+  //   · failureText  —— 后端的 user_msg 原样上屏那条路
+  const itemText = useHantUI(hazard.item);
+  const severityText = useHantUI(hazard.severity);
+  const gradeText = useHantUI(hazard.grade);
+  const statusText = useHantUI(hazard.status_display || hazardStatusZh(hazard.status));
+  const dueText = useHantUI(hazard.due_display || hazard.due_date || "");
+  const gradeLabels = useHantUIAll(GRADE_CHOICES);
+  // hook 必须无条件调用,所以没举手时喂空串 —— **不是**给 `confirmPrompt` 随便传个动作:
+  // 它对认不出的动作会落到最后那个 return(上报主管部门那句),而这句话是人在按下
+  // 不可撤销的那一下之前唯一读的东西,拼错了比抛异常还坏(异常至少看得见)。
+  const confirmText = useHantUI(armedAction ? confirmPrompt(armedAction, hazard) : "");
+  const failureText = useHantUI(failure);
+
   return (
     <div className="flex flex-col gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5">
       <div className="flex items-start gap-2.5">
@@ -1244,7 +1366,7 @@ function HazardRow({
             checked={selected}
             onChange={onToggleSelect}
             disabled={busy}
-            aria-label={`选中隐患 ${hazard.hazard_no}`}
+            aria-label={`選中隱患 ${hazard.hazard_no}`}
             className="mt-1 size-4 shrink-0 cursor-pointer accent-blue-600 pointer-coarse:size-6"
           />
         )}
@@ -1260,13 +1382,13 @@ function HazardRow({
             ⚠️ 它吃 ARTIFACT_BASE 那条链;断了会变成「预览不出来」的占位框
             (PhotoThumb 的 onError 兜着,不留破图)。点开是大图,走同一个取件端点。 */}
         {photoUrl && (
-          <a href={photoUrl} target="_blank" rel="noreferrer" title="点开看大图">
-            <PhotoThumb src={photoUrl} alt={`${hazard.item} 的现场照片`} />
+          <a href={photoUrl} target="_blank" rel="noreferrer" title="點開看大圖">
+            <PhotoThumb src={photoUrl} alt={`${itemText} 的現場照片`} />
           </a>
         )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="font-medium text-gray-900">{hazard.item}</span>
+            <span className="font-medium text-gray-900">{itemText}</span>
             {/* 🔴 现场那一档念的是 `severity`,**不是 `grade`**(supervision-lib 的
                 HazardBrief.severity 那条红线,与后端 `_hazard_line` 同一条规矩):
                 needs_grading=1 时 `grade` 是映射表给的默认值(一般),不是有人判过的
@@ -1275,28 +1397,33 @@ function HazardRow({
                 `severity` 只有 GET 端点那条路会给;老路(工具返回)没有这个键,
                 那时这颗徽章干脆不出现,让下面那颗「监理定级」和「⚠ 需人工定级」说话。 */}
             {hazard.severity && (
+              // 🔴 键用原值 `hazard.severity`(SEVERITY_CHIP 的键是简体,与后端
+              //    `agents/safety/severity.py` 同源);屏幕上那份用 severityText。
               <Chip tone={SEVERITY_CHIP[hazard.severity] ?? "bg-gray-100 text-gray-600 ring-gray-200"}>
-                现场{hazard.severity}
+                現場{severityText}
               </Chip>
             )}
             {/* 监理那一档(一般/严重)只在**定过级之后**才显示 —— 它决定了下面出现的是
                 「签发通知单」还是「签发暂停令」(服务端硬拦①②),没定级时把默认值摆出来
                 就是在给一个还不成立的结论背书。 */}
             {!hazard.needs_grading && hazard.grade && (
+              // 同上:键用原值(GRADE_CHIP 的键来自 db/hazards.py 的 GRADES),字用 gradeText。
               <Chip tone={GRADE_CHIP[hazard.grade] ?? "bg-gray-100 text-gray-600 ring-gray-200"}>
-                监理定级:{hazard.grade}
+                監理定級:{gradeText}
               </Chip>
             )}
             <Chip tone={STATUS_CHIP[hazard.status] ?? "bg-gray-100 text-gray-600 ring-gray-200"}>
-              {/* 中文名优先用后端算好的那份;拿不到才退回本地词表(两边同一张表)。 */}
-              {hazard.status_display || hazardStatusZh(hazard.status)}
+              {/* 中文名优先用后端算好的那份;拿不到才退回本地词表(两边同一张表)。
+                  🔴 **两条路一起过繁體转换**(statusText),不是只转其中一条 ——
+                  只转一条的表现是同一颗徽章会因为「这次是哪条路供的字」而变字形。 */}
+              {statusText}
             </Chip>
             {hazard.needs_grading && (
               // 🔴 显眼是刻意的:needs_grading=1 的隐患**任何签发都被服务端硬拦**
               // (Codex#11)。不标出来的话,人会一直点签发、一直被拒,而真正要做的
               // 是先定级 —— 界面必须把这件事说在前面。
               <Chip tone="bg-fuchsia-100 text-fuchsia-800 ring-fuchsia-300">
-                ⚠ 需人工定级
+                ⚠ 需人工定級
               </Chip>
             )}
             {hazard.overdue && (
@@ -1307,7 +1434,7 @@ function HazardRow({
                 切回「全部」时多出来的是哪些。有归属的不显示编号:这里拿不到工地名,
                 摆一串 P-xxxx 只是噪声。 */}
             {hazard.project_id === "" && (
-              <Chip tone="bg-gray-100 text-gray-600 ring-gray-200">未归工地</Chip>
+              <Chip tone="bg-gray-100 text-gray-600 ring-gray-200">未歸工地</Chip>
             )}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
@@ -1318,9 +1445,7 @@ function HazardRow({
               <span className={`text-[11px] ${hazard.overdue ? "text-red-600" : "text-gray-400"}`}>
                 {/* 期限的人话由后端算(due_display),前端一行日期换算都不写 ——
                     与下面那个输入框同一条红线(dates.py 用 314 行证明了这件事有多容易算错)。 */}
-                {hazard.due_date
-                  ? `整改期限 ${hazard.due_display || hazard.due_date}`
-                  : "还没下过整改期限"}
+                {hazard.due_date ? `整改期限 ${dueText}` : "還沒下過整改期限"}
               </span>
             )}
           </div>
@@ -1329,15 +1454,15 @@ function HazardRow({
 
       {hazard.needs_grading && (
         <div className="rounded-lg bg-fuchsia-50 px-2.5 py-2 text-[12px] text-fuchsia-900">
-          现场判的是「待定级」(词表外的隐患项)。不知道不等于不严重 ——
-          先由人定成一般或严重,才能签文书。
+          現場判的是「待定級」(詞表外的隱患項)。不知道不等於不嚴重 ——
+          先由人定成一般或嚴重,才能簽文書。
         </div>
       )}
 
       {needsDue && (
         <div className="flex flex-col gap-1">
           <Label htmlFor={`gyt-due-${hazard.hazard_no}`} className="text-[12px]">
-            整改期限(写原话:明天 / 3天后 / 下周三 / 月底)
+            整改期限(寫原話:{DUE_PHRASE_EXAMPLES})
           </Label>
           {/* 原话原样送后端,**前端一行日期换算都不写** —— agents/schedule/dates.py
               用 314 行证明了中文日期不好算,红线是「只传原话,代码来算」。 */}
@@ -1345,7 +1470,7 @@ function HazardRow({
             id={`gyt-due-${hazard.hazard_no}`}
             value={form.due}
             onChange={(e) => onFormChange({ due: e.target.value })}
-            placeholder="如:下周三"
+            placeholder={`如:${DUE_PHRASE_SAMPLE}`}
             disabled={busy}
           />
         </div>
@@ -1363,8 +1488,10 @@ function HazardRow({
 
       {armedAction ? (
         <IssueConfirmBar
-          prompt={confirmPrompt(armedAction, hazard)}
-          confirmLabel={CONFIRM_BUTTON_LABEL[armedAction] ?? "确认"}
+          // 这句里插了 `hazard.item`(后端来的违规项名),所以整句过转换,
+          // 不是只转 `confirmPrompt` 里那些源码文案。
+          prompt={confirmText}
+          confirmLabel={CONFIRM_BUTTON_LABEL[armedAction] ?? "確認"}
           armedAt={armedAt}
           onCancel={onDisarm}
           onConfirm={() => onAct(armedAction)}
@@ -1392,18 +1519,24 @@ function HazardRow({
               //      · 没判过(needs_grading)→ **两颗都是真按钮**,一颗都不锁。
               <div key={action} className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[12px] text-gray-500">
-                  {已判级别 ? "改判为" : "定级为"}
+                  {已判级别 ? "改判為" : "定級為"}
                 </span>
-                {[GRADE_NORMAL, GRADE_SEVERE].map((grade) =>
+                {/* 🔴 `grade` 是**简体原值**,一路管着三件事:`已判级别 === grade` 的比较、
+                    `GRADE_SEVERE` 的配色判断、以及 `onAct("grade", grade)` **送后端**
+                    (`HAZARD_GRADES` 是受控词表,词表外后端回 400)。
+                    屏幕上那份繁體是 `gradeLabels[i]`,**按下标**跟这个数组配对 ——
+                    别图省事把数组换成繁體的,那三处会一起静默失灵:
+                    比较永远不等(当前档渲成按钮)、配色掉回灰、请求被后端 400。 */}
+                {GRADE_CHOICES.map((grade, i) =>
                   已判级别 === grade ? (
                     // 状态片:说清「现在就是这一档」,而不是摆一颗点不动的按钮。
                     <span
                       key={grade}
-                      title="这是现在的级别,不用再点一次"
+                      title="這是現在的級別,不用再點一次"
                       className="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2 py-1 text-[12px] text-gray-500 ring-1 ring-gray-200 ring-inset"
                     >
                       <Check className="size-3.5" />
-                      现在:{grade}
+                      現在:{gradeLabels[i]}
                     </span>
                   ) : (
                     <Button
@@ -1414,7 +1547,7 @@ function HazardRow({
                       onClick={() => onAct("grade", grade)}
                       className="pointer-coarse:min-h-11"
                     >
-                      {grade}
+                      {gradeLabels[i]}
                     </Button>
                   ),
                 )}
@@ -1440,7 +1573,7 @@ function HazardRow({
               //    (刚拿共用那张给这条登记过复查了),面板顶上那一格一点线索都没有,
               //    而触屏根本没有 hover —— 藏进 title 等于没说,人只会看见一颗死按钮。
               <div key={action} className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[12px] text-gray-500">复查结论</span>
+                <span className="text-[12px] text-gray-500">複查結論</span>
                 <Button
                   size="sm"
                   variant="outline"
@@ -1501,7 +1634,7 @@ function HazardRow({
           )}
           {actions.length === 0 && (
             <span className="text-[12px] text-gray-400">
-              这条已经走完流程,没有下一步了。
+              這條已經走完流程,沒有下一步了。
             </span>
           )}
         </div>
@@ -1509,7 +1642,8 @@ function HazardRow({
 
       {failure && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-[13px] text-red-700">
-          {failure}
+          {/* 后端的人话原样上屏,只多过一道繁體(三条硬拦、状态机拒绝那几句都在后端拼)。 */}
+          {failureText}
         </div>
       )}
 
@@ -1553,7 +1687,7 @@ function HazardRow({
           {/* 措辞按「这一块里有什么」写,不写「详情」「展开」那种什么都没说的词。
               收起时也用同一句 —— 换成「收起」的话,同一颗按钮在两个状态下说的是
               两件不相干的事(一个说内容、一个说动作),而箭头已经把方向讲清楚了。 */}
-          <span>已签文书和复查记录</span>
+          <span>已簽文書和複查記錄</span>
         </button>
         {expanded && (
           <div id={evidenceId} className="mt-2">
@@ -1702,6 +1836,21 @@ export function SupervisionPanel({
    * 点了一次」这一幕 —— 那是共用带来的唯一新增误用路径。
    */
   const [usedPhotos, setUsedPhotos] = useState<Record<string, string>>({});
+
+  /**
+   * 繁體字典**预热** —— 面板一挂载就让它上路,而不是等第一条文本渲染时才拉。
+   *
+   * 面板打开的下一件事就是渲染一屏后端来的中文(状态、级别、违规项、期限),
+   * 不预热的话那些字会先以简体闪一下、字典到位后再变成繁體。差别只有一瞬,
+   * 但这一屏底下每颗按钮都是法律动作,字在眼皮底下变形会让人怀疑自己看错了行。
+   *
+   * 🔴 预热放在**面板**里、不放在常驻入口(supervision-entry.tsx)上:
+   * 那颗按钮是首屏就挂着的,在那儿预热 = 每个用户开站就拉 438 KB 字典,
+   * 包括从不开这个面板的简体工友。字典必须跟着面板走。
+   */
+  useEffect(() => {
+    ensureHantConverter();
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2234,7 +2383,7 @@ export function SupervisionPanel({
         return next;
       });
       setSelected((prev) => prev.filter((no) => !result.confirmed.includes(no)));
-      setBanner({ tone: "ok", text: result.user_msg || `已确认 ${result.confirmed.length} 条。` });
+      setBanner({ tone: "ok", text: result.user_msg || `已確認 ${result.confirmed.length} 條。` });
     } catch (err) {
       setBanner({
         tone: "bad",
@@ -2335,7 +2484,7 @@ export function SupervisionPanel({
           invalidateDetail(parsed.hazard_no);
           setBanner({
             tone: "ok",
-            text: parsed.user_msg || `已把隐患 ${parsed.hazard_no} 从台账里删掉。`,
+            text: parsed.user_msg || `已把隱患 ${parsed.hazard_no} 從台賬裏刪掉。`,
           });
           return;
         }
@@ -2406,6 +2555,22 @@ export function SupervisionPanel({
     [apiBase, forms, sharedPhotoState, setFailure, invalidateDetail, loadDetail],
   );
 
+  // ── 面板这一层要上屏的字(界面恒繁體)──────────────────────────────────────
+  //
+  // 🔴 **必须排在下面那句 `return null` 之前** —— hooks 不许在 early return 之后调。
+  //
+  // · scopeLabels —— 四颗筛子按钮的字。原值 `HAZARD_SCOPES` 是**送后端的 `?scope=`
+  //   受控词**(`agents/supervision/scoping.SCOPES`),词表外后端直接回 400,
+  //   所以 key / aria-pressed / setScope 三处一律还用原值,只有按钮上的字用这一份。
+  //   ⚠️ 「在办」「待确认」简繁不同形,「超期」「全部」同形 —— 别以为同形的那两个
+  //      不用管,顺序是按下标配对的。
+  // · scopeLabel  —— 空清单那句「「在辦」这一档里没有隐患」里那个词,同一个理由。
+  // · bannerText / loadText —— 后端 user_msg 原样上屏那两条路。
+  const scopeLabels = useHantUIAll(HAZARD_SCOPES);
+  const scopeLabel = useHantUI(scope);
+  const bannerText = useHantUI(banner?.text ?? "");
+  const loadText = useHantUI(loadMessage);
+
   if (typeof document === "undefined") return null;
 
   return createPortal(
@@ -2413,7 +2578,7 @@ export function SupervisionPanel({
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
-      aria-label="监理确认与处置"
+      aria-label="監理確認與處置"
     >
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       {/* 高度上限取 min(92dvh, 100dvh-2rem):理由原样见 checkin.tsx ——
@@ -2423,7 +2588,7 @@ export function SupervisionPanel({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-base font-semibold tracking-tight">
             <ClipboardCheck className="size-5 text-gray-700" />
-            监理确认与处置
+            監理確認與處置
           </div>
           <div className="flex items-center gap-1">
             {/* 刷新会**整表重排**(见 list 头注),所以它必须是人主动点的一颗按钮,
@@ -2434,8 +2599,8 @@ export function SupervisionPanel({
               onClick={reload}
               disabled={busy || phase === "loading"}
               className="flex size-7 cursor-pointer items-center justify-center rounded text-gray-500 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:size-11"
-              aria-label="重新拉一遍隐患清单"
-              title="重新拉一遍(会按最新台账重排整张清单)"
+              aria-label="重新拉一遍隱患清單"
+              title="重新拉一遍(會按最新台賬重排整張清單)"
             >
               <RefreshCcw className={`size-4 ${phase === "loading" ? "animate-spin" : ""}`} />
             </button>
@@ -2445,7 +2610,7 @@ export function SupervisionPanel({
               type="button"
               onClick={onClose}
               className="flex size-7 cursor-pointer items-center justify-center rounded text-gray-500 hover:bg-gray-100 pointer-coarse:size-11"
-              aria-label="关闭"
+              aria-label="關閉"
             >
               <X className="size-5" />
             </button>
@@ -2457,10 +2622,10 @@ export function SupervisionPanel({
             或者拼错一个字然后每次都 400。刻意不做自由输入框,理由同上。 */}
         <div
           role="group"
-          aria-label="筛选隐患"
+          aria-label="篩選隱患"
           className="flex flex-wrap items-center gap-1.5"
         >
-          {HAZARD_SCOPES.map((s) => (
+          {HAZARD_SCOPES.map((s, i) => (
             <button
               key={s}
               type="button"
@@ -2475,7 +2640,9 @@ export function SupervisionPanel({
                   : "bg-white text-gray-600 ring-gray-300 hover:bg-gray-50"
               }`}
             >
-              {s}
+              {/* 🔴 上屏的字用 `scopeLabels[i]`(繁體),而 key / aria-pressed /
+                  setScope 三处一律用原值 `s` —— 它是送后端的受控词,转了后端 400。 */}
+              {scopeLabels[i]}
             </button>
           ))}
           {/* 当前看的是哪个工地。**「全部工地」这一档必须说出来** —— 不说的话,
@@ -2483,7 +2650,7 @@ export function SupervisionPanel({
               切工地在顶栏(ProjectSwitcher),这里只报状态、不给第二个入口:
               两个地方都能改同一件事,人就不知道以哪个为准。 */}
           <span className="ml-auto text-[12px] text-gray-400">
-            {projectFilter === null ? "全部工地" : "只看顶栏选中的工地"}
+            {projectFilter === null ? "全部工地" : "只看頂欄選中的工地"}
           </span>
         </div>
 
@@ -2496,14 +2663,15 @@ export function SupervisionPanel({
                 : "rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700"
             }
           >
-            {banner.text}
+            {/* 后端的 user_msg 原样上屏,只多过一道繁體。 */}
+            {bannerText}
           </div>
         )}
 
         {pending.length > 0 && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-3 py-2">
             <div className="text-[13px] text-amber-900">
-              待确认 {pending.length} 条 —— 确认之后才进正式流程(签文书、算整改率、能被升级)。
+              待確認 {pending.length} 條 —— 確認之後才進正式流程(簽文書、算整改率、能被升級)。
             </div>
             <div className="flex items-center gap-2">
               <Button
@@ -2521,7 +2689,7 @@ export function SupervisionPanel({
                 }
                 className="pointer-coarse:min-h-11"
               >
-                {selectablePending.length === pending.length ? "取消全选" : "全选"}
+                {selectablePending.length === pending.length ? "取消全選" : "全選"}
               </Button>
               <Button
                 size="sm"
@@ -2534,7 +2702,7 @@ export function SupervisionPanel({
                 ) : (
                   <Check className="mr-1 size-4" />
                 )}
-                确认选中 {selectablePending.length} 条
+                確認選中 {selectablePending.length} 條
               </Button>
             </div>
           </div>
@@ -2548,8 +2716,8 @@ export function SupervisionPanel({
         {phase === "ready" && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-gray-500">
             <span>
-              这一屏 {list.length} 条
-              {onScreenOverdue > 0 ? ` · 已超期 ${onScreenOverdue} 条` : ""}
+              這一屏 {list.length} 條
+              {onScreenOverdue > 0 ? ` · 已超期 ${onScreenOverdue} 條` : ""}
             </span>
             {snapshot?.today && <span>期限按工地日期 {snapshot.today} 算</span>}
             {/* D11_NOTE —— 复查结论为什么不让模型下。
@@ -2566,8 +2734,8 @@ export function SupervisionPanel({
                 ⚠️ 共用照片之后这句话更要紧了:一张照片管好几条结论,
                 「谁来判」这件事只会更容易被当成「系统替我判过了」。 */}
             {reinspectable.length > 0 && (
-              <span title="复查照片的角度、光线、取景都变了,模型分不清「问题已消除」和「这张没拍到那个部位」——那是往「误判合格」方向错。">
-                复查结论由人来下
+              <span title="複查照片的角度、光線、取景都變了,模型分不清「問題已消除」和「這張沒拍到那個部位」——那是往「誤判合格」方向錯。">
+                複查結論由人來下
               </span>
             )}
           </div>
@@ -2579,8 +2747,8 @@ export function SupervisionPanel({
           <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
             <div className="text-[12px] leading-snug text-amber-900">
-              这一档的隐患太多,只列出了前 {list.length} 条(台账里共 {snapshot.total} 条)。
-              换一个筛子,或者在顶栏先选一个工地,才看得全。
+              這一檔的隱患太多,只列出了前 {list.length} 條(台賬裏共 {snapshot.total} 條)。
+              換一個篩子,或者在頂欄先選一個工地,才看得全。
             </div>
           </div>
         )}
@@ -2591,8 +2759,8 @@ export function SupervisionPanel({
         {phase === "ready" && (snapshot?.unassigned ?? 0) > 0 && (
           <div className="rounded-lg bg-gray-50 px-3 py-2 text-[12px] leading-snug text-gray-600">
             {projectFilter === null
-              ? `上面这些里,有 ${snapshot?.unassigned} 条还没归到任何工地。`
-              : `另外还有 ${snapshot?.unassigned} 条隐患没归到任何工地,这一屏里看不到 —— 把顶栏的工地切回「全部」才看得见。`}
+              ? `上面這些裏,有 ${snapshot?.unassigned} 條還沒歸到任何工地。`
+              : `另外還有 ${snapshot?.unassigned} 條隱患沒歸到任何工地,這一屏裏看不到 —— 把頂欄的工地切回「全部」才看得見。`}
           </div>
         )}
 
@@ -2626,7 +2794,7 @@ export function SupervisionPanel({
           {phase === "loading" ? (
             <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300 px-3 py-8 text-[13px] text-gray-500">
               <LoaderCircle className="size-4 animate-spin" />
-              正在读隐患台账…
+              正在讀隱患台賬…
             </div>
           ) : phase === "unreadable" ? (
             <div className="flex flex-col items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-4">
@@ -2635,7 +2803,7 @@ export function SupervisionPanel({
                 <div className="text-[13px] leading-snug text-red-700">
                   {/* 这一句一律是人话:后端的 user_msg,或 normalizeError 那几句固定中文。
                       **绝不要写成「台账里没有隐患」** —— 那正是这个分支存在的全部意义。 */}
-                  隐患清单没读出来。{loadMessage}
+                  隱患清單沒讀出來。{loadText}
                 </div>
               </div>
               <Button
@@ -2645,14 +2813,15 @@ export function SupervisionPanel({
                 className="pointer-coarse:min-h-11"
               >
                 <RefreshCcw className="mr-1 size-3.5" />
-                重试
+                重試
               </Button>
             </div>
           ) : list.length === 0 ? (
             <div className="rounded-lg border border-dashed border-gray-300 px-3 py-8 text-center text-[13px] text-gray-500">
-              「{scope}」这一档里没有隐患。
+              {/* 念的是繁體那份;`scope` 原值仍是送后端的受控词,别在这儿念它。 */}
+              「{scopeLabel}」這一檔裏沒有隱患。
               <br />
-              换上面的筛子看别的档;顶栏选了工地的话,也可能是这个工地下面没有。
+              換上面的篩子看別的檔;頂欄選了工地的話,也可能是這個工地下面沒有。
             </div>
           ) : (
             list.map((hazard) => (
@@ -2684,7 +2853,7 @@ export function SupervisionPanel({
 
         {docs.length > 0 && (
           <div className="flex flex-col gap-2">
-            <div className="text-sm font-medium text-gray-700">本次出的文书</div>
+            <div className="text-sm font-medium text-gray-700">本次出的文書</div>
             <SupervisionDocCards documents={docs} artifactBase={artifactBase} />
           </div>
         )}
@@ -2695,12 +2864,12 @@ export function SupervisionPanel({
             **它是真删**(库里整行没了)。这段话没跟着改的话,人会照着旧说明放心去点
             ——「反正只是划掉」—— 然后一条真实存在的隐患就从台账上消失了。 */}
         <div className="rounded-lg bg-gray-50 px-3 py-2 text-[11px] leading-relaxed text-gray-500">
-          「否决」是给**识错了**的隐患用的(照片里那顶帽子其实戴着):那一行会从台账里
-          整行删掉,找不回来,而且只有还没确认的隐患能这么删。确实是隐患的,请用「确认」。
+          「否決」是給**識錯了**的隱患用的(照片裏那頂帽子其實戴着):那一行會從台賬裏
+          整行刪掉,找不回來,而且只有還沒確認的隱患能這麼刪。確實是隱患的,請用「確認」。
           <br />
-          不确认、也不否决,本身是安全的:待确认的隐患不算整改率、不进超期清单、不会被升级(D17)。
+          不確認、也不否決,本身是安全的:待確認的隱患不算整改率、不進超期清單、不會被升級(D17)。
           <br />
-          这份清单直接读的是隐患台账,和聊天记录没有关系 —— 刷新页面、换台机器进来,
+          這份清單直接讀的是隱患台賬,和聊天記錄沒有關係 —— 刷新頁面、換台機器進來,
           看到的都是同一份。
         </div>
       </div>
@@ -2733,6 +2902,18 @@ export function SupervisionPanel({
  * 存在的隐患就这么没了,而屏幕上一切正常(识别回执照常报了这一项)。
  * ⚠️ 这条「必须显示」现在**没有任何地方在履行**(整张卡不可达)—— 那批失败项
  * 目前只在后端日志里。它不属于 W10 的范围,但别以为界面上已经有人在管了。
+ *
+ * ── 繁體化(W12):这张卡**只做了源码里的静态繁體,没有接运行时转换** ──────────
+ * 也就是说 `failedItems`(后端来的违规项名,8 类里 5 类简繁不同形)在这张卡上
+ * 仍会显示简体。这是**刻意的取舍**,两条理由:
+ *   ① 它长在**聊天流**里,不是点开才挂载的面板。接上 `useHantUI` 等于哪天这条路
+ *      一通,每条隐患消息都会触发 438 KB 字典的懒加载 —— 而那条「简体工友一个
+ *      字节都不下」是刚实测过的承诺;
+ *   ② 它**不可达**,接了也没法在界面上验(本组件头注最后一句就是这个意思),
+ *      而接一段验不了的转换逻辑,下一个人只会以为这里已经管好了。
+ * 🔴 哪天让这张卡活过来,**这一段要一起重做**:那时 failedItems / 徽章上的字
+ * 都得过转换,而底下这颗按钮点开的 `SupervisionPanel` 里已经转了 ——
+ * 一半繁體一半简体比全简体更像坏了。
  */
 export function HazardIntakeCard({
   hazards,
@@ -2756,21 +2937,21 @@ export function HazardIntakeCard({
         <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-blue-600" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="font-medium text-gray-900">隐患台账</span>
+            <span className="font-medium text-gray-900">隱患台賬</span>
             <span className="text-[13px] text-gray-600">
-              {hazards.length > 0 ? `已登记 ${hazards.length} 条` : "本次没有登记成功的隐患"}
+              {hazards.length > 0 ? `已登記 ${hazards.length} 條` : "本次沒有登記成功的隱患"}
             </span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[13px] text-gray-600">
             {pendingCount > 0 && (
-              <Chip tone="bg-amber-50 text-amber-700 ring-amber-200">待确认 {pendingCount} 条</Chip>
+              <Chip tone="bg-amber-50 text-amber-700 ring-amber-200">待確認 {pendingCount} 條</Chip>
             )}
             {severe > 0 && (
-              <Chip tone="bg-red-50 text-red-700 ring-red-200">严重 {severe} 条</Chip>
+              <Chip tone="bg-red-50 text-red-700 ring-red-200">嚴重 {severe} 條</Chip>
             )}
             {needGrading > 0 && (
               <Chip tone="bg-fuchsia-100 text-fuchsia-800 ring-fuchsia-300">
-                需人工定级 {needGrading} 条
+                需人工定級 {needGrading} 條
               </Chip>
             )}
           </div>
@@ -2779,8 +2960,8 @@ export function HazardIntakeCard({
             <div className="mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-2.5 py-2">
               <AlertTriangle className="mt-0.5 size-4 shrink-0 text-red-600" />
               <div className="text-[12px] leading-snug text-red-700">
-                有 {failedItems.length} 项没能记进台账:{failedItems.join("、")}。
-                这几项不会进整改流程,请人工补记或找管理员查日志。
+                有 {failedItems.length} 項沒能記進台賬:{failedItems.join("、")}。
+                這幾項不會進整改流程,請人工補記或找管理員查日誌。
               </div>
             </div>
           )}
@@ -2793,13 +2974,13 @@ export function HazardIntakeCard({
                 className="pointer-coarse:min-h-11"
               >
                 <ClipboardCheck className="mr-1 size-4" />
-                {pendingCount > 0 ? `去确认(${pendingCount} 条待确认)` : "打开监理处置"}
+                {pendingCount > 0 ? `去確認(${pendingCount} 條待確認)` : "打開監理處置"}
               </Button>
             </div>
           )}
 
           <div className="mt-1.5 text-[11px] text-gray-400">
-            自动登记的隐患都是「待确认」:要有人确认过,才会进签文书 / 算整改率 / 能被升级的正式流程。
+            自動登記的隱患都是「待確認」:要有人確認過,才會進簽文書 / 算整改率 / 能被升級的正式流程。
           </div>
         </div>
       </div>

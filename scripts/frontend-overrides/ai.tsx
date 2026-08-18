@@ -298,8 +298,8 @@ export function AssistantMessage({
                 <Trace
                   label={
                     isBackHandoff
-                      ? "交回调度中枢"
-                      : `${AGENT_NAMES[subAgentName ?? ""] ?? subAgentName} · 已把结果交给调度中枢`
+                      ? "交回調度中樞"
+                      : `${AGENT_NAMES[subAgentName ?? ""] ?? subAgentName} · 已把結果交給調度中樞`
                   }
                   icon={
                     <MessageSquareText className="h-3.5 w-3.5 shrink-0 text-gray-400" />

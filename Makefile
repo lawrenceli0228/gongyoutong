@@ -362,5 +362,11 @@ test-frontend: ## 跑前端纯函数测试(vitest,scripts/frontend-tests,不碰 
 	@# 七条编码测试向量与 backend/tests/unit/test_checkin_api.py 的 ROUNDTRIP_VECTORS
 	@# 同源(两边注释互指):后端改了编码,这里会先红。
 	@# --frozen-lockfile:锁文件就是契约,CI 与本机装的必须一字不差。
+	@# tsc 那一步是 2026-08-18 补的。补的理由是当天实证:往包里加了三个 .mjs 工具,
+	@# vitest 全绿而 `tsc --noEmit` 当场十几条红(.mjs 没进 include → import 进来全是 any),
+	@# **而没有任何一道关卡会说话**。CLAUDE.md 早就写着「加 lib 要同步 tsconfig 的 include」,
+	@# 但那是靠人记的 —— 靠人记的结果就是这次漏了。
+	@# 静默降级的表现:测试里写错字段名也不报,覆盖看着在、其实是 any 在放行。
 	cd scripts/frontend-tests && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm install --frozen-lockfile \
+		&& COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm tsc --noEmit \
 		&& COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm vitest run
