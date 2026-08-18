@@ -198,16 +198,59 @@ const HAN_RE = /[一-鿿]/;
  * ⚠️ 这段**必须留简体** —— 它匹配的是后端拼的简体串,转了就一个都摘不掉,
  *    而表现只是「偶尔判错语种」,没有任何报错。
  */
-const ARTIFACT_REF_RE = /[(（](?:照片|图纸)编号[:：][^)）]*[)）][ \t]*/g;
+const ARTIFACT_REF_RE = /[(（](?:照片|图纸)编号[:：]/;
 
-/** 摘掉后端拼进来的编号块,只留用户自己打的字。 */
-export function stripArtifactRefs(text: string): string {
-  return (text ?? "").replace(ARTIFACT_REF_RE, "");
+/**
+ * 只留用户**自己打的字** —— 后端拼进来的一律不算。
+ *
+ * ===========================================================================
+ * 判据来自 `core/uploads.py` 的拼装顺序,不是猜的
+ * ---------------------------------------------------------------------------
+ * ```python
+ * body = " ".join(用户打的那几段)              # ← 只有这一段是用户的
+ * body = f"{body}\n(照片编号:…)"  if body      # ← 编号块,**换行**分隔
+ *        else f"看看这张照片。(照片编号:…)"      # ← 用户什么都没打时,后端**自己编一句**
+ * body = f"{body} {_UNSUPPORTED_HINT}"         # ← 提示语,空格分隔,永远在编号块之后
+ * body = f"{body} {_PDF_HINT}"
+ * ```
+ *
+ * 于是规则只有两条:
+ *   ① **在第一个编号块处截断** —— 它后面全是后端的(编号 + 各种提示语);
+ *   ② 截断出来的头段**必须以换行结尾**才算用户打的字 ——
+ *      没有换行说明它是后端编的那句开场白。
+ *
+ * 🔴 **为什么非做 ① 不可**:提示语带的简体票比编号块多一个量级。
+ *    2026-08-18 数过(队友当天刚把 `_PDF_HINT` 从 2 句扩成 4 句):
+ *
+ *        _UNSUPPORTED_HINT          8 张简体票
+ *        _PDF_HINT                 28 张简体票   ← 一句话就能压过任何短句
+ *        _DRAWING_TOO_LARGE_HINT    4 张简体票
+ *
+ *    港方工友传个 PDF 配一句短繁體,答话当场变简体,而且零报错。
+ *
+ * 🔴 **为什么非做 ② 不可**:后端编的那句是「看看这**张**照片。」——
+ *    「这」「张」都在 SCRIPT_PAIRS 里。不做②的话,
+ *    **传张照片什么都不打 = 简体答话**,而正确行为是「没有信号 → 落默认语种」。
+ *
+ * ⚠️ 用户自己打的字里不会有换行(`" ".join(...)` 用空格拼),所以消息里
+ *    出现的 `\n` 一定是后端的分隔符 —— ② 这条判据才成立。哪天 uploads.py
+ *    改成别的分隔法,这里会**静默失效**(表现只是「偶尔判错语种」)。
+ *
+ * ⚠️ 同源四处:本函数 + `human.tsx` 的 `refPattern` + 后端 `core/uploads.py`
+ *    的拼装 + 那三条 `_*_HINT`。`lang-lib.test.ts` 钉着前两处。
+ */
+export function userTypedText(text: string): string {
+  const raw = text ?? "";
+  const m = ARTIFACT_REF_RE.exec(raw);
+  if (!m) return raw; // 没传附件,整条都是用户打的
+  const head = raw.slice(0, m.index);
+  // ② 没有换行 = 后端编的开场白(「看看这张照片。」),用户其实什么都没打
+  return head.endsWith("\n") ? head : "";
 }
 
 export function detectInput(text: string): Lang | null {
-  // 先摘编号块:判的是「**用户**在打什么字」,后端拼进来的那段不算数(见上)。
-  const s = stripArtifactRefs(text ?? "");
+  // 先剥掉后端拼进来的部分:判的是「**用户**在打什么字」(见上)。
+  const s = userTypedText(text ?? "");
   if (!s) return null;
 
   if (HAN_RE.test(s)) {

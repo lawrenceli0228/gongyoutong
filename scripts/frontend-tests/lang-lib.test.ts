@@ -24,7 +24,7 @@ import {
   resolveLang,
   SCRIPT_PAIRS,
   shouldConvert,
-  stripArtifactRefs,
+  userTypedText,
 } from "../frontend-overrides/lang-lib";
 // 判「简体侧是不是真的简体」必须用真转换器,不能用字表 —— 理由见下面那条
 // 「每个字对的简体侧在 hk 档下必须真的会变」。
@@ -225,50 +225,54 @@ describe("shouldConvert 硬约束", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 后端拼进来的产物编号块 —— 判语种前必须摘掉(2026-08-18 真人试用抓到)
+// 后端拼进用户消息的东西,判语种时一律不算(2026-08-18 真人试用抓到)
 // ---------------------------------------------------------------------------
 
-describe("产物编号块不许污染语种判别", () => {
-  /**
-   * 🔴 这条盯的是一个**已上线过的**缺陷。
-   *
-   * `core/uploads.py` 把上传的图纸改写成 `(图纸编号:<32位hex>)` 拼进用户消息,
-   * 而「图」「纸」都在 SCRIPT_PAIRS 里 —— 凭空给用户投两张简体票。
-   * 实测五条真实港式短句翻掉四条,表现是**港方工友传张图纸,答话就变简体**,
-   * 而且没有任何报错。
-   */
+describe("userTypedText:只留用户自己打的字", () => {
+  const REF = "(图纸编号:0123456789abcdef0123456789abcdef)";
+  /** 队友 2026-08-18 把 _PDF_HINT 从 2 句扩成 4 句,简体票从 2 涨到 28。 */
+  const PDF_HINT =
+    "(你传的是 PDF。聊天窗口当场看图暂时只认 DXF。如果这是**图纸**,请用右上角" +
+    "「📂 资料归档」面板上传 —— 那里图纸支持 PDF 和 DXF,归档进去后就能查图层/构件、" +
+    "出预览、读图上文字。如果 PDF 里其实是现场照片,麻烦先截个图再传)";
+
   it("🔴 港式短句 + 传图纸,判别不许被翻成简体", () => {
-    const REF = "(图纸编号:0123456789abcdef0123456789abcdef)";
+    // 「图」「纸」都在 SCRIPT_PAIRS 里 —— 编号块凭空投两张简体票。
     for (const phrase of ["呢張係咩", "check 下呢張", "這張圖有冇問題"]) {
       expect(detectInput(phrase), `「${phrase}」本身该判繁體`).toBe("zh-Hant");
       expect(
-        detectInput(phrase + REF),
-        `「${phrase}」拼上图纸编号块之后被判成了别的 —— 编号块是后端拼的,不该参与判别`,
+        detectInput(`${phrase}\n${REF}`),
+        `「${phrase}」拼上编号块之后判别变了 —— 编号块是后端拼的,不该参与判别`,
       ).toBe("zh-Hant");
     }
   });
 
-  it("只传文件不打字 → 判不出,落默认语种(而不是被标记带成简体)", () => {
-    expect(detectInput("(图纸编号:0123456789abcdef0123456789abcdef)")).toBeNull();
-    expect(detectInput("(照片编号:0123456789abcdef0123456789abcdef)")).toBeNull();
-    // resolveLang 的兜底链把它接到 DEFAULT_LANG —— 传图不打字就是繁體答话
-    expect(resolveLang(null, ["(图纸编号:abc)"])).toBe(DEFAULT_LANG);
+  it("🔴 提示语比编号块狠得多 —— 一句 _PDF_HINT 能压过任何短句", () => {
+    // 实测 28 张简体票。它跟在编号块**后面**,所以「在编号块处截断」才治得住。
+    expect(detectInput(`呢張圖則睇下\n${REF} ${PDF_HINT}`)).toBe("zh-Hant");
+    expect(
+      detectInput(`呢張圖則睇下\n${REF} (这张图的格式暂时打不开,请转成 JPG 或 PNG 再传一次)`),
+    ).toBe("zh-Hant");
   });
 
-  it("摘编号块不许伤到用户自己打的字", () => {
-    expect(stripArtifactRefs("睇下呢張圖(图纸编号:abc)").trim()).toBe("睇下呢張圖");
-    // 全角括号、全角冒号、多个编号顿号分隔 —— uploads.py 都产得出来
-    expect(stripArtifactRefs("帮我看看（照片编号：abc、def）有问题吗").trim()).toBe(
-      "帮我看看有问题吗",
-    );
-    // 没有编号块时原样返回
-    expect(stripArtifactRefs("今天还有哪些任务没做完?")).toBe("今天还有哪些任务没做完?");
+  it("🔴 什么都不打只传附件 → 判不出,落默认繁體(而不是被后端那句开场白带成简体)", () => {
+    // uploads.py 在用户没打字时**自己编一句**:「看看这张照片。」——「这」「张」都是简体判别字。
+    // 判据是「编号块前面没有换行 = 那句不是用户打的」。
+    expect(detectInput("看看这张照片。(照片编号:abc)")).toBeNull();
+    expect(detectInput("看看这张图纸。(图纸编号:abc)")).toBeNull();
+    expect(resolveLang(null, ["看看这张图纸。(图纸编号:abc)"])).toBe(DEFAULT_LANG);
   });
 
-  it("🔴 同源:摘的词必须与 human.tsx 的 refPattern 用的是同两个词", () => {
-    // human.tsx 的 refPattern 形参类型是 `"照片" | "图纸"`,它拿这两个词拼正则去
-    // 捞编号渲染图片。哪天有人改了那边的词(或后端 uploads.py 改了措辞),
-    // 这条会红 —— 否则表现只是「偶尔判错语种」,永远查不到这儿。
+  it("用户自己打的字一个都不许丢", () => {
+    expect(userTypedText(`睇下呢張圖\n${REF}`)).toBe("睇下呢張圖\n");
+    expect(userTypedText("今天还有哪些任务没做完?")).toBe("今天还有哪些任务没做完?");
+    // 全角括号 / 全角冒号,uploads.py 那几条正则都产得出来
+    expect(userTypedText("帮我看看\n（照片编号：abc、def）有问题吗")).toBe("帮我看看\n");
+  });
+
+  it("🔴 同源:截断用的词必须与 human.tsx 的 refPattern 是同两个词", () => {
+    // human.tsx 拿这两个词拼正则去捞编号渲染图片。哪天那边改了词(或后端 uploads.py
+    // 改了措辞),这条会红 —— 否则表现只是「偶尔判错语种」,永远查不到这儿。
     const human = readFileSync(
       fileURLToPath(new URL("../frontend-overrides/human.tsx", import.meta.url)),
       "utf8",
@@ -277,10 +281,7 @@ describe("产物编号块不许污染语种判别", () => {
       /refPattern\s*=\s*\(word:\s*"照片"\s*\|\s*"图纸"\)/,
     );
     for (const word of ["照片", "图纸"]) {
-      expect(
-        stripArtifactRefs(`前${`(${word}编号:abc)`}后`),
-        `lang-lib 摘不掉「${word}编号」这种块`,
-      ).toBe("前后");
+      expect(userTypedText(`前\n(${word}编号:abc)后`), `截不掉「${word}编号」`).toBe("前\n");
     }
   });
 });
