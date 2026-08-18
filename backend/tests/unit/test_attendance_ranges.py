@@ -17,10 +17,13 @@ today 全部显式注入:parse_* 若偷偷看系统时钟,这批用例过了基�
 
 from __future__ import annotations
 
+import re
 from datetime import date
+from types import ModuleType
 
 import pytest
 
+from gyt.agents.attendance import ranges
 from gyt.agents.attendance.ranges import (
     RangeParseError,
     format_day,
@@ -383,3 +386,233 @@ def test_范围展示格式_同一天退成单日() -> None:
 def test_范围展示格式_跨年带年份() -> None:
     display = format_range(date(2026, 12, 1), date(2026, 12, 31), today=date(2027, 1, 5))
     assert display == "2026年12月1日到2026年12月31日"
+
+
+# ---------------------------------------------------------------------------
+# 繁體写法(2026-08-18 补)—— 中建国际在港施工,现场打的就是「上週三」「這個月」
+#
+# 判据只有一条:**繁體那句的结果必须与对应简体那句完全一致**。
+# 不写死日期是刻意的 —— 写死的话,哪天词表口径变了会红两行(简体主表 + 这里),
+# 人会以为是繁體这套坏了;跑同一个断言的话,口径变动只红主表一处。
+#
+# ⚠️ 这一整节与 test_schedule_dates.py 那节是**同款、不同表**:那边的折叠表多
+#    「後」「內」两个字,因为那边收「後天 / N天後 / N天內」而这边刻意不收
+#    (考勤没有未来)。别把两边的表或用例合并,理由写在两份 ranges.py / dates.py 头注。
+# ---------------------------------------------------------------------------
+
+_HANT_REFERENCE: tuple[tuple[str, str], ...] = (
+    # 已经在本模块 _HANT_VARIANTS 里的六对
+    ("周", "週"),
+    ("礼", "禮"),
+    ("这", "這"),
+    ("个", "個"),
+    ("号", "號"),
+    ("两", "兩"),
+    # 🔴 下面两对**故意留在这张参考表里而没进 _HANT_VARIANTS**:
+    #    「後」「內」只出现在朝未来的词形里(後天 / N天後 / N天內),本模块不收那些词,
+    #    所以折叠表里现在没有它们(完备性守卫因此不会响)。哪天这边真收了「N天內」,
+    #    这条守卫会立刻红,提醒把「內」补进折叠表 —— 这正是它存在的理由。
+    ("后", "後"),
+    ("内", "內"),
+    # 给将来加词用的余量,同上口径
+    ("几", "幾"),
+    ("时", "時"),
+    ("点", "點"),
+    ("过", "過"),
+    ("刚", "剛"),
+)
+"""繁简对照的**第二份、独立于生产代码**的来源,只服务下面两条守卫。
+
+生产代码那张 `_HANT_VARIANTS` 是「实际折哪几个字」,这张是「哪些字有繁體异形」;
+两张表各写各的,守卫才有意义 —— 从生产表反推判据等于自证。
+"""
+
+
+def _vocab_chars(module: ModuleType) -> frozenset[str]:
+    """把模块里所有大写常量(词表 / 正则 / 举例串)用到的汉字收成一个集合。
+
+    与 test_schedule_dates.py 那份**逐字相同,且刻意各写一份** —— 两个被测模块
+    刻意不共用词表(ranges.py 头注),测试跟着各自模块走,不搭一座跨模块的桥;
+    这十来行的重复,比一个「共用测试基建」诱着人把两边词表也合并要便宜得多。
+
+    自动扫 ``vars()`` 而不是手工列表名:新加一张词表就自动进这个集合。手工名单的
+    失败方式是静默的 —— 漏登记一张表,下面两条守卫少查一片而测试照绿。
+
+    ⚠️ 异形字表自身必须跳过:它的键是繁體字,收进来会把「简体词表里不含任何一个键」
+    这条判据当场毒死。模块 docstring 不用管 —— ``__doc__`` 这名字 ``isupper()``
+    为假,天然进不来(而它现在满篇繁體例子)。
+    """
+    pieces: list[str] = []
+    for name, value in vars(module).items():
+        if not name.isupper() or name in {"_HANT_VARIANTS", "_HANT_TRANS"}:
+            continue
+        if isinstance(value, str):
+            pieces.append(value)
+        elif isinstance(value, re.Pattern):
+            pieces.append(value.pattern)
+        elif isinstance(value, dict | frozenset | set | tuple | list):
+            pieces.extend(item for item in value if isinstance(item, str))
+    return frozenset(ch for piece in pieces for ch in piece if "一" <= ch <= "鿿")
+
+
+@pytest.mark.parametrize(
+    ("hant", "hans"),
+    [
+        # 周X / 禮拜X:週 禮
+        ("週三", "周三"),
+        ("週五", "周五"),
+        ("禮拜日", "礼拜日"),
+        # 本週X / 這週X:週 這 個
+        ("本週一", "本周一"),
+        ("這週三", "这周三"),
+        ("這個星期二", "这个星期二"),
+        # 上週X:週 禮 個
+        ("上週三", "上周三"),
+        ("上週日", "上周日"),
+        ("上個禮拜一", "上个礼拜一"),
+        # 整周:週 這 個 禮
+        ("本週", "本周"),
+        ("這週", "这周"),
+        ("這個禮拜", "这个礼拜"),
+        ("上週", "上周"),
+        ("上個禮拜", "上个礼拜"),
+        # 月:這 個
+        ("這個月", "这个月"),
+        ("這月", "这月"),
+        ("上個月", "上个月"),
+        # 最近N天:兩
+        ("最近兩天", "最近两天"),
+        ("近兩天", "近两天"),
+        # X月Y號:號
+        ("8月5號", "8月5号"),
+        ("8月12號", "8月12号"),
+        # 剥时段词那一路也要在折叠之后照常工作
+        ("上週三下午", "上周三下午"),
+    ],
+)
+def test_繁體写法与简体写法结果逐条一致(hant: str, hans: str) -> None:
+    """港方打繁體,必须和简体一个答案。任何一行红 = 那个异形字没折进去。"""
+    assert parse_range(hant, today=BASE) == parse_range(hans, today=BASE)
+
+
+@pytest.mark.parametrize(
+    ("hant", "hans"),
+    [
+        ("上週三", "上周三"),
+        ("禮拜日", "礼拜日"),
+        ("這週三", "这周三"),
+        ("8月5號", "8月5号"),
+    ],
+)
+def test_单日解析的繁體写法与简体一致(hant: str, hans: str) -> None:
+    """parse_day 是第二个入口。折叠挂在两个入口的必经之路(_strip_noise)上,
+    这组用例守的就是「别哪天有人把折叠挪进 parse_range 里」—— 挪了这里当场红。"""
+    assert parse_day(hant, today=BASE) == parse_day(hans, today=BASE)
+
+
+@pytest.mark.parametrize(
+    ("mixed", "hans"),
+    [
+        ("上週3", "上周3"),  # 繁週 + 手机常打的阿拉伯数字
+        ("这個月", "这个月"),  # 简这 + 繁個
+        ("上个禮拜", "上个礼拜"),  # 简个 + 繁禮
+        ("最近兩天", "最近两天"),  # 简最近 + 繁兩
+        ("上週三下午", "上周三下午"),  # 繁週 + 简时段词
+    ],
+)
+def test_简繁混打也认(mixed: str, hans: str) -> None:
+    """工地上混打是常态:输入法记着繁體、人手快打了简体,一句话里两种都有。
+
+    折叠是**逐字**的(str.translate),所以混打天然成立 —— 这组守的是
+    「哪天有人把逐字折叠改成整词匹配」:那一改混打立刻全瞎,而纯繁體用例照绿。
+    """
+    assert parse_range(mixed, today=BASE) == parse_range(hans, today=BASE)
+
+
+@pytest.mark.parametrize(
+    ("hant", "hans"),
+    [
+        ("後天", "后天"),
+        ("大後天", "大后天"),
+        ("下週三", "下周三"),
+        ("3天後", "3天后"),
+        ("10天內", "10天内"),
+        ("週三之前", "周三之前"),
+    ],
+)
+def test_朝未来的繁體词形照样报错_方向约定不因简繁而松(hant: str, hans: str) -> None:
+    """**这条比「繁體能解析」更要紧。**
+
+    折叠只换字形,不换方向:考勤没有未来,「後天」和「后天」必须都报错。
+    哪天有人图省事把 schedule 那张八字表整个抄过来(多「後」「內」),这里的行为
+    其实**也不会变**(词表里本来就没有「后天」)—— 所以这组用例真正盯的是
+    另一头:别有人顺手把「後天 / N天後」这些词形也一并「补齐」到考勤词表里。
+    那一补,查考勤问「後天」会返回一段未来的空记录,而工友会以为那天真没人来。
+    """
+    with pytest.raises(RangeParseError):
+        parse_range(hans, today=BASE)
+    with pytest.raises(RangeParseError):
+        parse_range(hant, today=BASE)
+
+
+def test_简体输入过折叠一个字节都不变() -> None:
+    """本次改动对简体的承诺是「一个字节都不许变」,这条就是那句承诺的锁。
+
+    折叠是逐字表驱动的,所以「词表里每个字都折不动」= 任何由词表拼出来的简体串
+    都折不动,这比抽查几句强。外加几句真实短语兜住数字 / 半角符号。
+    """
+    for char in sorted(_vocab_chars(ranges)):
+        assert ranges._fold_hant(char) == char, f"简体词表里的「{char}」被折叠动了"
+    for phrase in ("上周三", "这个月", "最近7天", "8月5号", "2025-12-31", "昨天下午"):
+        assert ranges._fold_hant(phrase) == phrase
+
+
+def test_异形字表封闭_键不在简体词表里且值全指得出词表里的词() -> None:
+    """两头一起卡死,防它长成一张通用简繁转换表。
+
+    · **键 ∩ 简体词表 = 空**:这是「简体输入是恒等映射」的结构性证明。
+      哪天有人把「干→幹」这类**两边都在用**的字收进来,这条当场红。
+    · **值 ⊆ 简体词表**:表里每个字都要指得出词表里的哪个词 —— 这条同时钉死了
+      「别把 schedule 那份八字表整个抄过来」:「后」「内」在本模块词表里没有,
+      抄过来这条立刻红,而不是安安静静多躺两个用不上的字。
+    """
+    vocab = _vocab_chars(ranges)
+    both_scripts = sorted(set(ranges._HANT_VARIANTS) & vocab)
+    assert not both_scripts, f"这些字简繁两边都在用,折了会误伤简体输入:{both_scripts}"
+    strays = sorted({hans for hans in ranges._HANT_VARIANTS.values() if hans not in vocab})
+    assert not strays, f"这些字本模块词表里根本没有,表在往通用转换器长:{strays}"
+
+
+def test_异形字表完备_词表里凡有繁體异形的字都收全了() -> None:
+    """加词表漏收异形字的守卫。
+
+    漏一个字的现场表现是:港方那一种写法被 RangeParseError 打回,而报错还举例
+    叫他改用简体写法。零报错、零测试红、没人会发现,只有港方觉得这系统不认人话。
+    ⚠️ 参考表里的「後」「內」今天是**空转**的(本模块词表没有那两个字)——
+    那是刻意的,它们等着「哪天这边收了 N天內」的那一刻响。
+    """
+    vocab = _vocab_chars(ranges)
+    missing = {
+        hans: hant
+        for hans, hant in _HANT_REFERENCE
+        if hans in vocab and hant not in ranges._HANT_VARIANTS
+    }
+    assert not missing, f"词表里用到了这些字,但它们的繁體写法没收进折叠表:{missing}"
+
+
+def test_繁體输入的展示格式仍是简体() -> None:
+    """**只折输入,不折输出。**
+
+    屏幕上的繁體由前端渲染层转(docs/W12_三语切换_方案.md §5.3:后端一律不转)。
+    这里要是顺手把 format_day / format_range 也转了,就成了两处各转一半 ——
+    前端那道会把已经是繁體的字再转一遍,而凭证水印、台账里存的字形还得另说。
+    """
+    assert format_range(*parse_range("上週", today=BASE), today=BASE) == "8月3日到8月9日"
+    assert format_day(parse_day("上週三", today=BASE), today=BASE) == "8月5日(周三)"
+
+
+def test_看不懂的繁體写法报错引用的是用户原话() -> None:
+    """兜底报错引的是**没折过**的原话:师傅打的什么就念什么,不许把他的字改了念。"""
+    with pytest.raises(RangeParseError) as caught:
+        parse_range("開工那個月", today=BASE)
+    assert "開工那個月" in str(caught.value)

@@ -229,19 +229,32 @@ const CONFIRM_BUTTON_LABEL: Readonly<Record<string, string>> = Object.freeze({
  * (`_NEXT_WEEKS_RE` 是 `(下下周|下周)`、`_DAYS_RE` 是 `(.+)天[后内]`、
  * `_BARE_WEEKDAY_RE` 收的是 `周|星期|礼拜`),后端也**没有任何繁→简归一化**。
  *
- * 转成「下週三」的下场:监理照着屏幕上的例句打进去 → 正则一条都匹配不上 →
- * 后端回一句「这个日期我算不准」。而他刚刚是**照着系统教的写法**写的,
- * 屏幕上没有任何线索说明该换成哪种写法,只会反复试、反复被拒。
- * 「3天后」的「后」同理(opencc 把「天后」当成天后娘娘那个词,本来就不转,
- * 但别有人「顺手修成 3天後」—— 那样也匹配不上)。
+ * ✅ **2026-08-18 后端补上了繁→简归一化,这两条已经可以是繁體了。**
+ * `dates.py` 的 `_strip_noise()` 第一行做一次折叠(週→周 / 後→后 / 禮→礼 /
+ * 這→这 / 個→个 / 號→号 / 內→内 / 兩→两),所以「下週三」「後天」「9月1號」
+ * 现在都解析得出来,而且与对应简体写法**结果完全一致**(测试是
+ * `parse(繁) == parse(简)` 那种写法,不写死日期)。
  *
- * ⚠️ 真正的修法在后端(入口处做一次繁→简归一化),不在这里。在那之前,
- * 例句留简体只是**两害相权**:HK 监理自己打「下週三」照样会被拒。已回报为欠账。
- * 登记在 scripts/frontend-tests/hant-keep-hans.mjs。
+ * 🔴 **但这条约束本身没有消失,只是判据变了。** 例句仍然是「让人照抄进输入框、
+ * 抄完原样送后端」的原话 —— 它不是普通标签。往这两个常量里加新写法之前,
+ * 必须先确认 `agents/schedule/dates.py` 认得那个写法:
+ *
+ *     cd backend && .venv/bin/python -c "
+ *     import sys; sys.path.insert(0,'src')
+ *     from datetime import date
+ *     from gyt.agents.schedule.dates import parse_due
+ *     print(parse_due('你要加的写法', today=date.today()))"
+ *
+ * 已知**仍然不认**的:「下星期三」「下禮拜三」—— 那是**词表缺口不是简繁缺口**
+ * (简体的「下星期三」一样被拒:`_NEXT_WEEKS_RE` 只收「周」,不收「星期|礼拜」)。
+ * 别往例句里写它们。
+ *
+ * 「3天后」的「后」保持不变是对的:opencc 把「天后」当成天后娘娘那个词、本来就不转,
+ * 而后端两种都认,所以这一项转不转都行。
  */
-const DUE_PHRASE_EXAMPLES = "明天 / 3天后 / 下周三 / 月底";
+const DUE_PHRASE_EXAMPLES = "明天 / 3天后 / 下週三 / 月底";
 /** 同上 —— 输入框 placeholder 里那个单独的例子。 */
-const DUE_PHRASE_SAMPLE = "下周三";
+const DUE_PHRASE_SAMPLE = "下週三";
 
 /** 状态徽章配色:能动的暖色、收尾的灰、出事的红。认不出的状态退回灰色,不炸。 */
 const STATUS_CHIP: Record<string, string> = {
