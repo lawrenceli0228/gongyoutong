@@ -9,7 +9,8 @@
   · test_受控词表外的违规项原样透传_不做过滤
   · test_label非法时不当作工具失败
   · test_视觉调用传了max_retries为0
-这三条锁住的都是「刻意为之、但看起来像 bug」的设计,没有测试守着,
+  · test_小图走不走透传只取决于方向 里 orientation=0 那一行(TODO-53)
+这几条锁住的都是「刻意为之、但看起来像 bug」的设计,没有测试守着,
 下一个人很容易顺手"修好"它们,而修好之后坏掉的东西要到评测或账单上才看得见。
 """
 
@@ -768,9 +769,10 @@ async def test_可重试错误耗尽后返回中文信封(monkeypatch: pytest.Mo
 
 
 # ---------------------------------------------------------------------------
-# 六、图片预处理(_prepare_image)—— 降采样 / 挡动图 / 验真伪
+# 六、图片预处理(_prepare_image)—— 降采样 / 挡动图 / 验真伪 / EXIF 转正
 #
-# 这三件事只能靠**解码图片本身**来做,光看扩展名一件都做不到。
+# 这四件事只能靠**解码图片本身**来做,光看扩展名一件都做不到。
+# 转正那一件单独成节,在本节末尾(TODO-53)。
 # ---------------------------------------------------------------------------
 
 
@@ -865,6 +867,219 @@ def test_体积超标时逐档降质量(monkeypatch: pytest.MonkeyPatch) -> None
     out, mime = _prepare_image(raw, ".png")
     assert len(out) < len(raw), "体积超标却没被压"
     assert mime == "image/jpeg"
+
+
+# ---------------------------------------------------------------------------
+# 六之二、EXIF 转正(TODO-53,2026-08-19 真机撞出来的,不是审代码看出来的)
+#
+# 手机竖着拍时,传感器存下来的其实是**横的**像素,再写一个 EXIF Orientation
+# (6 = 顺时针转 90° 才是正的)。修之前 _prepare_image 一处 exif_transpose 都没有,
+# 而 save(format="JPEG") 不传 exif= 又会把方向标记一起丢掉。于是两边看到的不是同一张图:
+#
+#     界面   human.tsx 走 /artifacts/by-id/… 取的是**原始字节**
+#            → 浏览器按 EXIF 自己转正 → **工友看到的是正的**
+#     识图   _prepare_image 产出的那份既没转正、又没了方向标记
+#            → **模型看到的是躺倒的**
+#
+# **一句报错都没有。** 人对着屏幕上正立的照片,根本不会想到模型看到的是横躺的;
+# 而模型看一张躺倒的工地照,判断会直接崩(安全帽跑到画面侧边、临边护栏成了水平线)。
+# 所以这一节只能靠断言钉,靠眼睛一辈子看不出来。
+# ---------------------------------------------------------------------------
+
+_QUADRANT_SAMPLES: dict[str, tuple[float, float]] = {
+    "左上": (0.25, 0.25),
+    "右上": (0.75, 0.25),
+    "左下": (0.25, 0.75),
+    "右下": (0.75, 0.75),
+}
+"""四个象限的取样点(按宽高的比例给)。
+
+取 1/4 和 3/4 而不是贴角:JPEG 的色度抽样与振铃会把色块边界糊掉一圈,
+贴边取样会取到混色,判据当场失灵。
+"""
+
+
+def _oriented_jpeg(width: int, height: int, *, orientation: int | None = None) -> bytes:
+    """造一张带 EXIF 方向标记的 JPEG。
+
+    写法照抄 ``tests/unit/test_attendance_watermark.py`` 的 ``_jpeg()`` —— 那边已经有
+    一条 EXIF 方向的用例,别另发明一套。``0x0112`` 这个字面量也照那边写:它是 EXIF
+    规范里钉死的数(见 ``tools._EXIF_ORIENTATION`` 的说明),这里**故意不 import**
+    生产常量 —— 夹具独立写死,常量哪天被改错才有东西照出来。
+
+    **不用纯色图**:纯色图对旋转零区分度 —— Orientation=3 是 180°,宽高压根不变,
+    拿纯色图测的话,把 ``exif_transpose`` 整行删掉那条用例照样绿。所以画成四个象限,
+    红色那块落在哪个角就是"转没转、往哪边转"的唯一判据:
+
+        ┌────┬────┐    未转 ────────────▶ 红在左上
+        │ 红 │ 绿 │    3 = 转 180° ─────▶ 红在右下
+        ├────┼────┤    6 = 顺时针 90° ──▶ 红在右上
+        │ 蓝 │ 白 │    8 = 逆时针 90° ──▶ 红在左下
+        └────┴────┘
+    """
+    from PIL import Image
+
+    image = Image.new("RGB", (width, height), (255, 255, 255))
+    image.paste(Image.new("RGB", (width // 2, height // 2), (220, 20, 20)), (0, 0))
+    image.paste(Image.new("RGB", (width // 2, height // 2), (20, 160, 20)), (width // 2, 0))
+    image.paste(Image.new("RGB", (width // 2, height // 2), (20, 20, 220)), (0, height // 2))
+
+    kwargs: dict[str, Any] = {}
+    if orientation is not None:
+        exif = Image.Exif()
+        exif[0x0112] = orientation  # 0x0112 = EXIF Orientation
+        kwargs["exif"] = exif
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=95, **kwargs)
+    return buffer.getvalue()
+
+
+def _red_quadrant(data: bytes) -> str:
+    """红色象限落在产出图的哪个角。认不出时返回一句能读的诊断串,别让断言只报 None。"""
+    from PIL import Image
+
+    with Image.open(io.BytesIO(data)) as image:
+        rgb = image.convert("RGB")
+        hits = []
+        for name, (fx, fy) in _QUADRANT_SAMPLES.items():
+            red, green, blue = rgb.getpixel((int(rgb.width * fx), int(rgb.height * fy)))
+            # JPEG 有损、缩放还会再混一次色,所以判据是"红压倒另外两个通道",不是精确色值
+            if red > 150 and green < 100 and blue < 100:
+                hits.append(name)
+    return hits[0] if len(hits) == 1 else f"认不出(命中了 {hits})"
+
+
+def test_手机竖拍的照片转正之后再喂给模型() -> None:
+    """🔴 **TODO-53 的行为锁 —— 修之前工友和模型看到的不是同一张图。**
+
+    夹具就是真机复现的那张:存 **2430×4000 的躺着像素** + Orientation=6
+    (手机竖拍的实际存法)。``tools.py`` 头注里那两行实测数字就是这么来的:
+
+        修之前   1244×2048(竖,躺倒)   ← 只缩不转,方向标记还被 save() 一起丢掉了
+        修之后   2048×1244(横,正立)
+
+    而界面上工友看到的一直是正的(human.tsx 取原始字节,浏览器按 EXIF 自己转正),
+    识图那半边躺倒着、判断跟着崩,**全程零报错、零日志**。
+    """
+    from PIL import Image
+
+    from gyt.agents.safety.tools import _prepare_image
+    from gyt.config import get_settings
+
+    # 下面写死的宽高以"长边上限还是默认的 2048"为前提。默认值改了这条会红,
+    # 那时候连 tools.py 头注里「修之前 / 修之后」那两行实测记录一起更新,别只改测试。
+    assert get_settings().photo_compress_max_edge_px == 2048
+
+    out, mime = _prepare_image(_oriented_jpeg(2430, 4000, orientation=6), ".jpg")
+
+    with Image.open(io.BytesIO(out)) as image:
+        assert image.width > image.height, f"照片没转正,喂给模型的还是躺倒的:{image.size}"
+        assert image.size == (2048, 1244)
+    assert mime == "image/jpeg"
+    # 光看宽高只能证明"转了",证明不了"转对了方向"—— 6 和 8 都会把宽高对调
+    assert _red_quadrant(out) == "右上"
+
+
+@pytest.mark.parametrize(
+    ("orientation", "expected_size", "red_at"),
+    [
+        # 3 = 转 180°。**宽高压根不变** —— 这一行是这组里唯一只能靠像素判的,
+        #     拿纯色图测的话把 exif_transpose 删掉它照样绿(所以夹具画了四象限)。
+        (3, (400, 200), "右下"),
+        # 6 = 手机竖拍(顺时针转 90° 才正),TODO-53 的现场
+        (6, (200, 400), "右上"),
+        # 8 = 逆时针 90°,和 6 恰好反向 —— 两条一起才钉得住"方向对不对":
+        #     只测 6 的话,一个"无脑转 90°"的实现也能全绿
+        (8, (200, 400), "左下"),
+    ],
+)
+def test_要转的三种方向都按EXIF语义转到位(
+    orientation: int, expected_size: tuple[int, int], red_at: str
+) -> None:
+    """怎么转由 Pillow 的 exif_transpose 说了算,这里钉的是"我们真的调了它、而且没转反"。"""
+    from PIL import Image
+
+    from gyt.agents.safety.tools import _prepare_image
+
+    raw = _oriented_jpeg(400, 200, orientation=orientation)
+    out, mime = _prepare_image(raw, ".jpg")
+
+    # 尺寸/体积都没超限,唯一让它离开透传分支的理由就是方向不正
+    # (为什么方向 ≠ 1 也要走重编码,见 _prepare_image 头注最后一段)
+    assert out is not raw, "方向不正的图不许原样透传"
+    assert mime == "image/jpeg"
+    with Image.open(io.BytesIO(out)) as image:
+        assert image.size == expected_size
+    assert _red_quadrant(out) == red_at
+
+
+@pytest.mark.parametrize("orientation", [3, 6, 8])
+def test_转正后的产出不许再带方向标记(orientation: int) -> None:
+    """留着 = 下游解码器照着它再转一次,**转过头**。
+
+    像素既然已经转正,那个标记就成了一句谎话。现在它没被带出去,靠的是 save()
+    不传 ``exif=``(转完本来也没别的用)—— 而"什么都不做才成立"的性质最容易被顺手破坏:
+    哪天有人为了保住拍摄时间 / GPS 加一句 ``exif=image.getexif()``,方向标记会跟着回来,
+    而这里不会有任何报错。
+    """
+    from PIL import Image
+
+    from gyt.agents.safety.tools import _prepare_image
+
+    out, _ = _prepare_image(_oriented_jpeg(400, 200, orientation=orientation), ".jpg")
+    with Image.open(io.BytesIO(out)) as image:
+        assert image.getexif().get(0x0112) in (None, 1)  # 0x0112 = EXIF Orientation
+
+
+@pytest.mark.parametrize(
+    ("orientation", "passthrough", "why"),
+    [
+        (None, True, "根本没写 EXIF —— 截图、微信转发过来的图大多是这样"),
+        (1, True, "1 = 正常,标了也不用转"),
+        # 0 不是 EXIF 规范里的合法取值,但**真实文件里出现过**(某些相机/软件写坏了),
+        # Pillow 的 exif_transpose 对它也是不动。_UPRIGHT_ORIENTATIONS 收 0 就是为了跟
+        # Pillow 的实际行为对齐 —— 不收的话,一张根本不会被转的图会被白白重编码一次,
+        # 而"重编码只会白白损失画质"正是透传分支存在的全部理由。这一行看着像 bug,
+        # 别顺手"修好"它。
+        (0, True, "0 是坏值,但 Pillow 不转,我们也不该为它重编码"),
+        # 对照组:同尺寸、同体积,只有方向标记不同 —— 分支必须走反。
+        # 没有这一行的话,一个"永远透传"的实现也能让上面三行全绿。
+        (6, False, "6 = 手机竖拍,必须转正,不许透传"),
+    ],
+)
+def test_小图走不走透传只取决于方向(orientation: int | None, passthrough: bool, why: str) -> None:
+    """老行为「没超限就原样返回、连重编码都不做」不许被 TODO-53 的修法带坏。
+
+    断言用 ``is`` 而不是 ``==``:``==`` 在"重编码之后碰巧字节相同"时也成立,
+    而这里要的是**一个字节都没动过**(同一个对象原样递出去)。
+    """
+    from gyt.agents.safety.tools import _prepare_image
+
+    raw = _oriented_jpeg(400, 200, orientation=orientation)
+    out, _ = _prepare_image(raw, ".jpg")
+
+    assert (out is raw) is passthrough, why
+
+
+def test_没有方向标记的大图只缩不转_老行为原样保留() -> None:
+    """**同一组像素、只差一个 EXIF 标记**,和上面手机竖拍那条用的是同一个尺寸:
+
+        2430×4000 + Orientation=6  →  2048×1244(横)  ← 转正了
+        2430×4000  无 EXIF         →  1244×2048(竖)  ← 只缩,一如改动之前
+
+    第二行正是 ``tools.py`` 头注里"修之前"那组数字。两条摆在一起才说得清这次改动的边界:
+    **只在有方向标记时才改变结果**,缩图那条老路径一个字都没动。
+    """
+    from PIL import Image
+
+    from gyt.agents.safety.tools import _prepare_image
+
+    out, mime = _prepare_image(_oriented_jpeg(2430, 4000), ".jpg")
+
+    with Image.open(io.BytesIO(out)) as image:
+        assert image.size == (1244, 2048), "等比缩到长边 2048,不许因为这次改动转起来"
+    assert mime == "image/jpeg"
+    assert _red_quadrant(out) == "左上", "没有方向标记就一下都不许转"
 
 
 async def test_预处理失败会变成中文信封而不是异常(monkeypatch: pytest.MonkeyPatch) -> None:
