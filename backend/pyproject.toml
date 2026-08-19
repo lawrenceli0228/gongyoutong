@@ -61,14 +61,30 @@ dependencies = [
     # 直接 ImportError,而没有任何一行配置记录过我们依赖它。提成显式;uv.lock 里
     # 已是 4.63.0,提升零安装成本。区间照本文件惯例:下界=已核实版本,上界=下一大版本。
     "fonttools>=4.63.0,<5",
+    # tzdata:attendance/receipt.py 用 ZoneInfo("Asia/Hong_Kong") 打时间戳,而 Windows 没有
+    # 系统 IANA 时区库、部分精简 Linux 镜像也不带 —— 全靠这个纯数据包兜底。它此前是
+    # matplotlib 的**传递**依赖,2026-08-20 换掉 matplotlib 后随之消失,ZoneInfo 直接抛
+    # ZoneInfoNotFoundError。同 fonttools 的教训:传递依赖断得静默,提成显式。下界=已核实版本。
+    "tzdata>=2026.3",
     # python-docx:Report Agent 渲染巡检记录/日报落盘(方案 D 决策里定的产物形态)。
     # 主依赖而非 dev:容器里 `uv sync --no-dev` 也要能渲染。
     "python-docx>=1.1,<2",
     # ezdxf:CAD Agent 解析 DXF 图纸(纯 Python,绝不碰 DWG 二进制)。
-    # matplotlib:ezdxf.addons.drawing 渲染 DXF→PNG 的后端,CAD 预览要用。
+    # 渲染后端从 matplotlib 换成 ezdxf 原生 SVG 后端(2026-08-20):matplotlib 的
+    # MatplotlibBackend 逐图元建 artist,实测 2280 图元渲染 19s、真实施工图注释里记着 268s ——
+    # 阈值被迫压到 1000,几乎没有真图能出 PDF/预览。ezdxf 原生 SVGBackend 是轻量 recorder
+    # 直接吐 XML,同图快 ~7x;换后阈值提到 4000(见 config.drawing_render_max_entities)。
+    # matplotlib 换掉后全 backend 再无人用,一并移除(顺带给 1.9GB 的 VPS 减一个重依赖)。
+    #
+    # svglib + reportlab:把 ezdxf 出的 SVG 转成矢量 PDF(render.to_pdf)。都是纯 Python 轮子、
+    # 无系统二进制依赖(不像 cairosvg 要 libcairo)。许可证:reportlab 是 BSD、svglib 是
+    # **LGPL-3.0** —— 比上面 pypdfium 段里拒掉的 PyMuPDF(AGPL)温和得多:不改源、当库用,
+    # 商用合规几乎零负担(2026-08-20 与 @fan 确认可接受)。中文字体走 ezdxf 自己的字体系统,
+    # 渲染前把文字样式指到 CJK 字体(render.py 的候选表),SVG 里文字是 <path> 不依赖阅读器字体。
     # 都是主依赖:容器 `uv sync --no-dev` 也要能解析/渲染。
     "ezdxf>=1.4,<2",
-    "matplotlib>=3.9,<4",
+    "svglib>=2.2,<3",
+    "reportlab>=4.1,<6",
     # Knowledge Agent(规范检索 RAG)。全部本地跑,不联网、不烧钱:
     #   langchain-chroma       1.1.0  向量库(chromadb 由它带进来),要 langchain-core>=1.1.3,<2 —— 与本仓 1.5.3 兼容
     #   langchain-huggingface  1.2.2  HuggingFaceEmbeddings 跑 BGE-M3,要 langchain-core>=1.2.31,<2 —— 兼容
