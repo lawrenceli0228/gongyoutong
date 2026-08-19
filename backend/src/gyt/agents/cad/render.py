@@ -27,6 +27,7 @@ from ezdxf.addons.drawing import Frontend, RenderContext
 from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.backends.backend_pdf import FigureCanvasPdf
 from matplotlib.figure import Figure
 
 # 无头后端:服务器/线程池里没有显示设备,必须 Agg。用 OO API 时它不引 pyplot 全局态。
@@ -74,6 +75,31 @@ def to_png(path: Path) -> bytes:
     return buf.getvalue()
 
 
+def to_pdf(path: Path) -> bytes:
+    """把一张 DXF 渲染成**矢量 PDF**,返回字节。阻塞函数:调用方负责 to_thread 包。
+
+    与 ``to_png`` 复用同一套 ezdxf 绘制逻辑(白底黑线、模型空间整图、finalize 自动摆正),
+    唯一区别是画布换成 matplotlib 的 **PDF 后端**(FigureCanvasPdf):图元以矢量路径写进
+    PDF,而不是先栅格化成低分辨率 PNG 再包进去 —— 放大不糊,是「导出 PDF」该有的样子。
+
+    文件损坏/打不开时不吞异常,让 ezdxf 抛给上层翻成 FILE_CORRUPT。
+    """
+    doc = ezdxf.readfile(str(path))
+    msp = doc.modelspace()
+
+    fig = Figure(facecolor="white")
+    FigureCanvasPdf(fig)  # 矢量 PDF 画布(OO 路径,不经 pyplot)
+    ax = fig.add_axes((0, 0, 1, 1))
+    ax.set_axis_off()
+    frontend = Frontend(RenderContext(doc), MatplotlibBackend(ax), config=_LIGHT_CONFIG)
+    frontend.draw_layout(msp, finalize=True)
+
+    buf = io.BytesIO()
+    # bbox_inches="tight" 贴着图元裁掉四周空白;显式白底,免得默认透明背景叠出诡异颜色。
+    fig.savefig(buf, format="pdf", facecolor="white", bbox_inches="tight", pad_inches=0.2)
+    return buf.getvalue()
+
+
 def pdf_to_png(path: Path, *, page_index: int = 0, scale: float = _PDF_RENDER_SCALE) -> bytes:
     """把一张 PDF 图纸的某一页栅格化成 PNG,返回字节。阻塞函数:调用方负责 to_thread 包。
 
@@ -94,4 +120,4 @@ def pdf_to_png(path: Path, *, page_index: int = 0, scale: float = _PDF_RENDER_SC
         doc.close()
 
 
-__all__ = ["pdf_to_png", "to_png"]
+__all__ = ["pdf_to_png", "to_pdf", "to_png"]

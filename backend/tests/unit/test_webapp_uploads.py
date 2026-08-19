@@ -594,13 +594,39 @@ def test_传文档_后台入库失败_回滚(client: TestClient, monkeypatch: py
     assert not (get_settings().global_dir / "docs" / "regulation" / "坏了.pdf").exists()
 
 
-def test_传文档_抽不出文字_同步拒且422(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 扫描件:同步预检 pdf_has_text 就发现没文字层 → 当场 422 拒 + 回滚,不必等几分钟白跑 embedding。
+def test_传文档_抽不出文字_归档但不入检索(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 资料上传策略(改判):扫描件/无文字层 PDF **不再拒** —— 保留归档、能预览,
+    # 只是打「不可检索」标记、不进检索、不做 OCR、不伪造结果。
     monkeypatch.setattr("gyt.agents.knowledge.ingest.pdf_has_text", lambda _p: False)
+
+    def _boom(*a, **k):  # 不该走后台入库(无文字层直接归档)
+        raise AssertionError("无文字层不应触发 embedding 入库")
+
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.ingest_document", _boom)
 
     resp = client.post("/docs", files=_pdf_files("扫描件.pdf"), data={"doc_type": "regulation"})
 
-    assert resp.status_code == 422
-    assert resp.json()["error_code"] == "EMPTY_RESULT"
+    assert resp.status_code == 201
+    data = resp.json()["data"]
+    assert data["status"] == "unsearchable"
     assert "OCR" in resp.json()["user_msg"]
-    assert not (get_settings().global_dir / "docs" / "regulation" / "扫描件.pdf").exists()
+    # 文件留着(能预览),并打了「不可检索」标记
+    assert (get_settings().global_dir / "docs" / "regulation" / "扫描件.pdf").exists()
+    assert project_fs.doc_is_unsearchable("global", "regulation", "扫描件.pdf")
+
+
+def test_library_无文字层文档状态为unsearchable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 无文字层上传后,资料库该把状态标成 unsearchable(而不是永远「入库中」)。
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.pdf_has_text", lambda _p: False)
+    monkeypatch.setattr("gyt.agents.knowledge.ingest.ingest_document", lambda *a, **k: 0)
+    client.post("/docs", files=_pdf_files("扫描件.pdf"), data={"doc_type": "regulation"})
+
+    resp = client.get("/library")
+
+    docs = {d["filename"]: d for d in resp.json()["data"]["docs"]}
+    assert docs["扫描件.pdf"]["status"] == "unsearchable"
+    assert docs["扫描件.pdf"]["chunks"] == 0

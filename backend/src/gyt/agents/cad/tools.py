@@ -30,10 +30,10 @@ from langchain_core.tools import tool
 from pypdf.errors import PyPdfError
 from pypdfium2 import PdfiumError
 
-from gyt.agents.cad import index, render, vision
+from gyt.agents.cad import index, pdf_export, render, vision
 from gyt.agents.cad.demo_registry import get_demo_drawings
 from gyt.config import ALLOWED_DRAWING_EXT, get_settings
-from gyt.core import artifacts
+from gyt.core import artifacts, project_fs
 from gyt.core.artifacts import ArtifactKind, ArtifactNotFound
 from gyt.core.errors import Envelope, ErrorCode, fail, ok, tool_guard
 from gyt.core.llm import LLMCallError, MissingAPIKeyError
@@ -44,9 +44,16 @@ logger = logging.getLogger(__name__)
 
 _BYTES_PER_MB: Final[int] = 1024 * 1024
 _PREVIEW_NAME: Final[str] = "preview.png"
+_PDF_EXT: Final[str] = ".pdf"
 
 # 视图类型的人话标签(drawings.view_type ∈ plan/elevation/section)。
 _VIEW_CN: Final[dict[str, str]] = {"plan": "平面图", "elevation": "立面图", "section": "剖面图"}
+
+# 资料(文档)类型的人话标签(project_fs.DOC_TYPES ∈ regulation/task_book)。
+_DOC_CN: Final[dict[str, str]] = {
+    project_fs.DOC_REGULATION: "规范",
+    project_fs.DOC_TASK_BOOK: "任务书",
+}
 
 # 天正构件标签 → 人话构件名。认不出的落回原标签,不假装认得。
 # 两类键都在这里(对应 parse._detect_tianzheng 的两种加载形态):
@@ -167,6 +174,145 @@ def _display_name(drawing_id: str) -> str:
         if mapped_id == drawing_id:
             return name
     return "这张图纸"
+
+
+# --- 打开 / 预览 / 下载 / 导出:图纸与资料的定位(带歧义消解)---------------------
+# 这一组是「自然语言操作文件」的地基:把「打开 1 号楼二层平面图」这种话收敛成一份可预览/下载的
+# 具体文件。契约 2 照旧 —— 返回的是 artifact_id + 元数据,**绝不把文件内容塞进 state**。
+
+
+def _name_for_artifact_sync(artifact_id: str) -> str:
+    """从 id 反查展示名:先演示图映射,再上传图库行,都查不到给中性词。阻塞(调用方 to_thread)。"""
+    for name, mapped_id in get_demo_drawings().items():
+        if mapped_id == artifact_id:
+            return name
+    row = db.find_drawing_by_artifact(artifact_id)
+    return row.title if row is not None else "这张图纸"
+
+
+def _locate_drawing_sync(
+    drawing: str, project_id: str
+) -> tuple[dict[str, str] | None, Envelope | None]:
+    """把「图名或编号」定位到一张具体图纸。阻塞函数(sqlite + 读元数据),调用方 to_thread 包。
+
+    返回 (定位结果, 待转述信封):
+      · 定位成功 → ({artifact_id, name, ext}, None);
+      · 找不到 / 参数空 → (None, fail(...));
+      · **名字不唯一** → (None, ok(needs_disambiguation + candidates)) —— 让用户挑,别猜错图纸。
+
+    顺序:① 已是合法 id 直接用;② 演示名精确命中;③ 上传项目图按名字找**全部**同名。
+    选了工地(project_id)时③只在该项目内找,和 list_drawings / _load_index 的作用域一致。
+    """
+    text = (drawing or "").strip()
+    if not text:
+        return None, fail(ErrorCode.INVALID_INPUT, "要看哪张图?说个图名或编号。")
+
+    if artifacts.ARTIFACT_ID_RE.fullmatch(text):
+        try:
+            meta = artifacts.read_meta(text)
+        except ArtifactNotFound:
+            return None, fail(ErrorCode.NOT_FOUND, f"没找到编号 {text} 的图纸(可能已过期)。")
+        return {
+            "artifact_id": text,
+            "name": _name_for_artifact_sync(text),
+            "ext": str(meta.get("ext", "")).lower(),
+        }, None
+
+    demo = get_demo_drawings()
+    if text in demo:
+        aid = demo[text]
+        try:
+            meta = artifacts.read_meta(aid)
+        except ArtifactNotFound:
+            return None, fail(ErrorCode.NOT_FOUND, f"演示图纸「{text}」不见了,重启后端预注册一下。")
+        return {"artifact_id": aid, "name": text, "ext": str(meta.get("ext", "")).lower()}, None
+
+    rows = db.find_drawings_by_title(text, project_id or None)
+    if len(rows) == 1:
+        row = rows[0]
+        try:
+            meta = artifacts.read_meta(row.artifact_id)
+        except ArtifactNotFound:
+            return None, fail(ErrorCode.NOT_FOUND, f"图纸「{text}」的文件不见了。")
+        return {
+            "artifact_id": row.artifact_id,
+            "name": row.title,
+            "ext": str(meta.get("ext", "")).lower(),
+        }, None
+    if len(rows) > 1:
+        candidates = [
+            {
+                "artifact_id": r.artifact_id,
+                "project_id": r.project_id,
+                "title": r.title,
+                "view_type": r.view_type,
+                "floor": r.floor or "",
+            }
+            for r in rows
+        ]
+        listed = "、".join(
+            f"{r.title}({_VIEW_CN.get(r.view_type, r.view_type)}"
+            f"{'·' + r.floor if r.floor else ''}·项目 {r.project_id})"
+            for r in rows
+        )
+        return None, ok(
+            data={"needs_disambiguation": True, "candidates": candidates},
+            user_msg=(
+                f"有 {len(rows)} 张都叫「{text}」:{listed}。你要看哪一个?说清是哪个项目或楼层。"
+            ),
+        )
+    return None, fail(
+        ErrorCode.NOT_FOUND,
+        user_msg=f"没找到「{text}」这张图纸。现在能看的有:{_drawings_hint()}。",
+    )
+
+
+def _doc_meta(entry: project_fs.DocEntry) -> dict[str, Any]:
+    """一份资料的可预览/下载元数据(供前端拼 /files/doc 的 query)。"""
+    return {
+        "scope": entry.scope,
+        "doc_type": entry.doc_type,
+        "filename": entry.filename,
+        "project_id": entry.project_id,
+    }
+
+
+def _scoped_docs_sync(project_id: str) -> list[project_fs.DocEntry]:
+    """当前作用域内可见的资料:全局规范 + 当前工地的资料;没选工地则只有全局。阻塞(读目录)。
+
+    与 knowledge 的作用域纪律一致 —— 不把**别的**项目的资料端出来(防串味)。
+    """
+    all_docs = project_fs.list_docs(None)  # 全局 + 所有项目
+    if project_id:
+        return [
+            e for e in all_docs if e.scope == project_fs.SCOPE_GLOBAL or e.project_id == project_id
+        ]
+    return [e for e in all_docs if e.scope == project_fs.SCOPE_GLOBAL]
+
+
+def _locate_document_sync(
+    name: str, project_id: str
+) -> tuple[dict[str, Any] | None, Envelope | None]:
+    """把「资料名」定位到一份具体文档(按文件名包含匹配,带歧义消解)。阻塞函数,调用方 to_thread。
+
+    返回同 _locate_drawing_sync:成功给元数据,找不到给 fail,重名给 ok(needs_disambiguation)。
+    「《安全生产规范》」这种带书名号/多余空白的输入会先洗掉再匹配。
+    """
+    query = (name or "").strip().strip("《》").strip()
+    if not query:
+        return None, fail(ErrorCode.INVALID_INPUT, "要看哪份资料?说个名字。")
+    docs = _scoped_docs_sync(project_id)
+    matches = [e for e in docs if query.lower() in e.filename.lower()]
+    if len(matches) == 1:
+        return _doc_meta(matches[0]), None
+    if len(matches) > 1:
+        listed = "、".join(f"《{e.filename}》" for e in matches[:10])
+        return None, ok(
+            data={"needs_disambiguation": True, "candidates": [_doc_meta(e) for e in matches]},
+            user_msg=f"有 {len(matches)} 份名字里带「{query}」:{listed}。要看哪一份?",
+        )
+    avail = "、".join(f"《{e.filename}》" for e in docs[:10]) or "(暂无)"
+    return None, fail(ErrorCode.EMPTY_RESULT, f"没找到叫「{query}」的资料。现在有:{avail}。")
 
 
 async def _load_index(
@@ -833,6 +979,235 @@ async def read_view_params(drawing: str, *, config: RunnableConfig) -> Envelope:
     )
 
 
+_OPEN_DRAWING_DESC = (
+    "打开/预览一张图纸(在界面里弹出 PDF 预览)。用户说「打开 XX 图」「预览 XX 平面图」"
+    "「看看刚上传的施工图」时调它。drawing 填图纸名字或编号。"
+    "PDF 图纸直接预览;DXF 图纸会自动转成 PDF 再预览。"
+    "若返回里带 needs_disambiguation(同名多张),把候选念给用户让他选,别自己挑。"
+)
+
+
+@tool("open_drawing", description=_OPEN_DRAWING_DESC)
+@tool_guard
+async def open_drawing(drawing: str, *, config: RunnableConfig) -> Envelope:
+    """定位一张图纸,返回可在界面预览的元数据(DXF 走转 PDF,PDF 原样)。"""
+    project_id = project_from_config(config)
+    located, relay = await asyncio.to_thread(_locate_drawing_sync, drawing, project_id)
+    if located is None:
+        return relay  # NOT_FOUND / 参数空 / 需要用户消歧
+    artifact_id, name = located["artifact_id"], located["name"]
+
+    # 用 _load_index 拿格式(pdf/dxf)并对超大 DXF 做预览保护(同 render_preview 那道闸)。
+    idx, _did, error = await _load_index(artifact_id, project_id)
+    if error is not None:
+        return error
+    assert idx is not None
+
+    is_pdf = _is_pdf(idx)
+    if not is_pdf:
+        entities_total = sum(idx["entities_by_kind"].values())
+        max_entities = get_settings().drawing_render_max_entities
+        if entities_total > max_entities:
+            return fail(
+                ErrorCode.FILE_TOO_LARGE,
+                user_msg=(
+                    f"{name}图元太多({entities_total} 个),转 PDF 预览会很慢,这次先没开。"
+                    "图层、构件、标注尺寸都能正常查——想看哪样直接说。"
+                ),
+            )
+    return ok(
+        data={
+            "action": "preview",
+            "target": "drawing",
+            "artifact_id": artifact_id,
+            "name": name,
+            "format": "pdf" if is_pdf else "dxf",
+            "preview_format": "pdf",
+        },
+        user_msg=(
+            f"{name}这就打开预览"
+            + ("(PDF 图纸,直接看)。" if is_pdf else "(DXF 图纸,给你转成 PDF 看)。")
+        ),
+    )
+
+
+_DOWNLOAD_DRAWING_DESC = (
+    "下载一张图纸的**原文件**(DXF 就给 DXF,PDF 就给 PDF)。用户说「下载 XX 图」"
+    "「把原图给我」时调它。要 DXF 转出来的 PDF 请用 export_drawing_pdf。"
+    "drawing 填图纸名字或编号;同名多张会让用户先选。"
+)
+
+
+@tool("download_drawing", description=_DOWNLOAD_DRAWING_DESC)
+@tool_guard
+async def download_drawing(drawing: str, *, config: RunnableConfig) -> Envelope:
+    """定位一张图纸,返回下载原文件的元数据(前端带鉴权头取回后触发下载)。"""
+    located, relay = await asyncio.to_thread(
+        _locate_drawing_sync, drawing, project_from_config(config)
+    )
+    if located is None:
+        return relay
+    fmt = "pdf" if located["ext"] == _PDF_EXT else "dxf"
+    return ok(
+        data={
+            "action": "download",
+            "target": "drawing",
+            "artifact_id": located["artifact_id"],
+            "name": located["name"],
+            "format": fmt,
+            "download_format": "original",
+        },
+        user_msg=f"{located['name']}的原文件({'PDF' if fmt == 'pdf' else 'DXF'})给你下载。",
+    )
+
+
+_EXPORT_PDF_DESC = (
+    "把一张 DXF 图纸导出成 PDF(矢量,放大不糊),导出后可预览、也能下载这份 PDF。"
+    "用户说「把 XX DXF 转成 PDF」「导出这张图的 PDF」「转 PDF 给我看」时调它。"
+    "图纸本来就是 PDF 的,会直接告诉用户不用转。drawing 填图纸名字或编号;同名多张会让用户先选。"
+)
+
+
+@tool("export_drawing_pdf", description=_EXPORT_PDF_DESC)
+@tool_guard
+async def export_drawing_pdf(drawing: str, *, config: RunnableConfig) -> Envelope:
+    """DXF → 矢量 PDF(注册为产物、带缓存复用),返回可预览/下载的元数据。"""
+    project_id = project_from_config(config)
+    located, relay = await asyncio.to_thread(_locate_drawing_sync, drawing, project_id)
+    if located is None:
+        return relay
+    artifact_id, name = located["artifact_id"], located["name"]
+
+    idx, _did, error = await _load_index(artifact_id, project_id)
+    if error is not None:
+        return error
+    assert idx is not None
+
+    if _is_pdf(idx):
+        return ok(
+            data={
+                "action": "preview",
+                "target": "drawing",
+                "artifact_id": artifact_id,
+                "name": name,
+                "format": "pdf",
+                "preview_format": "pdf",
+                "exported": False,
+            },
+            user_msg=f"{name}本来就是 PDF,不用转,直接给你预览/下载。",
+        )
+
+    entities_total = sum(idx["entities_by_kind"].values())
+    max_entities = get_settings().drawing_render_max_entities
+    if entities_total > max_entities:
+        return fail(
+            ErrorCode.FILE_TOO_LARGE,
+            user_msg=(
+                f"{name}图元太多({entities_total} 个),转 PDF 会很慢,这次先没转。"
+                "图层、构件、标注尺寸都能正常查——想看哪样直接说。"
+            ),
+            detail=f"export_pdf 跳过:entities={entities_total} > {max_entities}",
+        )
+
+    try:
+        pdf_id = await asyncio.to_thread(pdf_export.export_dxf_to_pdf, artifact_id)
+    except ArtifactNotFound:
+        return fail(ErrorCode.NOT_FOUND, user_msg="这张图纸的文件不见了。")
+    except ezdxf.DXFError as exc:
+        logger.info("导出 PDF 渲染失败 %s:%s", artifact_id, exc)
+        return fail(
+            ErrorCode.FILE_CORRUPT,
+            user_msg="这张图纸转不成 PDF,可能文件有问题,换一张再试。",
+            detail=f"export_pdf {artifact_id} 失败:{type(exc).__name__}: {exc}",
+        )
+    return ok(
+        data={
+            "action": "preview",
+            "target": "drawing",
+            "artifact_id": artifact_id,
+            "name": name,
+            "format": "dxf",
+            "preview_format": "pdf",
+            "exported": True,
+            "pdf_id": pdf_id,
+        },
+        user_msg=f"{name}已经转成 PDF 了,可以预览,也能下载这份 PDF。",
+    )
+
+
+_FIND_DOCS_DESC = (
+    "在资料库里找规范/任务书文档(不是图纸)。用户问「资料库里有哪些规范」"
+    "「有没有 XX 规范」时调它。query 填名字关键词,留空则列出当前能看的全部资料。"
+    "只列全局规范 + 当前工地的资料。"
+)
+
+
+@tool("find_documents", description=_FIND_DOCS_DESC)
+@tool_guard
+async def find_documents(query: str = "", *, config: RunnableConfig) -> Envelope:
+    """列/搜资料库文档(规范/任务书),返回可预览/下载的元数据清单。"""
+    project_id = project_from_config(config)
+    docs = await asyncio.to_thread(_scoped_docs_sync, project_id)
+    q = (query or "").strip().strip("《》").strip()
+    if q:
+        docs = [e for e in docs if q.lower() in e.filename.lower()]
+    if not docs:
+        return fail(
+            ErrorCode.EMPTY_RESULT,
+            user_msg=(f"没找到名字里带「{q}」的资料。" if q else "资料库里现在还没有资料。"),
+        )
+    listed = "、".join(
+        f"《{e.filename}》({_DOC_CN.get(e.doc_type, e.doc_type)})" for e in docs[:20]
+    )
+    return ok(
+        data={"documents": [_doc_meta(e) for e in docs]},
+        user_msg=f"找到 {len(docs)} 份:{listed}。要预览或下载哪份,说一声。",
+    )
+
+
+_OPEN_DOC_DESC = (
+    "打开/预览资料库里的一份规范或任务书(在界面里弹出 PDF 预览)。"
+    "用户说「打开资料库里的《安全生产规范》」「预览 XX 规范」时调它。name 填资料名字关键词。"
+    "同名多份会让用户先选。"
+)
+
+
+@tool("open_document", description=_OPEN_DOC_DESC)
+@tool_guard
+async def open_document(name: str, *, config: RunnableConfig) -> Envelope:
+    """定位一份资料,返回可在界面预览的元数据。"""
+    located, relay = await asyncio.to_thread(
+        _locate_document_sync, name, project_from_config(config)
+    )
+    if located is None:
+        return relay
+    return ok(
+        data={"action": "preview", "target": "doc", **located},
+        user_msg=f"《{located['filename']}》这就打开预览。",
+    )
+
+
+_DOWNLOAD_DOC_DESC = (
+    "下载资料库里的一份规范或任务书(PDF)。用户说「下载 XX 规范」「把那份任务书给我」时调它。"
+    "name 填资料名字关键词;同名多份会让用户先选。"
+)
+
+
+@tool("download_document", description=_DOWNLOAD_DOC_DESC)
+@tool_guard
+async def download_document(name: str, *, config: RunnableConfig) -> Envelope:
+    """定位一份资料,返回下载元数据(前端带鉴权头取回后触发下载)。"""
+    located, relay = await asyncio.to_thread(
+        _locate_document_sync, name, project_from_config(config)
+    )
+    if located is None:
+        return relay
+    return ok(
+        data={"action": "download", "target": "doc", **located},
+        user_msg=f"《{located['filename']}》给你下载。",
+    )
+
+
 CAD_TOOLS: list = [
     list_drawings,
     list_projects,
@@ -842,15 +1217,27 @@ CAD_TOOLS: list = [
     layer_stats,
     read_view_params,
     render_preview,
+    open_drawing,
+    download_drawing,
+    export_drawing_pdf,
+    find_documents,
+    open_document,
+    download_document,
 ]
 """供 gyt.agents.cad 组装时使用。拿去用之前先 list(...) 复制一份,别原地 append。"""
 
 __all__ = [
     "CAD_TOOLS",
+    "download_document",
+    "download_drawing",
+    "export_drawing_pdf",
+    "find_documents",
     "layer_stats",
     "list_components",
     "list_drawings",
     "list_projects",
+    "open_document",
+    "open_drawing",
     "parse_drawing",
     "query_dimension",
     "read_view_params",

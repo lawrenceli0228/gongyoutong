@@ -24,20 +24,26 @@ import re
 import sqlite3
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
+import ezdxf
+from pypdf.errors import PyPdfError
 from starlette.applications import Starlette
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
+from gyt.agents.cad import index as cad_index
+from gyt.agents.cad import pdf_export
+from gyt.agents.cad.demo_registry import get_demo_drawings
 from gyt.agents.knowledge import ingest, store
 from gyt.checkin_api import CHECKIN_ROUTES
 from gyt.config import ALLOWED_DRAWING_EXT, get_settings
 from gyt.core import artifacts, project_fs
-from gyt.core.artifacts import ArtifactKind
+from gyt.core.artifacts import ArtifactKind, ArtifactNotFound
 from gyt.db import hazards
 from gyt.db import projects as db
 from gyt.supervision_api import SUPERVISION_ROUTES
@@ -46,6 +52,14 @@ logger = logging.getLogger(__name__)
 
 _BYTES_PER_MB = 1024 * 1024
 _PDF_EXT = ".pdf"
+_DXF_EXT = ".dxf"
+
+# 文件内容端点用的媒体类型与展示方式常量(禁止散落魔法值)。
+_MEDIA_PDF = "application/pdf"
+# DXF 不是浏览器能预览的格式,原文下载一律当二进制推给用户(触发「另存为」)。
+_MEDIA_DXF = "application/octet-stream"
+_DISPOSITIONS = frozenset({"inline", "attachment"})
+_FORMATS = frozenset({"original", "pdf"})
 
 
 # --- 信封响应 ----------------------------------------------------------------
@@ -61,6 +75,46 @@ def _ok(data: Any, user_msg: str, *, status: int = 200) -> JSONResponse:
 
 def _fail(status: int, user_msg: str, error_code: str) -> JSONResponse:
     return JSONResponse(_envelope(False, None, user_msg, error_code), status_code=status)
+
+
+# --- 文件内容响应(预览 / 下载)---------------------------------------------
+# 前端拿不了裸 URL 直接 window.open(API Key 在请求头里),只能带鉴权头 fetch 成 Blob。
+# 这些端点复用 langgraph 的 X-Api-Key 鉴权(enable_custom_route_auth,同其它自定义路由),
+# 端点内不再自己写鉴权。返回体是**文件字节**而不是信封,所以出错走 _fail(信封)、
+# 成功走 FileResponse(流式,不把整份读进内存)。
+
+
+def _content_disposition(disposition: str, filename: str) -> str:
+    """拼一个既兼容老浏览器又能带中文名的 Content-Disposition(RFC 5987)。
+
+    中文文件名(工地图纸「首层平面图.dxf」)不能直接进 filename= —— header 只允许 ASCII,
+    塞中文会乱码甚至截断。做法:filename= 给一个 ASCII 兜底名,filename*=UTF-8'' 给百分号
+    编码的真名,现代浏览器优先用后者。disposition 是 inline(浏览器内预览)或 attachment(下载)。
+    """
+    # ASCII 兜底名:非 ASCII 字符丢掉,再抹掉会破坏 header 的引号/换行;空了给个中性名。
+    ascii_fallback = re.sub(r'[\r\n"]', "_", filename.encode("ascii", "ignore").decode("ascii"))
+    ascii_fallback = ascii_fallback.strip() or "download"
+    encoded = quote(filename, safe="")
+    return f"{disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+
+
+def _disposition_of(request: Request, default: str = "inline") -> str:
+    """从 query 取展示方式(inline/attachment),非法值回退默认(不报错,给个安全默认)。"""
+    value = request.query_params.get("disposition", default)
+    return value if value in _DISPOSITIONS else default
+
+
+def _serve_file(path: Path, *, media_type: str, disposition: str, filename: str) -> FileResponse:
+    """把一份磁盘文件按指定媒体类型 + 展示方式流式返回(不经内存整读)。
+
+    不传 FileResponse 的 filename 参数(那会让它自己拼一个 attachment 头),改用我们
+    显式算好的 Content-Disposition —— inline 预览必须由我们控制,库默认只会给 attachment。
+    """
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={"content-disposition": _content_disposition(disposition, filename)},
+    )
 
 
 # --- project_id 生成 ---------------------------------------------------------
@@ -104,16 +158,57 @@ async def library(request: Request) -> JSONResponse:
     (project_fs.list_docs)。前端按 project_id 分组渲染,全局规范单列一组。只读,不改任何状态。
     """
 
-    def _work() -> tuple[list[Any], list[Any], list[Any], dict[tuple[str, str, str], int]]:
+    def _work() -> tuple[
+        list[Any], list[Any], list[Any], dict[tuple[str, str, str], int], set[tuple[str, str, str]]
+    ]:
+        docs = project_fs.list_docs()
+        # 无文字层(扫描件/转曲)标记 —— 让状态显示成「不可检索」而不是永远「入库中」。
+        # 文件系统 stat 属阻塞 IO,和其它三样一起在这一个线程池调用里做完。
+        unsearchable = {
+            (e.scope, e.project_id or "", e.filename)
+            for e in docs
+            if project_fs.doc_is_unsearchable(e.scope, e.doc_type, e.filename, e.project_id)
+        }
         return (
             db.list_projects(),
             db.list_drawings(),
-            project_fs.list_docs(),
+            docs,
             store.count_chunks_by_doc(),  # 每份文档的向量块数,标「入库中 / 已入库 N 段」
+            unsearchable,
         )
 
-    projects, drawings, docs, chunk_counts = await run_in_threadpool(_work)
+    projects, drawings, docs, chunk_counts, unsearchable = await run_in_threadpool(_work)
     name_by_id = {p.id: p.name for p in projects}
+
+    def _doc_status(scope: str, pid: str | None, filename: str, chunks: int) -> str:
+        """给前端展示用的四态:已可检索 / 不可检索 / 处理中(空库时也归这类,下次刷新再数)。
+
+        · unsearchable(无文字层标记)→ "unsearchable"(可预览,暂不可检索,OCR 待支持);
+        · chunks > 0                 → "indexed"(已入库、可检索);
+        · 其余(有文字层但块数还是 0)→ "ingesting"(embedding 还没跑完 / 刚数不出)。
+        「解析失败」这一态目前不会落到资料库:打不开的 PDF 在上传口就被 422 拦下、不归档。
+        """
+        if (scope, pid or "", filename) in unsearchable:
+            return "unsearchable"
+        return "indexed" if chunks > 0 else "ingesting"
+
+    def _doc_json(e: Any) -> dict[str, Any]:
+        # 向量块数:0 = 还在入库(embedding 未完)/ 无文字层,>0 = 已入库、可检索。
+        chunks = chunk_counts.get((e.scope, e.project_id or "", e.filename), 0)
+        return {
+            "scope": e.scope,
+            "project_id": e.project_id,
+            "project_name": name_by_id.get(e.project_id) if e.project_id else None,
+            "doc_type": e.doc_type,
+            "filename": e.filename,
+            "rel_path": e.rel_path,
+            "size_bytes": e.size_bytes,
+            "modified_at": e.modified_at,
+            "chunks": chunks,
+            # 展示状态:indexed / ingesting / unsearchable(见 _doc_status)。
+            "status": _doc_status(e.scope, e.project_id, e.filename, chunks),
+        }
+
     data = {
         "projects": [{"id": p.id, "name": p.name, "code": p.code} for p in projects],
         "drawings": [
@@ -126,25 +221,13 @@ async def library(request: Request) -> JSONResponse:
                 "floor": d.floor,
                 "rel_path": d.rel_path,
                 "artifact_id": d.artifact_id,
+                # 后缀:前端据它决定预览走「PDF 原样」还是「DXF 转 PDF」(.dxf / .pdf)。
+                "ext": PurePosixPath(d.rel_path or "").suffix.lower(),
                 "created_at": d.created_at,
             }
             for d in drawings
         ],
-        "docs": [
-            {
-                "scope": e.scope,
-                "project_id": e.project_id,
-                "project_name": name_by_id.get(e.project_id) if e.project_id else None,
-                "doc_type": e.doc_type,
-                "filename": e.filename,
-                "rel_path": e.rel_path,
-                "size_bytes": e.size_bytes,
-                "modified_at": e.modified_at,
-                # 向量块数:0 = 还在入库(embedding 未完),>0 = 已入库、可检索。
-                "chunks": chunk_counts.get((e.scope, e.project_id or "", e.filename), 0),
-            }
-            for e in docs
-        ],
+        "docs": [_doc_json(e) for e in docs],
     }
     return _ok(data, f"共 {len(drawings)} 张图纸、{len(docs)} 份资料。")
 
@@ -290,10 +373,24 @@ async def _handle_doc_upload(request: Request, *, scope: str, project_id: str) -
             logger.exception("文档 %s 预检打不开", filename)
             return {"status": "bad_pdf"}
         if not has_text:
-            landed.unlink(missing_ok=True)
-            artifacts.delete(artifact_id)
-            return {"status": "empty"}
-        return {"status": "ok", "landed": str(landed), "artifact_id": artifact_id}
+            # 资料上传策略(改判):无文字层 PDF(扫描件 / 文字转曲的 CAD 打印件)不再拒。
+            # 保留归档、能预览,只是打「不可检索」标记、不进检索、**绝不伪造 OCR 结果**。
+            # 文件与产物都留着(不 unlink、不 delete),资料库据标记把状态显示成「不可检索」。
+            project_fs.mark_doc_unsearchable(
+                scope, doc_type, landed.name, project_id=project_id or None
+            )
+            return {
+                "status": "no_text",
+                "landed": str(landed),
+                "artifact_id": artifact_id,
+                "filename": landed.name,
+            }
+        return {
+            "status": "ok",
+            "landed": str(landed),
+            "artifact_id": artifact_id,
+            "filename": landed.name,
+        }
 
     prep = await run_in_threadpool(_prepare)
     prep_status = prep["status"]
@@ -303,12 +400,33 @@ async def _handle_doc_upload(request: Request, *, scope: str, project_id: str) -
         return _fail(
             422, f"「{filename}」打不开(可能加密或损坏),没存进去,换一份 PDF 再传。", "FILE_CORRUPT"
         )
-    if prep_status == "empty":
-        return _fail(
-            422,
-            f"「{filename}」没读到可检索的文字(多半是扫描件/图片版 PDF),"
-            "需要先做 OCR 转成文字版再传。已自动清掉,没留在项目里。",
-            "EMPTY_RESULT",
+    if prep_status == "no_text":
+        # 无文字层:已归档、能预览,但进不了检索(不做 OCR、不伪造)。回 201「收下了」,不起后台入库。
+        kind_cn = "规范" if doc_type == project_fs.DOC_REGULATION else "任务书"
+        landed_name = str(prep["filename"])
+        logger.info(
+            "收到无文字层%s文档 %s(scope=%s project=%s):已归档、可预览、暂不入检索",
+            kind_cn,
+            landed_name,
+            scope,
+            project_id or "-",
+        )
+        return JSONResponse(
+            _envelope(
+                True,
+                {
+                    "scope": scope,
+                    "project_id": project_id or None,
+                    "doc_type": doc_type,
+                    "filename": landed_name,
+                    "artifact_id": str(prep["artifact_id"]),
+                    "status": "unsearchable",
+                },
+                f"{kind_cn}「{landed_name}」已归档,能预览。但没读到文字层"
+                "(多半是扫描件/图片版 PDF),暂时进不了检索(OCR 待支持)。",
+                None,
+            ),
+            status_code=201,
         )
 
     # 文件已落地、有文字层 —— embedding 丢后台,立刻回 202「正在入库」。
@@ -532,11 +650,151 @@ async def remove_project(request: Request) -> JSONResponse:
     )
 
 
+# --- 文件内容端点(预览 / 下载)---------------------------------------------
+
+
+async def serve_drawing_file(request: Request) -> Any:
+    """GET /files/drawing/{artifact_id} —— 取一张图纸的文件内容(预览或下载)。
+
+    query:
+      · disposition = inline(浏览器内预览,默认)/ attachment(触发下载);
+      · format = original(原文件,默认)/ pdf(DXF 转成矢量 PDF;PDF 图纸原样返回)。
+
+    归属校验:artifact_id 必须是**登记在册**的图纸 —— 项目图(drawings 表)或演示图
+    (预注册映射)。拿任意产物 id(照片、报告)来掏文件一律 404,不暴露磁盘路径。
+    """
+    artifact_id = request.path_params["artifact_id"]
+    if not artifacts.ARTIFACT_ID_RE.fullmatch(artifact_id):
+        return _fail(404, "没找到这张图纸(编号不对)。", "NOT_FOUND")
+    fmt = request.query_params.get("format", "original")
+    if fmt not in _FORMATS:
+        fmt = "original"
+
+    def _lookup() -> dict[str, str] | None:
+        # 只认在册图纸:项目图(库)或演示图(预注册映射)。都不是 → None(404)。
+        row = db.find_drawing_by_artifact(artifact_id)
+        demo_name = next((n for n, aid in get_demo_drawings().items() if aid == artifact_id), None)
+        if row is None and demo_name is None:
+            return None
+        try:
+            meta = artifacts.read_meta(artifact_id)
+        except ArtifactNotFound:
+            return None
+        return {
+            "ext": str(meta.get("ext", "")).lower(),
+            "title": row.title if row is not None else (demo_name or "图纸"),
+            "original_name": str(meta.get("original_name") or ""),
+        }
+
+    info = await run_in_threadpool(_lookup)
+    if info is None:
+        return _fail(404, "没找到这张图纸,可能已被删除。", "NOT_FOUND")
+    ext = info["ext"]
+    if ext not in ALLOWED_DRAWING_EXT:
+        return _fail(415, "这个文件不是图纸格式,只支持 DXF / PDF。", "FILE_UNSUPPORTED")
+
+    disposition = _disposition_of(request)
+    if fmt == "pdf" and ext == _DXF_EXT:
+        return await _serve_dxf_as_pdf(artifact_id, info["title"], disposition)
+
+    # 其余情况直接给原文件:PDF 图纸(含 format=pdf 时原样)、或 DXF 原文件下载。
+    def _build() -> Any:
+        try:
+            path = artifacts.resolve(artifact_id)
+        except ArtifactNotFound:
+            return _fail(404, "这张图纸的文件不见了。", "NOT_FOUND")
+        if ext == _PDF_EXT:
+            media = _MEDIA_PDF
+            out_name = info["original_name"] or f"{info['title']}.pdf"
+        else:
+            media = _MEDIA_DXF
+            out_name = info["original_name"] or f"{info['title']}{ext}"
+        return _serve_file(path, media_type=media, disposition=disposition, filename=out_name)
+
+    return await run_in_threadpool(_build)
+
+
+async def _serve_dxf_as_pdf(artifact_id: str, title: str, disposition: str) -> Any:
+    """把一张 DXF 转成矢量 PDF 后返回(带图元数保护 + 缓存复用)。异步:分步下线程池。"""
+    try:
+        idx = await cad_index.ensure_index(artifact_id)
+    except ArtifactNotFound:
+        return _fail(404, "这张图纸的文件不见了。", "NOT_FOUND")
+    except (ezdxf.DXFError, PyPdfError) as exc:
+        logger.info("导出 PDF 解析失败 %s:%s", artifact_id, exc)
+        return _fail(422, "这张图纸打不开,可能文件传坏了或格式不标准。", "FILE_CORRUPT")
+
+    entities_total = sum(idx.get("entities_by_kind", {}).values())
+    max_entities = get_settings().drawing_render_max_entities
+    if entities_total > max_entities:
+        return _fail(
+            413,
+            f"这张图纸图元太多({entities_total} 个),生成 PDF 会很慢,这次先没出。"
+            "图层、构件、标注尺寸都能正常查——想看哪样直接说。",
+            "FILE_TOO_LARGE",
+        )
+
+    def _build() -> Any:
+        try:
+            pdf_id = pdf_export.export_dxf_to_pdf(artifact_id)
+            path = artifacts.resolve(pdf_id)
+        except ArtifactNotFound:
+            return _fail(404, "这张图纸的文件不见了。", "NOT_FOUND")
+        except ezdxf.DXFError as exc:
+            logger.info("导出 PDF 渲染失败 %s:%s", artifact_id, exc)
+            return _fail(422, "这张图纸转不成 PDF,可能文件有问题,换一张再试。", "FILE_CORRUPT")
+        return _serve_file(
+            path, media_type=_MEDIA_PDF, disposition=disposition, filename=f"{title}.pdf"
+        )
+
+    return await run_in_threadpool(_build)
+
+
+async def serve_doc_file(request: Request) -> Any:
+    """GET /files/doc —— 取一份资料库文档(规范/任务书 PDF)的内容(预览或下载)。
+
+    query:scope(global/project)、doc_type(regulation/task_book)、filename、
+    project_id(项目作用域必填)、disposition(inline 默认 / attachment)。
+
+    归属校验:路径由「作用域 + 类型 + 安全 basename(+ 校验过的 project_id)」重建
+    (project_fs.resolve_doc),外部传路径穿越串一律落在 docs 目录内、查无即 404。
+    """
+    scope = (request.query_params.get("scope") or "").strip()
+    doc_type = (request.query_params.get("doc_type") or "").strip()
+    filename = (request.query_params.get("filename") or "").strip()
+    project_id = (request.query_params.get("project_id") or "").strip()
+
+    if scope not in project_fs.SCOPES:
+        return _fail(400, "资料范围不对(global/project)。", "INVALID_INPUT")
+    if doc_type not in project_fs.DOC_TYPES:
+        return _fail(400, "资料类型不对(regulation/task_book)。", "INVALID_INPUT")
+    if not filename:
+        return _fail(400, "没说要看哪份资料。", "INVALID_INPUT")
+    if scope == project_fs.SCOPE_GLOBAL and doc_type != project_fs.DOC_REGULATION:
+        return _fail(400, "全局资料只有规范。", "INVALID_INPUT")
+    if scope == project_fs.SCOPE_PROJECT and not project_id:
+        return _fail(400, "看项目资料要先选项目。", "INVALID_INPUT")
+
+    disposition = _disposition_of(request)
+
+    def _build() -> Any:
+        if scope == project_fs.SCOPE_PROJECT and db.get_project(project_id) is None:
+            return _fail(404, "没找到这个项目。", "NOT_FOUND")
+        path = project_fs.resolve_doc(scope, doc_type, filename, project_id=project_id or None)
+        if path is None:
+            return _fail(404, f"没找到资料「{filename}」(可能已删)。", "NOT_FOUND")
+        return _serve_file(path, media_type=_MEDIA_PDF, disposition=disposition, filename=path.name)
+
+    return await run_in_threadpool(_build)
+
+
 app = Starlette(
     routes=[
         Route("/projects", list_projects, methods=["GET"]),
         Route("/projects", create_project, methods=["POST"]),
         Route("/library", library, methods=["GET"]),
+        Route("/files/drawing/{artifact_id}", serve_drawing_file, methods=["GET"]),
+        Route("/files/doc", serve_doc_file, methods=["GET"]),
         Route("/projects/{project_id}/drawings", upload_drawing, methods=["POST"]),
         Route("/docs", upload_global_doc, methods=["POST"]),
         Route("/projects/{project_id}/docs", upload_project_doc, methods=["POST"]),

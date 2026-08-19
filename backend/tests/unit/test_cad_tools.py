@@ -12,7 +12,7 @@ import ezdxf
 import pytest
 
 from gyt.agents.cad import tools
-from gyt.core import artifacts
+from gyt.core import artifacts, project_fs
 from gyt.core.artifacts import ArtifactKind
 from gyt.db import projects as db
 from tests.unit._dxf_fixtures import (
@@ -590,3 +590,126 @@ async def test_list_drawings选了工地只列本项目图(tmp_path, monkeypatch
     r2 = await tools.list_drawings.ainvoke({})
     assert {u["title"] for u in r2["data"]["uploaded"]} == {"甲图", "乙图"}
     assert r2["data"]["demo"] == ["演示图"]
+
+
+# ---------------------------------------------------------------------------
+# 打开 / 预览 / 下载 / 导出 PDF(自然语言文件操作)
+# ---------------------------------------------------------------------------
+
+
+async def test_open_drawing_DXF返回预览元数据(cad_env):
+    result = await tools.open_drawing.ainvoke({"drawing": "首层平面图"})
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["action"] == "preview"
+    assert data["target"] == "drawing"
+    assert data["artifact_id"] == cad_env["id"]
+    assert data["format"] == "dxf"  # DXF 预览走转 PDF
+    assert data["preview_format"] == "pdf"
+
+
+async def test_download_drawing_返回原文件元数据(cad_env):
+    result = await tools.download_drawing.ainvoke({"drawing": "首层平面图"})
+    assert result["ok"] is True
+    assert result["data"]["action"] == "download"
+    assert result["data"]["download_format"] == "original"
+    assert result["data"]["format"] == "dxf"
+    assert result["data"]["artifact_id"] == cad_env["id"]
+
+
+async def test_export_drawing_pdf_DXF导出并给预览(cad_env):
+    result = await tools.export_drawing_pdf.ainvoke({"drawing": "首层平面图"})
+    assert result["ok"] is True
+    assert result["data"]["exported"] is True
+    assert result["data"]["preview_format"] == "pdf"
+    assert artifacts.ARTIFACT_ID_RE.fullmatch(result["data"]["pdf_id"])
+
+
+async def test_open_drawing_不存在NOT_FOUND(cad_env):
+    result = await tools.open_drawing.ainvoke({"drawing": "地下室平面图"})
+    assert result["ok"] is False
+    assert result["error_code"] == "NOT_FOUND"
+
+
+async def test_open_drawing_同名多张要用户确认(monkeypatch):
+    # 两个项目各有一张「二层平面图」,不选工地 → 跨项目撞名 → 让用户先选,不猜。
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)
+    db.create_project("p1", "甲")
+    db.create_project("p2", "乙")
+    a1 = artifacts.register(b"x", kind=ArtifactKind.DRAWING, original_name="a.dxf")
+    a2 = artifacts.register(b"y", kind=ArtifactKind.DRAWING, original_name="b.dxf")
+    db.add_drawing("p1", a1, "plan", "二层平面图")
+    db.add_drawing("p2", a2, "plan", "二层平面图")
+
+    result = await tools.open_drawing.ainvoke({"drawing": "二层平面图"})
+    assert result["ok"] is True
+    assert result["data"]["needs_disambiguation"] is True
+    assert len(result["data"]["candidates"]) == 2
+
+
+async def test_open_drawing_选了工地则只在该项目内不歧义(monkeypatch):
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)
+    db.create_project("p1", "甲")
+    db.create_project("p2", "乙")
+    a1 = artifacts.register(b"x", kind=ArtifactKind.DRAWING, original_name="a.dxf")
+    a2 = artifacts.register(b"y", kind=ArtifactKind.DRAWING, original_name="b.dxf")
+    db.add_drawing("p1", a1, "plan", "二层平面图")
+    db.add_drawing("p2", a2, "plan", "二层平面图")
+
+    # 选中 p1:同名只剩一张 → 直接定位,不歧义(download 不 parse,能验到定位结果)。
+    result = await tools.download_drawing.ainvoke(
+        {"drawing": "二层平面图"}, config={"configurable": {"gyt_project_id": "p1"}}
+    )
+    assert result["ok"] is True
+    assert result["data"]["artifact_id"] == a1
+
+
+# ---------------------------------------------------------------------------
+# 资料库文档:查找 / 打开 / 下载
+# ---------------------------------------------------------------------------
+
+
+async def test_find_documents_列出全局规范():
+    project_fs.land_doc("global", "regulation", "安全生产规范.pdf", b"%PDF")
+    result = await tools.find_documents.ainvoke({"query": ""})
+    assert result["ok"] is True
+    assert any(d["filename"] == "安全生产规范.pdf" for d in result["data"]["documents"])
+
+
+async def test_open_document_书名号也认_返回预览元数据():
+    project_fs.land_doc("global", "regulation", "安全生产规范.pdf", b"%PDF")
+    result = await tools.open_document.ainvoke({"name": "《安全生产规范》"})
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["action"] == "preview"
+    assert data["target"] == "doc"
+    assert data["filename"] == "安全生产规范.pdf"
+    assert data["scope"] == "global"
+    assert data["doc_type"] == "regulation"
+
+
+async def test_download_document_关键词匹配():
+    project_fs.land_doc("global", "regulation", "安全生产规范.pdf", b"%PDF")
+    result = await tools.download_document.ainvoke({"name": "安全生产"})
+    assert result["ok"] is True
+    assert result["data"]["action"] == "download"
+    assert result["data"]["filename"] == "安全生产规范.pdf"
+
+
+async def test_open_document_不存在EMPTY_RESULT():
+    result = await tools.open_document.ainvoke({"name": "根本没有的规范"})
+    assert result["ok"] is False
+    assert result["error_code"] == "EMPTY_RESULT"
+
+
+async def test_open_document_同名多份要用户确认():
+    db.create_project("pa", "甲")
+    project_fs.land_doc("global", "regulation", "消防规范.pdf", b"%PDF")
+    project_fs.land_doc("project", "regulation", "消防规范补充.pdf", b"%PDF", project_id="pa")
+    # 选中 pa:全局那份 + 本项目那份都含「消防规范」→ 歧义。
+    result = await tools.open_document.ainvoke(
+        {"name": "消防规范"}, config={"configurable": {"gyt_project_id": "pa"}}
+    )
+    assert result["ok"] is True
+    assert result["data"]["needs_disambiguation"] is True
+    assert len(result["data"]["candidates"]) == 2

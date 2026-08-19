@@ -114,6 +114,8 @@ _FIND_BY_TITLE_SQL: Final[str] = (
 _FIND_BY_ARTIFACT_SQL: Final[str] = (
     f"SELECT {_DRAWING_COLUMNS} FROM drawings WHERE artifact_id = ? ORDER BY id DESC LIMIT 1"
 )
+# 「打开/预览某张图」按名字找**全部**同名图纸(可跨项目),用于歧义消解:>1 张就请用户确认。
+_FIND_ALL_BY_TITLE_BASE: Final[str] = f"SELECT {_DRAWING_COLUMNS} FROM drawings WHERE title = ?"
 # 删除:单张图 / 某项目全部图 / 项目本身。删项目前必须先删它名下的图(外键)。
 _DELETE_DRAWING_SQL: Final[str] = "DELETE FROM drawings WHERE id = ?"
 _DELETE_PROJECT_DRAWINGS_SQL: Final[str] = "DELETE FROM drawings WHERE project_id = ?"
@@ -219,6 +221,23 @@ def find_drawing_by_artifact(artifact_id: str) -> DrawingRow | None:
     return DrawingRow(*raw) if raw is not None else None
 
 
+def find_drawings_by_title(title: str, project_id: str | None = None) -> list[DrawingRow]:
+    """按展示名找**全部**同名图纸(给了 project_id 就限定在该项目内),供歧义消解。
+
+    「打开/预览 XX 图」时用:恰好 1 张直接开;>1 张(同名跨项目 / 同名跨楼层)先把候选列给
+    用户确认,别猜错图纸。WHERE 片段是模块内字面量,值走 ? 占位(方案红线 4)。
+    """
+    params: list[str] = [title]
+    query = _FIND_ALL_BY_TITLE_BASE
+    if project_id is not None:
+        query += " AND project_id = ?"
+        params.append(project_id)
+    query += " ORDER BY project_id, id"
+    with _projects_db() as conn:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    return [DrawingRow(*r) for r in rows]
+
+
 def list_drawings(
     *, project_id: str | None = None, view_type: str | None = None
 ) -> list[DrawingRow]:
@@ -290,6 +309,7 @@ __all__ = [
     "delete_project_drawings",
     "find_drawing_by_artifact",
     "find_drawing_by_title",
+    "find_drawings_by_title",
     "get_drawing_by_id",
     "get_project",
     "list_drawings",
