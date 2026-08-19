@@ -428,9 +428,9 @@ describe("二次确认(判据是「这一下是不是法律行为」,不是「�
   it("确认话里要有隐患编号、三份文书的名字、以及「不能撤销」", () => {
     const prompt = confirmPrompt("suspend", hazard({ grade: GRADE_SEVERE }));
     expect(prompt).toContain("GYT-H-20260816-093000-1a2b");
-    expect(prompt).toContain("工程暂停令");
-    expect(prompt).toContain("致建设单位报告");
-    expect(prompt).toContain("不能撤销");
+    expect(prompt).toContain("工程暫停令");
+    expect(prompt).toContain("致建設單位報告");
+    expect(prompt).toContain("不能撤銷");
   });
 
   it("上报那句要说清是对施工单位的正式指控", () => {
@@ -444,9 +444,9 @@ describe("二次确认(判据是「这一下是不是法律行为」,不是「�
   it("否决那句要说清是**整行删掉、找不回来**,并给出「确实是隐患」的出路", () => {
     const prompt = confirmPrompt("reject", hazard());
     expect(prompt).toContain("GYT-H-20260816-093000-1a2b");
-    expect(prompt).toContain("删掉");
-    expect(prompt).toContain("找不回来");
-    expect(prompt).toContain("确认"); // 误点进来的人得知道该走哪条
+    expect(prompt).toContain("刪掉");
+    expect(prompt).toContain("找不回來");
+    expect(prompt).toContain("確認"); // 误点进来的人得知道该走哪条
     // 这句话是拿去弹原生对话框的:markdown 记号会原样显示成星号
     expect(prompt).not.toContain("**");
   });
@@ -781,7 +781,7 @@ describe("工具结果里捞数据(渲染路径:认不出就跳过,一个错都�
     // 状态缺省成 pending —— 权限最小的那一档,猜错也不会让人点到不该点的按钮
     expect(list[0]).toEqual({
       hazard_no: "GYT-H-9",
-      item: "(未写明事项)",
+      item: "(未寫明事項)",
       grade: "",
       status: "pending",
       needs_grading: false,
@@ -1541,7 +1541,7 @@ describe("photoTypeProblem —— 只拦有把握的那两类,其余交给后端
     for (const type of ["image/heic", "image/heif", "image/heic-sequence"]) {
       expect(photoTypeProblem({ type })).toBe(PHOTO_MESSAGES.heicNotSupported);
     }
-    expect(PHOTO_MESSAGES.heicNotSupported).toContain("拍照 / 选图");
+    expect(PHOTO_MESSAGES.heicNotSupported).toContain("拍照 / 選圖");
   });
 
   it("压根不是图的拦下来(点错文件那一类)", () => {
@@ -1565,7 +1565,7 @@ describe("describePhotoFile —— 「整改后.jpg · 2.3 MB」", () => {
 
   it("不到 1MB 说 KB,不到 1KB 说字节 —— 别让人看见「0.0 MB」", () => {
     expect(describePhotoFile({ name: "a.png", size: 400 * 1024 })).toBe("a.png · 400 KB");
-    expect(describePhotoFile({ name: "a.png", size: 512 })).toBe("a.png · 512 字节");
+    expect(describePhotoFile({ name: "a.png", size: 512 })).toBe("a.png · 512 字節");
   });
 
   it("🔴 长文件名掐中间不掐尾巴 —— 尾巴是扩展名,而「是不是 .heic」正是要看的", () => {
@@ -1582,8 +1582,8 @@ describe("describePhotoFile —— 「整改后.jpg · 2.3 MB」", () => {
   });
 
   it("没有文件名时说「(没有文件名)」,不留一个孤零零的「· 2.3 MB」", () => {
-    expect(describePhotoFile({ name: "", size: 1024 })).toBe("(没有文件名) · 1 KB");
-    expect(describePhotoFile({ name: "   ", size: 1024 })).toBe("(没有文件名) · 1 KB");
+    expect(describePhotoFile({ name: "", size: 1024 })).toBe("(沒有文件名) · 1 KB");
+    expect(describePhotoFile({ name: "   ", size: 1024 })).toBe("(沒有文件名) · 1 KB");
   });
 
   it("畸形大小也要排得出一行字,不许炸(渲染路径)", () => {
@@ -1713,11 +1713,11 @@ describe("照片这条链的文案(它们会原样上屏,所以在这里钉住)"
     // 旧那句「在聊天记录里那张照片下面能看到」现在只服务折叠起来的手填编号那一格。
     // 主路径是「拍一张」,两句话指向两个不同的地方 —— 合成一句必然有一半人被指错方向,
     // 而「被指错方向」正是真人测试反馈那句「照片不能是编号意义不明」的全部内容。
-    expect(SUPERVISION_MESSAGES.badPhotoId).toContain("聊天记录");
+    expect(SUPERVISION_MESSAGES.badPhotoId).toContain("聊天記錄");
     // 主路径那句现在是 SHARED_PHOTO_MESSAGES.waiting(照片在面板顶上那一格)。
     // 🔴 它不许再把人指回聊天记录 —— 那正是真人反馈「照片不能是编号意义不明」说的那一幕。
     expect(SHARED_PHOTO_MESSAGES.waiting).not.toContain("聊天");
-    expect(SHARED_PHOTO_MESSAGES.waiting).not.toContain("编号");
+    expect(SHARED_PHOTO_MESSAGES.waiting).not.toContain("編號");
   });
 
   it("每一句都是中文人话:不许漏进后端的字段名、英文状态词、模块路径", () => {
@@ -1978,9 +1978,9 @@ describe("「下面 N 条隐患都用这张」那个数(数大了 = 监理以为
   });
 
   it("describeSharedPhotoCoverage:1 条时不说「都」(中文里「都」预设复数)", () => {
-    expect(describeSharedPhotoCoverage(1)).toContain("1 条");
+    expect(describeSharedPhotoCoverage(1)).toContain("1 條");
     expect(describeSharedPhotoCoverage(1)).not.toContain("都");
-    expect(describeSharedPhotoCoverage(3)).toContain("3 条");
+    expect(describeSharedPhotoCoverage(3)).toContain("3 條");
     expect(describeSharedPhotoCoverage(3)).toContain("都");
   });
 
@@ -2017,12 +2017,12 @@ describe("共用照片这条链的文案(它们会原样上屏,所以在这里�
   });
 
   it("「传失败」那句绝不许读成「还没传」", () => {
-    expect(SHARED_PHOTO_MESSAGES.failed).toContain("没传上去");
+    expect(SHARED_PHOTO_MESSAGES.failed).toContain("沒傳上去");
     expect(SHARED_PHOTO_MESSAGES.failed).not.toBe(SHARED_PHOTO_MESSAGES.waiting);
   });
 
   it("「用了别的照片」那句要显眼地说出「不是上面那张」", () => {
-    expect(SHARED_PHOTO_MESSAGES.usesOwn).toContain("不是上面那张");
+    expect(SHARED_PHOTO_MESSAGES.usesOwn).toContain("不是上面那張");
     // 上面还没传共用照片时用的是另一句 —— 那时不该提一个屏幕上不存在的参照物
     expect(SHARED_PHOTO_MESSAGES.usesOwnAlone).not.toContain("共用");
   });

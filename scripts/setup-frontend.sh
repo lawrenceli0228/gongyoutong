@@ -71,6 +71,17 @@ readonly NODE_IMAGE_TAG="22-slim"
 # (v4 把 includeMargin 换成了 marginSize,qrcode.tsx 用的是后者)。
 readonly QRCODE_REACT_VERSION="4.2.0"
 
+# 简→繁(香港)转换库(W12 第一批,hant-convert.tsx 用)。同样钉死精确版本,
+# 理由与 qrcode.react 一致(Dockerfile 用 --frozen-lockfile)。
+# 1.4.1 = 2026-08-17 从 npm 查到的 latest。
+#
+# ⚠️ **它是 lazy import 进来的**(`import("opencc-js/cn2t")`),所以不进首屏包 ——
+#    438 KB gzipped 只在用户切到繁體时拉一次,之后浏览器缓存。
+# 🔴 **不许为了省体积换成 core + 单字表那个 25 KB 的精简档。** 实测(方案 §5.1)
+#    精简档会把「签发」转成「籤發」(抽籤的籤)、「复查」转成「復查」——
+#    那两个正是监理链的核心动作,而这个错没有任何测试会发现。
+readonly OPENCC_JS_VERSION="1.4.1"
+
 # -----------------------------------------------------------------------------
 # 路径解析:一律从脚本自身位置推导,允许在任意工作目录下执行
 # -----------------------------------------------------------------------------
@@ -484,9 +495,21 @@ apply_override "api-key.tsx" "src/lib/api-key.tsx"
 #    (2026-08-16 W9·S6:install_new_file 五 → 七,加了监理那两件。)
 #    (2026-08-16 W10·S3:install_new_file 七 → 八,加了 supervision-entry.tsx
 #     那个常驻入口。apply_override 仍是十二 —— 那次只改了已有的 thread-index.tsx。)
+#    (2026-08-17 W12·第一批:install_new_file 八 → **十**,加了 lang-lib.ts
+#     那个三语判别库 + hant-convert.tsx 那个懒加载转换器。
+#     apply_override 仍是**十二** —— 这批动的 ai.tsx / markdown-text.tsx /
+#     tool-calls.tsx 三份本来就在十二件里。)
 #    数法:grep -cE '^\s*apply_override ' scripts/setup-frontend.sh
 #          grep -cE '^\s*install_new_file ' scripts/setup-frontend.sh
 install_new_file "checkin-lib.ts" "src/lib/checkin-lib.ts"
+# W12 三语切换(第一批:繁體答话)。纯 TS 零依赖的判别库 ——
+# 判「用户在打什么字」+ 判「这条要不要转」。转换器本身是懒加载的,不在这个文件里
+# (理由见 lang-lib.ts 头注:opencc-js 的 cn2t 是 438 KB gzipped,
+#  而 300 KB 的预算管的是首屏)。
+install_new_file "lang-lib.ts" "src/lib/lang-lib.ts"
+# 转换器本体(懒加载 opencc-js)。与 lang-lib 分开的理由:lang-lib 必须保持
+# 零依赖(独立 vitest 包按相对路径 import 它),而本文件 import react + opencc。
+install_new_file "hant-convert.tsx" "src/lib/hant-convert.tsx"
 install_new_file "qrcode.tsx" "src/components/thread/qrcode.tsx"
 install_new_file "checkin.tsx" "src/components/thread/checkin.tsx"
 # W7 CAD/knowledge(队友分支):项目 / 图纸 / 资料上传面板与状态卡片。
@@ -547,6 +570,28 @@ else
     || die "qrcode.react 安装失败。检查 npm 源与网络后重跑本脚本;
       package.json 与 pnpm-lock.yaml 必须一起更新,缺一半会拖到 next build 才炸。"
   log_ok "已装 qrcode.react@${QRCODE_REACT_VERSION}(package.json 与 pnpm-lock.yaml 已同步)"
+fi
+
+# -----------------------------------------------------------------------------
+# 步骤 2.7:装简→繁转换库(W12 第一批唯一的新依赖)
+#
+# 同一条理由:hant-convert.tsx 里 `import("opencc-js/cn2t")` 是**动态** import,
+# 但 Next 的打包器仍要在构建期解析得到这个包 —— 不装的话 `next build` 报
+# Module not found,而那个报错离真因(依赖没装)隔着好几层。
+# 与上一步同样排在所有覆盖件拷贝**之后**、且同样会在没有 pnpm 的机器上 die。
+# -----------------------------------------------------------------------------
+log_step "安装简繁转换库 opencc-js@${OPENCC_JS_VERSION}"
+
+if grep -q "\"opencc-js\": \"${OPENCC_JS_VERSION}\"" "${FRONTEND_DIR}/package.json"; then
+  log_skip "opencc-js@${OPENCC_JS_VERSION} 已在 package.json,无需重装"
+else
+  command -v pnpm >/dev/null 2>&1 || die "没找到 pnpm,装不了 opencc-js。
+      先执行 corepack enable(Node 自带)或安装 pnpm,再重跑本脚本;
+      或手动执行:cd \"${FRONTEND_DIR}\" && pnpm add --save-exact opencc-js@${OPENCC_JS_VERSION}"
+  (cd "${FRONTEND_DIR}" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm add --save-exact "opencc-js@${OPENCC_JS_VERSION}") \
+    || die "opencc-js 安装失败。检查 npm 源与网络后重跑本脚本;
+      package.json 与 pnpm-lock.yaml 必须一起更新,缺一半会拖到 next build 才炸。"
+  log_ok "已装 opencc-js@${OPENCC_JS_VERSION}(package.json 与 pnpm-lock.yaml 已同步)"
 fi
 
 

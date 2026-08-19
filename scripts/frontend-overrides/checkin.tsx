@@ -64,6 +64,11 @@ import {
   sha256Hex,
   withSubmitDeadline,
 } from "@/lib/checkin-lib";
+// ⚠️ **本文件不 import hant-convert,是刻意的。** 打卡这条链上屏的字只有两种:
+//   · 本文件自己写的提示句 —— 源码里已经是繁體,零运行时;
+//   · 后端 Envelope 的 `user_msg` —— **一律不转**,理由在下面 problem 那段 JSX 注释里
+//     (那些句子内插了工友自己的姓名,转了会把名字里的字改掉)。
+// 两种都不需要转换器,所以这里连字典都不该被拉起来。
 import { CheckinQrPanel } from "./qrcode";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 
@@ -221,7 +226,7 @@ function ReceiptThumb({ receipt, large }: { receipt: Receipt; large?: boolean })
   if (url === null) {
     return (
       <div className="rounded-lg bg-gray-100 px-3 py-2 text-[12px] text-gray-500">
-        凭证图已过期清理
+        憑證圖已過期清理
       </div>
     );
   }
@@ -232,7 +237,7 @@ function ReceiptThumb({ receipt, large }: { receipt: Receipt; large?: boolean })
       <div className="flex items-start gap-2 rounded-lg bg-gray-100 px-3 py-2">
         <ImageOff className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
         <div className="text-[12px] leading-snug text-gray-500">
-          凭证图暂时打不开(取件服务没起,或图在别的机器上)
+          憑證圖暫時打不開(取件服務沒起,或圖在別的機器上)
         </div>
       </div>
     );
@@ -242,12 +247,12 @@ function ReceiptThumb({ receipt, large }: { receipt: Receipt; large?: boolean })
       href={url}
       target="_blank"
       rel="noreferrer"
-      title="点开看大图"
+      title="點開看大圖"
     >
       {/* 原生 <img> 而不是 next/image,理由同 human.tsx:213 那段注释 */}
       <img
         src={url}
-        alt={`打卡凭证 ${receipt.receipt_no}`}
+        alt={`打卡憑證 ${receipt.receipt_no}`}
         onError={() => setBroken(true)}
         className={
           large
@@ -280,7 +285,7 @@ function ReceiptCard({ receipt }: { receipt: Receipt }) {
       {receipt.source === "fallback" && (
         // D6:降级路径可能选到相册旧图,凭证力弱 —— 如实标注,不装现场即拍
         <div className="text-[11px] text-amber-600">
-          相册上传(未必是现场即拍),凭证力较弱
+          相冊上傳(未必是現場即拍),憑證力較弱
         </div>
       )}
     </div>
@@ -329,12 +334,12 @@ function PairTakeoverNotice({ state }: { state: PairState }) {
     >
       <Smartphone className="size-6 text-gray-400" />
       <div className="text-sm text-gray-700">
-        {state === "done" ? "这次打卡在手机上完成了。" : "这台电脑的取景已经关了。"}
+        {state === "done" ? "這次打卡在手機上完成了。" : "這台電腦的取景已經關了。"}
       </div>
       <div className="text-[11px] text-gray-400">
         {state === "done"
-          ? "凭证在手机上;这台电脑没取到凭证图。"
-          : "手机那边拍完,这里会自动出凭证。"}
+          ? "憑證在手機上;這台電腦沒取到憑證圖。"
+          : "手機那邊拍完,這裏會自動出憑證。"}
       </div>
     </div>
   );
@@ -484,7 +489,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
   const capture = useCallback(() => {
     const video = videoRef.current;
     if (!video || video.videoWidth === 0) {
-      setProblem({ message: "摄像头还没就绪,等一秒再拍。", conflict: false });
+      setProblem({ message: "攝像頭還沒就緒,等一秒再拍。", conflict: false });
       return;
     }
     const canvas = document.createElement("canvas");
@@ -492,7 +497,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) {
-      setProblem({ message: "这台浏览器截不了图,请用下面的选图方式。", conflict: false });
+      setProblem({ message: "這台瀏覽器截不了圖,請用下面的選圖方式。", conflict: false });
       return;
     }
     // 预览是镜像的(自拍习惯),成图**不**镜像 —— 水印要的是真实场景
@@ -500,7 +505,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
     canvas.toBlob(
       (blob) => {
         if (!blob) {
-          setProblem({ message: "出图失败,再拍一次。", conflict: false });
+          setProblem({ message: "出圖失敗,再拍一次。", conflict: false });
           return;
         }
         takePhoto(blob, "camera");
@@ -518,7 +523,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
       if (!file) return;
       // accept 只是提示,浏览器不强制;后端还有 JPEG 魔数闸,这里先把明显不对的挡下
       if (file.type && file.type !== "image/jpeg") {
-        setProblem({ message: "只收 JPEG 照片(手机相机拍出来的就是)。", conflict: false });
+        setProblem({ message: "只收 JPEG 照片(手機相機拍出來的就是)。", conflict: false });
         return;
       }
       takePhoto(file, "fallback");
@@ -654,7 +659,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
 
   const submit = useCallback(async () => {
     if (!photo) {
-      setProblem({ message: "先拍一张再打卡。", conflict: false });
+      setProblem({ message: "先拍一張再打卡。", conflict: false });
       return;
     }
     if (!workerName.trim()) {
@@ -698,7 +703,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
     } catch (err) {
       // sha256Hex(非 https)/ buildCheckinHeaders / parseReceiptEnvelope 的中文都到这
       setProblem({
-        message: err instanceof Error && err.message ? err.message : "出了点问题,再试一次。",
+        message: err instanceof Error && err.message ? err.message : "出了點問題,再試一次。",
         conflict: false,
       });
     } finally {
@@ -801,7 +806,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
             type="button"
             onClick={onClose}
             className="flex size-7 cursor-pointer items-center justify-center rounded text-gray-500 hover:bg-gray-100 pointer-coarse:size-11"
-            aria-label="关闭"
+            aria-label="關閉"
           >
             <X className="size-5" />
           </button>
@@ -841,7 +846,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
                       id="gyt-checkin-site"
                       value={siteName}
                       onChange={(e) => setSiteName(e.target.value)}
-                      placeholder="如:观塘A栋"
+                      placeholder="如:觀塘A棟"
                     />
                   </div>
                 </div>
@@ -895,7 +900,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
                       disabled={cameraState !== "live"}
                     >
                       <Camera className="mr-1 size-4" />
-                      {cameraState === "live" ? "拍照" : "正在起摄像头…"}
+                      {cameraState === "live" ? "拍照" : "正在起攝像頭…"}
                     </Button>
                   </div>
                 ) : (
@@ -918,11 +923,11 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
                       className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-sm text-gray-600 hover:bg-gray-100"
                     >
                       <Camera className="size-5" />
-                      拍一张自拍(或从相册选 JPEG)
+                      拍一張自拍(或從相冊選 JPEG)
                     </Label>
                     {hasCamera && cameraState === "failed" && (
                       <div className="text-[11px] text-gray-400">
-                        取景起不来(多半是相机权限没给),已换成选图方式。
+                        取景起不來(多半是相機權限沒給),已換成選圖方式。
                       </div>
                     )}
                   </div>
@@ -930,6 +935,26 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
 
                 {problem && (
                   <div className="flex flex-col gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+                    {/* 🔴 **这一句永远不许过繁體转换器。**(W12 定案:后端 Envelope 的
+                        `user_msg` 一律不转,与本仓「后端一律不转」同一口径。)
+
+                        这句话可能不是本文件写的:normalizeError 认出 Envelope 时会把
+                        后端的 user_msg 原样透传(checkin-lib.ts 的 ① 分支),而
+                        `attendance/messages.py` 那些句子**内插了工友自己的数据**。
+                        最要命的是 `missing_glyphs()` —— 它的 docstring 原话就是
+                        「字符原样回显、不做任何转换(它们多半正是姓名里的字)」:
+
+                            实测转换器:𠮶 → 嗰   恒 → 恆   㛿 → 𡠹
+                            于是「王𠮶」师傅打卡,屏幕告诉他「「嗰」这几个字画不进凭证」
+                            —— 他名字里根本没有这个字。
+
+                        这句话存在的全部意义就是**点名是哪个字**,点错了他只能反复重试
+                        反复失败,而**一行报错都不会有**。整句转换在原理上分不出
+                        「系统写的字」和「内插的用户数据」,分不出的时候默认转是危险的
+                        那一侧 —— 所以整条 user_msg 通道都不转。
+
+                        本文件自己写的那几句(「先拍一張再打卡。」)源码里就是繁體,
+                        本来就不需要转。守卫在 hant-ui-strings.test.ts。 */}
                     <div className="text-[13px] text-red-700">{problem.message}</div>
                     {problem.conflict && (
                       <Button
@@ -937,7 +962,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
                         size="sm"
                         onClick={startFreshEvent}
                       >
-                        换新的一次打卡
+                        換新的一次打卡
                       </Button>
                     )}
                   </div>
@@ -958,12 +983,14 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
 
         <div className="flex flex-col gap-2">
           <div className="text-sm font-medium text-gray-700">最近打卡</div>
+          {/* 同上:这一句也可能是后端 user_msg(normalizeError 的 ① 分支),**不转** ——
+              完整理由见上面 problem 那段。 */}
           {recentError ? (
             <div className="text-[12px] text-gray-400">{recentError}</div>
           ) : recent === null ? (
             <div className="text-[12px] text-gray-400">正在取…</div>
           ) : recent.length === 0 ? (
-            <div className="text-[12px] text-gray-400">还没有人打过卡。</div>
+            <div className="text-[12px] text-gray-400">還沒有人打過卡。</div>
           ) : (
             <div className="flex flex-col gap-1.5">
               {recent.map((row) => (

@@ -340,8 +340,9 @@ def test_当前工地_选了但库里查无_给可操作的话不报乱码编号
 
 
 def test_当前工地_拼在静态提示之后(graph_module: GraphFixture) -> None:
-    from gyt.db import projects as db
     from langchain_core.messages import HumanMessage, SystemMessage
+
+    from gyt.db import projects as db
 
     db.create_project("gyt-sc", "遂川垃圾处理中心", "SC")
     prompt_fn = graph_module.module.build_supervisor_prompt_runnable()

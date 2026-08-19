@@ -37,6 +37,13 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 
 import { getApiKey } from "@/lib/api-key";
+// 界面恒繁體(负责人 2026-08-18 定案),但本文件**一个转换器都不用**,是刻意的:
+//   · 静态文案(按钮 / 占位符 / toast 兜底句)——**源码里直接写繁體**,零运行时;
+//   · 后端回来的 `user_msg` —— **一律不转**(W12 复审定案,理由见 createProject 那处)。
+// 两条都不需要转换器,所以连 438 KB 的字典都不该被这个面板拉起来。
+// ⚠️ 本文件导出的顶栏三件(ProjectSwitcher / LibraryButton /「📂 资料归档」)是**常驻**的 ——
+//    以后真要加运行时转换,先回答「它在用户没点任何东西的时候会不会被挂上」:
+//    会 = 每个用户首屏都拉字典,包括从不开面板的简体工友。那条承诺是实测过的。
 import { cn } from "@/lib/utils";
 
 // 记住上次选中的工地(localStorage 键)。刻意不自动默认第一个项目 —— 那是「你在项目2、
@@ -69,7 +76,13 @@ async function readEnvelope(resp: Response): Promise<{ user_msg?: string; data?:
   }
 }
 
-/** 按文件名关键词预判平立剖,让用户确认/改,不猜错也不逼他每次手选。 */
+/** 按文件名关键词预判平立剖,让用户确认/改,不猜错也不逼他每次手选。
+ *
+ *  🔴 下面那几个中文**不是文案,是拿去匹配「用户上传的文件名」的关键词** ——
+ *  界面繁體化时一个字都不许动。工地传上来的 .dxf 绝大多数仍叫「三层平面图.dxf」,
+ *  关键词改了就永远猜不中:表现是每次都得手选一遍平/立/剖,**没有任何报错**。
+ *  (「平面 / 立面 / 剖面 / 剖」四个词简繁同形,扫描器压根不会报它们 ——
+ *   看着没改不是漏了。上面 VIEW_OPTIONS 那三个标签同理。) */
 function guessViewType(filename: string): ViewType | "" {
   const n = filename.toLowerCase();
   if (n.includes("平面") || n.includes("plan")) return "plan";
@@ -93,6 +106,9 @@ const ArchiveContext = createContext<ArchiveContextValue | null>(null);
 
 function useArchive(): ArchiveContextValue {
   const ctx = useContext(ArchiveContext);
+  // 这句**刻意留简体**:它只在「组件挂到 <ArchiveProvider> 外面」时抛,是开发期不变式,
+  // 生产环境会被 Next 的错误边界吞成一句英文,工友一个字都看不到。与本仓
+  // 「注释 / 日志一律简体」同口径,已登记进 scripts/frontend-tests/hant-keep-hans.mjs。
   if (!ctx) throw new Error("useArchive 必须在 <ArchiveProvider> 内使用");
   return ctx;
 }
@@ -132,7 +148,7 @@ export function ArchiveProvider({ children }: { children: ReactNode }) {
         return saved && list.some((p) => p.id === saved) ? saved : "";
       });
     } catch {
-      if (!silent) toast.error("拉取项目列表失败,后端起了吗?");
+      if (!silent) toast.error("拉取項目列表失敗,後端起了嗎?");
     }
   }, []);
 
@@ -199,7 +215,7 @@ function ProjectSwitcher() {
             ? "border-[#0E9F6E] bg-[#EEF6F2] text-[#0E7A55]"
             : "border-dashed border-[#C6D0CB] bg-white text-[#8A948F] hover:border-[#7FCDAE]",
         )}
-        title="当前工地 —— 问答 / 看图 / 归档都按它走"
+        title="當前工地 —— 問答 / 看圖 / 歸檔都按它走"
       >
         <span
           className={cn(
@@ -213,15 +229,18 @@ function ProjectSwitcher() {
             余 10px。上限再放宽到 88 就会顶到 380、把「资料归档」挤出屏幕右缘(实测过)。
             「在哪个工地」比完整名字更要紧 —— 点开下拉能看到全名,hover 还有 title。
             ≥640px 恢复 180px。 */}
+        {/* currentName 是**用户自己起的项目名**(经后端存的原文),不许转 ——
+            工地名转了会跟台账 / 回执里的写法对不上,而且那是人家填的字。
+            只有兜底那句是我们的文案,写繁體。 */}
         <span className="max-w-[72px] truncate max-[359px]:max-w-[52px] sm:max-w-[180px]">
-          🏗 {currentName ?? "全部工地(未选)"}
+          🏗 {currentName ?? "全部工地(未選)"}
         </span>
         <span className="shrink-0 text-[#9AA5A0]">▾</span>
       </button>
 
       {menuOpen && (
         <div className="absolute right-0 z-50 mt-2 w-[248px] overflow-hidden rounded-[14px] border border-[#E4E8E6] bg-white shadow-[0_12px_40px_rgba(27,36,32,0.16)]">
-          <div className="px-3 pt-2.5 pb-1 text-[12px] font-bold text-[#9AA5A0]">切换当前工地</div>
+          <div className="px-3 pt-2.5 pb-1 text-[12px] font-bold text-[#9AA5A0]">切換當前工地</div>
           <button
             onClick={() => {
               setProjectId("");
@@ -230,7 +249,7 @@ function ProjectSwitcher() {
             className={rowCls(!scoped)}
           >
             <span className="h-2 w-2 shrink-0 rounded-full bg-[#C6D0CB]" />
-            全部工地(不限项目)
+            全部工地(不限項目)
           </button>
           {projects.map((p) => (
             <button
@@ -286,7 +305,7 @@ export function ArchiveHeaderControls() {
       <button
         onClick={() => setOpen(true)}
         className="flex shrink-0 items-center gap-2 rounded-full bg-[#1B2420] px-2.5 py-2.5 text-[14px] font-bold whitespace-nowrap text-white transition hover:bg-black sm:px-4"
-        title="按项目归档图纸 / 规范 / 任务书"
+        title="按項目歸檔圖紙 / 規範 / 任務書"
       >
         {/* 窄屏只留 📂 图标(顶栏放不下三颗带字的按钮),≥640px 恢复「📂 资料归档」。
             功能一件不少:图标本身就是按钮,点开的还是同一个归档抽屉。
@@ -296,7 +315,7 @@ export function ArchiveHeaderControls() {
             有 0.487% 像素变化,全在这一片)。display:none 的那份不参与 flex 布局,
             所以这种写法在任何断点下都只有一个 flex item,桌面端与改造前逐像素一致。 */}
         <span className="sm:hidden">📂</span>
-        <span className="hidden sm:inline">📂 资料归档</span>
+        <span className="hidden sm:inline">📂 資料歸檔</span>
       </button>
     </div>
   );
@@ -329,7 +348,7 @@ function ArchiveDrawer() {
 
   async function createProject() {
     if (!newName.trim()) {
-      toast.error("项目名不能为空");
+      toast.error("項目名不能為空");
       return;
     }
     setBusy(true);
@@ -341,14 +360,26 @@ function ArchiveDrawer() {
       });
       const env = await readEnvelope(resp);
       if (resp.ok) {
-        toast.success(env?.user_msg ?? "项目建好了");
+        // 🔴 `env.user_msg` **一律不过繁體转换器**(W12 复审定案)。
+        //
+        // 这个文件里的 user_msg 内插的是**用户自己起的项目名 / 自己传的文件名**
+        // (webapp.py:180/235/344 那几句 `f"项目「{name}」建好了"`):
+        //     转换器会把「恒昌 3 期」写成「恆昌 3 期」、把文件名里的字一起换掉,
+        //     于是回执里的名字跟他刚才亲手打进去的那个对不上 —— 而这**一行报错都没有**。
+        // 整句转换在原理上分不出「系统写的字」和「内插的用户数据」,分不出的时候
+        // 默认转是危险的那一侧,所以整条 user_msg 通道都不转,与后端同一口径。
+        //
+        // 兜底句是我们自己的文案,源码里就写成繁體 —— 它本来就不需要转。
+        // 守卫在 scripts/frontend-tests/hant-ui-strings.test.ts(实参里出现
+        // user_msg / userMsg 就报),别再包回去。
+        toast.success(env?.user_msg ?? "項目建好了");
         setNewName("");
         setNewCode("");
         setShowNew(false);
         await reloadProjects();
         if (env?.data?.id) setProjectId(env.data.id);
       } else {
-        toast.error(env?.user_msg ?? "建项目失败");
+        toast.error(env?.user_msg ?? "建項目失敗");
       }
     } finally {
       setBusy(false);
@@ -356,9 +387,9 @@ function ArchiveDrawer() {
   }
 
   async function uploadDrawing() {
-    if (!dwgFile) return toast.error("请选一张 .dxf 或 .pdf 图纸");
-    if (!projectId) return toast.error("先选或建一个项目");
-    if (!viewType) return toast.error("请选平面 / 立面 / 剖面");
+    if (!dwgFile) return toast.error("請選一張 .dxf 或 .pdf 圖紙");
+    if (!projectId) return toast.error("先選或建一個項目");
+    if (!viewType) return toast.error("請選平面 / 立面 / 剖面");
     setBusy(true);
     try {
       const fd = new FormData();
@@ -372,13 +403,13 @@ function ArchiveDrawer() {
       );
       const env = await readEnvelope(resp);
       if (resp.ok) {
-        toast.success(env?.user_msg ?? "图纸上传成功");
+        toast.success(env?.user_msg ?? "圖紙上傳成功");
         setDwgFile(null);
         setTitle("");
         setFloor("");
         setViewType("");
       } else {
-        toast.error(env?.user_msg ?? "图纸上传失败");
+        toast.error(env?.user_msg ?? "圖紙上傳失敗");
       }
     } finally {
       setBusy(false);
@@ -386,8 +417,8 @@ function ArchiveDrawer() {
   }
 
   async function uploadDoc() {
-    if (!docFile) return toast.error("请选一份 PDF");
-    if (docScope === "project" && !projectId) return toast.error("项目资料要先选项目");
+    if (!docFile) return toast.error("請選一份 PDF");
+    if (docScope === "project" && !projectId) return toast.error("項目資料要先選項目");
     setBusy(true);
     try {
       const fd = new FormData();
@@ -400,10 +431,10 @@ function ArchiveDrawer() {
       const resp = await fetch(url, { method: "POST", headers: authHeaders(), body: fd });
       const env = await readEnvelope(resp);
       if (resp.ok) {
-        toast.success(env?.user_msg ?? "资料上传成功");
+        toast.success(env?.user_msg ?? "資料上傳成功");
         setDocFile(null);
       } else {
-        toast.error(env?.user_msg ?? "资料上传失败");
+        toast.error(env?.user_msg ?? "資料上傳失敗");
       }
     } finally {
       setBusy(false);
@@ -452,8 +483,8 @@ function ArchiveDrawer() {
             📂
           </div>
           <div>
-            <div className="text-[19px] font-black text-[#1B2420]">资料归档</div>
-            <div className="text-[13px] text-[#8A948F]">把图纸、规范正式存进项目</div>
+            <div className="text-[19px] font-black text-[#1B2420]">資料歸檔</div>
+            <div className="text-[13px] text-[#8A948F]">把圖紙、規範正式存進項目</div>
           </div>
           <button
             onClick={() => setOpen(false)}
@@ -467,14 +498,14 @@ function ArchiveDrawer() {
         <div className="flex flex-col gap-6 overflow-y-auto px-7 py-6">
           {/* ① 存到哪个工地 */}
           <section>
-            <div className={stepLabel}>① 存到哪个工地</div>
+            <div className={stepLabel}>① 存到哪個工地</div>
             <div className="flex gap-2.5">
               <select
                 value={projectId}
                 onChange={(e) => setProjectId(e.target.value)}
                 className={fieldCls + " font-bold text-[#1B2420]"}
               >
-                <option value="">（未选 / 全局）</option>
+                <option value="">（未選 / 全局）</option>
                 {projects.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}（{p.id}）
@@ -492,13 +523,13 @@ function ArchiveDrawer() {
               <div className="mt-2.5 flex gap-2">
                 <input
                   className={fieldCls}
-                  placeholder="新建项目名，如 幸福小区A3栋"
+                  placeholder="新建項目名，如 幸福小區A3棟"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                 />
                 <input
                   className="w-[90px] rounded-[14px] border border-[#E4E8E6] bg-white px-3 py-3.5 text-[15px]"
-                  placeholder="短码"
+                  placeholder="短碼"
                   value={newCode}
                   onChange={(e) => setNewCode(e.target.value)}
                 />
@@ -515,7 +546,7 @@ function ArchiveDrawer() {
 
           {/* ② 传什么 */}
           <section>
-            <div className={stepLabel}>② 传什么</div>
+            <div className={stepLabel}>② 傳什麼</div>
             <div className="grid grid-cols-2 gap-2.5">
               <button onClick={() => setTab("drawing")} className={bigChoice(tab === "drawing")}>
                 <div
@@ -524,7 +555,7 @@ function ArchiveDrawer() {
                     (tab === "drawing" ? "text-[#0E7A55]" : "text-[#6B7772]")
                   }
                 >
-                  📐 图纸
+                  📐 圖紙
                 </div>
                 <div
                   className={
@@ -542,7 +573,7 @@ function ArchiveDrawer() {
                     (tab === "doc" ? "text-[#0E7A55]" : "text-[#6B7772]")
                   }
                 >
-                  📄 资料
+                  📄 資料
                 </div>
                 <div
                   className={
@@ -559,7 +590,7 @@ function ArchiveDrawer() {
           {/* ③ 信息 —— 随②切换 */}
           {tab === "drawing" ? (
             <section className="flex flex-col gap-3">
-              <div className={stepLabel + " mb-0"}>③ 图纸信息</div>
+              <div className={stepLabel + " mb-0"}>③ 圖紙信息</div>
               <label
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => {
@@ -578,12 +609,12 @@ function ArchiveDrawer() {
                   <span className="font-bold text-[#1B2420]">{dwgFile.name}</span>
                 ) : (
                   <>
-                    拖入 .dxf / .pdf,或 <span className="font-bold text-[#0E9F6E]">点击选择</span>
+                    拖入 .dxf / .pdf,或 <span className="font-bold text-[#0E9F6E]">點擊選擇</span>
                   </>
                 )}
               </label>
 
-              <div className="text-[14px] font-semibold text-[#6B7772]">这是哪种图?</div>
+              <div className="text-[14px] font-semibold text-[#6B7772]">這是哪種圖?</div>
               <div className="grid grid-cols-3 gap-2">
                 {VIEW_OPTIONS.map((o) => (
                   <button
@@ -599,25 +630,26 @@ function ArchiveDrawer() {
               <div className="flex gap-2.5">
                 <input
                   className={fieldCls}
-                  placeholder="图名(留空=文件名)"
+                  placeholder="圖名(留空=文件名)"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                 />
                 <input
                   className="w-[130px] rounded-[14px] border border-[#E4E8E6] bg-white px-4 py-3.5 text-[15px] placeholder:text-[#A2ABA6]"
-                  placeholder="楼层·可选"
+                  placeholder="樓層·可選"
                   value={floor}
                   onChange={(e) => setFloor(e.target.value)}
                 />
               </div>
 
               <button onClick={uploadDrawing} disabled={busy} className={archiveBtn}>
-                {busy ? "上传中…" : `归档到 ${currentName ?? "…先选项目"}`}
+                {/* currentName 是用户自己起的项目名,原样上屏、不转(理由见顶栏那颗 chip)。 */}
+                {busy ? "上傳中…" : `歸檔到 ${currentName ?? "…先選項目"}`}
               </button>
             </section>
           ) : (
             <section className="flex flex-col gap-3">
-              <div className={stepLabel + " mb-0"}>③ 资料信息</div>
+              <div className={stepLabel + " mb-0"}>③ 資料信息</div>
 
               <div className="text-[14px] font-semibold text-[#6B7772]">作用域</div>
               <div className="grid grid-cols-2 gap-2">
@@ -625,33 +657,35 @@ function ArchiveDrawer() {
                   onClick={() => setDocScope("global")}
                   className={bigChoice(docScope === "global")}
                 >
-                  <div className="text-[16px] font-black text-[#1B2420]">全局规范</div>
-                  <div className="mt-1 text-[12px] font-bold text-[#8A948F]">所有项目通用</div>
+                  <div className="text-[16px] font-black text-[#1B2420]">全局規範</div>
+                  <div className="mt-1 text-[12px] font-bold text-[#8A948F]">所有項目通用</div>
                 </button>
                 <button
                   onClick={() => setDocScope("project")}
                   className={bigChoice(docScope === "project")}
                 >
-                  <div className="text-[16px] font-black text-[#1B2420]">本项目</div>
+                  <div className="text-[16px] font-black text-[#1B2420]">本項目</div>
                   <div className="mt-1 text-[12px] font-bold text-[#8A948F]">
-                    {currentName ?? "先选项目"}
+                    {currentName ?? "先選項目"}
                   </div>
                 </button>
               </div>
 
+              {/* 这两颗按钮的中文只是标签 —— 送后端的是 `doc_type=regulation / task_book`
+                  (英文枚举,见 uploadDoc 里那句 fd.append),所以转繁體不影响任何请求。 */}
               {docScope === "project" && (
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     onClick={() => setDocType("regulation")}
                     className={toggle(docType === "regulation")}
                   >
-                    规范
+                    規範
                   </button>
                   <button
                     onClick={() => setDocType("task_book")}
                     className={toggle(docType === "task_book")}
                   >
-                    任务书
+                    任務書
                   </button>
                 </div>
               )}
@@ -674,13 +708,13 @@ function ArchiveDrawer() {
                   <span className="font-bold text-[#1B2420]">{docFile.name}</span>
                 ) : (
                   <>
-                    拖入 .pdf,或 <span className="font-bold text-[#0E9F6E]">点击选择</span>
+                    拖入 .pdf,或 <span className="font-bold text-[#0E9F6E]">點擊選擇</span>
                   </>
                 )}
               </label>
 
               <button onClick={uploadDoc} disabled={busy} className={archiveBtn}>
-                {busy ? "上传中…" : docScope === "global" ? "归档到 全局规范" : "归档到本项目"}
+                {busy ? "上傳中…" : docScope === "global" ? "歸檔到 全局規範" : "歸檔到本項目"}
               </button>
             </section>
           )}
@@ -719,8 +753,10 @@ type LibraryData = {
   docs: LibDoc[];
 };
 
+// 两张标签表:**键是后端回来的枚举值(英文),不许动**;值只是上屏的字,写繁體。
+// (VIEW_LABEL 的三个值简繁同形,所以看着没改,不是漏了。)
 const VIEW_LABEL: Record<string, string> = { plan: "平面", elevation: "立面", section: "剖面" };
-const DOC_LABEL: Record<string, string> = { regulation: "规范", task_book: "任务书" };
+const DOC_LABEL: Record<string, string> = { regulation: "規範", task_book: "任務書" };
 
 function fmtSize(n: number): string {
   if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
@@ -738,21 +774,23 @@ async function apiDelete(path: string, body?: unknown): Promise<boolean> {
     });
     const env = await readEnvelope(resp);
     if (resp.ok) {
-      toast.success(env?.user_msg ?? "已删除");
+      // 同样是后端来的人话,**不转**;兜底句已是繁體(理由见 createProject 那处)。
+      // 这里的 user_msg 内插的是用户自己起的项目名 / 自己传的文件名。
+      toast.success(env?.user_msg ?? "已刪除");
       return true;
     }
-    toast.error(env?.user_msg ?? "删除失败");
+    toast.error(env?.user_msg ?? "刪除失敗");
     return false;
   } catch {
-    toast.error("删除失败,后端起了吗?");
+    toast.error("刪除失敗,後端起了嗎?");
     return false;
   }
 }
 
 /** 行内两步删除:点「删除」→ 变「确认删除 / 取消」→ 确认后跑 onDelete。不弹浏览器原生框。 */
 function RowDelete({
-  label = "删除",
-  confirmLabel = "确认删除",
+  label = "刪除",
+  confirmLabel = "確認刪除",
   onDelete,
 }: {
   label?: string;
@@ -762,7 +800,7 @@ function RowDelete({
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  if (busy) return <span className="text-[12px] text-[#B4BDB8]">删除中…</span>;
+  if (busy) return <span className="text-[12px] text-[#B4BDB8]">刪除中…</span>;
   if (confirming) {
     return (
       <span className="flex items-center gap-2 text-[12px]">
@@ -817,16 +855,17 @@ export function LibraryButton() {
       const resp = await fetch(`${API_URL}/library`, { headers: authHeaders() });
       const env = await readEnvelope(resp);
       if (resp.ok && env?.data) setData(env.data as LibraryData);
-      else if (!silent) toast.error(env?.user_msg ?? "拉取资料库失败");
+      else if (!silent) toast.error(env?.user_msg ?? "拉取資料庫失敗");
     } catch {
-      if (!silent) toast.error("拉取资料库失败,后端起了吗?");
+      if (!silent) toast.error("拉取資料庫失敗,後端起了嗎?");
     } finally {
       if (!silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (open) void load();
+    if (!open) return;
+    void load();
   }, [open, load]);
 
   // 有文档还在入库(chunks===0)时,每 4s 静默刷一次,直到都入完 —— 这就是那条「进度」。
@@ -851,8 +890,8 @@ export function LibraryButton() {
             📚
           </div>
           <div>
-            <div className="text-[19px] font-black text-[#1B2420]">资料库</div>
-            <div className="text-[13px] text-[#8A948F]">所有项目的图纸与规范</div>
+            <div className="text-[19px] font-black text-[#1B2420]">資料庫</div>
+            <div className="text-[13px] text-[#8A948F]">所有項目的圖紙與規範</div>
           </div>
           <button
             onClick={() => void load()}
@@ -871,7 +910,7 @@ export function LibraryButton() {
 
         <div className="flex flex-col gap-5 overflow-y-auto px-7 py-6">
           {loading && (
-            <div className="py-10 text-center text-[15px] text-[#8A948F]">加载中…</div>
+            <div className="py-10 text-center text-[15px] text-[#8A948F]">加載中…</div>
           )}
           {!loading && data && <LibraryBody data={data} reload={load} />}
         </div>
@@ -884,13 +923,13 @@ export function LibraryButton() {
       <button
         onClick={() => setOpen(true)}
         className="flex shrink-0 items-center gap-2 rounded-full border border-[#E4E8E6] bg-white px-2.5 py-2 text-[14px] font-bold whitespace-nowrap text-[#33403A] transition hover:border-[#7FCDAE] sm:px-4"
-        title="查看所有项目的图纸与规范"
+        title="查看所有項目的圖紙與規範"
       >
         {/* 与「资料归档」同一处理(含那条 flex gap 的坑,见那边的注释):
             窄屏只留 📚 图标,≥640px 恢复带字的原样。
             实测(2026-08-15,390×844)不这么做时这颗是 52×102 ——「资料库」三字竖排两行。 */}
         <span className="sm:hidden">📚</span>
-        <span className="hidden sm:inline">📚 资料库</span>
+        <span className="hidden sm:inline">📚 資料庫</span>
       </button>
       {open && mounted && createPortal(drawer, document.body)}
     </>
@@ -904,9 +943,9 @@ function LibraryBody({ data, reload }: { data: LibraryData; reload: () => Promis
   if (empty) {
     return (
       <div className="rounded-[16px] border border-dashed border-[#C6D0CB] bg-white px-6 py-12 text-center text-[15px] leading-relaxed text-[#8A948F]">
-        还没有任何图纸或资料。
+        還沒有任何圖紙或資料。
         <br />
-        点右上角「📂 资料归档」传第一份吧。
+        點右上角「📂 資料歸檔」傳第一份吧。
       </div>
     );
   }
@@ -914,7 +953,7 @@ function LibraryBody({ data, reload }: { data: LibraryData; reload: () => Promis
   return (
     <>
       {globalDocs.length > 0 && (
-        <LibrarySection title="全局规范" hint="所有项目通用" count={globalDocs.length}>
+        <LibrarySection title="全局規範" hint="所有項目通用" count={globalDocs.length}>
           {globalDocs.map((d) => (
             <DocRow key={d.rel_path} doc={d} reload={reload} />
           ))}
@@ -924,15 +963,16 @@ function LibraryBody({ data, reload }: { data: LibraryData; reload: () => Promis
         const dwgs = data.drawings.filter((x) => x.project_id === p.id);
         const docs = data.docs.filter((x) => x.scope === "project" && x.project_id === p.id);
         return (
+          // title 是用户自己起的项目名,原样上屏、不转(与顶栏 chip 同一条规矩)。
           <LibrarySection
             key={p.id}
             title={p.name}
-            hint={`编号 ${p.id}`}
+            hint={`編號 ${p.id}`}
             count={dwgs.length + docs.length}
             action={
               <RowDelete
-                label="删除项目"
-                confirmLabel="确认删除项目"
+                label="刪除項目"
+                confirmLabel="確認刪除項目"
                 onDelete={async () => {
                   if (await apiDelete(`/projects/${encodeURIComponent(p.id)}`)) await reload();
                 }}
@@ -940,7 +980,7 @@ function LibraryBody({ data, reload }: { data: LibraryData; reload: () => Promis
             }
           >
             {dwgs.length === 0 && docs.length === 0 ? (
-              <div className="px-1 py-1.5 text-[13px] text-[#A2ABA6]">（暂无图纸或资料)</div>
+              <div className="px-1 py-1.5 text-[13px] text-[#A2ABA6]">（暫無圖紙或資料)</div>
             ) : (
               <>
                 {dwgs.map((d) => (
@@ -996,7 +1036,7 @@ function DrawingRow({ dwg, reload }: { dwg: LibDrawing; reload: () => Promise<vo
       </div>
       <div className="min-w-0">
         <div className="truncate text-[15px] font-bold text-[#1B2420]">{dwg.title}</div>
-        <div className="text-[12px] text-[#8A948F]">图纸{dwg.floor ? ` · ${dwg.floor}` : ""}</div>
+        <div className="text-[12px] text-[#8A948F]">圖紙{dwg.floor ? ` · ${dwg.floor}` : ""}</div>
       </div>
       <span className="ml-auto shrink-0 rounded-full bg-[#EEF6F2] px-2.5 py-1 text-[12px] font-bold text-[#0E7A55]">
         {VIEW_LABEL[dwg.view_type] ?? dwg.view_type}
@@ -1026,9 +1066,9 @@ function DocRow({ doc, reload }: { doc: LibDoc; reload: () => Promise<void> }) {
         <div className="text-[12px] text-[#8A948F]">
           {DOC_LABEL[doc.doc_type] ?? doc.doc_type} · {fmtSize(doc.size_bytes)} ·{" "}
           {doc.chunks > 0 ? (
-            <span className="text-[#5FAE8E]">已入库 {doc.chunks} 段</span>
+            <span className="text-[#5FAE8E]">已入庫 {doc.chunks} 段</span>
           ) : (
-            <span className="animate-pulse font-bold text-[#C2892B]">入库中…</span>
+            <span className="animate-pulse font-bold text-[#C2892B]">入庫中…</span>
           )}
         </div>
       </div>

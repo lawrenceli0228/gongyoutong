@@ -114,7 +114,30 @@ _CJK_FONT_CANDIDATES = (
     r"C:\Windows\Fonts\simhei.ttf",  # 黑体
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # WSL2/Linux 装 fonts-noto-cjk 后
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    # ── macOS(2026-08-19 补)──────────────────────────────────────────────
+    # 补之前**整张表没有一条 macOS 路径**,于是 PDF 那 11 条在 Mac 上全程 skip。
+    # 而 CLAUDE.md 写着本项目是「Intel Mac + Windows 两人两台机」—— 也就是说
+    # 一半的开发机从来没跑过这批测试,只有 CI 跑。skip 不会红,所以没人发现。
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
 )
+"""可内嵌进 PDF 的 CJK 字体候选。找不到就整文件 skip(见 test_cad_pdf.py 顶部)。
+
+🔴 **别加 PingFang.ttc 或 Hiragino Sans GB.ttc** —— 它们是 macOS 上最顺手的两个
+中文字体,而且**造得出 PDF、`has_text` 也是 True**,所以看起来完全正常。
+但 2026-08-19 实测:fpdf2 给这两个 `.ttc` 做子集化之后产出的 CID 字体,
+**pypdf 抽不回原文** —— `PDF_TEXT_LINES` 一条都对不上。
+
+加了它们的下场不是 skip 而是**红**,而且红得毫无指向性
+(「明明写进去了为什么抽不出来」)。fontTools 当时吐的那句
+`cidg NOT subset; don't know how to subset; dropped` 就是线索,但它是 warning,
+淹在输出里没人看。
+
+上面这三条是实测**能抽回**的:造完 PDF 再用 `parse_pdf` 抽一遍,
+`PDF_TEXT_LINES` 四行逐条比对通过。往这张表加新字体前请照同样办法验一遍,
+别只看「PDF 造出来了」。
+"""
 
 
 def _find_cjk_font() -> str | None:

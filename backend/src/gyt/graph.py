@@ -148,13 +148,13 @@ from gyt.agents.safety import SAFETY_AGENT_NAME, build_safety_agent
 from gyt.agents.schedule import SCHEDULE_AGENT_NAME, build_schedule_agent
 from gyt.agents.supervision import SUPERVISION_AGENT_NAME, build_supervision_agent
 from gyt.config import get_settings
-from gyt.core.run_context import project_from_config
-from gyt.db.projects import get_project
 
 # 导入模块而非函数：单测要用 monkeypatch.setattr(llm, "get_chat_model", ...) 把模型换成假的，
 # 写成 from gyt.core.llm import get_chat_model 的话名字会在导入时绑死，打桩就失效了。
 from gyt.core import llm
+from gyt.core.run_context import project_from_config
 from gyt.core.uploads import ingest_uploads
+from gyt.db.projects import get_project
 
 # —— 模块级常量：禁止在函数体里散落字面量 ——
 

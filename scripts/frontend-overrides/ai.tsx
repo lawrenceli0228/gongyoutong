@@ -36,6 +36,10 @@ import { useQueryState, parseAsBoolean } from "nuqs";
 import { GenericInterruptView } from "./generic-interrupt";
 import { useArtifact } from "../artifact";
 import { MessageSquareText } from "lucide-react";
+import { useMemo } from "react";
+// W12:繁體答话。判定归 lang-lib(纯函数、可单测),拉字典归 hant-convert(懒加载)。
+import { resolveLang } from "@/lib/lang-lib";
+import { useHantText } from "@/lib/hant-convert";
 
 function CustomComponent({
   message,
@@ -229,9 +233,38 @@ export function AssistantMessage({
     return false;
   })();
 
-  const displayString = turnHasVisibleAgentTable
+  const strippedString = turnHasVisibleAgentTable
     ? stripLedgerEcho(contentString)
     : contentString;
+
+  // ===========================================================================
+  // W12 第一批:按用户输入的语言答话(目前只做繁體)
+  // ---------------------------------------------------------------------------
+  // 为什么转换在**这里**,而不在 markdown-text.tsx 里面:
+  //   `MarkdownText` 有四个消费者,其中两个是**上游的英文调试界面**
+  //   (agent-inbox 的 state-view / inbox-item-input)。放进 markdown-text
+  //   会把它们也转了 —— 那是我们不拥有的表面,而且转它是错的。
+  //
+  // 为什么繁體要靠转换而不是靠提示词:探针 155 次真调用实测,
+  //   靠提示词让模型换繁體在**需要调工具的 Agent** 上只有 25%-60%
+  //   (门槛 80%),五个档位试遍都不够 —— CLAUDE.md「提示词只是概率性生效,
+  //   结构件才兜得住」的第四次应验。方案 §4.5。
+  //
+  // 语种怎么定:显式选择(第二批才有切换器,现在恒 null)→ 往回扫本线程的
+  //   用户发言 → 落 DEFAULT_LANG。「第二句只打好」靠往回扫那一层。
+  //   用户发言本身**永不转换**(shouldConvert 对 human 恒 false)——
+  //   human.tsx 的 `(照片编号:…)` 正则是简体的,转了照片就不渲染成图。
+  // ===========================================================================
+  const userTextsNewestFirst = useMemo(
+    () =>
+      thread.messages
+        .filter((m) => m.type === "human")
+        .map((m) => getContentString(m.content))
+        .reverse(),
+    [thread.messages],
+  );
+  const lang = resolveLang(null, userTextsNewestFirst);
+  const displayString = useHantText(strippedString, "ai", lang);
 
   // 「Transferring back to supervisor」是 langgraph_supervisor 注入的**收工信号**,
   // 后端必须保留(关掉会让 supervisor 复转直至熔断,graph.py 有血泪注释)。
@@ -265,15 +298,23 @@ export function AssistantMessage({
                 <Trace
                   label={
                     isBackHandoff
-                      ? "交回调度中枢"
-                      : `${AGENT_NAMES[subAgentName ?? ""] ?? subAgentName} · 已把结果交给调度中枢`
+                      ? "交回調度中樞"
+                      : `${AGENT_NAMES[subAgentName ?? ""] ?? subAgentName} · 已把結果交給調度中樞`
                   }
                   icon={
                     <MessageSquareText className="h-3.5 w-3.5 shrink-0 text-gray-400" />
                   }
                 >
+                  {/* 🔴 这里必须是 displayString 不是 contentString。
+                      2026-08-18 对抗复审抓到:折叠里用原文、下面那条 <MarkdownText>
+                      用转过的,于是**同一个 Agent 的同一句话**,折叠起来是简体、
+                      带表格时是繁體。工友看到的是「有时候变字」,没有任何报错。
+
+                      对子 Agent 消息 turnHasVisibleAgentTable 恒 false
+                      (上面那个函数直接 return false),所以
+                      strippedString === contentString,两条路本来就该同一份。 */}
                   <div className="py-1 whitespace-pre-wrap break-words text-gray-600">
-                    {contentString}
+                    {displayString}
                   </div>
                 </Trace>
               ) : (
@@ -319,8 +360,13 @@ export function AssistantMessage({
                 onSelect={(branch) => thread.setBranch(branch)}
                 isLoading={isLoading}
               />
+              {/* 复制按钮拿的也得是 displayString —— **所见即所复制**。
+                  用 contentString 的话:屏幕上是繁體,点复制粘出来是简体,
+                  而人一般不会去核对粘贴结果的字形,只会在别处发现「怎么变了」。
+                  顺带:displayString 是裁掉 supervisor 表格复读之后的那份,
+                  屏幕上显示的就是它,复制它才对得上。 */}
               <CommandBar
-                content={contentString}
+                content={displayString}
                 isLoading={isLoading}
                 isAiMessage={true}
                 handleRegenerate={() => handleRegenerate(parentCheckpoint)}

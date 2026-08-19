@@ -43,6 +43,11 @@ agent-chat-ui 的输入框上有一个「Upload PDF or Image」按钮,用户点�
 **替换是永久的**(用 RemoveMessage 换掉原消息),不是只改这一次模型输入 ——
 因为子 Agent 与 Supervisor 共享同一份 messages,只改模型输入的话
 子 Agent 那边照样会拿到 image 块再炸一次。
+
+🔴 **每轮扫的是全部用户消息,不是只扫最后一条**(2026-08-19 改)。
+原来只扫最后一条,假设「更早的在它们自己那轮已经改写过了」——
+**那条假设在 run 失败时不成立**(失败的 run 不提交检查点,改写就丢了),
+后果是那条线程被永久毒化、此后每次提问都 400。完整实录见 `ingest_uploads` 头注。
 """
 
 from __future__ import annotations
@@ -281,23 +286,53 @@ def ingest_uploads(state: dict[str, Any]) -> dict[str, Any]:
 
     返回空 dict 表示什么都不用改 —— 绝大多数轮次都会走这条路(用户只是打字)。
 
-    只处理**最后一条**用户消息:更早的那些在它们自己那一轮已经被改写过了,
-    重复处理会把同一张图反复登记,artifacts 目录白白膨胀。
+    ===========================================================================
+    🔴 扫**全部**用户消息,不是只扫最后一条(2026-08-19 真机抓到)
+    ---------------------------------------------------------------------------
+    原来只处理最后一条,理由写的是「更早的那些在它们自己那一轮已经被改写过了」。
+    **那条假设在 run 失败时不成立**,而失败一点都不罕见(断网、限流、模型 5xx)。
+
+    真机实录:网络中断那阵子,
+
+        1. 发照片 → 本 hook 改写了 → 模型调用 APIConnectionError → run 失败
+           → 改写**没落盘**(失败的 run 不提交检查点)
+        2. 再发一张 → 线程变成 [文本, image原样, image原样]
+        3. 本 hook 只看最后一条 → messages[1] 永远是原样
+
+    于是那条线程**被永久毒化**:此后每次提问,文本档模型都会收到一个 image 块,
+    DeepSeek 回 400「unknown variant `image`, expected `text`」,而工友看到的
+    只是「出错了」。自己好不了 —— 除非删掉整条对话。
+
+    扫全部是安全的,**重复登记那个顾虑不成立**:改写完的消息 content 是纯字符串,
+    `_rewrite` 第一行 `isinstance(content, list)` 就返回 None。也就是说
+    对已改写的消息本函数天然是空操作,不会把同一张图登记第二次。
+
+    ⚠️ 改这里时我先断言过「`RemoveMessage` + 同 id 会把消息挪到末尾、顺序全乱」,
+    **那是错的**,实测(`add_messages` 直接跑一遍)两种写法都是**原地替换**:
+
+        原始            a=第一条 | b=第二条 | c=答话 | d=第三条
+        同id替换 b      a=第一条 | b=改写后 | c=答话 | d=第三条
+        Remove+同id b   a=第一条 | b=改写后 | c=答话 | d=第三条   ← 位置没动
+
+    所以保留 `RemoveMessage` 这个形状:单条时输出与改动前**逐字节相同**,
+    既有测试与既有契约都不用跟着动。别为了「看起来简洁」把它删掉再验一次。
     """
     messages = state.get("messages") or []
     if not messages:
         return {}
-    last = messages[-1]
-    if not isinstance(last, HumanMessage):
-        return {}
-
-    rewritten = _rewrite(last)
-    if rewritten is None:
-        return {}
 
     # 必须**永久**换掉,不能只改这一次的模型输入:子 Agent 与 Supervisor 共享
     # 同一份 messages,只改模型输入的话,子 Agent 那边照样会拿到 image 块再炸一次。
-    return {"messages": [RemoveMessage(id=last.id), rewritten]}
+    updates: list[Any] = []
+    for m in messages:
+        if not isinstance(m, HumanMessage):
+            continue
+        rewritten = _rewrite(m)
+        if rewritten is not None:
+            updates.extend((RemoveMessage(id=m.id), rewritten))
+    if not updates:
+        return {}
+    return {"messages": updates}
 
 
 _MISSING = set(EXT_BY_MIME.values()) - ALLOWED_IMAGE_EXT

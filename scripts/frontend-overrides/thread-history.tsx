@@ -81,23 +81,23 @@ function describeDeleteFailure(error: unknown): string {
   // 走代理(langgraph-nextjs-api-passthrough)时路径配错同样是 404,那种情况下线程好端端在。
   // 摘掉 = 界面上「删成功了」而服务器上还在,正是最坏的那种假象。所以只提示,不摘行。
   if (status === 404) {
-    return "删不掉:服务器上没找到这条记录。刷新一下页面,看看它是不是已经不在了。";
+    return "刪不掉:服務器上沒找到這條記錄。刷新一下頁面,看看它是不是已經不在了。";
   }
   if (status === 401 || status === 403) {
-    return "删不掉:没有权限。检查一下 API Key 填对了没有。";
+    return "刪不掉:沒有權限。檢查一下 API Key 填對了沒有。";
   }
   if (status !== undefined && status >= 500) {
-    return `删不掉:服务器这边出错了(${status})。稍等一下再试。`;
+    return `刪不掉:服務器這邊出錯了(${status})。稍等一下再試。`;
   }
   if (status !== undefined) {
-    return `删不掉:服务器拒绝了这次删除(${status})。`;
+    return `刪不掉:服務器拒絕了這次刪除(${status})。`;
   }
 
   const name = error instanceof Error ? error.name : "";
   if (name === "ConnectionError" || error instanceof TypeError) {
-    return "删不掉:连不上服务器。确认后端还开着,再试一次。";
+    return "刪不掉:連不上服務器。確認後端還開着,再試一次。";
   }
-  return "删不掉,原因不清楚。刷新页面再试一次;还是不行就看一眼后端日志。";
+  return "刪不掉,原因不清楚。刷新頁面再試一次;還是不行就看一眼後端日誌。";
 }
 
 /**
@@ -125,7 +125,7 @@ function useDeleteThread(): (threadId: string) => Promise<DeleteResult> {
   return useCallback(
     async (threadId: string): Promise<DeleteResult> => {
       if (!apiUrl) {
-        return { ok: false, userMsg: "删不掉:还没填服务地址。" };
+        return { ok: false, userMsg: "刪不掉:還沒填服務地址。" };
       }
       try {
         const client = createClient(
@@ -244,7 +244,7 @@ function DeleteConfirmBar({
   return (
     <div
       role="group"
-      aria-label="确认删除这条对话记录"
+      aria-label="確認刪除這條對話記錄"
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.stopPropagation();
@@ -253,7 +253,7 @@ function DeleteConfirmBar({
       }}
       className="flex h-9 w-[280px] items-center justify-between gap-1 rounded-md border border-red-300 bg-red-50 pr-1 pl-2.5"
     >
-      <span className="truncate text-xs text-red-700">删了找不回来,真删?</span>
+      <span className="truncate text-xs text-red-700">刪了找不回來,真刪?</span>
       {/* ⚠️ 顺序是「删除 / 取消」,取消在**最右** —— 这是刻意的,别按习惯调回去。
           2026-08-11 对抗复核拿跑着的编译产物里的真实 CSS 值算过几何:
           确认条 w-[280px] 从 x=4 起、pr-1 + 1px 边框 → 内容右缘 279;
@@ -275,7 +275,7 @@ function DeleteConfirmBar({
           }}
           className="rounded bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700 focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:outline-none"
         >
-          删除
+          刪除
         </button>
         <button
           ref={cancelRef}
@@ -348,6 +348,13 @@ function ThreadRow({
               Button 的 px-4 让正文从 20 起,截断到 20+208 = 228 为止;
               删除按钮 right-2 + size-7,占 264~292。中间留 36px,标题绝不会被压住。
               280 和 300 这两个数是上游写死的,改了它们记得回来重算这里。
+
+              ⚠️ 界面繁體化(W12)绕开了这里:title 是 getThreadTitle 取回来的
+              **工友自己打的那句话**(第一条用户消息的正文),一个字都不许转。
+              这是 lang-lib.ts 里「shouldConvert 对 human 恒 false」那条红线在
+              另一个表面上的延伸 —— 答话跟着用户的字走,用户的字本身更不能动。
+              转了不会有任何报错:简体工友打的「今天还有哪些任务没做完」在**他自己的**
+              历史列表里变成繁體,他会以为点错了对话,然后一条条翻找那条「不见了」的记录。
             */}
             <p className="max-w-[13rem] truncate text-ellipsis">{title}</p>
           </Button>
@@ -355,11 +362,18 @@ function ThreadRow({
           {/*
             删除按钮是绝对定位的**兄弟**元素,不是套在上面那个 Button 里面 ——
             按钮套按钮是非法 HTML,而且点删除会连带触发打开线程。
+
+            aria-label 是**拼**出来的,两半的规矩相反,别顺手一起转:
+              前半「刪除這條對話記錄:」是给人看的字 → 跟着界面走繁體;
+              后半 `${title}` 是工友打的原话      → **原样插进去、不转**(理由见上面那条)。
+            拼在一句里最容易连带转掉,而坏的方式很隐蔽:读屏软件念出来的标题
+            和列表里显示的标题变成两句话,只有用读屏的人撞得见,眼睛看的人一辈子发现不了。
+            旁边的 title="…" 不含用户内容,是纯标签,整句转。
           */}
           <button
             type="button"
-            aria-label={`删除这条对话记录:${title}`}
-            title="删除这条对话记录"
+            aria-label={`刪除這條對話記錄:${title}`}
+            title="刪除這條對話記錄"
             disabled={isDeleting}
             onClick={(e) => {
               e.preventDefault();
@@ -456,7 +470,7 @@ function ThreadList({
         setThreadId(null);
       }
 
-      toast.success("这条对话记录已经删掉了", { duration: 3000 });
+      toast.success("這條對話記錄已經刪掉了", { duration: 3000 });
     },
     [deleteThread, setThreads, threadId, setThreadId],
   );
@@ -534,9 +548,10 @@ export default function ThreadHistory() {
               <PanelRightClose className="size-5" />
             )}
           </Button>
-          <h1 className="text-xl font-semibold tracking-tight">
-            Thread History
-          </h1>
+          {/* 上游原文 "Thread History"。桌面侧栏与手机抽屉各一份,
+              两处必须同字 —— 同一个东西在两条路径上叫两个名字,工友会以为是两个功能。
+              ⚠️ 英文残留那套繁體守卫抓不到(判据 s2hk(v)!==v 对英文恒等)。 */}
+          <h1 className="text-xl font-semibold tracking-tight">歷史記錄</h1>
         </div>
         {threadsLoading ? (
           <ThreadHistoryLoading />
@@ -559,7 +574,8 @@ export default function ThreadHistory() {
             className="flex lg:hidden"
           >
             <SheetHeader>
-              <SheetTitle>Thread History</SheetTitle>
+              {/* 与上面桌面侧栏那个标题**同字**,见那里的注释。 */}
+              <SheetTitle>歷史記錄</SheetTitle>
             </SheetHeader>
             <ThreadList
               threads={threads}

@@ -31,6 +31,12 @@ import { SyntaxHighlighter } from "@/components/thread/syntax-highlighter";
 
 import { TooltipIconButton } from "@/components/thread/tooltip-icon-button";
 import { cn } from "@/lib/utils";
+// W12:徽章键收简繁两套。词表的唯一真相在 lang-lib,别在本文件里再抄一份。
+import {
+  TASK_STATUS_WORDS,
+  TASK_STATUS_WORDS_HANT,
+  withHantKeys,
+} from "@/lib/lang-lib";
 
 import "katex/dist/katex.min.css";
 
@@ -92,13 +98,32 @@ function textOf(node: React.ReactNode): string {
 const CHIP_BASE =
   "inline-flex items-center rounded-full px-2 py-0.5 text-[12px] font-medium ring-1 ring-inset";
 
-/** 状态词 → 徽章样式。只认整格精确匹配,防止误染普通句子里的这些词。 */
-const STATUS_CHIPS: Record<string, string> = {
-  已逾期: `${CHIP_BASE} bg-red-50 text-red-700 ring-red-200`,
-  未完成: `${CHIP_BASE} bg-amber-50 text-amber-700 ring-amber-200`,
-  已完成: `${CHIP_BASE} bg-emerald-50 text-emerald-700 ring-emerald-200`,
-  没定期限: `${CHIP_BASE} bg-gray-100 text-gray-500 ring-gray-200`,
-};
+/**
+ * 状态词 → 徽章样式。只认整格精确匹配,防止误染普通句子里的这些词。
+ *
+ * **简繁两套键都收**(W12,2026-08-17)。词表与繁體镜像的唯一真相在
+ * `@/lib/lang-lib` 的 `TASK_STATUS_WORDS` / `TASK_STATUS_WORDS_HANT`,
+ * 那边有推演;`badge-keys.test.ts` 用真转换器钉着「繁體项 === s2hk(简体项)」。
+ *
+ * 🔴 **收繁體键修的是一个 W12 之前就存在的 bug,不只是给转换让路。**
+ * 这四个词是 `agents/schedule/prompt.md:63` 让**模型照抄**写进表格的,
+ * 而探针实测模型本来就有 25%-75% 的概率自己吐繁體 —— 所以在 W12 之前,
+ * 模型写「沒定期限」时这个徽章就已经静默不上色了。
+ *
+ * 附带好处:**转换点插在哪都不影响徽章**。约束从「记住别挪转换点」
+ * (靠人记)变成「表里有两种写法」(可测)。
+ */
+const STATUS_CHIPS: Record<string, string> = withHantKeys(
+  TASK_STATUS_WORDS,
+  TASK_STATUS_WORDS_HANT,
+  (word) =>
+    ({
+      已逾期: `${CHIP_BASE} bg-red-50 text-red-700 ring-red-200`,
+      未完成: `${CHIP_BASE} bg-amber-50 text-amber-700 ring-amber-200`,
+      已完成: `${CHIP_BASE} bg-emerald-50 text-emerald-700 ring-emerald-200`,
+      没定期限: `${CHIP_BASE} bg-gray-100 text-gray-500 ring-gray-200`,
+    })[word] ?? CHIP_BASE,
+);
 
 const TASK_ID_RE = /^T\d+$/;
 

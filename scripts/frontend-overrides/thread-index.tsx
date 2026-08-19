@@ -82,7 +82,9 @@ function ScrollToBottom(props: { className?: string }) {
       onClick={() => scrollToBottom()}
     >
       <ArrowDown className="h-4 w-4" />
-      <span>Scroll to bottom</span>
+      {/* 上游原文 "Scroll to bottom" —— 恒繁體界面里的一颗英文按钮。
+          英文残留那套繁體守卫抓不到(判据 s2hk(v)!==v 对英文恒等),只能人扫。 */}
+      <span>回到最新</span>
     </Button>
   );
 }
@@ -199,10 +201,17 @@ function ThreadInner() {
 
       // Message is defined, and it has not been logged yet. Save it, and send the error
       lastError.current = message;
-      toast.error("An error occurred. Please try again.", {
+      // 🔴 这是主聊天界面**唯一**的出错提示 —— 上游原文是英文,而界面已经整体恒繁體,
+      // 于是港方工友会在一整屏繁體里吃到一句 "An error occurred. Please try again."。
+      // (W12 那套繁體守卫的判据是 `s2hk(v) !== v`,**英文恒等**,所以它一条都不覆盖。)
+      //
+      // ⚠️ `{message}` 是上游框架原样透出来的技术文本(常是英文,可能带类名/路径),
+      //    这里**刻意不翻也不删**:它是屏幕上唯一能报给管理员的线索。
+      //    人话那一半由标题承担 —— 工友看标题就知道该干什么,底下那行给管理员看。
+      toast.error("出錯了,請再試一次", {
         description: (
           <p>
-            <strong>Error:</strong> <code>{message}</code>
+            <strong>出錯原因:</strong> <code>{message}</code>
           </p>
         ),
         richColors: true,
@@ -421,7 +430,7 @@ function ThreadInner() {
                 <TooltipIconButton
                   size="lg"
                   className="shrink-0 p-2 sm:p-4"
-                  tooltip="新对话"
+                  tooltip="新對話"
                   variant="ghost"
                   onClick={() => setThreadId(null)}
                 >
@@ -497,10 +506,10 @@ function ThreadInner() {
                   {!chatStarted && (
                     <div className="flex flex-col items-center text-center">
                       <h1 className="text-[30px] leading-tight font-black tracking-tight text-[#1B2420] sm:text-[44px]">
-                        有事就问工友通
+                        有事就問工友通
                       </h1>
                       <p className="mt-2 text-[15px] text-[#6B7772] sm:mt-3 sm:text-[18px]">
-                        说一句话、拍张照,或者传个文件,我来帮你派活
+                        説一句話、拍張照,或者傳個文件,我來幫你派活
                       </p>
                     </div>
                   )}
@@ -541,7 +550,7 @@ function ThreadInner() {
                             form?.requestSubmit();
                           }
                         }}
-                        placeholder="对着我说话、拍张照,或问一句…"
+                        placeholder="對着我説話、拍張照,或問一句…"
                         className="field-sizing-content resize-none border-none bg-transparent p-5 pb-2 text-[17px] text-[#33403A] shadow-none ring-0 outline-none placeholder:text-[#A2ABA6] focus:ring-0 focus:outline-none"
                       />
 
@@ -567,7 +576,7 @@ function ThreadInner() {
                               htmlFor="render-tool-calls"
                               className="text-sm whitespace-nowrap text-[#6B7772]"
                             >
-                              隐藏中间步骤
+                              隱藏中間步驟
                             </Label>
                           </div>
                         </div>
@@ -577,7 +586,7 @@ function ThreadInner() {
                           className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-[12px] border border-[#E4E8E6] bg-white px-3 py-2 text-sm font-bold whitespace-nowrap text-[#33403A] transition hover:border-[#7FCDAE] sm:min-h-0"
                         >
                           <Plus className="size-4 text-[#0E9F6E]" />
-                          <span>上传图纸·资料</span>
+                          <span>上傳圖紙·資料</span>
                         </Label>
                         <input
                           id="file-input"
@@ -618,7 +627,7 @@ function ThreadInner() {
                               (!input.trim() && contentBlocks.length === 0)
                             }
                           >
-                            发送
+                            發送
                           </Button>
                         )}
                       </div>

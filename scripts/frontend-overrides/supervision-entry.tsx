@@ -182,11 +182,11 @@ export function SupervisionEntry() {
         onClick={() => setOpen(true)}
         className="flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap sm:min-h-0 sm:min-w-0"
         aria-label={
-          hasPending ? `监理确认与处置,有 ${badgeText} 条待确认` : "监理确认与处置"
+          hasPending ? `監理確認與處置,有 ${badgeText} 條待確認` : "監理確認與處置"
         }
       >
         <ClipboardCheck className="size-5 text-gray-600" />
-        <span className="text-sm text-gray-600">隐患</span>
+        <span className="text-sm text-gray-600">隱患</span>
         {hasPending && (
           // 徽章走**行内**而不是 absolute 定位的角标:这一行是 flex-wrap 的,
           // 绝对定位的角标会被换行/挤压切掉一半,而那时它看着像个装饰,没人会去数。

@@ -746,9 +746,15 @@ describe("parsePairEnvelope(轮询解析:看不懂就 null,一个错都不抛)",
 });
 
 describe("配对文案与节拍(契约第五节那张表)", () => {
+  // 2026-08-18 界面繁體化(W12):这三句是**纯前端文案** —— checkin_api.py 的
+  // 契约只规定状态机,还明说 `user_msg:""`「配对状态对应的界面文案在前端」,
+  // 所以繁體化动的是文案本身,不是任何跨泳道契约。改法是拿 s2hk 转出来的,
+  // 不是手打(「掃」「碼」「請」都是一简对多繁的雷区)。
+  // 断言仍然照抄字面量、不改成 `s2hk(...)` 动态算:那样等于拿被测对象自己的
+  // 转换器给自己判分,「一字不差」这条守卫就空了。
   it("三句话一字不差", () => {
-    expect(PAIR_MESSAGES.waiting).toBe("用手机扫这个码,在手机上拍照打卡");
-    expect(PAIR_MESSAGES.scanned).toBe("手机已经扫上了 —— 请在手机上拍一张自拍");
+    expect(PAIR_MESSAGES.waiting).toBe("用手機掃這個碼,在手機上拍照打卡");
+    expect(PAIR_MESSAGES.scanned).toBe("手機已經掃上了 —— 請在手機上拍一張自拍");
     expect(PAIR_MESSAGES.done).toBe("✅ 已打卡成功");
   });
 

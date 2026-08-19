@@ -1,7 +1,12 @@
 import { useState, useRef, useEffect, ChangeEvent } from "react";
 import { toast } from "sonner";
 import { ContentBlock } from "@langchain/core/messages";
-import { fileToContentBlock } from "@/lib/multimodal-utils";
+import {
+  MSG_UNSUPPORTED_PASTE,
+  MSG_UNSUPPORTED_PICK,
+  fileToContentBlock,
+  msgDuplicate,
+} from "@/lib/multimodal-utils";
 
 export const SUPPORTED_FILE_TYPES = [
   "image/jpeg",
@@ -77,14 +82,10 @@ export function useFileUpload({
     );
 
     if (invalidFiles.length > 0) {
-      toast.error(
-        "You have uploaded invalid file type. Please upload a JPEG, PNG, GIF, WEBP image, a PDF, or a DXF drawing (.dxf).",
-      );
+      toast.error(MSG_UNSUPPORTED_PICK);
     }
     if (duplicateFiles.length > 0) {
-      toast.error(
-        `Duplicate file(s) detected: ${duplicateFiles.map((f) => f.name).join(", ")}. Each file can only be uploaded once per message.`,
-      );
+      toast.error(msgDuplicate(duplicateFiles));
     }
 
     const newBlocks = uniqueFiles.length
@@ -137,14 +138,10 @@ export function useFileUpload({
       );
 
       if (invalidFiles.length > 0) {
-        toast.error(
-          "You have uploaded invalid file type. Please upload a JPEG, PNG, GIF, WEBP image, a PDF, or a DXF drawing (.dxf).",
-        );
+        toast.error(MSG_UNSUPPORTED_PICK);
       }
       if (duplicateFiles.length > 0) {
-        toast.error(
-          `Duplicate file(s) detected: ${duplicateFiles.map((f) => f.name).join(", ")}. Each file can only be uploaded once per message.`,
-        );
+        toast.error(msgDuplicate(duplicateFiles));
       }
 
       const newBlocks = uniqueFiles.length
@@ -262,14 +259,10 @@ export function useFileUpload({
     const duplicateFiles = validFiles.filter(isDuplicate);
     const uniqueFiles = validFiles.filter((file) => !isDuplicate(file));
     if (invalidFiles.length > 0) {
-      toast.error(
-        "You have pasted an invalid file type. Please paste a JPEG, PNG, GIF, WEBP image, a PDF, or a DXF drawing (.dxf).",
-      );
+      toast.error(MSG_UNSUPPORTED_PASTE);
     }
     if (duplicateFiles.length > 0) {
-      toast.error(
-        `Duplicate file(s) detected: ${duplicateFiles.map((f) => f.name).join(", ")}. Each file can only be uploaded once per message.`,
-      );
+      toast.error(msgDuplicate(duplicateFiles));
     }
     if (uniqueFiles.length > 0) {
       const newBlocks = await Promise.all(uniqueFiles.map(fileToContentBlock));
