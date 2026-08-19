@@ -154,6 +154,30 @@ export const HANT_CHARS: ReadonlySet<string> = new Set([
 /** 拉丁字母占比超过这个数就判成英文。0.5 = 一半以上是字母。 */
 const LATIN_RATIO_THRESHOLD = 0.5;
 
+/**
+ * 判成英文至少要几个「词」。
+ *
+ * ===========================================================================
+ * 🔴 为什么光看字母占比不够 —— 一句「ok」会把整条线程翻掉
+ * ---------------------------------------------------------------------------
+ * 2026-08-19 真机抓到:港方工友一路打繁體,中间应了一句 **ok**,
+ * 从那条起答话全变简体。链路是:
+ *
+ *     detectInput("ok")  字母占比 2/2 = 100% > 0.5  →  "en"
+ *     shouldConvert("ai", "en")  →  false           →  **不转**
+ *     模型本来就吐简体                              →  简体原文直接上屏
+ *
+ * 而「ok / yes / no / hi」这些**不携带语言意图** —— 中文用户一样天天在打。
+ * 拿它们当「这个人要用英文」的证据,是把一句应答当成了语种切换。
+ *
+ * 判据改成「至少两个词」:真要用英文提问的人会写成句
+ * (`What tasks are still open today?`),不会只敲两个字母。
+ *
+ * ⚠️ 阈值只管**英文**这一支。汉字那一支不受影响 ——
+ *    「好」一个字照样判不出来,那是本来就该走兜底链的情形。
+ */
+const LATIN_MIN_WORDS = 2;
+
 const LATIN_RE = /[A-Za-z]/;
 const HAN_RE = /[一-鿿]/;
 
@@ -299,7 +323,15 @@ export function detectInput(text: string): Lang | null {
 
   const letters = [...s].filter((c) => LATIN_RE.test(c)).length;
   const meaningful = [...s].filter((c) => !/\s/.test(c)).length;
-  if (meaningful > 0 && letters / meaningful > LATIN_RATIO_THRESHOLD) return "en";
+  // 「至少两个词」那道闸见 LATIN_MIN_WORDS 的头注 —— 治的是一句「ok」翻掉整条线程。
+  const words = s.trim().split(/\s+/).filter(Boolean).length;
+  if (
+    meaningful > 0 &&
+    words >= LATIN_MIN_WORDS &&
+    letters / meaningful > LATIN_RATIO_THRESHOLD
+  ) {
+    return "en";
+  }
   return null;
 }
 

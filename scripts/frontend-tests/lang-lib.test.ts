@@ -118,6 +118,35 @@ describe("detectInput 判别向量", () => {
     expect(detectInput("Add a task: fix the edge protection")).toBe("en");
   });
 
+  /**
+   * 🔴 2026-08-19 真机抓到的:港方工友一路打繁體,中间应了一句 **ok**,
+   * 从那条起答话全变简体。
+   *
+   *     detectInput("ok")  字母占比 2/2 = 100% > 0.5  →  "en"
+   *     shouldConvert("ai", "en")  →  false           →  **不转**
+   *     模型本来就吐简体                              →  简体原文直接上屏
+   *
+   * 「ok / yes / no / hi」**不携带语言意图** —— 中文用户一样天天在打。
+   * 拿它们当「这个人要用英文」的证据,是把一句应答当成了语种切换。
+   */
+  it("🔴 单个英文短应答不算语言信号 —— 一句 ok 不许把整条线程翻掉", () => {
+    for (const s of ["ok", "OK", "Ok", "yes", "no", "hi", "y", "sure", "done"]) {
+      expect(detectInput(s), `「${s}」被判成了语言信号`).toBeNull();
+    }
+  });
+
+  it("真机那条线程:打过繁體之后应一句 ok,仍该沿用繁體", () => {
+    // 从新到旧,resolveLang 就是这么扫的
+    expect(resolveLang(null, ["ok", "全部人", "顯示全部"])).toBe("zh-Hant");
+    // 简体那边同理,别只修一边
+    expect(resolveLang(null, ["ok", "全部人", "显示全部"])).toBe("zh-Hans");
+  });
+
+  it("真要用英文提问的仍判英文 —— 这道闸不许把英文那批堵死", () => {
+    expect(detectInput("show all")).toBe("en");
+    expect(detectInput("What tasks are still open today?")).toBe("en");
+  });
+
   it("🔴 简繁同形的短句判不出来 —— 这是常态,返回 null 交给兜底链", () => {
     // 「好」「收到」在简繁里逐字相同;8 类违规项里也有一半同形。
     for (const s of ["好", "好的", "收到", "未戴安全帽", "消防通道堵塞"]) {
