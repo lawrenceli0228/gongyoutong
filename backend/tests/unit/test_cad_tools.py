@@ -184,17 +184,101 @@ async def test_render_preview对PDF出PNG(pdf_env):
     assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
 
-@_needs_cjk
-async def test_扫描PDF读文字时如实说是扫描件(tmp_path, monkeypatch):
+@pytest.fixture
+def scanned_pdf_env(tmp_path, monkeypatch):
+    """一张无文字层的 PDF(has_text=False),用来测「文字选不中 → 视觉兜底」这条路。
+
+    视觉调用一律打桩(下面每个用例各自 setattr tools.vision.read_drawing_text),
+    绝不发真网络请求(CLAUDE.md:测试不联网、不产生账单)。make_scanned_pdf 不需要 CJK 字体。
+    """
     make_scanned_pdf(tmp_path / "scan.pdf")
     sid = artifacts.register(
         tmp_path / "scan.pdf", kind=ArtifactKind.DRAWING, original_name="scan.pdf"
     )
     monkeypatch.setattr(tools, "get_demo_drawings", lambda: {"扫描图": sid})
+    return {"id": sid, "name": "扫描图"}
+
+
+async def test_文字选不中的PDF走视觉兜底认出字(scanned_pdf_env, monkeypatch):
+    # 核心:文字层为空时不再直接放弃,渲染成图交给视觉模型认字。
+    async def _fake_read(_png: bytes) -> str:
+        return "标高 ±0.000\n消防车道 2000\n配电室"
+
+    monkeypatch.setattr(tools.vision, "read_drawing_text", _fake_read)
     result = await tools.read_view_params.ainvoke({"drawing": "扫描图"})
+
+    assert result["ok"] is True
+    assert result["data"]["source"] == "vision"
+    assert result["data"]["annotations_recognized"] == ["标高 ±0.000", "消防车道 2000", "配电室"]
+    # 红线:认出来的字必须带「可能有误 / 以原图为准」,和「读到图上文字」那套精确措辞分开。
+    assert "可能有误" in result["user_msg"]
+    assert "以原图为准" in result["user_msg"]
+
+
+async def test_视觉也认不出字时如实说没认出(scanned_pdf_env, monkeypatch):
+    async def _fake_read(_png: bytes) -> str:
+        return tools.vision.EMPTY_MARKER
+
+    monkeypatch.setattr(tools.vision, "read_drawing_text", _fake_read)
+    result = await tools.read_view_params.ainvoke({"drawing": "扫描图"})
+
     assert result["ok"] is False
     assert result["error_code"] == "EMPTY_RESULT"
-    assert "扫描件" in result["user_msg"]
+    assert "没认出" in result["user_msg"]
+
+
+async def test_视觉调用失败时透传中文错误(scanned_pdf_env, monkeypatch):
+    from gyt.core.llm import LLMCallError
+
+    async def _fake_read(_png: bytes) -> str:
+        raise LLMCallError("AI 助手暂时连不上,请稍后再试。", "UPSTREAM_ERROR")
+
+    monkeypatch.setattr(tools.vision, "read_drawing_text", _fake_read)
+    result = await tools.read_view_params.ainvoke({"drawing": "扫描图"})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "UPSTREAM_ERROR"
+    assert "连不上" in result["user_msg"]
+
+
+async def test_视觉密钥没配时指到env而非系统开小差(scanned_pdf_env, monkeypatch):
+    from gyt.core.llm import MissingAPIKeyError
+
+    async def _fake_read(_png: bytes) -> str:
+        raise MissingAPIKeyError("Kimi(月之暗面)", "GYT_MOONSHOT_API_KEY")
+
+    monkeypatch.setattr(tools.vision, "read_drawing_text", _fake_read)
+    result = await tools.read_view_params.ainvoke({"drawing": "扫描图"})
+
+    assert result["ok"] is False
+    # 指到 .env 哪一行,不被 tool_guard 吞成 INTERNAL。
+    assert "GYT_MOONSHOT_API_KEY" in result["user_msg"]
+
+
+@_needs_cjk
+async def test_有矢量文字的PDF不触发视觉省钱路径不误触(pdf_env, monkeypatch):
+    called = False
+
+    async def _fake_read(_png: bytes) -> str:
+        nonlocal called
+        called = True
+        return "不该被调到"
+
+    monkeypatch.setattr(tools.vision, "read_drawing_text", _fake_read)
+    result = await tools.read_view_params.ainvoke({"drawing": "首层平面图PDF"})
+
+    assert result["ok"] is True
+    assert called is False  # 有矢量文字直接读,绝不触发视觉(那是要花钱的)
+
+
+async def test_parse_drawing对文字选不中的PDF改口指路读图上文字(scanned_pdf_env):
+    # §4 联动:has_text=False 的概览文案不再说死「都读不了」,改成指路到「读图上文字」兜底。
+    # parse_drawing 本身不调视觉,无需打桩。
+    result = await tools.parse_drawing.ainvoke({"drawing": "扫描图"})
+    assert result["ok"] is True
+    assert result["data"]["has_text"] is False
+    assert "读图上文字" in result["user_msg"]
+    assert "都读不了" not in result["user_msg"]
 
 
 # --- 天正图(TCH_* 私有构件)------------------------------------------------

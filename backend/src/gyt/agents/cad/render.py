@@ -74,16 +74,18 @@ def to_png(path: Path) -> bytes:
     return buf.getvalue()
 
 
-def pdf_to_png(path: Path) -> bytes:
-    """把一张 PDF 图纸的**首页**栅格化成 PNG,返回字节。阻塞函数:调用方负责 to_thread 包。
+def pdf_to_png(path: Path, *, page_index: int = 0, scale: float = _PDF_RENDER_SCALE) -> bytes:
+    """把一张 PDF 图纸的某一页栅格化成 PNG,返回字节。阻塞函数:调用方负责 to_thread 包。
 
-    只出首页(MVP:施工图 PDF 一份多为单页,多页的先看第一页,够定位)。
-    文件损坏/加密打不开时不吞异常,让 pypdfium2 抛给工具层翻成 FILE_CORRUPT。
+    默认出首页、预览倍率(``_PDF_RENDER_SCALE``):render_preview 按默认调,行为不变。
+    「文字选不中」的读字兜底(vision.read_drawing_text)会传更高的 ``scale``
+    (settings.cad_ocr_render_scale)把小字放清;``page_index`` 预留给多页(当前只用首页)。
+    文件损坏/加密/页码越界时都不吞异常,让 pypdfium2 抛给工具层翻成 FILE_CORRUPT。
     """
     doc = pdfium.PdfDocument(str(path))
     try:
-        page = doc[0]
-        bitmap = page.render(scale=_PDF_RENDER_SCALE)
+        page = doc[page_index]
+        bitmap = page.render(scale=scale)
         pil_image = bitmap.to_pil()
         buf = io.BytesIO()
         pil_image.save(buf, format="png")

@@ -54,6 +54,28 @@ def test_pdf_to_png出真PNG(tmp_path):
     assert len(png) > 100
 
 
+def test_pdf_to_png支持指定倍率与页码且默认不变(tmp_path):
+    # 读字兜底要用更高倍率(小字更清)、可指定页;默认参数必须保持预览行为不变。
+    import io
+
+    from PIL import Image
+
+    p = tmp_path / "scan.pdf"
+    make_scanned_pdf(p)
+
+    default_png = render.pdf_to_png(p)  # 老调用(位置参数):默认首页、预览倍率
+    hi_png = render.pdf_to_png(p, scale=4.0)  # 更高倍率
+    first_png = render.pdf_to_png(p, page_index=0)  # 显式首页
+
+    for png in (default_png, hi_png, first_png):
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"  # 都是真 PNG
+
+    # 倍率更高 → 像素尺寸更大(按图像宽度判,别按压缩后字节数,纯色图压得太狠不可靠)。
+    assert Image.open(io.BytesIO(hi_png)).size[0] > Image.open(io.BytesIO(default_png)).size[0]
+    # page_index=0 与默认同尺寸(都是首页)。
+    assert Image.open(io.BytesIO(first_png)).size == Image.open(io.BytesIO(default_png)).size
+
+
 def test_损坏PDF解析时抛pypdf异常(tmp_path):
     # parse 层故意不吞:异常冒到工具层才翻成 FILE_CORRUPT(与 DXF 那条线同姿势)。
     from pypdf.errors import PyPdfError
