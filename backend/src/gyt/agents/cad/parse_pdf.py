@@ -12,9 +12,12 @@
     本文件全部是**同步阻塞**函数(pypdf 抽文本是阻塞 IO/CPU):调用方(index.ensure_index)
     负责用 ``asyncio.to_thread`` 丢线程池。这里绝不 import asyncio、绝不落盘。
 
-扫描件(has_text=False):有的 PDF 是纸质图扫描/拍照,没有文字层,一个字也抽不到。
-    这时 has_text 为 False,工具层会如实说「这是扫描件,读不了文字,只能看预览」——
-    不硬编、不假装 OCR(视觉/OCR 是后续可选项,不在本次范围)。
+文字层为空(has_text=False):两种常见成因 —— ① 打印成 PDF 时文字被转成矢量线条
+    (勾了「文字作为图形」或用了 SHX 字体);② 纸质图扫描/拍照,整页是位图。两者 pypdf
+    都抽不到一个字。本层如实置 has_text=False、annotations 为空,**不在这里做 OCR**
+    (本层是同步、纯解析,不碰模型)。真正的读字兜底放在**查询期**:工具层 read_view_params
+    发现文字层为空时,渲染成图交给视觉模型认字(agents/cad/vision.py)——按需付费、带缓存,
+    且「认出来的字」会带「可能有误」的措辞,和这里「抽出来的精确文字」泾渭分明。
 
 损坏/加密 PDF:本层**故意让 pypdf 的异常向上抛**,不在这里吞。
     工具层(tools.py)接住 ``pypdf.errors.PyPdfError`` 翻成 FILE_CORRUPT 的中文信封 ——

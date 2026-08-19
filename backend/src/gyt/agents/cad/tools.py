@@ -28,13 +28,15 @@ import ezdxf
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from pypdf.errors import PyPdfError
+from pypdfium2 import PdfiumError
 
-from gyt.agents.cad import index, render
+from gyt.agents.cad import index, render, vision
 from gyt.agents.cad.demo_registry import get_demo_drawings
 from gyt.config import ALLOWED_DRAWING_EXT, get_settings
 from gyt.core import artifacts
 from gyt.core.artifacts import ArtifactKind, ArtifactNotFound
 from gyt.core.errors import Envelope, ErrorCode, fail, ok, tool_guard
+from gyt.core.llm import LLMCallError, MissingAPIKeyError
 from gyt.core.run_context import project_from_config
 from gyt.db import projects as db
 
@@ -355,7 +357,12 @@ async def parse_drawing(drawing: str, *, config: RunnableConfig) -> Envelope:
                 "图层/构件/标注读数是 DXF 专有,PDF 给不了。"
             )
         else:
-            tail = "看着像扫描件,读不到文字;能出预览图看整张,但图上文字/图层/构件都读不了。"
+            # 文字选不中(文字转图形/扫描件):矢量文字抽不到,但可渲染成图让视觉模型认 ——
+            # 认出来的可能有误,别把话说死成「读不了」。
+            tail = (
+                "文字选不中(是图形或扫描的),不过我可以照着图**认**出来(可能有误、可能漏),"
+                "你说「读图上文字」就行;图层/构件/标注读数仍是 DXF 专有,PDF 给不了。"
+            )
         return ok(
             data={"format": "pdf", "page_count": page_count, "has_text": has_text},
             user_msg=f"{name}是 PDF 图纸,共 {page_count} 页。{tail}",
@@ -699,6 +706,67 @@ _VIEW_PARAMS_DESCRIPTION = (
 )
 
 
+async def _read_pdf_text_by_vision(
+    drawing_id: str, name: str, view_type: str | None, view_label: str
+) -> Envelope:
+    """PDF 文字层为空(文字转图形/扫描件)时的读字兜底:渲染成图 → 视觉模型认字。
+
+    认出来的字**可能有误、可能漏**(和矢量文字层抽出来的『精确』两回事),所以成功文案里
+    必须带「可能有误、以原图为准」的红线措辞 —— 别和「读到图上文字」那套精确措辞混了。
+    渲染倍率取 settings.cad_ocr_render_scale(比预览高,小字更清)。视觉调用的异常在这里接住
+    翻成中文信封(vision.read_drawing_text 本身不接)。
+    """
+    path = await asyncio.to_thread(artifacts.resolve, drawing_id)
+    scale = get_settings().cad_ocr_render_scale
+    try:
+        # 渲染用 pypdfium2(抛 PdfiumError),抽文字用 pypdf(抛 PyPdfError)—— 两个库、两种异常,
+        # 都当「文件打不开」处理,别让损坏 PDF 冒到 tool_guard 变成「系统开小差」。
+        png_bytes = await asyncio.to_thread(render.pdf_to_png, path, scale=scale)
+    except (PyPdfError, PdfiumError) as exc:
+        logger.info("PDF 读字渲染失败 %s:%s", drawing_id, exc)
+        return fail(
+            ErrorCode.FILE_CORRUPT,
+            user_msg="这张 PDF 图纸打不开,可能文件传坏了,换一张再试。",
+            detail=f"pdf ocr render {drawing_id} 失败:{type(exc).__name__}: {exc}",
+        )
+
+    try:
+        recognized = await vision.read_drawing_text(png_bytes)
+    except MissingAPIKeyError as exc:
+        # 密钥没配:这句本身是可操作的中文(指到 .env 哪一行),原样透传,别被 tool_guard 吞成 INTERNAL。
+        logger.error("视觉模型密钥没配置:%s", exc)
+        return fail(ErrorCode.INTERNAL, user_msg=str(exc))
+    except LLMCallError as exc:
+        logger.warning("PDF 读字视觉调用失败:%s", exc)
+        return fail(exc.error_code, user_msg=str(exc.user_msg))
+
+    lines = [ln.strip() for ln in recognized.splitlines() if ln.strip()]
+    if not lines or recognized.strip() == vision.EMPTY_MARKER:
+        # 认了一遍也没认出字:如实说,不硬编。
+        return fail(
+            ErrorCode.EMPTY_RESULT,
+            user_msg=(
+                f"{name}是 PDF 图纸,文字选不中(是图形或扫描的),我照着图认了一遍也没认出字来。"
+                "能出预览图看整张,但图上的文字读不了。"
+            ),
+        )
+
+    shown = ";".join(lines[:8])
+    return ok(
+        data={
+            "format": "pdf",
+            "view_type": view_type,
+            # 独立字段:和矢量文字层的 annotations(精确)分开,标明来源是视觉识别(可能有误)。
+            "annotations_recognized": lines,
+            "source": "vision",
+        },
+        user_msg=(
+            f"{name}({view_label},PDF)文字选不中(是图形或扫描的),下面是我**照图认出来**的 "
+            f"{len(lines)} 条,**可能有误、可能漏,关键数字(标高/尺寸等)务必以原图为准**:{shown}。"
+        ),
+    )
+
+
 @tool("read_view_params", description=_VIEW_PARAMS_DESCRIPTION)
 @tool_guard
 async def read_view_params(drawing: str, *, config: RunnableConfig) -> Envelope:
@@ -715,16 +783,12 @@ async def read_view_params(drawing: str, *, config: RunnableConfig) -> Envelope:
     view_label = _VIEW_CN.get(view_type or "", "图纸")
 
     if _is_pdf(idx):
-        # PDF 的看家能力:把图上抽到的文字(标高、房间名、标注数字)如实报出来。没抽到就说扫描件。
+        # PDF 的看家能力:把图上抽到的文字(标高、房间名、标注数字)如实报出来。
         pdf_annotations: list[dict[str, Any]] = idx.get("annotations", [])
         if not pdf_annotations:
-            return fail(
-                ErrorCode.EMPTY_RESULT,
-                user_msg=(
-                    f"{name}是 PDF 图纸,但读不到任何文字(像扫描件)。"
-                    "能出预览图看整张,图上的文字读不了。"
-                ),
-            )
+            # 文字层为空(文字转图形/扫描件):不再直接放弃,渲染成图交给视觉模型认字兜底。
+            # 认出来的字可能有误,文案会明说(见 _read_pdf_text_by_vision 的红线措辞)。
+            return await _read_pdf_text_by_vision(drawing_id, name, view_type, view_label)
         ann_shown = "、".join(a["text"] for a in pdf_annotations[:8])
         return ok(
             data={"format": "pdf", "view_type": view_type, "annotations": pdf_annotations},
