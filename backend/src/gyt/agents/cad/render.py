@@ -59,10 +59,11 @@ _LIGHT_CONFIG = Configuration(
 # 的候选表,不进 config.py(放 .env 里没人会改,反而多一处会漂的拷贝)。
 # Windows 自带 YaHei/SimHei;Linux 装 fonts-noto-cjk 后有 Noto;SimSun 兜底。
 _CJK_FONT_CANDIDATES = (
-    "msyh.ttc",  # Microsoft YaHei
-    "simhei.ttf",  # SimHei
-    "NotoSansCJKsc-Regular.otf",  # fonts-noto-cjk(Debian/Ubuntu)
+    "msyh.ttc",  # Microsoft YaHei —— Windows 自带
+    "NotoSansCJKsc-Regular.otf",  # fonts-noto-cjk(装了更好看)
     "NotoSansCJK-Regular.ttc",
+    "wqy-microhei.ttc",  # 文泉驿微米黑 —— 线上镜像装的就是它(Dockerfile app 阶段,水印也用)
+    "simhei.ttf",  # SimHei —— Windows 自带
     "simsun.ttc",  # 宋体
 )
 
@@ -87,6 +88,15 @@ def _resolve_cjk_font() -> str | None:
         # 只认「原样命中」的,才是真装了这个中文字体。
         if face and face.filename and face.filename.lower() == cand.lower():
             _cjk_font_name = cand
+            # 同时把 ezdxf 的 fallback 也钉成这个中文字体。关键:裸 Debian 镜像里 ezdxf 的
+            # 默认 fallback 是 ArialUni.ttf(镜像里没装),图里任何解析不到的字体(天正 SHX、
+            # MTEXT 内联 \f 等)一回退就撞 FontNotFoundError「no fonts available」直接崩 ——
+            # 这正是移除 matplotlib(它自带 DejaVu 兜底)后暴露出来的坑。私有属性,ezdxf 版本
+            # 已锁 >=1.4,<2;设不了也不致命(下面 _apply_cjk_font 已把样式字体指过去)。
+            try:
+                fonts.font_manager._fallback_font_name = cand  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                logger.debug("设置 ezdxf fallback 字体失败,忽略", exc_info=True)
             logger.debug("CAD 渲染选用中文字体:%s", cand)
             return cand
     logger.warning(
