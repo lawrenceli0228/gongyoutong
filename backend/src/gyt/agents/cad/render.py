@@ -1,103 +1,156 @@
-"""DXF → PNG 预览(落地文档第 7 节:中文字体 + 线程安全两个坑)。
+"""DXF → 矢量 PDF / PNG 预览(落地文档第 7 节:中文字体 + 线程安全两个坑)。
 
 ===========================================================================
-坑一:pyplot 非线程安全 —— 用 OO API,不碰全局 pyplot
+渲染后端:ezdxf 原生 SVG 后端(2026-08-20 从 matplotlib 换过来)
 ---------------------------------------------------------------------------
-    render 跑在工具层 asyncio.to_thread 的线程池里,而 pyplot 维护一份**全局**
-    figure 状态,多线程同时画会互相踩。所以这里显式 Figure() + FigureCanvasAgg,
-    把 Axes 交给 ezdxf 的 MatplotlibBackend,全程不 import pyplot、不用 qsave。
+    旧实现用 ezdxf 的 MatplotlibBackend 逐图元建 matplotlib artist,慢到离谱
+    (实测 2280 图元 19s、真实施工图注释里记着 268s),阈值被迫压到 1000,几乎没有
+    真图能出图。改用 ezdxf 自带的 **SVGBackend** —— 轻量 recorder 直接吐 SVG XML,
+    同图快约 7x。矢量 PDF 由 svglib 把 SVG 解析成 reportlab 图元、再 renderPDF 写出。
+    PNG 预览不再单独走一套渲染,而是复用「出 PDF」再用 pypdfium2 栅格化首页 ——
+    一条快链,阈值(config.drawing_render_max_entities)对 PDF/PNG 两条路一致。
 
-坑二:matplotlib 默认无中文字体 —— 图层名/标注会渲染成方框
+坑一:线程安全 —— 每次调用各建各的对象,无全局画布状态
 ---------------------------------------------------------------------------
-    原生 Windows 直接指系统自带的 Microsoft YaHei / SimHei(不用装);
-    WSL2/Linux 上装 fonts-noto-cjk 后 "Noto Sans CJK SC" 兜底。
-    rcParams 是进程级全局设置,在 import 时设一次即可。
+    render 跑在工具层 asyncio.to_thread 的线程池里。旧实现要绕开 pyplot 的全局
+    figure 状态;新实现的 SVGBackend / svg2rlg / reportlab canvas 都是**每次调用新建**,
+    没有可被并发踩的进程级可变状态。ezdxf 的字体管理器是只读共享,不在此处建缓存。
+
+坑二:中文字体 —— ezdxf 的 SVG 后端不认 matplotlib 的 rcParams
+---------------------------------------------------------------------------
+    SVGBackend 用 ezdxf 自己的字体系统(fontTools)解析文字为矢量路径。DXF 的文字样式
+    默认字体多半没有中文字形,直接渲成 .notdef 豆腐块。所以渲染前把每个文字样式的字体
+    指到一个含中文的字体(_CJK_FONT_CANDIDATES,平台知识留在代码里,同 watermark.py)。
+    因为文字最终是 <path> 而非 <text>,产物 PDF/PNG 不再依赖阅读器/系统字体。
 ===========================================================================
 """
 
 from __future__ import annotations
 
 import io
+import logging
 from pathlib import Path
 
 import ezdxf
-import matplotlib
 import pypdfium2 as pdfium
-from ezdxf.addons.drawing import Frontend, RenderContext
+from ezdxf.addons.drawing import Frontend, RenderContext, layout, svg
 from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
-from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
-from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.backends.backend_pdf import FigureCanvasPdf
-from matplotlib.figure import Figure
+from ezdxf.fonts import fonts
+from reportlab.graphics import renderPDF
+from svglib.svglib import svg2rlg
 
-# 无头后端:服务器/线程池里没有显示设备,必须 Agg。用 OO API 时它不引 pyplot 全局态。
-matplotlib.use("Agg")
-# 中文字体:Windows 自带 YaHei/SimHei;Linux 兜 Noto。设一次(进程级),不进函数体。
-matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC"]
-matplotlib.rcParams["axes.unicode_minus"] = False
+logger = logging.getLogger(__name__)
 
-_DPI = 150
-
-# PDF 栅格化的缩放倍率:PDF 页以 72pt/英寸为基准,×2 ≈ 144 DPI,和上面 DXF 的 150 DPI 相当,
-# 施工图上的细线/小字也看得清,又不至于让预览图太大。
+# PDF 栅格化的缩放倍率:PDF 页以 72pt/英寸为基准,×2 ≈ 144 DPI,施工图上的细线/小字
+# 也看得清,又不至于让预览图太大。read_drawing_text 的读字兜底会传更高的 scale。
 _PDF_RENDER_SCALE = 2.0
 
-# 白底 + 黑线:DXF 里图元多是 ACI 7(随背景取黑/白的自适应色)。默认背景是黑、7 号
-# 画成白线;我们要出的是白底 PNG,不改配色的话就是白线画在白底上 —— 一片空白。
-# 显式钉死「白底 + 前景全黑」,细线在浅色看图器里也看得清。
+# 整图四周留白(mm)。SVGBackend 的 Page(0,0,...) 会按内容外接框自动定尺寸,margins 只加边距。
+_PAGE_MARGIN_MM = 5.0
+
+# 白底 + 黑线:DXF 里图元多是 ACI 7(随背景取黑/白的自适应色)。显式钉死「白底 + 前景全黑」,
+# 细线在浅色看图器里也看得清;不设的话 7 号会画成白线、白底上一片空白。
 _LIGHT_CONFIG = Configuration(
     background_policy=BackgroundPolicy.WHITE,
     color_policy=ColorPolicy.BLACK,
 )
 
+# 含中文字形的字体候选(按平台优先级)。这是代码携带的平台知识 —— 同 attendance/watermark.py
+# 的候选表,不进 config.py(放 .env 里没人会改,反而多一处会漂的拷贝)。
+# Windows 自带 YaHei/SimHei;Linux 装 fonts-noto-cjk 后有 Noto;SimSun 兜底。
+_CJK_FONT_CANDIDATES = (
+    "msyh.ttc",  # Microsoft YaHei
+    "simhei.ttf",  # SimHei
+    "NotoSansCJKsc-Regular.otf",  # fonts-noto-cjk(Debian/Ubuntu)
+    "NotoSansCJK-Regular.ttc",
+    "simsun.ttc",  # 宋体
+)
 
-def to_png(path: Path) -> bytes:
-    """把一张 DXF 渲染成整图 PNG,返回字节。阻塞函数:调用方负责 to_thread 包。
+# 解析结果只算一次(进程级)。None 表示本机没探到中文字体 —— 那就不改样式,
+# 让 ezdxf 自行兜底(拉丁字符照常,中文可能仍是豆腐块,但不比原来更差)。
+_cjk_font_resolved = False
+_cjk_font_name: str | None = None
 
-    只渲染模型空间整图(MVP 砍掉局部裁剪 region,落地文档 6.5)。
-    文件损坏/打不开时不吞异常,让 ezdxf 抛给工具层翻成 FILE_CORRUPT。
-    """
-    doc = ezdxf.readfile(str(path))
-    msp = doc.modelspace()
 
-    fig = Figure(facecolor="white")
-    FigureCanvasAgg(fig)  # 显式挂 Agg 画布(OO 路径,不经 pyplot)
-    ax = fig.add_axes((0, 0, 1, 1))
-    ax.set_axis_off()
-    # finalize=True 让 addon 自己把纵横比与坐标范围摆正,不用手算 xlim/ylim。
-    frontend = Frontend(RenderContext(doc), MatplotlibBackend(ax), config=_LIGHT_CONFIG)
-    frontend.draw_layout(msp, finalize=True)
+def _resolve_cjk_font() -> str | None:
+    """挑一个 ezdxf 字体管理器认得的中文字体文件名;探不到返回 None(只算一次)。"""
+    global _cjk_font_resolved, _cjk_font_name
+    if _cjk_font_resolved:
+        return _cjk_font_name
+    _cjk_font_resolved = True
+    for cand in _CJK_FONT_CANDIDATES:
+        try:
+            face = fonts.font_manager.get_font_face(cand)
+        except Exception:  # noqa: BLE001 —— 字体管理器内部异常一律当「这个候选不可用」
+            continue
+        # get_font_face 找不到会回退到某个默认字体(filename 与请求的不同);
+        # 只认「原样命中」的,才是真装了这个中文字体。
+        if face and face.filename and face.filename.lower() == cand.lower():
+            _cjk_font_name = cand
+            logger.debug("CAD 渲染选用中文字体:%s", cand)
+            return cand
+    logger.warning(
+        "未探到可用的中文字体(候选:%s),中文可能渲成方块", ", ".join(_CJK_FONT_CANDIDATES)
+    )
+    _cjk_font_name = None
+    return None
 
-    buf = io.BytesIO()
-    # bbox_inches="tight" 贴着图元裁掉四周空白,细长/小图也能填满画面;
-    # 显式白底,免得默认透明背景在看图器里叠出诡异颜色。
-    fig.savefig(buf, format="png", dpi=_DPI, facecolor="white", bbox_inches="tight", pad_inches=0.2)
-    return buf.getvalue()
+
+def _apply_cjk_font(doc: ezdxf.document.Drawing) -> None:
+    """把文档里每个文字样式的字体指到中文字体,让 SVG 后端能渲出中文(见坑二)。"""
+    cjk = _resolve_cjk_font()
+    if not cjk:
+        return
+    for style in doc.styles:
+        try:
+            style.dxf.font = cjk
+        except Exception:  # noqa: BLE001 —— 个别特殊样式(形文件等)设不了就跳过,不影响其余
+            continue
+
+
+def _render_pdf_bytes(doc: ezdxf.document.Drawing) -> bytes:
+    """DXF 文档 → 矢量 PDF 字节。ezdxf SVGBackend 出 SVG,再 svglib+reportlab 转 PDF。"""
+    _apply_cjk_font(doc)
+    backend = svg.SVGBackend()
+    Frontend(RenderContext(doc), backend, config=_LIGHT_CONFIG).draw_layout(
+        doc.modelspace(), finalize=True
+    )
+    page = layout.Page(0, 0, layout.Units.mm, margins=layout.Margins.all(_PAGE_MARGIN_MM))
+    svg_str = backend.get_string(page)
+
+    # svg2rlg 吃带 XML 声明的 unicode 会报错,喂 BytesIO(utf-8) 即可,免落临时文件。
+    drawing = svg2rlg(io.BytesIO(svg_str.encode("utf-8")))
+    if drawing is None:
+        # 自产 SVG 正常不会解析失败;真失败了当损坏处理,让上层翻成 FILE_CORRUPT。
+        raise ezdxf.DXFError("SVG→PDF 转换失败:svglib 未能解析渲染出的 SVG")
+    return renderPDF.drawToString(drawing)
 
 
 def to_pdf(path: Path) -> bytes:
     """把一张 DXF 渲染成**矢量 PDF**,返回字节。阻塞函数:调用方负责 to_thread 包。
 
-    与 ``to_png`` 复用同一套 ezdxf 绘制逻辑(白底黑线、模型空间整图、finalize 自动摆正),
-    唯一区别是画布换成 matplotlib 的 **PDF 后端**(FigureCanvasPdf):图元以矢量路径写进
-    PDF,而不是先栅格化成低分辨率 PNG 再包进去 —— 放大不糊,是「导出 PDF」该有的样子。
-
+    只渲染模型空间整图(finalize 自动摆正纵横比)。图元以矢量路径写进 PDF,放大不糊。
     文件损坏/打不开时不吞异常,让 ezdxf 抛给上层翻成 FILE_CORRUPT。
     """
     doc = ezdxf.readfile(str(path))
-    msp = doc.modelspace()
+    return _render_pdf_bytes(doc)
 
-    fig = Figure(facecolor="white")
-    FigureCanvasPdf(fig)  # 矢量 PDF 画布(OO 路径,不经 pyplot)
-    ax = fig.add_axes((0, 0, 1, 1))
-    ax.set_axis_off()
-    frontend = Frontend(RenderContext(doc), MatplotlibBackend(ax), config=_LIGHT_CONFIG)
-    frontend.draw_layout(msp, finalize=True)
 
-    buf = io.BytesIO()
-    # bbox_inches="tight" 贴着图元裁掉四周空白;显式白底,免得默认透明背景叠出诡异颜色。
-    fig.savefig(buf, format="pdf", facecolor="white", bbox_inches="tight", pad_inches=0.2)
-    return buf.getvalue()
+def to_png(path: Path) -> bytes:
+    """把一张 DXF 渲染成整图 PNG,返回字节。阻塞函数:调用方负责 to_thread 包。
+
+    复用 ``to_pdf`` 的快链再用 pypdfium2 栅格化首页 —— 不另起一套渲染,PDF/PNG 行为一致。
+    文件损坏/打不开时不吞异常,让 ezdxf 抛给工具层翻成 FILE_CORRUPT。
+    """
+    pdf_bytes = to_pdf(path)
+    doc = pdfium.PdfDocument(pdf_bytes)
+    try:
+        bitmap = doc[0].render(scale=_PDF_RENDER_SCALE)
+        buf = io.BytesIO()
+        bitmap.to_pil().save(buf, format="png")
+        return buf.getvalue()
+    finally:
+        doc.close()
 
 
 def pdf_to_png(path: Path, *, page_index: int = 0, scale: float = _PDF_RENDER_SCALE) -> bytes:

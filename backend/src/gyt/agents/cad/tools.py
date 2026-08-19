@@ -763,7 +763,7 @@ async def render_preview(drawing: str, *, config: RunnableConfig) -> Envelope:
     name = _display_name(drawing_id)
 
     if _is_pdf(idx):
-        # PDF 走 pypdfium2 栅格化首页,没有「图元太多」这道 matplotlib 专属的拦阻。
+        # PDF 走 pypdfium2 栅格化首页,没有「图元太多」这道 DXF 渲染专属的拦阻。
         path = await asyncio.to_thread(artifacts.resolve, drawing_id)
         try:
             png_bytes = await asyncio.to_thread(render.pdf_to_png, path)
@@ -785,8 +785,8 @@ async def render_preview(drawing: str, *, config: RunnableConfig) -> Envelope:
             ),
         )
 
-    # 渲染前先按图元数拦一道:真实工程图上千图元,matplotlib 逐个画会卡几分钟(实测 268s),
-    # 而且大地坐标系的真图渲染出来常是空白。超阈值就**不渲染、如实说**,别硬撑到超时。
+    # 渲染前先按图元数拦一道:图元数越大 SVG→PDF 越慢(见 config.drawing_render_max_entities
+    # 的伸缩实测),而且大地坐标系的真图渲染出来常是空白。超阈值就**不渲染、如实说**,别硬撑到超时。
     entities_total = sum(idx["entities_by_kind"].values())
     max_entities = get_settings().drawing_render_max_entities
     if entities_total > max_entities:
