@@ -98,6 +98,77 @@ def make_tianzheng_dxf(path: Path) -> None:
     doc.saveas(path)
 
 
+def _register_tch_class(doc, name: str) -> None:
+    """往 CLASSES 段登记一个天正私有类(``TCH_*``),app 名照真图写「TCH_KERNAL|…」。
+
+    真天正图在 CLASSES 段登记这些类,实体则以通用 ``ACAD_PROXY_ENTITY`` 存盘 —— 这正是
+    形态②:``dxftype()`` 认不出是天正,唯一的天正指纹在 CLASSES 段(和 APPID ``_TCH``)。
+    """
+    from ezdxf.entities import DXFClass
+
+    doc.classes.register(
+        DXFClass.new(
+            dxfattribs={
+                "name": name,
+                "cpp_class_name": name,
+                # 真图的 app_name 是「TCH_KERNAL|缺乏解释器天正图形看不见…」,检测只看类名前缀,
+                # 这里留个可辨识的短串即可(app_name 不参与判定)。
+                "app_name": "TCH_KERNAL|天正",
+                "flags": 0,
+                "was_a_proxy": 1,
+                "is_an_entity": 1,
+            }
+        )
+    )
+
+
+def _add_proxy_entity(doc, msp, layer: str) -> None:
+    """往图里塞一个通用 ``ACAD_PROXY_ENTITY``(天正带 proxy graphics 存盘后的形态②)。
+
+    与 ``_add_tch_proxy`` 的区别:那个 dxftype 是 ``TCH_*``(形态①,实体自带私有类型);
+    这个 dxftype 是 ``ACAD_PROXY_ENTITY``,真实类型只在 CLASSES 段登记 —— 检出得靠
+    「CLASSES 有 TCH_ 类 + 图里有代理实体」,构件按图层(组码 8)归类。句柄由 entitydb
+    分配(合法 16 进制),别手搓非法句柄。
+    """
+    handle = doc.entitydb.next_handle()
+    tags = [
+        (0, "ACAD_PROXY_ENTITY"),
+        (5, handle),
+        (330, "0"),
+        (100, "AcDbEntity"),
+        (8, layer),
+        (100, "AcDbProxyEntity"),
+        (90, 1),  # proxy 版本/占位,ezdxf 原样保管
+    ]
+    entity = DXFTagStorage.load(ExtendedTags([dxftag(*t) for t in tags]), doc)
+    doc.entitydb.add(entity)
+    msp.add_entity(entity)
+
+
+def make_tianzheng_proxy_dxf(path: Path) -> None:
+    """天正图(形态②):CLASSES 段登记 TCH_* 类,构件以通用 ACAD_PROXY_ENTITY 存盘。
+
+    模拟国内实际图纸最常见的天正存盘形态 —— 墙/柱/门窗读进来全是 ``ACAD_PROXY_ENTITY``,
+    dxftype 里一个 ``TCH_`` 都没有(旧检测只认 dxftype 前缀,把整张图漏成「普通图、没标注」)。
+    断言点:仍被检出为天正,构件按图层(COLUMN/WALL/WINDOW)归类。
+    """
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 4
+    for name in ("TCH_COLUMN", "TCH_WALL", "TCH_WINDOW"):
+        _register_tch_class(doc, name)
+    for lname in ("COLUMN", "WALL", "WINDOW", "AXIS"):
+        doc.layers.add(lname)
+    msp = doc.modelspace()
+    msp.add_line((0, 0), (SPAN_MM, 0), dxfattribs={"layer": "AXIS"})  # 普通图元照常
+    for _ in range(4):
+        _add_proxy_entity(doc, msp, "COLUMN")
+    for _ in range(3):
+        _add_proxy_entity(doc, msp, "WALL")
+    for _ in range(2):
+        _add_proxy_entity(doc, msp, "WINDOW")
+    doc.saveas(path)
+
+
 def make_broken_dxf(path: Path) -> None:
     """损坏图:先造一张好图,再从中间截断,ezdxf.readfile 会抛 DXFStructureError。"""
     good = path.with_name("_tmp_good.dxf")

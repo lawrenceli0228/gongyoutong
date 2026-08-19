@@ -21,6 +21,7 @@ from tests.unit._dxf_fixtures import (
     make_gbk_dxf,
     make_scanned_pdf,
     make_tianzheng_dxf,
+    make_tianzheng_proxy_dxf,
     make_vector_pdf,
 )
 
@@ -237,6 +238,37 @@ async def test_天正图概览标出私有构件计数(tianzheng_env):
     assert result["data"]["tianzheng"]["detected"] is True
     # 私有构件按人话计数报出来:3 墙、2 柱。
     assert "墙" in result["user_msg"] and "柱" in result["user_msg"]
+
+
+@pytest.fixture
+def tianzheng_proxy_env(tmp_path, monkeypatch):
+    """代理实体形态(形态②)的天正图 —— 回归 test-3:构件全是 ACAD_PROXY_ENTITY。"""
+    make_tianzheng_proxy_dxf(tmp_path / "tzp.dxf")
+    drawing_id = artifacts.register(
+        tmp_path / "tzp.dxf", kind=ArtifactKind.DRAWING, original_name="tzp.dxf"
+    )
+    monkeypatch.setattr(tools, "get_demo_drawings", lambda: {"天正代理图": drawing_id})
+    return {"id": drawing_id, "name": "天正代理图"}
+
+
+async def test_天正代理实体图查标注给导出指引而非图上没标(tianzheng_proxy_env):
+    # 回归 test-3(消防车道读不出):旧检测漏判这类图 → query_dimension 误答「图上没标」。
+    # 现在应识别为天正、给 T3 导出路;导出后那道 2000 才会变成真 DIMENSION 被读到。
+    result = await tools.query_dimension.ainvoke({"drawing": "天正代理图"})
+    assert result["ok"] is False
+    assert "天正" in result["user_msg"]
+    assert "图上没标" not in result["user_msg"]
+    assert "T3" in result["user_msg"]
+
+
+async def test_天正代理实体图概览按图层译成中文构件名(tianzheng_proxy_env):
+    # 验证 _TCH_CN 把天正标准英文图层名(COLUMN/WALL/WINDOW)译成中文,而不是原样吐英文。
+    result = await tools.list_components.ainvoke({"drawing": "天正代理图"})
+    assert result["ok"] is True
+    assert result["data"]["tianzheng"]["detected"] is True
+    msg = result["user_msg"]
+    assert "柱" in msg and "墙" in msg and "窗" in msg
+    assert "COLUMN" not in msg and "WALL" not in msg  # 别把英文图层名直接甩给用户
 
 
 # --- query_dimension ---------------------------------------------------------
