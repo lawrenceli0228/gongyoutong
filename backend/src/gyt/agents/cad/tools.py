@@ -46,8 +46,13 @@ _PREVIEW_NAME: Final[str] = "preview.png"
 # 视图类型的人话标签(drawings.view_type ∈ plan/elevation/section)。
 _VIEW_CN: Final[dict[str, str]] = {"plan": "平面图", "elevation": "立面图", "section": "剖面图"}
 
-# 天正私有构件类型(parse 检出的 TCH_*)→ 人话构件名。认不出的落回原类型名,不假装认得。
+# 天正构件标签 → 人话构件名。认不出的落回原标签,不假装认得。
+# 两类键都在这里(对应 parse._detect_tianzheng 的两种加载形态):
+#   · ``TCH_*`` —— 形态①,实体直载为私有类型,标签即 TCH_ 类型名;
+#   · 英文图层名 —— 形态②,天正构件被存成通用 ACAD_PROXY_ENTITY、拿不到逐个类型,
+#     parse 退一步按图层给它们计数,标签就是天正标准英文图层名(COLUMN/WALL/…)。
 _TCH_CN: Final[dict[str, str]] = {
+    # 形态①:TCH_* 私有类型
     "TCH_WALL": "墙",
     "TCH_COLUMN": "柱",
     "TCH_WINDOW": "窗",
@@ -60,6 +65,19 @@ _TCH_CN: Final[dict[str, str]] = {
     "TCH_BALCONY": "阳台",
     "TCH_RAILING": "栏杆",
     "TCH_ROOF": "屋顶",
+    # 形态②:天正标准英文图层名(proxy 构件按图层归类后的标签)
+    "WALL": "墙",
+    "COLUMN": "柱",
+    "WINDOW": "窗",
+    "DOOR": "门",
+    "CURTWALL": "幕墙",
+    "OPENING": "洞口",
+    "STAIR": "楼梯",
+    "AXIS": "轴线",
+    "SPACE": "房间",
+    "BALCONY": "阳台",
+    "RAILING": "栏杆",
+    "ROOF": "屋顶",
 }
 
 # 交给用户的「把天正图变成能读的图」的正确步骤 —— 三条路,从推荐到应急。

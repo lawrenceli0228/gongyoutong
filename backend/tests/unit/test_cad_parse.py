@@ -11,6 +11,7 @@ from tests.unit._dxf_fixtures import (
     make_gbk_dxf,
     make_plain_dxf,
     make_tianzheng_dxf,
+    make_tianzheng_proxy_dxf,
 )
 
 
@@ -92,6 +93,38 @@ def test_天正图被检出并列出私有构件类型(tmp_path):
     tz = result["tianzheng"]
     assert tz["detected"] is True
     assert tz["component_kinds"] == {"TCH_WALL": 3, "TCH_COLUMN": 2}
+
+
+def test_天正图代理实体形态也被检出并按图层归类(tmp_path):
+    # 回归 test-3(消防车道读不出的真图):天正构件以通用 ACAD_PROXY_ENTITY 存盘,
+    # dxftype 里没有任何 TCH_,唯一指纹在 CLASSES 段登记的 TCH_* 类。旧检测只比 dxftype
+    # 前缀,把这类图整片漏成「普通图、没标注」;现在应检出天正,构件按图层计数。
+    make_tianzheng_proxy_dxf(tmp_path / "tzp.dxf")
+    result = parse.parse_dxf(tmp_path / "tzp.dxf")
+
+    # 实体确实是通用代理类型(不是 TCH_*)—— 坐实这是形态②而非形态①。
+    assert result["entities_by_kind"].get("ACAD_PROXY_ENTITY") == 9
+    assert not any(k.startswith("TCH_") for k in result["entities_by_kind"])
+
+    tz = result["tianzheng"]
+    assert tz["detected"] is True
+    assert tz["component_kinds"] == {"COLUMN": 4, "WALL": 3, "WINDOW": 2}
+
+
+def test_有TCH类登记但无代理实体的空图不误判为天正(tmp_path):
+    # 边界:CLASSES 段残留 TCH_ 类登记、但图里一个天正实体都没有 —— 不算天正,别乱指。
+    import ezdxf
+
+    from tests.unit._dxf_fixtures import _register_tch_class
+
+    doc = ezdxf.new("R2010")
+    _register_tch_class(doc, "TCH_WALL")
+    doc.modelspace().add_line((0, 0), (100, 0))
+    doc.saveas(tmp_path / "stale.dxf")
+
+    result = parse.parse_dxf(tmp_path / "stale.dxf")
+    assert result["tianzheng"]["detected"] is False
+    assert result["tianzheng"]["component_kinds"] == {}
 
 
 def test_普通图tianzheng字段为未检出(tmp_path):

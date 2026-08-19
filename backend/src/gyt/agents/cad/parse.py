@@ -231,6 +231,47 @@ def _bounds(msp: Any) -> dict[str, list[float]] | None:
     }
 
 
+def _detect_tianzheng(doc: Any, by_kind: Counter, per_layer: dict[str, Counter]) -> dict[str, Any]:
+    """检出天正(TArch)私有构件,产出 ``{detected, component_kinds}``。
+
+    工具层据此对用户说「这是天正图、先导出 T3」,而不是把读不到几何当成「文件坏了」,
+    也不至于把一张满是天正墙/柱/标注的图当成「普通图、什么标注都没有」。
+    ``component_kinds`` 是 ``{构件标签: 数量}``,交给 tools._tianzheng_summary 说成
+    「66 柱、44 墙…」。
+
+    天正私有构件在 ezdxf 里有**两种加载形态**,两种都要认(旧代码只认①,把②整片漏掉):
+
+    ① 直载为 ``TCH_*``:ezdxf 没有私有类定义,当未知类型读进来,``dxftype()`` 就是
+       ``TCH_WALL`` 之类 —— 直接按类型计数,标签即 TCH_ 类型名。
+
+    ② 载为通用 ``ACAD_PROXY_ENTITY``:天正带 proxy graphics 存盘时,实体被包成标准代理
+       实体,``dxftype()`` 一律是 ``ACAD_PROXY_ENTITY``,**真实类型只在 CLASSES 段登记为
+       ``TCH_*``**(APPID 里还留一个 ``_TCH``)。这是国内实际图纸最常见的形态。代理实体
+       拿不到逐个的私有类型,退一步**按图层给它们计数**(天正标准英文图层名
+       COLUMN/WALL/WINDOW/CURTWALL/AXIS/SPACE…;认不出的图层名原样留着,不假装认得)。
+
+    形态②要求「CLASSES 段有 TCH_ 类」**且**「图里确有代理实体」双条件:只剩残留类登记、
+    没有任何天正实体的空图不算天正,免得乱指(泛化的 ``ACAD_PROXY_ENTITY`` 也可能来自别家插件,
+    但配上 CLASSES 段的 ``TCH_*`` 登记就足以锁定是天正)。
+    """
+    tch_by_type = {k: int(v) for k, v in sorted(by_kind.items()) if k.startswith("TCH_")}
+    if tch_by_type:  # 形态①
+        return {"detected": True, "component_kinds": tch_by_type}
+
+    # 形态②:CLASSES 段登记了 TCH_* 类 + 图里确有代理实体
+    has_tch_class = any(str(getattr(cls.dxf, "name", "")).startswith("TCH_") for cls in doc.classes)
+    if has_tch_class and by_kind.get("ACAD_PROXY_ENTITY"):
+        proxy_by_layer = {
+            layer: int(kinds["ACAD_PROXY_ENTITY"])
+            for layer, kinds in sorted(per_layer.items())
+            if kinds.get("ACAD_PROXY_ENTITY")
+        }
+        if proxy_by_layer:
+            return {"detected": True, "component_kinds": proxy_by_layer}
+
+    return {"detected": False, "component_kinds": {}}
+
+
 def parse_dxf(path: Path) -> dict[str, Any]:
     """解析一张 DXF,产出落地文档第 4 节的中间对象(不含 source_artifact_id)。
 
@@ -242,11 +283,6 @@ def parse_dxf(path: Path) -> dict[str, Any]:
 
     by_kind, per_layer, insert_by_block = _scan_modelspace(msp)
     insunits = int(doc.header.get("$INSUNITS", 0))
-
-    # 天正(TArch)私有构件按 TCH_* 类型出现在 by_kind 里。检出它们,让工具层能对用户说
-    # 「这是天正图、先导出 T3」,而不是把读不到几何当成「文件坏了」。detect 只认 TCH_ 前缀
-    # (天正专有),不把泛化的 ACAD_PROXY_ENTITY 也算进来 —— 那可能来自别家插件,不好乱指。
-    tianzheng_kinds = {k: int(v) for k, v in sorted(by_kind.items()) if k.startswith("TCH_")}
 
     return {
         "format": "dxf",  # 索引格式判别:工具层按它在 dxf/pdf 两条线间分流
@@ -260,10 +296,7 @@ def parse_dxf(path: Path) -> dict[str, Any]:
         "dimensions": _dimensions(msp),
         "annotations": _texts(msp),
         "bounds": _bounds(msp),
-        "tianzheng": {
-            "detected": bool(tianzheng_kinds),
-            "component_kinds": tianzheng_kinds,
-        },
+        "tianzheng": _detect_tianzheng(doc, by_kind, per_layer),
     }
 
 
