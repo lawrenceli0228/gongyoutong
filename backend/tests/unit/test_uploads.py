@@ -84,13 +84,48 @@ def test_没有消息时不报错() -> None:
     assert ingest_uploads({}) == {}
 
 
-def test_最后一条不是用户消息时不动() -> None:
-    """只处理最后一条用户消息 —— 更早的在它们自己那轮已经改写过了,
-    重复处理会把同一张图反复登记,artifacts 目录白白膨胀。"""
+def test_历史里遗留的image块也要改写_哪怕最后一条不是用户消息() -> None:
+    """🔴 这条原来断的是反的(「最后一条不是用户消息就什么都不动」),而那正是 bug。
+
+    原假设:「更早的那些在它们自己那一轮已经被改写过了」。
+    **run 失败时不成立** —— 失败的 run 不提交检查点,改写就丢了。
+
+    2026-08-19 真机实录(断网那阵子):
+        发照片 → 改写了 → 模型调用 APIConnectionError → run 失败 → 改写没落盘
+        再发一张 → 线程变成 [文本, image原样, image原样]
+        hook 只看最后一条 → 更早那条永远是原样
+    于是那条线程**被永久毒化**:此后每次提问,文本档模型都收到 image 块,
+    DeepSeek 回 400「unknown variant `image`, expected `text`」,
+    而工友只看到「出错了」,自己好不了 —— 除非删掉整条对话。
+
+    下面这个 state 就是毒化后的形状:历史里躺着一条原样 image,后面跟着 AI 消息。
+    """
     state = {
         "messages": [
             HumanMessage(content=[_image_part(_jpeg())], id="u1"),
             AIMessage(content="好的", id="a1"),
+        ]
+    }
+    out = ingest_uploads(state)
+    assert out, "历史里的 image 块没被改写 —— 这条线程会在下一次提问时 400"
+    rewritten = [m for m in out["messages"] if isinstance(m, HumanMessage)]
+    assert len(rewritten) == 1
+    assert isinstance(rewritten[0].content, str)
+    assert "照片编号" in rewritten[0].content
+    assert rewritten[0].id == "u1", "必须用同一个 id 原地替换,不然位置会乱"
+
+
+def test_已改写过的消息不会被重复登记() -> None:
+    """扫全部消息是否会把同一张图登记两次 —— **不会**,而这是扫全部能成立的前提。
+
+    改写完的 content 是纯字符串,`_rewrite` 第一行 isinstance(content, list)
+    就返回 None。所以对已改写的消息本函数是空操作。
+    """
+    state = {
+        "messages": [
+            HumanMessage(content="看看这张照片。(照片编号:" + "a" * 32 + ")", id="u1"),
+            AIMessage(content="好的", id="a1"),
+            HumanMessage(content="再看看这条", id="u2"),
         ]
     }
     assert ingest_uploads(state) == {}
