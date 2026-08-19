@@ -1,6 +1,8 @@
 import { ContentBlock } from "@langchain/core/messages";
 import { toast } from "sonner";
 
+import { compressImageFile } from "@/lib/image-compress";
+
 // --------------------------------------------------------------------------
 // 上传出错的三句人话(W12 界面繁體化,2026-08-18 补)
 // --------------------------------------------------------------------------
@@ -71,7 +73,24 @@ export async function fileToContentBlock(
     return Promise.reject(new Error(`Unsupported file type: ${file.type}`));
   }
 
-  const data = await fileToBase64(file);
+  const isImage = supportedImageTypes.includes(file.type);
+
+  // ------------------------------------------------------------------------
+  // 上传前把照片缩到服务端反正要缩到的尺寸(image-compress.ts,理由在它的头注)。
+  //
+  // 🔴 **摆在这里、而不是摆在 use-file-upload.tsx**:那边把「校验 → 查重 →
+  //    转块」抄了三遍(选文件 / 拖进来 / 粘贴),而这个函数是三条路唯一的汇合处。
+  //    放那边要改三处,漏一处的表现是「拖进来的照片快、粘贴进来的还是慢十几秒」,
+  //    没有报错,而且要走三条不同交互才复现得出来。
+  //
+  // 🔴 **DXF 图纸和 PDF 一个字节都不许动** —— 图纸要的是尺寸/标高精确到毫米,
+  //    PDF 里可能有可选中的文字层,任何重编码都是毁内容。所以这里用 isImage 卡住。
+  //    (compressImageFile 自己也只认 image/jpeg,这是第二道;两道都留着,
+  //     因为哪天有人放宽那边的白名单,这一道还挡着图纸。)
+  // ------------------------------------------------------------------------
+  const upload = isImage ? await compressImageFile(file) : file;
+
+  const data = await fileToBase64(upload);
 
   // DXF 图纸:发成 file 块(与 PDF 同形),后端 uploads.py 按 filename .dxf 认出来
   // 登记成 DRAWING 产物。mimeType 钉一个规范值,后端主要还是看 filename。
@@ -84,11 +103,18 @@ export async function fileToContentBlock(
     };
   }
 
-  if (supportedImageTypes.includes(file.type)) {
+  if (isImage) {
     return {
       type: "image",
-      mimeType: file.type,
+      // ⚠️ 读 **upload.type**,不是 file.type —— 这里必须报**真实字节**的类型:
+      //    后端照片的落盘扩展名是拿 mimeType 查 EXT_BY_MIME 得来的
+      //    (core/uploads.py,不看文件名),说谎就会出现「.png 后缀装着 jpeg 字节」。
+      //    今天两者恒等(压缩只收 JPEG、只出 JPEG),写 upload.type 是为了
+      //    哪天有人放宽 COMPRESSIBLE_TYPE 时这里不会静默出错。
+      mimeType: upload.type,
       data,
+      // 文件名一律用原件的:界面上那张预览卡和「已经加过了」的提示拿它给人看,
+      // 后端不看它。改成 .jpg 只会让人以为自己传错了文件。
       metadata: { name: file.name },
     };
   }
