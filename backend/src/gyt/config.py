@@ -255,6 +255,11 @@ class Settings(BaseSettings):
     # 同步工具里塞这个必卡死。而且大地坐标系的真图往往渲染出来还是空白(视野被离群点撑爆)。
     # 预览本就是锦上添花,不值得为它冒卡死风险;演示主线是「查」不是「看图」。
     drawing_render_max_entities: int = Field(default=1000, ge=1)
+    # PDF 图纸「文字选不中」(文字转图形/扫描件)时,渲染成图交给视觉模型认字用的栅格化倍率
+    # (agents/cad/vision.py)。比预览的 _PDF_RENDER_SCALE(2.0)高:小字更清、识别更准。
+    # 注意:VLM 输入普遍会被降采样到 ~1568px,一张 A1 大图的小字仍可能糊 —— 再高倍率也救不回,
+    # 这是「整图一发」的根本限制(要精读得上分块,不在本期)。
+    cad_ocr_render_scale: float = Field(default=3.0, gt=0)
     photo_compress_target_mb: float = Field(default=4.0, gt=0)  # 压到多大再喂视觉模型
     photo_compress_max_edge_px: int = Field(default=2048, ge=1)  # 长边像素上限
 

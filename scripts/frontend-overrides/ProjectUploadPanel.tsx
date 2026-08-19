@@ -37,6 +37,11 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 
 import { getApiKey } from "@/lib/api-key";
+// 后端工具结果经 values 流到达这里,两处消费它(都在 <StreamProvider> 之内,能安全读流):
+//   · ProjectSwitchSync —— switch_project 的结果落成「自然语言切换的工地」;
+//   · FilePreviewSync   —— open_drawing / open_document / export_drawing_pdf / download_*
+//     的结果自动弹预览 / 触发下载(自然语言操作文件的闭环)。
+import { useStreamContext } from "@/providers/Stream";
 // 界面恒繁體(负责人 2026-08-18 定案),但本文件**一个转换器都不用**,是刻意的:
 //   · 静态文案(按钮 / 占位符 / toast 兜底句)——**源码里直接写繁體**,零运行时;
 //   · 后端回来的 `user_msg` —— **一律不转**(W12 复审定案,理由见 createProject 那处)。
@@ -76,6 +81,60 @@ async function readEnvelope(resp: Response): Promise<{ user_msg?: string; data?:
   }
 }
 
+// --- 文件预览 / 下载(带鉴权头 fetch 成 Blob;绝不 window.open)---------------------
+// API Key 在请求头里,裸 URL 拿不到 —— 所以不能直接 window.open / <img src>,
+// 一律 fetch 成 Blob 再 createObjectURL:预览用 <iframe>,下载用临时 <a download>,关闭时 revoke。
+
+type DocRef = { scope: string; doc_type: string; filename: string; project_id?: string | null };
+type Disposition = "inline" | "attachment";
+
+function drawingFileUrl(
+  artifactId: string,
+  opts: { format: "original" | "pdf"; disposition: Disposition },
+): string {
+  const q = new URLSearchParams({ format: opts.format, disposition: opts.disposition });
+  return `${API_URL}/files/drawing/${encodeURIComponent(artifactId)}?${q.toString()}`;
+}
+
+function docFileUrl(doc: DocRef, disposition: Disposition): string {
+  const q = new URLSearchParams({
+    scope: doc.scope,
+    doc_type: doc.doc_type,
+    filename: doc.filename,
+    disposition,
+  });
+  if (doc.project_id) q.set("project_id", doc.project_id);
+  return `${API_URL}/files/doc?${q.toString()}`;
+}
+
+/** 带鉴权头取一份文件成 Blob;失败弹后端人话(user_msg 不转,与本文件同口径)。 */
+async function authFetchBlob(url: string): Promise<Blob | null> {
+  try {
+    const resp = await fetch(url, { headers: authHeaders() });
+    if (!resp.ok) {
+      const env = await readEnvelope(resp);
+      toast.error(env?.user_msg ?? "打不開這個文件");
+      return null;
+    }
+    return await resp.blob();
+  } catch {
+    toast.error("取文件失敗,後端起了嗎?");
+    return null;
+  }
+}
+
+/** 下载:Blob → 临时 <a download> → 点一下 → 立即 revoke(不留 objectURL)。 */
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 /** 按文件名关键词预判平立剖,让用户确认/改,不猜错也不逼他每次手选。
  *
  *  🔴 下面那几个中文**不是文案,是拿去匹配「用户上传的文件名」的关键词** ——
@@ -100,6 +159,10 @@ type ArchiveContextValue = {
   setProjectId: (v: string) => void;
   currentName?: string;
   reloadProjects: (silent?: boolean) => Promise<void>;
+  // 文件预览弹窗:showPreview 收一个已建好的 Blob URL,closePreview 关闭并 revoke。
+  preview: { url: string; title: string } | null;
+  showPreview: (blobUrl: string, title: string) => void;
+  closePreview: () => void;
 };
 
 const ArchiveContext = createContext<ArchiveContextValue | null>(null);
@@ -111,6 +174,55 @@ function useArchive(): ArchiveContextValue {
   // 「注释 / 日志一律简体」同口径,已登记进 scripts/frontend-tests/hant-keep-hans.mjs。
   if (!ctx) throw new Error("useArchive 必须在 <ArchiveProvider> 内使用");
   return ctx;
+}
+
+/**
+ * 「后端 → 前端」切换工地的落地点(自然语言切换的唯一闭环处)。
+ *
+ * 后端 supervisor 识别到用户要切工地时调 `switch_project` 工具,其 ToolMessage
+ * (name=switch_project、content 是 `{ok,data:{project_id,name},...}` 的干净 JSON)
+ * 随 values 流到前端。这里监听消息流,认到**本会话新到达**的成功切换,就调 setProjectId
+ * 更新 React state + localStorage —— 下一轮 stream.submit 就带上新的 gyt_project_id。
+ *
+ * 只认「新到达」的切换:挂载时先把已有消息全部记为已处理,这样打开一条历史里切过工地的旧线程
+ * 不会把你此刻的选择改掉(那是过去的动作,不该现在重放)。渲染 null,只跑副作用。
+ */
+function ProjectSwitchSync(): null {
+  const stream = useStreamContext();
+  const { projectId, setProjectId, reloadProjects } = useArchive();
+  const handledRef = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    const messages = stream.messages ?? [];
+    // 首次:把现有消息(可能是加载进来的历史)全标记为已处理,避免回放旧切换。
+    if (handledRef.current === null) {
+      handledRef.current = new Set(
+        messages.map((m) => m.id).filter((id): id is string => Boolean(id)),
+      );
+      return;
+    }
+    for (const m of messages) {
+      const msg = m as { type?: string; name?: string; content?: unknown; id?: string };
+      if (msg.type !== "tool" || msg.name !== "switch_project" || !msg.id) continue;
+      if (handledRef.current.has(msg.id)) continue;
+      handledRef.current.add(msg.id);
+      let env: { ok?: boolean; data?: { project_id?: unknown } } | null = null;
+      try {
+        env = JSON.parse(typeof msg.content === "string" ? msg.content : "");
+      } catch {
+        continue;
+      }
+      // 失败信封 data 为 null;成功切换才有 data.project_id(空串=切到全部/不限项目,也要生效)。
+      if (!env?.ok || !env.data || typeof env.data.project_id !== "string") continue;
+      const next = env.data.project_id;
+      if (next !== projectId) {
+        setProjectId(next);
+        void reloadProjects(true); // 顺手刷一下项目列表,让顶栏 chip 立刻显示新工地名
+      }
+    }
+  }, [stream.messages, projectId, setProjectId, reloadProjects]);
+
+  return null;
 }
 
 /** 归档面板的状态容器:把「开合 + 项目列表 + 当前工地」抬到顶栏与抽屉共用。 */
@@ -162,14 +274,186 @@ export function ArchiveProvider({ children }: { children: ReactNode }) {
 
   const currentName = projects.find((p) => p.id === projectId)?.name;
 
+  const [preview, setPreview] = useState<{ url: string; title: string } | null>(null);
+  const showPreview = useCallback((url: string, title: string) => {
+    setPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev.url); // 换一份预览先把旧的 objectURL 放掉,别泄漏
+      return { url, title };
+    });
+  }, []);
+  const closePreview = useCallback(() => {
+    setPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev.url);
+      return null;
+    });
+  }, []);
+
   return (
     <ArchiveContext.Provider
-      value={{ open, setOpen, projects, projectId, setProjectId, currentName, reloadProjects }}
+      value={{
+        open,
+        setOpen,
+        projects,
+        projectId,
+        setProjectId,
+        currentName,
+        reloadProjects,
+        preview,
+        showPreview,
+        closePreview,
+      }}
     >
       {children}
       <ArchiveDrawer />
+      <PreviewModal />
+      {/* 后端「打开/预览/下载」工具结果在这里落地成自动预览 / 下载(自然语言操作文件的闭环)。 */}
+      <FilePreviewSync />
+      {/* 后端 switch_project 的结果在这里落地成前端选择(自然语言切换工地的闭环)。 */}
+      <ProjectSwitchSync />
     </ArchiveContext.Provider>
   );
+}
+
+/** PDF 预览弹窗:portal 挂到 body,<iframe> 打开 Blob URL;关闭由 closePreview 释放 URL。 */
+function PreviewModal() {
+  const { preview, closePreview } = useArchive();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  // ESC 关闭:预览是全屏遮罩,给个不用找 ✕ 的退出口。
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closePreview();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [preview, closePreview]);
+  if (!preview || !mounted) return null;
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[60] flex flex-col bg-black/60 p-3 sm:p-8"
+      onClick={closePreview}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="mx-auto flex h-full w-full max-w-[960px] flex-col overflow-hidden rounded-[14px] bg-white shadow-2xl"
+      >
+        <div className="flex items-center gap-3 border-b border-[#EAEDEB] px-5 py-3">
+          {/* title 是用户自己起的图纸/文件名,原样上屏、不转(与顶栏 chip 同一条规矩)。 */}
+          <div className="truncate text-[15px] font-bold text-[#1B2420]">{preview.title}</div>
+          <button
+            onClick={closePreview}
+            className="ml-auto text-[22px] leading-none text-[#B4BDB8] hover:text-[#6B7772]"
+            title="關閉預覽"
+          >
+            ✕
+          </button>
+        </div>
+        <iframe src={preview.url} title={preview.title} className="h-full w-full flex-1 border-0" />
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// 会触发「预览 / 下载」的后端工具名(其 ToolMessage 的 data 带 action + 文件元数据)。
+const FILE_ACTION_TOOLS = new Set([
+  "open_drawing",
+  "export_drawing_pdf",
+  "download_drawing",
+  "open_document",
+  "download_document",
+]);
+
+/** 从后端工具结果的 data 里算出该 fetch 哪个 URL、以及预览标题 / 下载文件名。 */
+function fileActionTarget(
+  action: "preview" | "download",
+  data: any,
+): { url: string; title: string; downloadName: string } | null {
+  if (data?.target === "drawing" && data.artifact_id) {
+    const title = data.name ?? "圖紙";
+    if (action === "preview") {
+      return {
+        url: drawingFileUrl(data.artifact_id, { format: "pdf", disposition: "inline" }),
+        title,
+        downloadName: `${title}.pdf`,
+      };
+    }
+    return {
+      url: drawingFileUrl(data.artifact_id, { format: "original", disposition: "attachment" }),
+      title,
+      downloadName: `${title}.${data.format === "pdf" ? "pdf" : "dxf"}`,
+    };
+  }
+  if (data?.target === "doc" && data.filename) {
+    return {
+      url: docFileUrl(
+        {
+          scope: data.scope,
+          doc_type: data.doc_type,
+          filename: data.filename,
+          project_id: data.project_id,
+        },
+        action === "preview" ? "inline" : "attachment",
+      ),
+      title: data.filename,
+      downloadName: data.filename,
+    };
+  }
+  return null;
+}
+
+async function runFileAction(
+  action: "preview" | "download",
+  data: any,
+  showPreview: (u: string, t: string) => void,
+): Promise<void> {
+  const target = fileActionTarget(action, data);
+  if (!target) return;
+  const blob = await authFetchBlob(target.url);
+  if (!blob) return;
+  if (action === "preview") showPreview(URL.createObjectURL(blob), target.title);
+  else triggerBlobDownload(blob, target.downloadName);
+}
+
+/** 后端「打开/预览/下载」工具结果的落地点:认到本会话**新到达**的成功结果,自动弹预览 / 触发下载。
+ *
+ *  与 ProjectSwitchSync 同一套「只认新到达」的做法:挂载时先把已有消息记为已处理,
+ *  这样打开一条历史线程不会把里面旧的打开动作重放一遍。歧义(needs_disambiguation)或失败
+ *  一律不自动动手 —— 那时模型已经在聊天里问清 / 说明了,替用户猜着打开反而添乱。 */
+function FilePreviewSync(): null {
+  const stream = useStreamContext();
+  const { showPreview } = useArchive();
+  const handledRef = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    const messages = stream.messages ?? [];
+    if (handledRef.current === null) {
+      handledRef.current = new Set(
+        messages.map((m) => m.id).filter((id): id is string => Boolean(id)),
+      );
+      return;
+    }
+    for (const m of messages) {
+      const msg = m as { type?: string; name?: string; content?: unknown; id?: string };
+      if (msg.type !== "tool" || !msg.name || !FILE_ACTION_TOOLS.has(msg.name) || !msg.id) continue;
+      if (handledRef.current.has(msg.id)) continue;
+      handledRef.current.add(msg.id);
+      let env: { ok?: boolean; data?: any } | null = null;
+      try {
+        env = JSON.parse(typeof msg.content === "string" ? msg.content : "");
+      } catch {
+        continue;
+      }
+      const data = env?.ok ? env.data : null;
+      if (!data || data.needs_disambiguation) continue; // 歧义/失败:模型已在聊天里说明,不自动动手
+      const action = data.action;
+      if (action !== "preview" && action !== "download") continue;
+      void runFileAction(action, data, showPreview);
+    }
+  }, [stream.messages, showPreview]);
+
+  return null;
 }
 
 /** 读当前选中的工地项目编号(供聊天提交时经 config.configurable 注入,让规范问答自动限定作用域)。
@@ -734,6 +1018,7 @@ type LibDrawing = {
   floor: string | null;
   rel_path: string | null;
   artifact_id: string;
+  ext: string; // ".dxf" / ".pdf":决定预览走「DXF 转 PDF」还是「PDF 原样」,以及下载原文件的后缀
   created_at: string;
 };
 type LibDoc = {
@@ -745,7 +1030,8 @@ type LibDoc = {
   rel_path: string;
   size_bytes: number;
   modified_at: string;
-  chunks: number; // 向量块数:0 = 入库中(embedding 未完),>0 = 已入库、可检索
+  chunks: number; // 向量块数:0 = 入库中/无文字层,>0 = 已入库、可检索
+  status: string; // indexed / ingesting / unsearchable(见后端 /library 的 _doc_status)
 };
 type LibraryData = {
   projects: { id: string; name: string; code: string | null }[];
@@ -869,7 +1155,7 @@ export function LibraryButton() {
   }, [open, load]);
 
   // 有文档还在入库(chunks===0)时,每 4s 静默刷一次,直到都入完 —— 这就是那条「进度」。
-  const anyIngesting = !!data?.docs.some((d) => d.chunks === 0);
+  const anyIngesting = !!data?.docs.some((d) => d.status === "ingesting");
   useEffect(() => {
     if (!open || !anyIngesting) return;
     const timer = setInterval(() => void load(true), 4000);
@@ -1028,9 +1314,55 @@ function LibrarySection({
   );
 }
 
-function DrawingRow({ dwg, reload }: { dwg: LibDrawing; reload: () => Promise<void> }) {
+/** 行内小操作按钮:点一下跑异步动作,期间禁用防连点。label 是繁體静态文案。 */
+function ActionBtn({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void | Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
   return (
-    <div className="flex items-center gap-3 rounded-[14px] border border-[#EAEDEB] bg-white px-4 py-3">
+    <button
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await onClick();
+        } finally {
+          setBusy(false);
+        }
+      }}
+      className="shrink-0 rounded-[8px] border border-[#E4E8E6] px-2.5 py-1 text-[12px] font-bold text-[#33403A] transition hover:border-[#7FCDAE] disabled:opacity-50"
+    >
+      {busy ? "…" : label}
+    </button>
+  );
+}
+
+function DrawingRow({ dwg, reload }: { dwg: LibDrawing; reload: () => Promise<void> }) {
+  const { showPreview } = useArchive();
+  const isPdf = dwg.ext === ".pdf";
+
+  async function preview() {
+    // DXF 转 PDF 预览、PDF 原样预览,后端都走 format=pdf(见 /files/drawing)。
+    const blob = await authFetchBlob(
+      drawingFileUrl(dwg.artifact_id, { format: "pdf", disposition: "inline" }),
+    );
+    if (blob) showPreview(URL.createObjectURL(blob), dwg.title);
+  }
+  async function download(format: "original" | "pdf") {
+    const blob = await authFetchBlob(
+      drawingFileUrl(dwg.artifact_id, { format, disposition: "attachment" }),
+    );
+    if (!blob) return;
+    const suffix = format === "pdf" ? "pdf" : isPdf ? "pdf" : "dxf";
+    triggerBlobDownload(blob, `${dwg.title}.${suffix}`);
+  }
+
+  return (
+    <div className="flex items-center gap-2 rounded-[14px] border border-[#EAEDEB] bg-white px-4 py-3">
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[#F1F4F3] text-lg">
         📐
       </div>
@@ -1041,6 +1373,16 @@ function DrawingRow({ dwg, reload }: { dwg: LibDrawing; reload: () => Promise<vo
       <span className="ml-auto shrink-0 rounded-full bg-[#EEF6F2] px-2.5 py-1 text-[12px] font-bold text-[#0E7A55]">
         {VIEW_LABEL[dwg.view_type] ?? dwg.view_type}
       </span>
+      <ActionBtn label="預覽" onClick={preview} />
+      {/* DXF:下载原 DXF + 下载生成的 PDF;PDF 图纸:只有一份原文件。 */}
+      {isPdf ? (
+        <ActionBtn label="下載" onClick={() => download("original")} />
+      ) : (
+        <>
+          <ActionBtn label="DXF" onClick={() => download("original")} />
+          <ActionBtn label="PDF" onClick={() => download("pdf")} />
+        </>
+      )}
       <RowDelete
         onDelete={async () => {
           if (
@@ -1055,33 +1397,61 @@ function DrawingRow({ dwg, reload }: { dwg: LibDrawing; reload: () => Promise<vo
   );
 }
 
+/** 一份文档的检索状态徽标:已可检索 / 处理中 / 可预览但不可检索(OCR 待支援)。 */
+function DocStatus({ doc }: { doc: LibDoc }) {
+  if (doc.status === "indexed" || (doc.status !== "unsearchable" && doc.chunks > 0)) {
+    return <span className="text-[#5FAE8E]">已入庫 {doc.chunks} 段</span>;
+  }
+  if (doc.status === "unsearchable") {
+    // 无文字层(扫描件/转曲):归了档、能预览,但暂不可检索。不伪造 OCR,如实说。
+    return <span className="font-bold text-[#C2892B]">可預覽 · 暫不可檢索(OCR 待支援)</span>;
+  }
+  return <span className="animate-pulse font-bold text-[#C2892B]">入庫中…</span>;
+}
+
 function DocRow({ doc, reload }: { doc: LibDoc; reload: () => Promise<void> }) {
+  const { showPreview } = useArchive();
+  const ref: DocRef = {
+    scope: doc.scope,
+    doc_type: doc.doc_type,
+    filename: doc.filename,
+    project_id: doc.project_id,
+  };
+
+  async function preview() {
+    const blob = await authFetchBlob(docFileUrl(ref, "inline"));
+    if (blob) showPreview(URL.createObjectURL(blob), doc.filename);
+  }
+  async function download() {
+    const blob = await authFetchBlob(docFileUrl(ref, "attachment"));
+    if (blob) triggerBlobDownload(blob, doc.filename);
+  }
+
   return (
-    <div className="flex items-center gap-3 rounded-[14px] border border-[#EAEDEB] bg-white px-4 py-3">
+    <div className="flex items-center gap-2 rounded-[14px] border border-[#EAEDEB] bg-white px-4 py-3">
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[#F1F4F3] text-lg">
         📄
       </div>
       <div className="min-w-0">
         <div className="truncate text-[15px] font-bold text-[#1B2420]">{doc.filename}</div>
         <div className="text-[12px] text-[#8A948F]">
-          {DOC_LABEL[doc.doc_type] ?? doc.doc_type} · {fmtSize(doc.size_bytes)} ·{" "}
-          {doc.chunks > 0 ? (
-            <span className="text-[#5FAE8E]">已入庫 {doc.chunks} 段</span>
-          ) : (
-            <span className="animate-pulse font-bold text-[#C2892B]">入庫中…</span>
-          )}
+          {DOC_LABEL[doc.doc_type] ?? doc.doc_type} · {fmtSize(doc.size_bytes)} · <DocStatus doc={doc} />
         </div>
       </div>
-      <RowDelete
-        onDelete={async () => {
-          const base =
-            doc.scope === "global"
-              ? "/docs"
-              : `/projects/${encodeURIComponent(doc.project_id ?? "")}/docs`;
-          if (await apiDelete(base, { doc_type: doc.doc_type, filename: doc.filename }))
-            await reload();
-        }}
-      />
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        <ActionBtn label="預覽" onClick={preview} />
+        <ActionBtn label="下載" onClick={download} />
+        <RowDelete
+          onDelete={async () => {
+            const base =
+              doc.scope === "global"
+                ? "/docs"
+                : `/projects/${encodeURIComponent(doc.project_id ?? "")}/docs`;
+            if (await apiDelete(base, { doc_type: doc.doc_type, filename: doc.filename }))
+              await reload();
+          }}
+        />
+      </div>
     </div>
   );
 }

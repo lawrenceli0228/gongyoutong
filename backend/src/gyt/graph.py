@@ -155,6 +155,7 @@ from gyt.core import llm
 from gyt.core.run_context import project_from_config
 from gyt.core.uploads import ingest_uploads
 from gyt.db.projects import get_project
+from gyt.site_switch import switch_project
 
 # —— 模块级常量：禁止在函数体里散落字面量 ——
 
@@ -277,11 +278,15 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
     AgentSpec(
         name=CAD_AGENT_NAME,
         summary=(
-            "看 DXF 图纸:查图纸上标注的尺寸、数构件在哪个图层、列图层清单、出图纸 PNG 预览。"
+            "看图纸 + 管图纸/资料的预览下载:查图纸上标注的尺寸、数构件在哪个图层、列图层清单;"
+            "还负责**打开/预览图纸、下载图纸原文件、把 DXF 导出成 PDF**,"
+            "以及**打开/预览/下载资料库里的规范和任务书 PDF**。"
             "用户问「首层平面图有哪些图层」「这道梁标注多长」「KZ1 在哪层」"
-            "「看看结构图」「打开某张图看柱距」这类**看图纸**的话,派给它。"
-            "它只看图纸,不看现场照片、不答规范条文该是多少 —— "
-            "「柱距多少才合规」是条文问题,不归它。"
+            "「打开二层平面图」「预览这张施工图」「下载结构图 PDF」「把 A 区平面 DXF 转成 PDF」"
+            "「打开资料库里的《安全生产规范》」这类**看图纸 / 打开文件**的话,派给它。"
+            "它看图纸、开文件,不看现场照片、不答规范条文里写了什么该是多少 —— "
+            "「柱距多少才合规」「规范怎么规定」这类**问规范内容**的是条文问题,不归它"
+            "(但**打开那份规范 PDF** 归它)。"
             # 正域写足(尺寸/构件/图层/预览四类的口语说法),结尾带同款条文免责句。
             # routing R15-R17 的 expected_agent 已是 cad,这条一上线就把误派/空派归位。
             # ⚠️ 别去改 safety 的 summary 救 R17(TODO-23 明令禁止);若演示图没标柱距,
@@ -380,6 +385,16 @@ _SUPERVISOR_PROMPT_TEMPLATE = """\
    决定反问，就把问题本身写出来；决定「做不了」，就把做不了和现在能做什么写出来——
    这两种情况写完就停，**严禁再调任何交接工具**。嘴上说着「派不下去/做不了」
    手上却发了交接，系统只认你的手，结果就是派错人。
+
+# 切换工地（这件事你自己用工具做，不派人）
+
+用户要改「现在针对哪个工地」时——比如「切到 XX 工地」「换成项目2」「以后都按阳光花园来」
+「不限项目 / 看全部工地」——你**直接调 `switch_project` 工具**，别派给同事，也别光用嘴说
+「好的已切换」：只有这个工具才会真正切换界面选中的工地，光回一句话是假的、不生效。
+调完照工具返回的 `user_msg` 转述给用户即可。
+一句话里既要「切工地」又要「查数据」时（如「切到项目2 顺便看看它的图纸」），
+先调 `switch_project` 把工地切了，然后提醒用户「这条还是按原来的工地查的，切换从你下一条消息起生效，
+要按新工地看就再问一次」——别拿新工地名去查这一轮的数据，那一轮用的还是旧工地。
 
 # 汇报规则（红线，违反会出安全事故）
 
@@ -552,6 +567,10 @@ def build_graph(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> CompiledStateGra
     builder = create_supervisor(
         agents=agents,
         model=llm.get_chat_model("text"),
+        # supervisor 名下的自定义工具:switch_project 让「自然语言切换当前工地」成为一个真动作。
+        # 它不是交接工具(不派人),而是 supervisor 自己执行、结果经 ToolMessage 回传前端落地
+        # (前端 ProjectSwitchSync 据此 setProjectId)。详见 gyt/site_switch.py 顶部。
+        tools=[switch_project],
         # 可调用体而非静态字符串:每轮把「当前工地」现查现拼到提示后面(见该函数说明),
         # 修「supervisor 说不出当前工地、子 Agent 却说得出」的矛盾。
         prompt=build_supervisor_prompt_runnable(specs),

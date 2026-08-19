@@ -40,6 +40,11 @@ DOC_TYPES: Final[tuple[str, ...]] = (DOC_REGULATION, DOC_TASK_BOOK)
 _DRAWINGS_SUBDIR: Final[str] = "drawings"
 _DOCS_SUBDIR: Final[str] = "docs"
 _TMP_SUFFIX: Final[str] = ".tmp"
+# 「可预览、暂不可检索」标记 sidecar 的后缀(无文字层 PDF:扫描件 / 文字转曲的 CAD 打印件)。
+# 落在文档旁边、名为 ``<原名>.pdf.gytnosearch``:上传时若抽不到文字层就打这个标记,
+# 资料库据它把状态显示成「不可检索(OCR 待支持)」而不是永远「入库中」。
+# **不做 OCR、不伪造检索结果**,只是把「归档了但搜不到」这个事实显式记下来。
+_NOSEARCH_SUFFIX: Final[str] = ".gytnosearch"
 
 # project_id 只允许字母数字 + 短横 + 下划线 —— 它要当目录名用,不许含分隔符 / ".."。
 _PROJECT_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -177,11 +182,11 @@ class DocEntry(NamedTuple):
 
 
 def _iter_doc_files(dir_path: Path) -> Iterator[Path]:
-    """列一个 doc 目录下的正式文件(跳过落地中途的 .tmp;目录不存在即空)。"""
+    """列一个 doc 目录下的正式文件(跳过落地中途的 .tmp 与状态 sidecar;目录不存在即空)。"""
     if not dir_path.is_dir():
         return
     for f in sorted(dir_path.iterdir()):
-        if f.is_file() and f.suffix != _TMP_SUFFIX:
+        if f.is_file() and f.suffix not in (_TMP_SUFFIX, _NOSEARCH_SUFFIX):
             yield f
 
 
@@ -236,6 +241,64 @@ def list_docs(project_id: str | None = None) -> list[DocEntry]:
     return entries
 
 
+# --- 文档定位(供文件内容端点按「作用域 + 类型 + 安全 basename」取回镜像文件)----------
+# 与落地 / 删除同一条路径重建逻辑:绝不接受外部传来的绝对路径,一律由校验过的
+# scope + doc_type + safe basename(+ 校验过的 project_id)拼出目标,防路径穿越。
+
+
+def _doc_file_path(scope: str, doc_type: str, filename: str, project_id: str | None) -> Path:
+    """按落地位重建一份文档镜像的绝对路径(不检查是否存在)。参数非法直接抛。"""
+    if scope not in SCOPES:
+        raise ValueError(f"scope 不合法(只认 {SCOPES}):{scope!r}")
+    if doc_type not in DOC_TYPES:
+        raise ValueError(f"doc_type 不合法(只认 {DOC_TYPES}):{doc_type!r}")
+    name = _safe_name(filename)  # 剥掉所有目录成分,".." 归空即拒
+    if scope == SCOPE_GLOBAL:
+        return get_settings().global_dir / _DOCS_SUBDIR / doc_type / name
+    if not project_id:
+        raise ValueError("项目作用域必须给 project_id")
+    return _project_root(project_id) / _DOCS_SUBDIR / doc_type / name
+
+
+def resolve_doc(
+    scope: str, doc_type: str, filename: str, project_id: str | None = None
+) -> Path | None:
+    """把「作用域 + 类型 + 文件名」解析成落地镜像的绝对路径;文件不存在返回 None。
+
+    文件内容端点(webapp)用它取回 PDF 字节做预览/下载。**只吃校验过的标识,不吃路径** ——
+    路径由本层用安全 basename 重建,外部即便传 ``../../etc/passwd`` 也只会落在 docs 目录内、
+    大概率 None。参数不合法(scope/doc_type 非法、项目作用域缺 project_id)照旧抛 ValueError。
+    """
+    target = _doc_file_path(scope, doc_type, filename, project_id)
+    return target if target.is_file() else None
+
+
+# --- 「可预览、暂不可检索」标记(无文字层 PDF)---------------------------------
+# 只记一个事实:这份 PDF 抽不到文字层(扫描件 / 文字转曲),归了档、能预览,但暂不进检索。
+# **不做 OCR、不改文件本身**,仅落一个空 sidecar,供资料库把状态显示对。
+
+
+def mark_doc_unsearchable(
+    scope: str, doc_type: str, filename: str, project_id: str | None = None
+) -> None:
+    """给一份已落地的无文字层 PDF 打「不可检索」标记(幂等:重复打只是覆盖同一个空文件)。"""
+    marker = _doc_file_path(scope, doc_type, filename, project_id).with_name(
+        _safe_name(filename) + _NOSEARCH_SUFFIX
+    )
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_bytes(b"")
+
+
+def doc_is_unsearchable(
+    scope: str, doc_type: str, filename: str, project_id: str | None = None
+) -> bool:
+    """这份文档是不是被标了「不可检索」(无文字层)。标记不在即 False。"""
+    marker = _doc_file_path(scope, doc_type, filename, project_id).with_name(
+        _safe_name(filename) + _NOSEARCH_SUFFIX
+    )
+    return marker.is_file()
+
+
 # --- 删除(镜像文件 / 整个项目目录)------------------------------------------
 # 一律用「作用域/类型 + 安全 basename」或「校验后的项目相对路径」重建目标,
 # 绝不拿外部传来的路径直接删 —— 删除比落地更怕路径穿越。
@@ -245,18 +308,11 @@ def delete_doc(scope: str, doc_type: str, filename: str, project_id: str | None 
     """删除一份落地文档(规范/任务书镜像)。删掉返回 True;文件本就不在返回 False。
 
     路径由 scope + doc_type + **安全 basename** 重建(同 land_doc 的落地位),不接受外部路径。
+    顺带清掉它的「不可检索」标记 sidecar(若有)—— 不然删完再传同名文件会误显示成不可检索。
     """
-    if scope not in SCOPES:
-        raise ValueError(f"scope 不合法(只认 {SCOPES}):{scope!r}")
-    if doc_type not in DOC_TYPES:
-        raise ValueError(f"doc_type 不合法(只认 {DOC_TYPES}):{doc_type!r}")
-    name = _safe_name(filename)
-    if scope == SCOPE_GLOBAL:
-        target = get_settings().global_dir / _DOCS_SUBDIR / doc_type / name
-    else:
-        if not project_id:
-            raise ValueError("项目作用域必须给 project_id")
-        target = _project_root(project_id) / _DOCS_SUBDIR / doc_type / name
+    target = _doc_file_path(scope, doc_type, filename, project_id)
+    marker = target.with_name(_safe_name(filename) + _NOSEARCH_SUFFIX)
+    marker.unlink(missing_ok=True)  # 标记是附属物,先清掉(文件不在时也可能残留标记)
     if not target.is_file():
         return False
     target.unlink()
@@ -300,9 +356,12 @@ __all__ = [
     "delete_doc",
     "delete_drawing_file",
     "delete_project_tree",
+    "doc_is_unsearchable",
     "ensure_project_tree",
     "land_doc",
     "land_drawing",
     "list_docs",
+    "mark_doc_unsearchable",
     "project_rel_path",
+    "resolve_doc",
 ]

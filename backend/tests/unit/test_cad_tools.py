@@ -12,7 +12,7 @@ import ezdxf
 import pytest
 
 from gyt.agents.cad import tools
-from gyt.core import artifacts
+from gyt.core import artifacts, project_fs
 from gyt.core.artifacts import ArtifactKind
 from gyt.db import projects as db
 from tests.unit._dxf_fixtures import (
@@ -21,6 +21,7 @@ from tests.unit._dxf_fixtures import (
     make_gbk_dxf,
     make_scanned_pdf,
     make_tianzheng_dxf,
+    make_tianzheng_proxy_dxf,
     make_vector_pdf,
 )
 
@@ -184,17 +185,101 @@ async def test_render_preview对PDF出PNG(pdf_env):
     assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
 
-@_needs_cjk
-async def test_扫描PDF读文字时如实说是扫描件(tmp_path, monkeypatch):
+@pytest.fixture
+def scanned_pdf_env(tmp_path, monkeypatch):
+    """一张无文字层的 PDF(has_text=False),用来测「文字选不中 → 视觉兜底」这条路。
+
+    视觉调用一律打桩(下面每个用例各自 setattr tools.vision.read_drawing_text),
+    绝不发真网络请求(CLAUDE.md:测试不联网、不产生账单)。make_scanned_pdf 不需要 CJK 字体。
+    """
     make_scanned_pdf(tmp_path / "scan.pdf")
     sid = artifacts.register(
         tmp_path / "scan.pdf", kind=ArtifactKind.DRAWING, original_name="scan.pdf"
     )
     monkeypatch.setattr(tools, "get_demo_drawings", lambda: {"扫描图": sid})
+    return {"id": sid, "name": "扫描图"}
+
+
+async def test_文字选不中的PDF走视觉兜底认出字(scanned_pdf_env, monkeypatch):
+    # 核心:文字层为空时不再直接放弃,渲染成图交给视觉模型认字。
+    async def _fake_read(_png: bytes) -> str:
+        return "标高 ±0.000\n消防车道 2000\n配电室"
+
+    monkeypatch.setattr(tools.vision, "read_drawing_text", _fake_read)
     result = await tools.read_view_params.ainvoke({"drawing": "扫描图"})
+
+    assert result["ok"] is True
+    assert result["data"]["source"] == "vision"
+    assert result["data"]["annotations_recognized"] == ["标高 ±0.000", "消防车道 2000", "配电室"]
+    # 红线:认出来的字必须带「可能有误 / 以原图为准」,和「读到图上文字」那套精确措辞分开。
+    assert "可能有误" in result["user_msg"]
+    assert "以原图为准" in result["user_msg"]
+
+
+async def test_视觉也认不出字时如实说没认出(scanned_pdf_env, monkeypatch):
+    async def _fake_read(_png: bytes) -> str:
+        return tools.vision.EMPTY_MARKER
+
+    monkeypatch.setattr(tools.vision, "read_drawing_text", _fake_read)
+    result = await tools.read_view_params.ainvoke({"drawing": "扫描图"})
+
     assert result["ok"] is False
     assert result["error_code"] == "EMPTY_RESULT"
-    assert "扫描件" in result["user_msg"]
+    assert "没认出" in result["user_msg"]
+
+
+async def test_视觉调用失败时透传中文错误(scanned_pdf_env, monkeypatch):
+    from gyt.core.llm import LLMCallError
+
+    async def _fake_read(_png: bytes) -> str:
+        raise LLMCallError("AI 助手暂时连不上,请稍后再试。", "UPSTREAM_ERROR")
+
+    monkeypatch.setattr(tools.vision, "read_drawing_text", _fake_read)
+    result = await tools.read_view_params.ainvoke({"drawing": "扫描图"})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "UPSTREAM_ERROR"
+    assert "连不上" in result["user_msg"]
+
+
+async def test_视觉密钥没配时指到env而非系统开小差(scanned_pdf_env, monkeypatch):
+    from gyt.core.llm import MissingAPIKeyError
+
+    async def _fake_read(_png: bytes) -> str:
+        raise MissingAPIKeyError("Kimi(月之暗面)", "GYT_MOONSHOT_API_KEY")
+
+    monkeypatch.setattr(tools.vision, "read_drawing_text", _fake_read)
+    result = await tools.read_view_params.ainvoke({"drawing": "扫描图"})
+
+    assert result["ok"] is False
+    # 指到 .env 哪一行,不被 tool_guard 吞成 INTERNAL。
+    assert "GYT_MOONSHOT_API_KEY" in result["user_msg"]
+
+
+@_needs_cjk
+async def test_有矢量文字的PDF不触发视觉省钱路径不误触(pdf_env, monkeypatch):
+    called = False
+
+    async def _fake_read(_png: bytes) -> str:
+        nonlocal called
+        called = True
+        return "不该被调到"
+
+    monkeypatch.setattr(tools.vision, "read_drawing_text", _fake_read)
+    result = await tools.read_view_params.ainvoke({"drawing": "首层平面图PDF"})
+
+    assert result["ok"] is True
+    assert called is False  # 有矢量文字直接读,绝不触发视觉(那是要花钱的)
+
+
+async def test_parse_drawing对文字选不中的PDF改口指路读图上文字(scanned_pdf_env):
+    # §4 联动:has_text=False 的概览文案不再说死「都读不了」,改成指路到「读图上文字」兜底。
+    # parse_drawing 本身不调视觉,无需打桩。
+    result = await tools.parse_drawing.ainvoke({"drawing": "扫描图"})
+    assert result["ok"] is True
+    assert result["data"]["has_text"] is False
+    assert "读图上文字" in result["user_msg"]
+    assert "都读不了" not in result["user_msg"]
 
 
 # --- 天正图(TCH_* 私有构件)------------------------------------------------
@@ -237,6 +322,37 @@ async def test_天正图概览标出私有构件计数(tianzheng_env):
     assert result["data"]["tianzheng"]["detected"] is True
     # 私有构件按人话计数报出来:3 墙、2 柱。
     assert "墙" in result["user_msg"] and "柱" in result["user_msg"]
+
+
+@pytest.fixture
+def tianzheng_proxy_env(tmp_path, monkeypatch):
+    """代理实体形态(形态②)的天正图 —— 回归 test-3:构件全是 ACAD_PROXY_ENTITY。"""
+    make_tianzheng_proxy_dxf(tmp_path / "tzp.dxf")
+    drawing_id = artifacts.register(
+        tmp_path / "tzp.dxf", kind=ArtifactKind.DRAWING, original_name="tzp.dxf"
+    )
+    monkeypatch.setattr(tools, "get_demo_drawings", lambda: {"天正代理图": drawing_id})
+    return {"id": drawing_id, "name": "天正代理图"}
+
+
+async def test_天正代理实体图查标注给导出指引而非图上没标(tianzheng_proxy_env):
+    # 回归 test-3(消防车道读不出):旧检测漏判这类图 → query_dimension 误答「图上没标」。
+    # 现在应识别为天正、给 T3 导出路;导出后那道 2000 才会变成真 DIMENSION 被读到。
+    result = await tools.query_dimension.ainvoke({"drawing": "天正代理图"})
+    assert result["ok"] is False
+    assert "天正" in result["user_msg"]
+    assert "图上没标" not in result["user_msg"]
+    assert "T3" in result["user_msg"]
+
+
+async def test_天正代理实体图概览按图层译成中文构件名(tianzheng_proxy_env):
+    # 验证 _TCH_CN 把天正标准英文图层名(COLUMN/WALL/WINDOW)译成中文,而不是原样吐英文。
+    result = await tools.list_components.ainvoke({"drawing": "天正代理图"})
+    assert result["ok"] is True
+    assert result["data"]["tianzheng"]["detected"] is True
+    msg = result["user_msg"]
+    assert "柱" in msg and "墙" in msg and "窗" in msg
+    assert "COLUMN" not in msg and "WALL" not in msg  # 别把英文图层名直接甩给用户
 
 
 # --- query_dimension ---------------------------------------------------------
@@ -474,3 +590,126 @@ async def test_list_drawings选了工地只列本项目图(tmp_path, monkeypatch
     r2 = await tools.list_drawings.ainvoke({})
     assert {u["title"] for u in r2["data"]["uploaded"]} == {"甲图", "乙图"}
     assert r2["data"]["demo"] == ["演示图"]
+
+
+# ---------------------------------------------------------------------------
+# 打开 / 预览 / 下载 / 导出 PDF(自然语言文件操作)
+# ---------------------------------------------------------------------------
+
+
+async def test_open_drawing_DXF返回预览元数据(cad_env):
+    result = await tools.open_drawing.ainvoke({"drawing": "首层平面图"})
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["action"] == "preview"
+    assert data["target"] == "drawing"
+    assert data["artifact_id"] == cad_env["id"]
+    assert data["format"] == "dxf"  # DXF 预览走转 PDF
+    assert data["preview_format"] == "pdf"
+
+
+async def test_download_drawing_返回原文件元数据(cad_env):
+    result = await tools.download_drawing.ainvoke({"drawing": "首层平面图"})
+    assert result["ok"] is True
+    assert result["data"]["action"] == "download"
+    assert result["data"]["download_format"] == "original"
+    assert result["data"]["format"] == "dxf"
+    assert result["data"]["artifact_id"] == cad_env["id"]
+
+
+async def test_export_drawing_pdf_DXF导出并给预览(cad_env):
+    result = await tools.export_drawing_pdf.ainvoke({"drawing": "首层平面图"})
+    assert result["ok"] is True
+    assert result["data"]["exported"] is True
+    assert result["data"]["preview_format"] == "pdf"
+    assert artifacts.ARTIFACT_ID_RE.fullmatch(result["data"]["pdf_id"])
+
+
+async def test_open_drawing_不存在NOT_FOUND(cad_env):
+    result = await tools.open_drawing.ainvoke({"drawing": "地下室平面图"})
+    assert result["ok"] is False
+    assert result["error_code"] == "NOT_FOUND"
+
+
+async def test_open_drawing_同名多张要用户确认(monkeypatch):
+    # 两个项目各有一张「二层平面图」,不选工地 → 跨项目撞名 → 让用户先选,不猜。
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)
+    db.create_project("p1", "甲")
+    db.create_project("p2", "乙")
+    a1 = artifacts.register(b"x", kind=ArtifactKind.DRAWING, original_name="a.dxf")
+    a2 = artifacts.register(b"y", kind=ArtifactKind.DRAWING, original_name="b.dxf")
+    db.add_drawing("p1", a1, "plan", "二层平面图")
+    db.add_drawing("p2", a2, "plan", "二层平面图")
+
+    result = await tools.open_drawing.ainvoke({"drawing": "二层平面图"})
+    assert result["ok"] is True
+    assert result["data"]["needs_disambiguation"] is True
+    assert len(result["data"]["candidates"]) == 2
+
+
+async def test_open_drawing_选了工地则只在该项目内不歧义(monkeypatch):
+    monkeypatch.setattr(tools, "get_demo_drawings", dict)
+    db.create_project("p1", "甲")
+    db.create_project("p2", "乙")
+    a1 = artifacts.register(b"x", kind=ArtifactKind.DRAWING, original_name="a.dxf")
+    a2 = artifacts.register(b"y", kind=ArtifactKind.DRAWING, original_name="b.dxf")
+    db.add_drawing("p1", a1, "plan", "二层平面图")
+    db.add_drawing("p2", a2, "plan", "二层平面图")
+
+    # 选中 p1:同名只剩一张 → 直接定位,不歧义(download 不 parse,能验到定位结果)。
+    result = await tools.download_drawing.ainvoke(
+        {"drawing": "二层平面图"}, config={"configurable": {"gyt_project_id": "p1"}}
+    )
+    assert result["ok"] is True
+    assert result["data"]["artifact_id"] == a1
+
+
+# ---------------------------------------------------------------------------
+# 资料库文档:查找 / 打开 / 下载
+# ---------------------------------------------------------------------------
+
+
+async def test_find_documents_列出全局规范():
+    project_fs.land_doc("global", "regulation", "安全生产规范.pdf", b"%PDF")
+    result = await tools.find_documents.ainvoke({"query": ""})
+    assert result["ok"] is True
+    assert any(d["filename"] == "安全生产规范.pdf" for d in result["data"]["documents"])
+
+
+async def test_open_document_书名号也认_返回预览元数据():
+    project_fs.land_doc("global", "regulation", "安全生产规范.pdf", b"%PDF")
+    result = await tools.open_document.ainvoke({"name": "《安全生产规范》"})
+    assert result["ok"] is True
+    data = result["data"]
+    assert data["action"] == "preview"
+    assert data["target"] == "doc"
+    assert data["filename"] == "安全生产规范.pdf"
+    assert data["scope"] == "global"
+    assert data["doc_type"] == "regulation"
+
+
+async def test_download_document_关键词匹配():
+    project_fs.land_doc("global", "regulation", "安全生产规范.pdf", b"%PDF")
+    result = await tools.download_document.ainvoke({"name": "安全生产"})
+    assert result["ok"] is True
+    assert result["data"]["action"] == "download"
+    assert result["data"]["filename"] == "安全生产规范.pdf"
+
+
+async def test_open_document_不存在EMPTY_RESULT():
+    result = await tools.open_document.ainvoke({"name": "根本没有的规范"})
+    assert result["ok"] is False
+    assert result["error_code"] == "EMPTY_RESULT"
+
+
+async def test_open_document_同名多份要用户确认():
+    db.create_project("pa", "甲")
+    project_fs.land_doc("global", "regulation", "消防规范.pdf", b"%PDF")
+    project_fs.land_doc("project", "regulation", "消防规范补充.pdf", b"%PDF", project_id="pa")
+    # 选中 pa:全局那份 + 本项目那份都含「消防规范」→ 歧义。
+    result = await tools.open_document.ainvoke(
+        {"name": "消防规范"}, config={"configurable": {"gyt_project_id": "pa"}}
+    )
+    assert result["ok"] is True
+    assert result["data"]["needs_disambiguation"] is True
+    assert len(result["data"]["candidates"]) == 2
