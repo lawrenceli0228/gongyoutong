@@ -239,13 +239,45 @@ const ARTIFACT_REF_RE = /[(（](?:照片|图纸)编号[:：]/;
  * ⚠️ 同源四处:本函数 + `human.tsx` 的 `refPattern` + 后端 `core/uploads.py`
  *    的拼装 + 那三条 `_*_HINT`。`lang-lib.test.ts` 钉着前两处。
  */
+/**
+ * 末尾那一串提示语 —— `f"{body} {_XXX_HINT}"` 拼出来的形状:**空格 + 整段括号 + 贴在末尾**。
+ *
+ * 🔴 **为什么不能只靠「在编号块处截断」**:附件被**拒收**的时候后端不登记产物,
+ * 于是消息里**压根没有编号块**,只有提示语:
+ *
+ *     呢張圖則睇下 (你传的是 PDF。…)      ← 2026-08-19 真机抓到的原文
+ *
+ * 那一句是 28 张简体票对 3 张繁體票 —— 港方打一句短繁體传个 PDF,答话当场变简体。
+ * 而单测里构造的是「用户文字 + 编号块 + 提示语」,**那个形状现实中不出现**:
+ * 有编号块 = 收下了 = 不会有拒收提示语。测试验了一个不存在的场景,漏了真的那个。
+ *
+ * ⚠️ 代价:用户自己打的话如果**以括号结尾**(「呢張圖則睇下(急)」),
+ *    那一段也会被剔掉。只影响**判语种**,不影响显示、不影响送后端的内容 ——
+ *    而且剔掉之后前面那句照样判得出来。两害相权取这个。
+ */
+const TRAILING_HINT_RE = /\s*[(（][^(（]*[)）]\s*$/;
+
 export function userTypedText(text: string): string {
-  const raw = text ?? "";
+  let raw = text ?? "";
+
+  // ① 先砍编号块及其后面的一切(编号 + 跟在它后面的提示语)
   const m = ARTIFACT_REF_RE.exec(raw);
-  if (!m) return raw; // 没传附件,整条都是用户打的
-  const head = raw.slice(0, m.index);
-  // ② 没有换行 = 后端编的开场白(「看看这张照片。」),用户其实什么都没打
-  return head.endsWith("\n") ? head : "";
+  if (m) {
+    const head = raw.slice(0, m.index);
+    // 没有换行 = 后端编的开场白(「看看这张照片。」),用户其实什么都没打
+    return head.endsWith("\n") ? head : "";
+  }
+
+  // ② 没有编号块 = 附件被拒收(或压根没传附件)。这时提示语直接贴在用户那句后面,
+  //    只能按形状剥:反复剥掉末尾的「空格 + 整段括号」。
+  //    循环是因为可能拼了不止一条(比如又不支持又太大)。
+  let prev: string;
+  do {
+    prev = raw;
+    raw = raw.replace(TRAILING_HINT_RE, "");
+  } while (raw !== prev);
+
+  return raw;
 }
 
 export function detectInput(text: string): Lang | null {

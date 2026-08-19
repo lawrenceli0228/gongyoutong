@@ -230,11 +230,67 @@ describe("shouldConvert 硬约束", () => {
 
 describe("userTypedText:只留用户自己打的字", () => {
   const REF = "(图纸编号:0123456789abcdef0123456789abcdef)";
-  /** 队友 2026-08-18 把 _PDF_HINT 从 2 句扩成 4 句,简体票从 2 涨到 28。 */
-  const PDF_HINT =
-    "(你传的是 PDF。聊天窗口当场看图暂时只认 DXF。如果这是**图纸**,请用右上角" +
-    "「📂 资料归档」面板上传 —— 那里图纸支持 PDF 和 DXF,归档进去后就能查图层/构件、" +
-    "出预览、读图上文字。如果 PDF 里其实是现场照片,麻烦先截个图再传)";
+  /**
+   * 🔴 **从后端源码里读,不手抄。**
+   *
+   * 这几句是 `core/uploads.py` 拼进用户消息的提示语,而它们**全是简体**。
+   * 手抄一份进测试的下场:队友改了措辞(2026-08-18 就把 `_PDF_HINT` 从 2 句扩成
+   * 4 句、简体票从 2 涨到 28),而**测试还在验那句老的** —— 照绿,真机翻车。
+   *
+   * 读**全部** `_*_HINT` 而不是只读 PDF 那条:哪天加第五条,它自动进覆盖范围。
+   * 读不到就让测试红(不是 skip)—— 读不到本身就说明那边的写法变了,该有人看一眼。
+   */
+  function backendHints(): { name: string; text: string }[] {
+    const src = readFileSync(
+      fileURLToPath(new URL("../../backend/src/gyt/core/uploads.py", import.meta.url)),
+      "utf8",
+    );
+    const out: { name: string; text: string }[] = [];
+    // 两种形态各写一条,别合并成一个「聪明」的正则 —— 合过一次,`$` 在 m 模式下
+    // 匹配行尾,多行那条一进 `(` 就被截断,读出来 0 段而**测试照绿**
+    // (是下面那道「读不到就红」的闸把它抓出来的)。
+    const collect = (body: string) => [...body.matchAll(/"([^"]*)"/g)].map((x) => x[1]).join("");
+    // ① 单行:_X_HINT: Final[str] = "…"
+    for (const m of src.matchAll(/^(_[A-Z_]*HINT): Final\[str\] = ("[^"]*")\s*$/gm)) {
+      out.push({ name: m[1], text: collect(m[2]) });
+    }
+    // ② 多行隐式拼接:_X_HINT: Final[str] = (\n    "…"\n    "…"\n)
+    for (const m of src.matchAll(/^(_[A-Z_]*HINT): Final\[str\] = \(\n([\s\S]*?)\n\)/gm)) {
+      out.push({ name: m[1], text: collect(m[2]) });
+    }
+    return out;
+  }
+
+  it("🔴 后端那几条提示语,一条都不许把判别翻掉(文案从源码读,不手抄)", () => {
+    const hints = backendHints();
+    // 空转闸:读不到就说明 uploads.py 的写法变了,别让守卫静默放行
+    expect(hints.length, "从 uploads.py 里一条 _*_HINT 都没读出来 —— 那边的写法变了?").
+      toBeGreaterThanOrEqual(4);
+
+    for (const h of hints) {
+      // 先证明这条提示语**确实带简体票**(否则下面两条是空转的)。
+      // 注意剥掉外层括号再判 —— 直接把整条喂进 detectInput 会被「剥末尾括号」
+      // 那一步整段吃掉、返回 null,那样这个自检就变成了永远为真的废话。
+      const inner = h.text.replace(/^[(（]/, "").replace(/[)）]$/, "");
+      expect(detectInput(inner), `${h.name} 本身居然不判简体 —— 这个用例可能已失效`).toBe(
+        "zh-Hans",
+      );
+      // 🔴 **两种形状都要验,而且第二种才是真的**(2026-08-19 真机抓到):
+      //   ① 附件收下了 → 有编号块,提示语跟在它后面
+      //   ② 附件**被拒收** → 后端不登记产物,**压根没有编号块**,提示语直接贴在用户那句后面
+      // 原来只验了①,而①现实中不出现(有编号块 = 收下了 = 不会有拒收提示语)。
+      // 也就是说那条守卫验的是一个不存在的场景,真的那个漏了。
+      expect(
+        detectInput(`呢張圖則睇下\n${REF} ${h.text}`),
+        `${h.name}(形状①:带编号块)把港方那句短繁體压成了简体`,
+      ).toBe("zh-Hant");
+      expect(
+        detectInput(`呢張圖則睇下 ${h.text}`),
+        `${h.name}(形状②:附件被拒、无编号块 —— **真机就是这个形状**)` +
+          `把港方那句短繁體压成了简体`,
+      ).toBe("zh-Hant");
+    }
+  });
 
   it("🔴 港式短句 + 传图纸,判别不许被翻成简体", () => {
     // 「图」「纸」都在 SCRIPT_PAIRS 里 —— 编号块凭空投两张简体票。
@@ -245,14 +301,6 @@ describe("userTypedText:只留用户自己打的字", () => {
         `「${phrase}」拼上编号块之后判别变了 —— 编号块是后端拼的,不该参与判别`,
       ).toBe("zh-Hant");
     }
-  });
-
-  it("🔴 提示语比编号块狠得多 —— 一句 _PDF_HINT 能压过任何短句", () => {
-    // 实测 28 张简体票。它跟在编号块**后面**,所以「在编号块处截断」才治得住。
-    expect(detectInput(`呢張圖則睇下\n${REF} ${PDF_HINT}`)).toBe("zh-Hant");
-    expect(
-      detectInput(`呢張圖則睇下\n${REF} (这张图的格式暂时打不开,请转成 JPG 或 PNG 再传一次)`),
-    ).toBe("zh-Hant");
   });
 
   it("🔴 什么都不打只传附件 → 判不出,落默认繁體(而不是被后端那句开场白带成简体)", () => {
