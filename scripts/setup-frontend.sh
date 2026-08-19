@@ -448,6 +448,23 @@ apply_override "multimodal-utils.ts" "src/lib/multimodal-utils.ts"
 apply_override "MultimodalPreview.tsx" "src/components/thread/MultimodalPreview.tsx"
 apply_override "thread-index.tsx" "src/components/thread/index.tsx"
 
+# 上传前把照片缩到「服务端反正要缩到」的那个尺寸(2026-08-19)。
+# 与上面那件 multimodal-utils.ts 是**一组**:那份里
+# `import { compressImageFile } from "@/lib/image-compress"`,而它的 fileToContentBlock
+# 是「选文件 / 拖进来 / 粘贴」三条路唯一的汇合处(上游把校验抄了三遍,这一步没有)。
+#
+# **走 install_new_file 而不是 apply_override**:它是**本仓自有**的新文件、上游没有
+# 对应物,而 apply_override 对不存在的目标只 warning 跳过(见函数头注),永远装不上。
+# ⚠️ 它是唯一一件**不在下面那一整段** install_new_file 里的,摆这儿是为了挨着使用者。
+#    所以审计件数只认下面「数法」那两条 grep,别靠肉眼数那一段有几行。
+# ⚠️ 漏装 = 前端构建直接 Module not found(与监理那三件同款)。这个坏法是响的,不难查。
+# 🔴 安静的坏法在**常量漂移**:image-compress.ts 的 MAX_EDGE / TARGET_BYTES /
+#    JPEG_QUALITY 三个数镜像服务端(config.py 的 photo_compress_max_edge_px、
+#    photo_compress_target_mb + agents/safety/tools.py 的 _JPEG_QUALITY_STEPS 首档 85)。
+#    漂了一声不吭,表现是客户端缩一次、服务端再缩一次 —— 两代有损叠加,
+#    而「有没有戴安全帽」这种判断经不起反复有损压缩。
+install_new_file "image-compress.ts" "src/lib/image-compress.ts"
+
 # 上游 LangGraph logo 用了 JSX 里非法的 clip-path(应为 clipPath),控制台每次报
 # "Invalid DOM property `clip-path`"。这里改成 clipPath 消掉这个警告。
 apply_override "langgraph.tsx" "src/components/icons/langgraph.tsx"
@@ -486,7 +503,7 @@ apply_override "api-key.tsx" "src/lib/api-key.tsx"
 #   qrcode.tsx     —— 电脑端二维码面板(依赖下面步骤 2.6 装的 qrcode.react)
 #   checkin.tsx    —— 自拍打卡组件,thread-index.tsx 的动作条里是它的入口
 # ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override 十二件 + install_new_file
-#    **八件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
+#    **十一件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
 #    合并之后数出来永远对不上。
 #    (2026-08-15 校过:上一版这里写的是「十一件 + 三件」,而 apply_override 那时
 #     确实是十一件、install_new_file 却已经是五件 —— 队友那两件
@@ -499,6 +516,15 @@ apply_override "api-key.tsx" "src/lib/api-key.tsx"
 #     那个三语判别库 + hant-convert.tsx 那个懒加载转换器。
 #     apply_override 仍是**十二** —— 这批动的 ai.tsx / markdown-text.tsx /
 #     tool-calls.tsx 三份本来就在十二件里。)
+#    (2026-08-19 perf·上传压缩:install_new_file 十 → **十一**,加了 image-compress.ts
+#     —— 上传前把照片缩到服务端反正要缩到的尺寸,治「点了发送先干等十几秒」。
+#     apply_override 仍是**十二** —— 这次只改了已有的 multimodal-utils.ts
+#     (它 import 那个新库),没有新增打补丁的目标。
+#     ⚠️ 那一行**不在本段里**:为了挨着使用者 multimodal-utils.ts,它写在上面
+#        DXF 那组的末尾。所以「肉眼数本段」从这次起就是错的数法,只认下面两条 grep。
+#     ⚠️ 顺手补正:上面那个头数在「八」上停了两批 —— W12 两批都只改了历史记录、
+#        没回头改它,而真值那时已经是十。**改数是两处一起**:头一行的数 + 追加历史。
+#        这就是本段开头那条教训的第三次复发,而它照旧一声不吭。)
 #    数法:grep -cE '^\s*apply_override ' scripts/setup-frontend.sh
 #          grep -cE '^\s*install_new_file ' scripts/setup-frontend.sh
 install_new_file "checkin-lib.ts" "src/lib/checkin-lib.ts"

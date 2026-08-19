@@ -92,7 +92,7 @@ from typing import Any, Final
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
-from PIL import Image
+from PIL import Image, ImageOps
 
 from gyt.agents.safety.severity import grade, worst
 
@@ -182,6 +182,22 @@ _FENCE_RE: Final[re.Pattern[str]] = re.compile(
 """剥 ```json ... ``` 代码块。模型很爱加这层壳,提示词里已要求不加,但不能只靠它守规矩。"""
 
 _BYTES_PER_MB: Final[int] = 1024 * 1024
+
+_EXIF_ORIENTATION: Final[int] = 0x0112
+"""EXIF 里「这张图要怎么转才是正的」那个标记的 tag 号。
+
+用字面量而不是 ``PIL.ExifTags.Base.Orientation``:那个枚举在 Pillow 9.5 才加,
+而 0x0112 是 EXIF 规范里钉死的数,几十年不会变。
+"""
+
+_UPRIGHT_ORIENTATIONS: Final[frozenset[int]] = frozenset({0, 1})
+"""哪些取值算「本来就正、不用转」。
+
+1 = 正常。0 不是合法取值,但**真实文件里出现过**(某些相机/软件写坏了),
+Pillow 的 ``exif_transpose`` 对它也是不动 —— 收进来是为了让这里的判断
+与 Pillow 的实际行为一致,否则会为一张根本不会被转的图白白重编码一次。
+2~8 是各种翻转/旋转,一律要转。
+"""
 
 _JPEG_QUALITY_STEPS: Final[tuple[int, ...]] = (85, 75, 65, 55)
 """压体积时逐档下调的 JPEG 质量。
@@ -327,16 +343,51 @@ def _prepare_image(payload: bytes, ext: str) -> tuple[bytes, str]:
           │    animated gif/webp 的 MIME 与静态图**完全相同**,只看扩展名必然放行;
           │    而月之暗面可能把它当视频解码计费 —— 账单是静态图的几十倍,且完全静默
           ▼
-          │ ③ 长边 > photo_compress_max_edge_px → 等比缩小
+          │ ③ EXIF Orientation ≠ 1 → 转正(见下方「照片躺倒」)
+          ▼
+          │ ④ 长边 > photo_compress_max_edge_px → 等比缩小
           │    视觉 token 按**像素面积**计。实测 4000×2430 的工地照片端到端 59.7 秒,
           │    而 1600×1067 的同类只要 10.1 秒 —— 手机原图正好是前者那个量级
           ▼
-          │ ④ 仍大于 photo_compress_target_mb → 逐档降 JPEG 质量
+          │ ⑤ 仍大于 photo_compress_target_mb → 逐档降 JPEG 质量
           ▼
         (处理后的字节, MIME)
 
-    **没超限的图原样返回**,连重编码都不做 —— 重编码只会白白损失画质,
-    而判断「有没有戴安全帽」经不起反复有损压缩。
+    **没超限、且方向本来就正的图原样返回**,连重编码都不做 —— 重编码只会白白
+    损失画质,而判断「有没有戴安全帽」经不起反复有损压缩。
+
+    ===========================================================================
+    ③ 那一步:照片躺倒(TODO-53,2026-08-19 真机撞出来的,不是审代码看出来的)
+    ---------------------------------------------------------------------------
+    手机竖着拍时,传感器存下来的其实是**横的**像素,再写一个 EXIF Orientation
+    (=6 表示顺时针转 90° 才是正的)。在此之前本函数**一处 exif_transpose 都没有**,
+    而且 ``image.save(format="JPEG")`` 不传 ``exif=`` 会把方向标记一起丢掉。
+
+    坏在「两边看到的不是同一张图」,而且一句报错都没有:
+
+        界面   human.tsx 走 /artifacts/by-id/… 取的是**原始字节**
+               → 浏览器按 EXIF 自己转正 → **工友看到的是正的**
+        识图   本函数产出的那份既没转正、又没了方向标记
+               → **模型看到的是躺倒的**
+
+    人对着屏幕上正立的照片,根本不会想到模型看到的是横躺的;而模型看一张躺倒的
+    工地照,判断会直接崩(安全帽跑到画面侧边、临边护栏成了水平线)。
+
+    实测(同一张模拟手机竖拍的图:存 2430×4000 的躺着像素 + Orientation=6):
+
+        修之前   1244×2048(竖,躺倒)  896,568 字节  产出 EXIF: None
+        修之后   2048×1244(横,正立)
+
+    **为什么方向 ≠ 1 也要走重编码那条路**:透传分支返回的是原始字节(EXIF 还在),
+    方向对不对就完全取决于下游解码器认不认 —— 那是个**没人验过的未知数**。
+    把它并进重编码分支,代价只落在「真的被转过的图」身上(方向 = 1 的绝大多数
+    照样原样透传、一个字节不动),换来的是一句可以打包票的话:
+    **从本函数出去的每一张图都是正立的**,要么它本来就正,要么我们把它转正了。
+
+    ⚠️ 顺序照 ``attendance/watermark.py:196-218`` 那段实测注释:transpose 排在
+    **正方形** thumbnail 之前,两者先后不影响结果(那边实测过 Orientation=6 的图
+    输出宽高正确对调)。这里没有 ``draft()``,所以不存在那边「draft 必须最早」
+    的约束 —— 别照抄那条,这边没有 DCT 降采样这一环。
     """
     settings = get_settings()
     try:
@@ -345,6 +396,10 @@ def _prepare_image(payload: bytes, ext: str) -> tuple[bytes, str]:
             width, height = probe.size
             frames = getattr(probe, "n_frames", 1)
             fmt = (probe.format or "").upper()
+            # 0x0112 = EXIF Orientation。缺标记 / 0 / 1 都当「本来就正」。
+            # 这里读的是**存储方向**下的尺寸,与转不转正无关:90° 旋转只是把宽高
+            # 对调,``max(width, height)`` 不变 —— 所以下面那个长边判据照用不误。
+            orientation = probe.getexif().get(_EXIF_ORIENTATION, 1)
     except Exception as exc:  # noqa: BLE001 —— Pillow 的异常类型很杂,一律当损坏处理
         raise ImageRejected(
             ErrorCode.FILE_CORRUPT,
@@ -359,10 +414,15 @@ def _prepare_image(payload: bytes, ext: str) -> tuple[bytes, str]:
 
     max_edge = settings.photo_compress_max_edge_px
     limit_bytes = int(settings.photo_compress_target_mb * _BYTES_PER_MB)
-    if max(width, height) <= max_edge and len(payload) <= limit_bytes:
+    # 方向不正的也要走下面那条路 —— 理由在头注「为什么方向 ≠ 1 也要走重编码」。
+    upright = orientation in _UPRIGHT_ORIENTATIONS
+    if max(width, height) <= max_edge and len(payload) <= limit_bytes and upright:
         return payload, MIME_BY_EXT[ext]
 
     with Image.open(io.BytesIO(payload)) as image:
+        # 转正排在最前:exif_transpose 要读 EXIF,而 convert("RGB") 之后
+        # info 里还剩什么不该赌。转完方向标记就没用了,save() 也不会带出去。
+        image = ImageOps.exif_transpose(image)
         image = image.convert("RGB")  # 统一丢掉 alpha/调色板,JPEG 存不了它们
         if max(width, height) > max_edge:
             image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
@@ -373,7 +433,9 @@ def _prepare_image(payload: bytes, ext: str) -> tuple[bytes, str]:
             if len(data) <= limit_bytes:
                 break
     logger.info(
-        "照片已预处理:%dx%d %.1fMB → %dx%d %.1fMB(原格式 %s)",
+        # 入口尺寸是**存储方向**下的,出口是转正后的 —— 方向 ≠ 1 时这两组宽高
+        # 会看着像对调了,那是对的,不是打错。所以把 orientation 一起打出来。
+        "照片已预处理:%dx%d %.1fMB → %dx%d %.1fMB(原格式 %s,EXIF 方向 %s)",
         width,
         height,
         len(payload) / _BYTES_PER_MB,
@@ -381,6 +443,7 @@ def _prepare_image(payload: bytes, ext: str) -> tuple[bytes, str]:
         image.height,
         len(data) / _BYTES_PER_MB,
         fmt or "?",
+        orientation,
     )
     return data, "image/jpeg"
 
