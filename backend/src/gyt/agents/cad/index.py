@@ -103,6 +103,16 @@ def read(drawing_id: str) -> dict[str, Any] | None:
     return loaded
 
 
+def _stale(cached: dict[str, Any]) -> bool:
+    """旧版本索引判据:DXF 索引缺 ``extents_outlier``(2026-08-20 新增的离群检测字段)
+    就当未命中、重解析一次补上。没有版本号也能升级已缓存的图,且不碰 read/write 的等值语义。
+
+    用 ``entities_by_kind`` 认 DXF —— 不用 ``format``:该键是后加的,更老的缓存索引压根没有它
+    (会漏判)。PDF 索引没有 ``entities_by_kind`` 也没有 ``extents_outlier``,天然不触发重建
+    (否则 parse_pdf 不产出这个字段,会每次访问都重解析、死循环)。"""
+    return "entities_by_kind" in cached and "extents_outlier" not in cached
+
+
 async def ensure_index(drawing_id: str) -> dict[str, Any]:
     """所有查询工具的第一步:命中读盘、未命中就地解析并落盘,返回索引 dict。
 
@@ -110,7 +120,7 @@ async def ensure_index(drawing_id: str) -> dict[str, Any]:
     (文件损坏)—— 都由工具层接住翻成对应的中文信封,本函数不吞。
     """
     cached = await asyncio.to_thread(read, drawing_id)
-    if cached is not None:
+    if cached is not None and not _stale(cached):
         return cached
 
     path = await asyncio.to_thread(artifacts.resolve, drawing_id)  # 可能抛 ArtifactNotFound
