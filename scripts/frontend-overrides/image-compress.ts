@@ -208,12 +208,32 @@ export function shouldTryCompress(file: {
 }
 
 /**
- * 服务端到底会不会动这张图 —— **逐字镜像 `_prepare_image` 的那个 if**:
+ * 服务端到底会不会动这张图 —— 镜像 `_prepare_image` 那个 if 的**前两项**:
  *
- *     if max(width, height) <= max_edge and len(payload) <= limit_bytes:
+ *     if max(width, height) <= max_edge and len(payload) <= limit_bytes and upright:
  *         return payload          # 原样透传
+ *         ↑ 前两项在这儿取反       ↑ 第三项故意不镜像,见下
  *
- * 取反就是这里。服务端不动的,客户端也不许动(否则就是白掉一档画质)。
+ * 服务端不动的,客户端也不许动(否则就是白掉一档画质)。
+ *
+ * ---------------------------------------------------------------------------
+ * 第三项 `upright`(EXIF 方向正不正)**故意不镜像**(2026-08-19,TODO-53)
+ * ---------------------------------------------------------------------------
+ * 两边各自都保得住「模型看到的是正立的」,而跟它要付真代价:
+ *
+ *   · 本文件解码时就用 `imageOrientation: "from-image"`,**凡是它重编码过的
+ *     都已经转正**,产出还不带方向标记 —— 服务端拿到就是 upright,直接透传。
+ *   · 本文件原样放过的(小图 / 非 JPEG / 压完更大),EXIF 还在原文件里,
+ *     服务端那条新判据接得住,会替它转正。
+ *
+ * 要镜像的话,得在**解码前**知道方向 —— 而 `createImageBitmap` 不给,只能自己
+ * 解 JPEG 的 APP1 段。为一个服务端已经兜住的场景手写 EXIF 解析器,是拿一段新的、
+ * 没测试的字节解析去换一次服务端重编码,不划算。
+ *
+ * ⚠️ 这条「不镜像」的前提是**服务端真的会转正**。`image-compress.test.ts` 里
+ *    有一条专门盯着它(`_UPRIGHT_ORIENTATIONS` + `exif_transpose` 都还在)——
+ *    前提没了而这里不知道的话,方向不正的小图两边都不管,原样躺着送进模型,
+ *    而界面上还是正的(浏览器按 EXIF 渲染),一句报错都没有。
  */
 export function needsWork(
   width: number,

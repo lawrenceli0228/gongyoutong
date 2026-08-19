@@ -119,14 +119,56 @@ describe("常量与服务端同源", () => {
   });
 
   /**
-   * `needsWork` 是对这个 if 取反。哪天后端把 `<=` 改成 `<`(或者把 and 改成 or),
-   * 客户端的边界就整体错开一格 —— 表现是恰好卡在 2048 / 4MB 的图两边各压一次。
+   * `needsWork` 是对这个 if 的**前两项**取反。哪天后端把 `<=` 改成 `<`
+   * (或者把 and 改成 or),客户端的边界就整体错开一格 —— 表现是恰好卡在
+   * 2048 / 4MB 的图两边各压一次。
+   *
+   * ===========================================================================
+   * 第三项 `and upright` 客户端**故意不镜像**(TODO-53 修复引入,2026-08-19)
+   * ---------------------------------------------------------------------------
+   * 服务端多了一条「EXIF 方向不正的也要走重编码」。客户端不跟,理由是两边
+   * 各自都能保证「模型看到的是正立的」,而跟了要付真代价:
+   *
+   *   · 客户端解码时就用 imageOrientation: "from-image",**凡是它重编码过的
+   *     都已经转正**,而且产出不带方向标记 —— 服务端拿到就是 upright。
+   *   · 客户端原样放过的(小图 / 非 JPEG / 压完更大),EXIF 还在原文件里,
+   *     服务端那条新判据接得住。
+   *
+   * 要镜像的话,客户端得在**解码前**知道方向 —— 而 createImageBitmap 不给,
+   * 只能自己解 JPEG 的 APP1 段。为一个服务端已经兜住的场景手写 EXIF 解析器,
+   * 是拿一个新的、没测试的字节解析去换一次服务端重编码,不划算。
+   *
+   * ⚠️ 所以这条断言只钉**前两项**。第三项单独钉在下一条里 —— 拆开是为了
+   *    「后端改了边界」和「后端改了方向策略」两种漂移能分别报出来,
+   *    合成一条正则的话,报错只会说「形状变了」,人还得自己去 diff。
    */
-  it("🔴 服务端那个「原样透传」的 if 还是原来的形状", () => {
+  it("🔴 服务端那个「原样透传」的 if,前两项还是原来的形状", () => {
     expect(
       readBackend("agents/safety/tools.py"),
-      "_prepare_image 的透传判据变了 —— needsWork 是照它取反写的,要一起改",
-    ).toMatch(/if max\(width, height\) <= max_edge and len\(payload\) <= limit_bytes:/);
+      "_prepare_image 的透传判据变了 —— needsWork 是照它前两项取反写的,要一起改",
+    ).toMatch(/if max\(width, height\) <= max_edge and len\(payload\) <= limit_bytes and upright:/);
+  });
+
+  /**
+   * 上一条的第三项单独钉在这儿。守的是**客户端那条「不镜像」的前提还成不成立**:
+   * 客户端敢放过一张方向不正的小图,唯一的依据就是「服务端会转正它」。
+   *
+   * 哪天有人把 `upright` 从判据里拿掉(比如觉得多一次重编码不值),
+   * 那条前提当场失效,而表现是**静默的** —— 方向不正的小图既没被客户端转、
+   * 也没被服务端转,原样送进模型,躺倒。界面上还是正的(浏览器按 EXIF 渲染),
+   * 一句报错都没有,正是 TODO-53 那个 bug 复活。
+   */
+  it("🔴 服务端仍然把「方向不正」算进要动手的条件(客户端不镜像它的前提)", () => {
+    const src = readBackend("agents/safety/tools.py");
+    expect(src, "_UPRIGHT_ORIENTATIONS 没了 —— 方向策略变了,回去读 image-compress.ts 头注").toMatch(
+      /_UPRIGHT_ORIENTATIONS/,
+    );
+    expect(src, "upright 不再由 EXIF 方向算出来了,客户端「不镜像」的前提可能已失效").toMatch(
+      /upright = orientation in _UPRIGHT_ORIENTATIONS/,
+    );
+    expect(src, "重编码分支里的 exif_transpose 没了 —— 方向不正的图会原样躺着喂给模型").toMatch(
+      /ImageOps\.exif_transpose\(image\)/,
+    );
   });
 
   it("COMPRESSIBLE_TYPE 是且只是 image/jpeg(收窄的三个理由在头注,别放宽)", () => {
