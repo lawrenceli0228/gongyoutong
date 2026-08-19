@@ -46,6 +46,29 @@ def test_损坏文件解析时抛DXF异常(tmp_path):
         parse.parse_dxf(tmp_path / "broken.dxf")
 
 
+def test_普通图不判离群(tmp_path):
+    # 普通图内容在原点附近,extents_outlier 必须是 False(否则整条预览/导出被误拦)。
+    make_plain_dxf(tmp_path / "plain.dxf")
+    result = parse.parse_dxf(tmp_path / "plain.dxf")
+    assert result["extents_outlier"] is False
+
+
+def test_大地坐标系判离群(tmp_path):
+    # 内容很小(1m 见方)却整体落在 3800 万的绝对坐标上(测绘/GIS)——渲染画布从原点铺过去
+    # 会是一张几乎空白的巨图。这类图 extents_outlier 必须为 True,让渲染前如实拦下。
+    import ezdxf
+
+    doc = ezdxf.new("R2010")
+    msp = doc.modelspace()
+    ox, oy = 38_560_000.0, 2_919_000.0  # 大地坐标偏移
+    for i in range(30):
+        msp.add_line((ox + i, oy), (ox + i + 0.5, oy + 0.5), dxfattribs={"layer": "AXIS"})
+    path = tmp_path / "geodetic.dxf"
+    doc.saveas(path)
+    result = parse.parse_dxf(path)
+    assert result["extents_outlier"] is True
+
+
 def test_单位与块与标注都被探测出来(tmp_path):
     make_gbk_dxf(tmp_path / "gbk.dxf")
     result = parse.parse_dxf(tmp_path / "gbk.dxf")

@@ -733,6 +733,15 @@ async def _serve_dxf_as_pdf(artifact_id: str, title: str, disposition: str) -> A
             "图层、构件、标注尺寸都能正常查——想看哪样直接说。",
             "FILE_TOO_LARGE",
         )
+    if idx.get("extents_outlier"):
+        # 离群图元/大地坐标把外框撑爆:整图渲出来是「一个点浮在巨大空白里」,如实拦下(见
+        # parse._extents_outlier)。不然就是这条线最初暴露的问题——出一张没用的巨图 PDF。
+        return _fail(
+            413,
+            "这张图纸坐标异常(有离群图元把范围撑得极大),整张渲出来内容会缩成一个点、"
+            "几乎空白,这次先没出。图层、构件、标注尺寸都能正常查——想看哪样直接说。",
+            "FILE_TOO_LARGE",
+        )
 
     def _build() -> Any:
         try:
