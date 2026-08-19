@@ -270,6 +270,17 @@ def test_supervisor_提示词要求如实转述失败且禁止编造(
     assert "编造" in prompt
 
 
+def test_supervisor_提示词交代了切换工地要走switch_project工具(
+    graph_module: GraphFixture,
+) -> None:
+    # 切换工地是 supervisor 自己用工具做的真动作,提示词必须点名 switch_project ——
+    # 否则模型会用嘴回一句「已切换」而不真切(前端 ProjectSwitchSync 收不到信号,选中工地不变)。
+    prompt = graph_module.module.build_supervisor_prompt()
+
+    assert "switch_project" in prompt
+    assert "切换工地" in prompt
+
+
 def test_supervisor_提示词里的名单跟着登记表自动变(graph_module: GraphFixture) -> None:
     # Arrange：造一个假登记项，验证名单不是写死的
     fake_spec = graph_module.module.AGENT_REGISTRY[0]._replace(
