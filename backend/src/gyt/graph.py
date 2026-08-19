@@ -155,6 +155,7 @@ from gyt.core import llm
 from gyt.core.run_context import project_from_config
 from gyt.core.uploads import ingest_uploads
 from gyt.db.projects import get_project
+from gyt.site_switch import switch_project
 
 # —— 模块级常量：禁止在函数体里散落字面量 ——
 
@@ -385,6 +386,16 @@ _SUPERVISOR_PROMPT_TEMPLATE = """\
    这两种情况写完就停，**严禁再调任何交接工具**。嘴上说着「派不下去/做不了」
    手上却发了交接，系统只认你的手，结果就是派错人。
 
+# 切换工地（这件事你自己用工具做，不派人）
+
+用户要改「现在针对哪个工地」时——比如「切到 XX 工地」「换成项目2」「以后都按阳光花园来」
+「不限项目 / 看全部工地」——你**直接调 `switch_project` 工具**，别派给同事，也别光用嘴说
+「好的已切换」：只有这个工具才会真正切换界面选中的工地，光回一句话是假的、不生效。
+调完照工具返回的 `user_msg` 转述给用户即可。
+一句话里既要「切工地」又要「查数据」时（如「切到项目2 顺便看看它的图纸」），
+先调 `switch_project` 把工地切了，然后提醒用户「这条还是按原来的工地查的，切换从你下一条消息起生效，
+要按新工地看就再问一次」——别拿新工地名去查这一轮的数据，那一轮用的还是旧工地。
+
 # 汇报规则（红线，违反会出安全事故）
 
 1. 同事返回的结果里如果 `ok` 是 false，**必须如实告诉用户这次失败了**，
@@ -556,6 +567,10 @@ def build_graph(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> CompiledStateGra
     builder = create_supervisor(
         agents=agents,
         model=llm.get_chat_model("text"),
+        # supervisor 名下的自定义工具:switch_project 让「自然语言切换当前工地」成为一个真动作。
+        # 它不是交接工具(不派人),而是 supervisor 自己执行、结果经 ToolMessage 回传前端落地
+        # (前端 ProjectSwitchSync 据此 setProjectId)。详见 gyt/site_switch.py 顶部。
+        tools=[switch_project],
         # 可调用体而非静态字符串:每轮把「当前工地」现查现拼到提示后面(见该函数说明),
         # 修「supervisor 说不出当前工地、子 Agent 却说得出」的矛盾。
         prompt=build_supervisor_prompt_runnable(specs),

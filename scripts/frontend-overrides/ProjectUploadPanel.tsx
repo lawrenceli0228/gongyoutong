@@ -37,9 +37,10 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 
 import { getApiKey } from "@/lib/api-key";
-// 自然语言「打开/预览/下载」文件:后端工具结果(open_drawing / open_document /
-// export_drawing_pdf / download_* 的 ToolMessage)经 values 流到前端,FilePreviewSync
-// 据它自动弹预览 / 触发下载。ArchiveProvider 始终挂在 <StreamProvider> 之内,这里能安全读流。
+// 后端工具结果经 values 流到达这里,两处消费它(都在 <StreamProvider> 之内,能安全读流):
+//   · ProjectSwitchSync —— switch_project 的结果落成「自然语言切换的工地」;
+//   · FilePreviewSync   —— open_drawing / open_document / export_drawing_pdf / download_*
+//     的结果自动弹预览 / 触发下载(自然语言操作文件的闭环)。
 import { useStreamContext } from "@/providers/Stream";
 // 界面恒繁體(负责人 2026-08-18 定案),但本文件**一个转换器都不用**,是刻意的:
 //   · 静态文案(按钮 / 占位符 / toast 兜底句)——**源码里直接写繁體**,零运行时;
@@ -175,6 +176,55 @@ function useArchive(): ArchiveContextValue {
   return ctx;
 }
 
+/**
+ * 「后端 → 前端」切换工地的落地点(自然语言切换的唯一闭环处)。
+ *
+ * 后端 supervisor 识别到用户要切工地时调 `switch_project` 工具,其 ToolMessage
+ * (name=switch_project、content 是 `{ok,data:{project_id,name},...}` 的干净 JSON)
+ * 随 values 流到前端。这里监听消息流,认到**本会话新到达**的成功切换,就调 setProjectId
+ * 更新 React state + localStorage —— 下一轮 stream.submit 就带上新的 gyt_project_id。
+ *
+ * 只认「新到达」的切换:挂载时先把已有消息全部记为已处理,这样打开一条历史里切过工地的旧线程
+ * 不会把你此刻的选择改掉(那是过去的动作,不该现在重放)。渲染 null,只跑副作用。
+ */
+function ProjectSwitchSync(): null {
+  const stream = useStreamContext();
+  const { projectId, setProjectId, reloadProjects } = useArchive();
+  const handledRef = useRef<Set<string> | null>(null);
+
+  useEffect(() => {
+    const messages = stream.messages ?? [];
+    // 首次:把现有消息(可能是加载进来的历史)全标记为已处理,避免回放旧切换。
+    if (handledRef.current === null) {
+      handledRef.current = new Set(
+        messages.map((m) => m.id).filter((id): id is string => Boolean(id)),
+      );
+      return;
+    }
+    for (const m of messages) {
+      const msg = m as { type?: string; name?: string; content?: unknown; id?: string };
+      if (msg.type !== "tool" || msg.name !== "switch_project" || !msg.id) continue;
+      if (handledRef.current.has(msg.id)) continue;
+      handledRef.current.add(msg.id);
+      let env: { ok?: boolean; data?: { project_id?: unknown } } | null = null;
+      try {
+        env = JSON.parse(typeof msg.content === "string" ? msg.content : "");
+      } catch {
+        continue;
+      }
+      // 失败信封 data 为 null;成功切换才有 data.project_id(空串=切到全部/不限项目,也要生效)。
+      if (!env?.ok || !env.data || typeof env.data.project_id !== "string") continue;
+      const next = env.data.project_id;
+      if (next !== projectId) {
+        setProjectId(next);
+        void reloadProjects(true); // 顺手刷一下项目列表,让顶栏 chip 立刻显示新工地名
+      }
+    }
+  }, [stream.messages, projectId, setProjectId, reloadProjects]);
+
+  return null;
+}
+
 /** 归档面板的状态容器:把「开合 + 项目列表 + 当前工地」抬到顶栏与抽屉共用。 */
 export function ArchiveProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -258,6 +308,8 @@ export function ArchiveProvider({ children }: { children: ReactNode }) {
       <PreviewModal />
       {/* 后端「打开/预览/下载」工具结果在这里落地成自动预览 / 下载(自然语言操作文件的闭环)。 */}
       <FilePreviewSync />
+      {/* 后端 switch_project 的结果在这里落地成前端选择(自然语言切换工地的闭环)。 */}
+      <ProjectSwitchSync />
     </ArchiveContext.Provider>
   );
 }
