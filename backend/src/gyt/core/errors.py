@@ -15,9 +15,13 @@ from __future__ import annotations
 import functools
 import inspect
 import logging
+import time
 from collections.abc import Callable
+from contextlib import suppress
 from enum import Enum
 from typing import Any, TypedDict, TypeVar, cast
+
+from gyt.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -161,31 +165,126 @@ def _guard_detail(fn: Callable[..., Any], exc: BaseException) -> str:
     return f"{fn.__module__}.{fn.__qualname__} 抛出 {type(exc).__name__}: {exc}"
 
 
+# ---------------------------------------------------------------------------
+# 耗时观测:工具那一侧
+#
+# 为什么要记(2026-08-20,一次花了两小时的日志考古之后):线上一次「拍照 → 出
+# 巡检记录」量到 213 秒,日志里只有 httpx 那几行「HTTP Request: POST ... 200 OK」,
+# 于是只能靠**相邻两行的时间差**倒推 —— 而倒推不出的恰恰是最要紧的一件事:
+# 那 198 秒是**在模型调用里面**,还是**在发出请求之前**(工具后处理、隐患入库、
+# 中间件、图调度)?两者修法完全不同。
+#
+# 模型那一侧由 core/timing.py 的 LlmCallTiming 接上,工具这一侧就是下面这段。
+# 两件合起来才把那段黑箱切开(完整推演在 core/timing.py 的模块头注):
+#
+#     模型调用记了 198 秒  → 在调用里面,查模型侧 / 网络
+#     模型调用记了 2 秒    → 在调用之前,查工具与图调度 ← 这条日志说话
+# ---------------------------------------------------------------------------
+
+_NO_SLOW_THRESHOLD = float("inf")
+"""配置读不到时用的"永不告警"阈值。
+
+**刻意不在这里抄一份 20.0 的默认值** —— 抄了就是第二份真相(唯一入口是
+config.get_settings),而且配置真读不出来的时候猜一个数只会误报。inf 的效果是
+"照样记耗时,只是不往 warning 抬":那个数字本身仍然原样在日志里,人一眼看得出。
+"""
+
+
+def _tool_slow_threshold() -> float:
+    """取工具慢调用阈值(秒)。取不到就退回 _NO_SLOW_THRESHOLD。
+
+    ⚠️ 观测件读配置也可能炸(.env 写坏、pydantic 校验不过),所以这里必须兜住 ——
+       绝不许出现"因为阈值读不出来,所以工具执行失败"。
+    """
+    try:
+        return get_settings().tool_slow_warn_s
+    except Exception:  # noqa: BLE001 —— 观测绝不许把主路径打断
+        return _NO_SLOW_THRESHOLD
+
+
+def _log_tool_elapsed(name: str, elapsed: float, failed: str | None = None) -> None:
+    """给一次工具执行记一条耗时。``failed`` 非空表示走的是异常路径。
+
+    ⚠️ **整只函数兜住异常**:观测件坏掉最多是少一条日志,绝不许变成"工具失败"。
+       连兜底那句 debug 也再兜一层 —— test_timing.py 里会把 logger 整个换成
+       "每个方法都抛"的替身,验的就是业务结果一点不受影响。
+
+    ⚠️ 分级判据(``>=`` 阈值抬 warning)与 core/timing.py 的 ``LlmCallTiming``
+       是同一条,但**刻意不共用代码**:timing.py 要 import langchain
+       (``LlmCallTiming`` 的基类 ``BaseCallbackHandler``),而 core/errors.py
+       至今是 langchain-free 的 —— 2026-08-20 实测导入耗时 24.8ms vs 249.6ms,
+       且 attendance/cleanup.py、core/doc_no.py、attendance/messages.py 三个轻量
+       入口都还靠着这条(它们现在 import 完 sys.modules 里没有 langchain_core)。
+       为省这十几行去换一条重依赖不划算。**改这里的分级判据,记得回 timing.py
+       看一眼那一条**,别让两边漂了。
+    """
+    try:
+        if failed is not None:
+            # 失败路径也要记 —— 「慢且最终失败」那一类不记就永远看不见。
+            # 堆栈由调用方的 logger.exception 负责,这里只补"耗时"这一个数。
+            logger.warning("工具执行失败 name=%s 耗时=%.1fs 类型=%s", name, elapsed, failed)
+            return
+        slow = _tool_slow_threshold()
+        # 超阈值抬到 warning:线上日志量很大,慢调用要能一眼捞出来。
+        level = logging.WARNING if elapsed >= slow else logging.INFO
+        logger.log(
+            level,
+            "工具执行完成 name=%s 耗时=%.1fs%s",
+            name,
+            elapsed,
+            f"(超过 {slow:.0f}s 阈值)" if level == logging.WARNING else "",
+        )
+    except Exception:  # noqa: BLE001 —— 同上,观测件绝不许把工具打断
+        with suppress(Exception):
+            logger.debug("工具耗时观测失败,已忽略", exc_info=True)
+
+
 def tool_guard(fn: F) -> F:
     """兜底装饰器:同步 / async 工具函数都能包。
 
     被包住的函数一旦抛异常,调用方拿到的是 fail(INTERNAL) 信封而不是异常。
     正常返回值原样透传(约定工具自己已经用 ok()/fail() 包好了)。
+
+    顺带记一条耗时(见上面 `_log_tool_elapsed` 那段)。挂在这里而不是让每个工具
+    各自记,理由和信封本身一样:**这里是所有工具的唯一必经处**,谁都不会忘。
+
+    ⚠️ **两个包装器都要记**。漏一个的表现是"有的工具有耗时日志、有的没有",
+       而人会以为那个工具没被调用过 —— 极难注意到,所以下面两段是刻意对称的。
     """
+    # 提前取一次:functools.wraps 会把 __qualname__ 抄到包装器上,写 fn.__qualname__
+    # 和写包装器的是同一个值,但取一次更明确"记的是被包的那个函数"。
+    name = fn.__qualname__
+
     if inspect.iscoroutinefunction(fn):
 
         @functools.wraps(fn)
         async def _async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            started = time.monotonic()
             try:
-                return await fn(*args, **kwargs)
+                result = await fn(*args, **kwargs)
             except Exception as exc:  # noqa: BLE001 —— 兜底就是要吃掉一切业务异常
-                logger.exception("工具执行失败(async): %s", fn.__qualname__)
+                logger.exception("工具执行失败(async): %s", name)
+                _log_tool_elapsed(name, time.monotonic() - started, type(exc).__name__)
                 return fail(ErrorCode.INTERNAL, detail=_guard_detail(fn, exc))
+            # 刻意用 else 段而不是 finally:BaseException(KeyboardInterrupt /
+            # SystemExit / CancelledError)照旧原样上抛,且**不**记成"执行完成"——
+            # 那是句假话。代价是被取消的慢调用不留耗时,可以接受。
+            _log_tool_elapsed(name, time.monotonic() - started)
+            return result
 
         return cast(F, _async_wrapper)
 
     @functools.wraps(fn)
     def _sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+        started = time.monotonic()
         try:
-            return fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 —— 同上,永不向上抛
-            logger.exception("工具执行失败: %s", fn.__qualname__)
+            logger.exception("工具执行失败: %s", name)
+            _log_tool_elapsed(name, time.monotonic() - started, type(exc).__name__)
             return fail(ErrorCode.INTERNAL, detail=_guard_detail(fn, exc))
+        _log_tool_elapsed(name, time.monotonic() - started)
+        return result
 
     return cast(F, _sync_wrapper)
 
