@@ -261,7 +261,29 @@ function ThreadInner() {
       { messages: [...toolMessages, newHumanMessage], context },
       {
         streamMode: ["values"],
-        streamSubgraphs: true,
+        // 🔴 **`streamSubgraphs` 必须是 false(或干脆不写),别再改回 true。**
+        //
+        // 它原本是上游 agent-chat-ui 的默认值,2026-08-09 那次把整份 thread-index
+        // 拷进来当覆盖件时原样带进来的 —— 不是我们要的。2026-08-21 查「聊天框
+        // 会把说的话突然收回去」时查到它头上:
+        //
+        //   · 开着它,子图(safety / schedule / inspection 那些独立编译的 Agent)
+        //     的 `values` 事件也会推上来;
+        //   · 而 SDK 对**每个** values 事件是**整份替换**主状态,不是合并
+        //     (`@langchain/langgraph-sdk` 的 `dist/ui/manager.js:447` 那句裸
+        //     `return data`);
+        //   · 子图先推一份长的(它自己的内部消息),父节点跑完再推一份短的
+        //     (supervisor 的 `output_mode="last_message"` 只回灌最后一条);
+        //   · 于是**子 Agent 说的话先出现、再消失**。零报错。
+        //
+        // 探针实证(不调模型):子图推到 messages=3,父图回来 messages=2,
+        // 安全档那句整条没了。这正是 Claude Code 那套子 Agent 的做法所避免的 ——
+        // 子 Agent 的内部过程从来不进主对话,所以没有可收回的东西。
+        //
+        // ⚠️ 关掉它的代价:子图里发的 **custom 事件**也一起收不到了。耗时行原本
+        //    靠那条路,所以它已经改走直连接口(`GET /timing`,见 GytTimingRows.tsx)
+        //    —— **两件是同一个开关的两头,别只改一头。**
+        streamSubgraphs: false,
         streamResumable: true,
         // W7 §3:把界面选中的「当前工地」经 config.configurable 带给后端,
         // 让规范问答自动限定到「全局 + 该项目」——没选项目就不带,后端只查全局。
@@ -293,7 +315,11 @@ function ThreadInner() {
     stream.submit(undefined, {
       checkpoint: parentCheckpoint,
       streamMode: ["values"],
-      streamSubgraphs: true,
+      // 与 handleSubmit 那处同一条,理由写在那儿(子图 values 会整份替换主状态,
+      // 表现是子 Agent 说的话先出现再消失)。🔴 **三处提交路径必须一致** ——
+      // 发送 / 重新生成 / 编辑后重发(human.tsx),漏一处的表现是「平时好好的,
+      // 一按重新生成话就被收回去」,而且没人会想到是这两个值不一样。
+      streamSubgraphs: false,
       streamResumable: true,
       config: currentProjectId
         ? { configurable: { gyt_project_id: currentProjectId } }

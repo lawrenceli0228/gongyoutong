@@ -47,6 +47,7 @@ from gyt.core.artifacts import ArtifactKind, ArtifactNotFound
 from gyt.db import hazards
 from gyt.db import projects as db
 from gyt.supervision_api import SUPERVISION_ROUTES
+from gyt.timing_api import TIMING_ROUTES
 
 logger = logging.getLogger(__name__)
 
@@ -848,6 +849,17 @@ app = Starlette(
         # 的 src 挂载热重载覆盖到)。
         # ⚠️ 删掉这一行 = 监理端点整个消失,现象还是 404、**不是启动报错**。
         *SUPERVISION_ROUTES,
+        # 耗时观测(gyt/timing_api.py 的 TIMING_ROUTES)—— 一条,**只读**:
+        #   GET /timing?thread_id=…&since=…   某个会话里「每步花了多久」的增量拉取
+        #
+        # 为什么它也在这儿:同上,``http.app`` 只能有一个,这是第四拨自定义路由。
+        # 为什么耗时不走聊天流(它本来是走 custom 事件的,2026-08-21 换掉):
+        # 值得看的模型调用全在子图里,子图的 custom 事件要开 ``subgraphs=True``
+        # 才出得来,而一开它子图的 ``values`` 就会整份替换前端主状态 ——
+        # 子 Agent 说的话先出现再消失。完整推演在 gyt/core/timing.py 模块头注。
+        # ⚠️ 删掉这一行 = 界面上耗时行**一行都不出、控制台干净**(前端拿到 404
+        #    是安静吞掉的:观测件坏了不许打扰工友)。不会有任何东西说话。
+        *TIMING_ROUTES,
     ]
 )
 

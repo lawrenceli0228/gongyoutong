@@ -60,41 +60,77 @@ callback 不碰模型的构造参数,所以不动缓存键。**这一条是实�
 三处都是"谁都绕不过"的收口,不用让每个 Agent 各自记得加。
 
 ===========================================================================
-为什么同一份数还要往前端推一遍(2026-08-20,同一天)
+为什么同一份数还要给工友看一眼
 ---------------------------------------------------------------------------
 上面记的这些**只有能翻日志的人看得见**。工友举着手机在工地上等三分钟,界面上
 从头到尾只有一句「正在忙」—— 他分不出是在等识图、在等台账,还是已经卡死了。
 于是「慢」这件事对他永远是黑箱,而对我只是一次 grep。
 
-所以同一份数再走一条 **custom 事件**通道推给界面(界面上已有的「隱藏中間步驟」
+所以同一份数存一份在后端,前端**自己来取**(界面上已有的「隱藏中間步驟」
 开关就是这类信息的天然位置)。
 
-🔴 **为什么是 custom 事件、而不是挂在工具返回上**:supervisor 的
-   ``output_mode="last_message"`` 会把子 Agent 的工具返回整个丢掉 —— 那正是
-   巡检记录卡至今一张都没渲染出来的原因(CLAUDE.md 的「监理常驻操作台」一节 /
-   TODO-47)。custom 事件走的是 ``stream_mode="custom"`` 那条**独立通道**,
-   不经过 supervisor 的消息裁剪,所以不受它影响。前端也已经在订阅了 ——
-   线上日志实测 ``stream_mode=['values', 'messages-tuple', 'custom']``。
+===========================================================================
+🔴 为什么**不**走 LangGraph 的 custom 事件(2026-08-21 推翻了前一天的写法)
+---------------------------------------------------------------------------
+2026-08-20 这件事第一版是走 ``stream_mode="custom"`` 推给前端的,理由写得也对:
+supervisor 的 ``output_mode="last_message"`` 会把子 Agent 的工具返回整个丢掉,
+而 custom 是独立通道、不受消息裁剪影响。
 
-事件契约(**前端已按这个写,字段名不许改**,同 CLAUDE.md 对 Agent name 的那条):
+**但它一条都没显示出来过**,原因不在那条通道本身,在它的作用域:
 
-    {"gyt_timing": {kind, name, seconds,
-                    input_tokens, output_tokens, reasoning_tokens,
-                    slow, ok}}
+  ① 值得看的模型调用**全在子图里**。safety(识图 23 秒)、schedule 这些都是
+     ``create_supervisor`` 挂进去的 Agent —— 每个都是独立编译的 Pregel,
+     由 ``_make_call_agent`` 在父节点的**函数体里** ``.invoke()``。
+     于是它们发的 custom 事件带着命名空间(``inspection:…|safety:…``)。
 
-逐字段的含义、以及「什么时候是 None」写在 ``emit_timing`` 的 docstring 里。
+  ② 子图里发的 custom 事件,**必须请求方开 ``subgraphs=True`` 才出得来**。
+     实测(probe,没调模型):
 
-🔴 **推送绝不许把主路径打断**,这条比上面任何一条都硬:``get_stream_writer()``
-   在 LangGraph 运行时**之外**会直接抛(实测 RuntimeError「Called get_config
-   outside of a runnable context」),而评测、单测、CLI、清理脚本全都不在图内 ——
-   那是**正常情况,不是故障**。所以拿不到 writer 一律安静走开,连日志都不记。
+         不带 subgraphs → 收到 1 条:['外层发的']
+         带 subgraphs   → 收到 2 条:['外层发的', '子图里发的']
+
+  ③ 而 ``subgraphs=True`` 会把子图的 **``values``** 事件也放出来,SDK 对每个
+     values 事件是**整份替换**、不是合并(``@langchain/langgraph-sdk``
+     的 ``dist/ui/manager.js:447`` 那句裸 ``return data``)。子图先推一份长的
+     (它自己的内部消息),父节点跑完再推一份短的(last_message 只回灌最后一条),
+     于是**子 Agent 说的话先出现、再消失** —— 工友看见的是「话被收回去了」。
+
+  ②③ 是**同一个开关的两头**:开着,耗时行有了但话会被收回;关着,话不收回但
+  耗时行一条都没有。走聊天流就只能二选一。
+
+所以耗时改走**自己的直连接口**(``timing_api.py``),照 W7 打卡、W10 监理操作台
+的先例 —— CLAUDE.md 里那句原话:**「操作台不是聊天产物,它有自己的入口和自己的
+数据源。」** 观测数据是第三个同类。换完之后 ``subgraphs`` 可以关掉,两件一起好。
+
+顺带修掉两件旧毛病:
+  · **不再易失。** custom 事件不进检查点,刷新页面就没了;缓冲在后端,刷新还在。
+  · **说得出「識隱患」了。** 旧版只带模型名(``kimi-k3``),因为 ``_mark`` 压根
+    没取 metadata。而 ``on_chat_model_start`` 的 metadata 里实测就有
+    ``langgraph_node='safety'`` —— 界面上那个中文名的来源。
+
+===========================================================================
+⚠️ 一条被实测推翻的旧判断,别再照着推理
+---------------------------------------------------------------------------
+2026-08-20 曾判定「同步 callback 被 langchain 丢进线程执行器,contextvar 断了,
+所以 ``get_stream_writer()`` 拿不到」。**那是错的** —— 实测:
+
+    跟图跑在同一个线程:False        ← 线程确实换了
+    get_stream_writer():拿得到      ← 但上下文跟过去了
+
+当时那个探针是拿手写的 ``run_in_executor(None, fn)`` 模拟的,**那个默认不拷贝
+上下文**,而 langchain 自己那个拷。是模拟错了,不是代码有毛病。
+
+**但线程换了这件事本身是真的,而且有后果**:缓冲会被别的线程写,
+所以 ``_TimingBuffer`` 必须自带锁。见那个类的头注。
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from typing import Any
+from collections import OrderedDict, deque
+from typing import Any, NamedTuple
 from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -187,24 +223,211 @@ def _token_counts(response: LLMResult) -> tuple[int | None, int | None, int | No
 
 
 # ---------------------------------------------------------------------------
-# 推给前端的 custom 事件(完整理由见模块头注「为什么同一份数还要往前端推一遍」)
+# 存给前端来取的耗时记录(为什么不走 custom 事件,见模块头注那一整节)
 # ---------------------------------------------------------------------------
-
-EVENT_KEY = "gyt_timing"
-"""事件的顶层键。**前端按这个名字认,改名等于改对外 API。**
-
-只包一层、且带自己的前缀,是因为 custom 这条通道是**共用**的:谁都能往里写,
-前端要能一眼把我们这条和别人那条分开。
-"""
 
 KIND_LLM = "llm"
 KIND_TOOL = "tool"
-"""事件的两种来源。**唯一真相在这两行。**
+"""记录的两种来源。**唯一真相在这两行。**
 
-``core/errors.py`` 的 ``tool_guard`` 也要推,它从这里取 ``KIND_TOOL`` ——
+``core/errors.py`` 的 ``tool_guard`` 也要记,它从这里取 ``KIND_TOOL`` ——
 **不许自己手抄一个字符串**。手抄的下场是前端按 ``kind`` 分流时静默少一整类
 (工具那半边的耗时全不显示),而后端前端都不报错。
 """
+
+RECORD_KEYS: tuple[str, ...] = (
+    "seq",
+    "kind",
+    "name",
+    "agent",
+    "seconds",
+    "ok",
+    "slow",
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+)
+"""一条记录的**全部**键,**这就是给前端的契约本身**。
+
+跨语言镜像在 ``scripts/frontend-overrides/timing-lib.ts``,收敛不掉、手工对齐;
+改名等于改对外 API(同 CLAUDE.md 对 Agent name 的那条)。
+
+⚠️ **十个键恒定存在,不是"有值才带"**:``kind=tool`` 时三个 token 字段与
+   ``agent`` 给 None 而不是缺席。形状固定前端才能安心解构,少一个键就得每处
+   判一次 undefined —— 而漏判的表现是界面上一行都不出、控制台干净。
+   ``test_timing.py`` 拿这个元组逐键核对 ``_record`` 的产物,别只在心里对。
+
+逐字段的含义:
+
+    seq       单调递增序号,前端拿它做增量拉取(``?since=``)。全进程共用一个
+              计数器 —— 会话内递增就够用,共用一个的好处是不必管会话何时新建
+    kind      KIND_LLM / KIND_TOOL
+    name      模型名(kimi-k3)或工具名(analyze_site_photo)
+    agent     这次调用发生在哪个图节点(safety / schedule / supervisor…)。
+              界面上那个「識隱患」就是拿它查表来的。**取不到给 None** ——
+              路径乙(直调 ainvoke)和图外调用压根没有"节点"这个概念
+    seconds   耗时,保留一位小数(与日志里那个 ``%.1f`` 是同一个数)
+    ok        成没成。**失败的也记** —— 「这步失败了、还花了 213 秒」和
+              「这步很慢」是两回事,只记成功的话最该看见的那类恰好看不见
+    slow      是否 ``>=`` 阈值。判据与日志抬 warning 那条同源
+    三个 token  只有 kind=llm 才可能有。命中缓存 / 供应商不报用量 / 是工具,
+              都给 None。**None 不许写成 0**(理由见 ``_as_int``)
+"""
+
+_BUFFER_PER_THREAD = 200
+_BUFFER_MAX_THREADS = 64
+"""缓冲的两道硬闸,同 ``_MAX_TRACKED`` 那条:**防泄漏,不是可调旋钮**,
+所以不进 ``config.py``(那里放的是"会有人想改"的东西)。
+
+单会话 200 条:一次「拍照 → 出巡检记录」大约十几条,200 条够翻十几轮。
+会话数 64:超了按最久没动过的先淘汰。淘汰掉的后果只是"那条老会话翻不出耗时了",
+业务一点不受影响 —— 观测件绝不许把进程吃垮。
+"""
+
+
+def _current_thread_id() -> str | None:
+    """从 LangGraph 运行时取当前会话号。不在图里就给 None。
+
+    🔴 **``from langgraph.config import ...`` 必须留在函数体里。** 两个理由,
+       任一条都足够(与旧版取 writer 时同一条,没变):
+       ① ``import langgraph.config`` 实测 555.8ms(2026-08-20,还是在
+          langchain_core 已加载的前提下量的)。本模块被 ``core/llm.py`` 模块级
+          import,提上去等于给每个 import 到 llm 的入口(含评测)白加半秒。
+       ② 提上去就把"langgraph 装没装好"变成 **import 期硬失败** ——
+          观测件把主路径打断,正是本模块头注明令禁止的那件事。
+       代价只有一次 ``sys.modules`` 字典查找:真在图里跑时 langgraph 早加载好了。
+
+    ⚠️ **拿不到是正常路径,不是故障。** 评测、单测、CLI、清理脚本全都不在图内,
+       ``get_config()`` 在运行时之外会直接抛(实测 RuntimeError「Called get_config
+       outside of a runnable context」)。所以这里连 debug 都不记 —— 记了就是
+       每跑一轮评测刷一屏噪声,而噪声会把真正的告警埋掉。
+
+    实测(2026-08-21):``tool_guard`` 包着的工具里调这个,拿到
+    ``thread_id='会话-abc'``,子图套两层也照样拿得到。
+    """
+    try:
+        from langgraph.config import get_config
+
+        configurable = get_config().get("configurable") or {}
+    except Exception:  # noqa: BLE001 —— 见 docstring:这是正常路径
+        return None
+    thread_id = configurable.get("thread_id")
+    return str(thread_id) if thread_id else None
+
+
+def _agent_name(metadata: dict[str, Any]) -> str | None:
+    """从 callback 的 metadata 里推出「这次调用属于哪个 Agent」。
+
+    🔴 **不许用 ``langgraph_node``。** 那是本能反应,而且在裸 StateGraph 上试会
+       "看着正好" —— 但真实的子 Agent 是 ``create_agent(...)`` 编出来的图,模型
+       调用发生在**它内部的节点**里。实测(2026-08-21,真形状:create_agent
+       套进英雄链子图、再套进父图):
+
+           langgraph_node = 'model'          ← safety 和 report 两次调用**都是它**
+           checkpoint_ns  = 'inspection:…|safety:…|model:…'
+                            'inspection:…|report:…|model:…'
+
+       拿 ``langgraph_node`` 当名字,界面上每一行都会写「model」,而且不报错。
+
+    判据:**取命名空间的第一段**。理由不是"第一段碰巧对",是它恰好等于
+    ``AGENT_REGISTRY`` 里注册的那个名字 —— 也就是前端 ``AGENT_LABELS``
+    查表用的键、``GytStatusCards`` 的 ``AGENT_TO_CARD`` 用的键。英雄链里
+    safety 与 report 都归到 ``inspection``,这正是界面想要的粒度
+    (那两步在工友眼里就是「識隱患」这一件事)。
+
+    ⚠️ 命名空间为空时退回 ``langgraph_node``,**这不是兜底而是正解**:空命名空间
+       意味着这次调用就发生在最外层图的节点里,那里的节点名本来就是有意义的
+       (supervisor 那种)。'model' 这种内部名只可能出现在非空命名空间下。
+
+    取不到就 None —— 路径乙(直调 ainvoke)和图外调用压根没有"节点"这个概念。
+    """
+    ns = metadata.get("langgraph_checkpoint_ns") or metadata.get("checkpoint_ns") or ""
+    if isinstance(ns, str) and ns:
+        # 段的长相是 `<节点名>:<任务 uuid>`,多段之间用 `|` 隔开。
+        first = ns.split("|", 1)[0].split(":", 1)[0].strip()
+        if first:
+            return first
+    node = metadata.get("langgraph_node")
+    return str(node) if node else None
+
+
+class _TimingBuffer:
+    """按会话号归档的耗时记录,进程内、有上限、**自带锁**。
+
+    🔴 **锁不是防御性编程,是必需的。** 实测(2026-08-21):langchain 把同步
+       callback 丢进线程执行器跑 —— ``跟图跑在同一个线程:False``。也就是说
+       ``add()`` 真的会被别的线程调,而读那一侧(HTTP handler)跑在事件循环上。
+       没有锁的话 ``OrderedDict`` 在扩容/淘汰的当口被并发改,轻则漏一条,
+       重则 RuntimeError 冒到 handler 里变成 500。
+
+    为什么是进程内而不是落库:耗时是**观测数据,不是业务数据** —— 丢了不影响
+    任何人干活,而为它加一张表就要管迁移、清理、备份。同样的判断在
+    ``attendance/cleanup.py`` 那边反过来:考勤凭证是业务数据,所以它落盘。
+
+    ⚠️ 进程内的代价要认:**多 worker 时各存各的**。今天线上是
+       ``--n-jobs-per-worker 2`` 的单 worker,不是问题;哪天真起多 worker,
+       表现是"有时候取回来的耗时不全",到那天再谈共享存储,别现在预支复杂度。
+    """
+
+    def __init__(self, per_thread: int, max_threads: int) -> None:
+        self._per_thread = per_thread
+        self._max_threads = max_threads
+        self._lock = threading.Lock()
+        self._threads: OrderedDict[str, deque[dict[str, Any]]] = OrderedDict()
+        self._seq = 0
+
+    def add(self, thread_id: str, record: dict[str, Any]) -> None:
+        """记一条。``seq`` 由这里统一发号 —— 调用方不许自己编。"""
+        with self._lock:
+            self._seq += 1
+            rows = self._threads.get(thread_id)
+            if rows is None:
+                rows = deque(maxlen=self._per_thread)
+                self._threads[thread_id] = rows
+                # 淘汰按"最久没动过"来,不是按"最早建的":一条老会话只要还在用,
+                # 就不该因为后面新建了一堆会话而被挤掉。
+                while len(self._threads) > self._max_threads:
+                    self._threads.popitem(last=False)
+            self._threads.move_to_end(thread_id)
+            # `seq` 放在**最前面**,与 `RECORD_KEYS` 的顺序对齐。dict 比对和 JSON
+            # 取值都不看顺序,所以这纯粹是为了让 `tuple(记录) == RECORD_KEYS`
+            # 这种写法不会踩空 —— 有人早晚会那么写。
+            rows.append({"seq": self._seq, **record})
+
+    def since(self, thread_id: str, seq: int) -> tuple[list[dict[str, Any]], int]:
+        """取这个会话里 ``seq`` 之后的记录,连同新的游标一起给。
+
+        游标在**没有新记录时原样退回**(不是给 0):退成 0 的话前端下一轮会把
+        整段重新拉一遍,界面上表现为耗时行成倍重复,而两边都不报错。
+
+        ⚠️ 回的是**拷贝**,不是缓冲里那些 dict 本身。今天的唯一调用方
+        (``timing_api``)只是把它们塞进 JSONResponse、不会改 —— 但哪天有人在
+        handler 里给记录补一个字段,改的就是缓冲里那份,而且下一轮取出来还带着。
+        先筛后拷:真正新增的通常只有几条,拷贝那几个十键小 dict 的代价可以忽略。
+        """
+        with self._lock:
+            rows = [row for row in (self._threads.get(thread_id) or ()) if row["seq"] > seq]
+        fresh = [dict(row) for row in rows]
+        return fresh, (fresh[-1]["seq"] if fresh else seq)
+
+    def clear(self) -> None:
+        """只给测试用 —— 用例之间必须互不串味。"""
+        with self._lock:
+            self._threads.clear()
+            self._seq = 0
+
+
+_BUFFER = _TimingBuffer(_BUFFER_PER_THREAD, _BUFFER_MAX_THREADS)
+
+
+def recent_timings(thread_id: str, since: int = 0) -> tuple[list[dict[str, Any]], int]:
+    """给 ``timing_api.py`` 的读口。**这是唯一的读入口**,别让谁再摸 ``_BUFFER``。"""
+    return _BUFFER.since(thread_id, since)
+
+
+def reset_timings() -> None:
+    """清空缓冲。只给测试用。"""
+    _BUFFER.clear()
 
 
 def emit_timing(
@@ -214,69 +437,86 @@ def emit_timing(
     seconds: float,
     ok: bool,
     slow: bool,
+    agent: str | None = None,
+    thread_id: str | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     reasoning_tokens: int | None = None,
 ) -> None:
-    """把一条耗时推给前端。**不在图内就安静走开,任何情况下都不抛。**
+    """记一条耗时到缓冲。**不在会话里就安静走开,任何情况下都不抛。**
 
-    参数即契约(前端已按这个写,字段名不许改):
+    字段含义见 ``RECORD_KEYS`` 的 docstring(那儿是契约的唯一真相)。这里只说
+    两个参数本身的事:
 
-        kind:             ``KIND_LLM`` / ``KIND_TOOL``,前端按它分流
-        name:             模型名(kimi-k3)或工具名(analyze_site_photo)
-        seconds:          耗时,**保留一位小数**(和日志里的 ``%.1f`` 是同一个数)
-        ok:               这次调用成没成。**失败的也推** —— 界面上「这一步失败了、
-                          花了 213 秒」和「这一步很慢」是两回事
-        slow:             是否 ``>=`` 阈值。判据与日志抬 warning 那条同源
-        input_tokens 等:  只有 ``kind=llm`` 才可能有;命中缓存、供应商不报用量、
-                          或者压根是工具,都给 None。**None 不许写成 0**(见 ``_as_int``)
+        agent:      调用方知道就传(``LlmCallTiming`` 从 metadata 里取得到);
+                    不知道就留空
+        thread_id:  调用方知道就传,不传则**自己去运行时里问**。
+                    🔴 ``LlmCallTiming`` 必须显式传 —— 它拿的是
+                    ``on_chat_model_start`` 的 metadata,那是**当参数递进来的**,
+                    比 contextvar 可靠(那个 callback 实测跑在别的线程里)。
+                    ``tool_guard`` 那侧不传,靠 ``_current_thread_id()`` ——
+                    这样 ``core/errors.py`` 一行 langgraph 都不用碰,
+                    它那条"模块级不许 import langchain"的守卫继续成立。
 
-    ⚠️ **八个键恒定存在**,``kind=tool`` 时三个 token 字段是 None 而不是缺席 ——
-       形状固定的对象前端才能安心解构,少一个键就得每处都判一次 undefined。
+    ⚠️ 拿不到会话号就丢掉这条,**这是正常路径**:评测、单测、CLI 全都不在会话里。
     """
     try:
-        # 🔴 **函数内 import,不许"顺手"提到文件顶部。** 两个理由,任一条都足够:
-        #   ① `import langgraph.config` 实测 555.8ms(2026-08-20,还是在
-        #      langchain_core 已加载的前提下量的)。本模块被 core/llm.py 模块级
-        #      import,提上去等于给每一个 import 到 llm 的入口(含评测)白加半秒。
-        #   ② 提上去就把"langgraph 装没装好"变成**import 期硬失败** ——
-        #      观测件把主路径打断,正是本模块头注明令禁止的那件事。
-        # 代价只有一次 sys.modules 字典查找:真在图里跑的时候 langgraph 早加载好了。
-        from langgraph.config import get_stream_writer
-
-        writer = get_stream_writer()
-    except Exception:  # noqa: BLE001 —— 这里是**正常路径**,见下
-        # 🔴 不在 LangGraph 运行时里就会抛(实测 RuntimeError「Called get_config
-        #    outside of a runnable context」)。评测、单测、CLI、清理脚本全都不在
-        #    图内 —— **那是正常情况,不是故障**。所以连 debug 都不记:记了就是
-        #    每跑一轮评测刷一屏噪声,而噪声会把真正的告警埋掉。
-        #
-        # ⚠️ 变异测试实证(2026-08-20):把这个 try/except 拿掉,test_timing.py
-        #    当场红 7 条 —— 除了专门盯这件事的那条,还连累 5 条压根不管推事件的
-        #    老用例。那 5 条就是"观测件把主路径打断"在真实世界里的样子。
-        return
-    if writer is None:
-        return
-    try:
-        writer(
-            {
-                EVENT_KEY: {
-                    "kind": kind,
-                    "name": name,
-                    # 保留一位小数:界面上「7.5 秒」够用,推 7.483210 只是噪声,
-                    # 而且和日志里那个 %.1f 对得上 —— 两边说的必须是同一个数,
-                    # 不然对账的人会以为看见了两次不同的调用。
-                    "seconds": round(seconds, 1),
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "reasoning_tokens": reasoning_tokens,
-                    "slow": slow,
-                    "ok": ok,
-                }
-            }
+        thread_id = thread_id or _current_thread_id()
+        if not thread_id:
+            return
+        _BUFFER.add(
+            thread_id,
+            _record(
+                kind, name, agent, seconds, ok, slow, input_tokens, output_tokens, reasoning_tokens
+            ),
         )
-    except Exception:  # noqa: BLE001 —— 推送坏了最多是界面上少一行,不能连累调用
-        logger.debug("耗时事件推送失败,已忽略", exc_info=True)
+    except Exception:  # noqa: BLE001 —— 记坏了最多是界面上少一行,不能连累调用
+        logger.debug("耗时记录写入失败,已忽略", exc_info=True)
+
+
+def _record(
+    kind: str,
+    name: str,
+    agent: str | None,
+    seconds: float,
+    ok: bool,
+    slow: bool,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    reasoning_tokens: int | None,
+) -> dict[str, Any]:
+    """拼一条记录(``seq`` 由缓冲发号,所以这里没有)。
+
+    单拎出来是为了让 ``test_timing.py`` 能拿 ``RECORD_KEYS`` 逐键核对它的产物 ——
+    契约有没有漏键这件事,要有东西替人数。
+    """
+    return {
+        "kind": kind,
+        "name": name,
+        "agent": agent,
+        # 保留一位小数:界面上「7.5 秒」够用,存 7.483210 只是噪声,而且和日志里
+        # 那个 %.1f 对得上 —— 两边说的必须是同一个数,不然对账的人会以为
+        # 看见了两次不同的调用。
+        "seconds": round(seconds, 1),
+        "ok": ok,
+        "slow": slow,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "reasoning_tokens": reasoning_tokens,
+    }
+
+
+class _Started(NamedTuple):
+    """一次模型调用在**起点**记下的东西,等终点来配对。
+
+    做成具名的而不是四元组:``started[2]`` 这种写法在半年后没人认得出是会话号,
+    而且加一项字段时所有解包处都要跟着数位置。
+    """
+
+    at: float
+    model: str
+    thread_id: str | None
+    agent: str | None
 
 
 class LlmCallTiming(BaseCallbackHandler):
@@ -288,7 +528,7 @@ class LlmCallTiming(BaseCallbackHandler):
 
     def __init__(self, slow_seconds: float) -> None:
         self._slow_seconds = slow_seconds
-        self._started: dict[UUID, tuple[float, str]] = {}
+        self._started: dict[UUID, _Started] = {}
 
     # -- 起点 ---------------------------------------------------------------
     # langchain 对 chat model 走 on_chat_model_start,对老式 LLM 走 on_llm_start。
@@ -305,12 +545,36 @@ class LlmCallTiming(BaseCallbackHandler):
         self._mark(run_id, kwargs)
 
     def _mark(self, run_id: UUID, kwargs: dict[str, Any]) -> None:
+        """记起点,顺便把**只有这个钩子拿得到的两样东西**收下来。
+
+        🔴 会话号与节点名必须在**起点**取,终点取不到:实测(2026-08-21)同一次
+           调用的两个钩子拿到的东西完全不同 ——
+
+               on_chat_model_start  metadata 有 11 个键,含
+                                    thread_id='会话-123'、langgraph_node='safety'
+               on_llm_end           metadata **是空的**
+
+           所以别"顺手"挪到 ``on_llm_end`` 里去取,挪了就是每条记录的
+           ``agent`` 恒为 None、``thread_id`` 只能退回问运行时(而那是另一条
+           不如它可靠的路 —— 这个回调跑在别的线程里)。
+
+        ⚠️ 记下来的是**图节点名(英文)**,不是给人看的名字。中文名在前端查表
+           (``timing-lib.ts`` 的 ``AGENT_LABELS``)—— 后端一个中文都不带,
+           因为界面恒繁體而这里是简体源码,让后端出中文等于把繁簡这件事漏一处。
+        """
         try:
             if len(self._started) >= _MAX_TRACKED:
                 self._started.pop(next(iter(self._started)), None)
             params = kwargs.get("invocation_params") or {}
             model = str(params.get("model") or params.get("model_name") or "?")
-            self._started[run_id] = (time.monotonic(), model)
+            metadata = kwargs.get("metadata") or {}
+            thread_id = metadata.get("thread_id")
+            self._started[run_id] = _Started(
+                at=time.monotonic(),
+                model=model,
+                thread_id=str(thread_id) if thread_id else None,
+                agent=_agent_name(metadata),
+            )
         except Exception:  # noqa: BLE001 —— 观测件绝不许把主路径打断
             logger.debug("模型调用计时:记起点失败", exc_info=True)
 
@@ -321,7 +585,7 @@ class LlmCallTiming(BaseCallbackHandler):
             started = self._started.pop(run_id, None)
             if started is None:
                 return
-            elapsed, model = time.monotonic() - started[0], started[1]
+            elapsed, model = time.monotonic() - started.at, started.model
             # 超过阈值抬到 warning:线上日志量很大,慢调用要能一眼捞出来。
             # 判据本身就是这个数 —— 见模块头注「为什么要这件」。
             slow = elapsed >= self._slow_seconds
@@ -337,8 +601,8 @@ class LlmCallTiming(BaseCallbackHandler):
         except Exception:  # noqa: BLE001
             logger.debug("模型调用计时:记终点失败", exc_info=True)
             return
-        # 日志记完**再**推事件,顺序是刻意的:日志是最后的兜底 —— 前端那条通道断了
-        # 我还能翻日志,反过来不成立。所以绝不许让推送的任何环节挡在日志前面。
+        # 日志记完**再**记缓冲,顺序是刻意的:日志是最后的兜底 —— 前端那条路断了
+        # 我还能翻日志,反过来不成立。所以绝不许让记缓冲的任何环节挡在日志前面。
         input_tokens, output_tokens, reasoning_tokens = _token_counts(response)
         emit_timing(
             kind=KIND_LLM,
@@ -346,6 +610,8 @@ class LlmCallTiming(BaseCallbackHandler):
             seconds=elapsed,
             ok=True,
             slow=slow,
+            agent=started.agent,
+            thread_id=started.thread_id,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             reasoning_tokens=reasoning_tokens,
@@ -358,7 +624,7 @@ class LlmCallTiming(BaseCallbackHandler):
             started = self._started.pop(run_id, None)
             if started is None:
                 return
-            elapsed, model = time.monotonic() - started[0], started[1]
+            elapsed, model = time.monotonic() - started.at, started.model
             logger.warning(
                 "模型调用失败 model=%s 耗时=%.1fs 类型=%s",
                 model,
@@ -368,8 +634,8 @@ class LlmCallTiming(BaseCallbackHandler):
         except Exception:  # noqa: BLE001
             logger.debug("模型调用计时:记失败态失败", exc_info=True)
             return
-        # 失败的也推。界面上「这一步失败了、还花了 213 秒」和「这一步很慢」是两回事,
-        # 前端按 ok 分流 —— 只推成功的话,最值得看见的那一类恰好看不见。
+        # 失败的也记。界面上「这一步失败了、还花了 213 秒」和「这一步很慢」是两回事,
+        # 前端按 ok 分流 —— 只记成功的话,最值得看见的那一类恰好看不见。
         #
         # ⚠️ `slow` 照样按阈值如实算:上面那句日志"失败一律 warning"是**日志侧**的
         #    分级(失败本身就值得看见),和"这次是不是超阈值"不是同一件事,别混。
@@ -380,7 +646,17 @@ class LlmCallTiming(BaseCallbackHandler):
             seconds=elapsed,
             ok=False,
             slow=elapsed >= self._slow_seconds,
+            agent=started.agent,
+            thread_id=started.thread_id,
         )
 
 
-__all__ = ["EVENT_KEY", "KIND_LLM", "KIND_TOOL", "LlmCallTiming", "emit_timing"]
+__all__ = [
+    "KIND_LLM",
+    "KIND_TOOL",
+    "RECORD_KEYS",
+    "LlmCallTiming",
+    "emit_timing",
+    "recent_timings",
+    "reset_timings",
+]

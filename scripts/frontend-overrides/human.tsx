@@ -343,7 +343,10 @@ export function HumanMessage({
       {
         checkpoint: parentCheckpoint,
         streamMode: ["values"],
-        streamSubgraphs: true,
+        // 编辑后重发 —— 三条提交路径里的第三条。**必须与 thread-index.tsx 的
+        // handleSubmit / handleRegenerate 一致**,完整理由写在 handleSubmit 那处:
+        // 开着它,子图的 values 会整份替换主状态,子 Agent 说的话先出现再消失。
+        streamSubgraphs: false,
         streamResumable: true,
         optimisticValues: (prev) => {
           const values = meta?.firstSeenState?.values;
