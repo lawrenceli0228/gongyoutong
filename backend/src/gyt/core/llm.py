@@ -147,6 +147,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
@@ -167,6 +168,7 @@ from langchain_openai import ChatOpenAI
 
 from gyt.config import Settings, get_settings
 from gyt.core.errors import ErrorCode
+from gyt.core.timing import LlmCallTiming
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +340,19 @@ def get_chat_model(purpose: Purpose = "text", **overrides: Any) -> BaseChatModel
     # 详见 config.text_temperature 上方那段实测记录。
     if purpose == "text":
         params["temperature"] = settings.text_temperature
+    # 慢调用观测(core/timing.py,完整理由在那个文件的头注)。
+    #
+    # 🔴 **挂在这里、而不是在 base_agent.py 包一层模型代理** —— 包代理会把工具集
+    #    那一维从缓存键里弄丢(CLAUDE.md 的明令)。callback **不动缓存键**,
+    #    这一条是实测过的、不是推理:带不带 callbacks 的 `_get_llm_string()`
+    #    逐字节相同(2026-08-20 实测,走的就是本函数这条真实路径:
+    #    text 档键长 491、vision 档 410,带不带 callbacks 完全一致)。
+    #    必须实测的理由:键一变,**整份视觉缓存作废** —— 那是演示前要焐 22 分钟
+    #    的东西(TODO-11 的演示铁律),这种代价不能靠"我记得应该不影响"。
+    #
+    # ⚠️ 放在 overrides 合并**之前**:调用方显式传 callbacks 时应当能盖掉它
+    #    (评测里就有想静默的场景),而不是被我们硬塞的这条覆盖掉。
+    params["callbacks"] = [LlmCallTiming(settings.llm_slow_warn_s)]
     return ChatOpenAI(**{**params, **overrides})
 
 
@@ -925,6 +940,45 @@ def _for_direct_call(model: BaseChatModel) -> BaseChatModel:
     return model.model_copy(update={"cache": False})
 
 
+# --- 路径乙的耗时观测 --------------------------------------------------------
+# 路径甲(Agent)靠挂在 get_chat_model 上的 LlmCallTiming 回调记账,但**路径乙走不到
+# 那个回调**:_for_direct_call 拿的是调用方自己造的模型,而且直调这一段里还夹着
+# 缓存查找与自研退避重试 —— 那些时间全在回调之外。所以这里单记一条"整段"的账。
+# 完整理由见 core/timing.py 的模块头注。
+
+_OUTCOME_CACHED = "命中缓存"
+_OUTCOME_CALLED = "真调模型"
+_OUTCOME_FAILED = "未拿到回答"
+"""三种落点。**必须能从日志里分出来** —— 命中缓存那条只花几毫秒,要是和真调用
+写成同一句话,人看见"模型直调完成 耗时=0.0s"会以为模型变快了;反过来真慢的时候
+也要能立刻排除"是不是缓存没命中"。所以结论直接写进日志,不让人猜。"""
+
+
+def _log_direct_elapsed(model_name: str, elapsed: float, outcome: str, slow_seconds: float) -> None:
+    """给一次 ainvoke 记一条耗时。
+
+    ⚠️ 分级判据(``>=`` 阈值抬 warning)与 core/timing.py 的 ``LlmCallTiming``
+       同一条。这里不复用那个类:它是 langchain 的回调、按"单次模型请求"记账,
+       而这里要的是"整个 ainvoke"(含缓存查找与 N 次重试),量的压根不是一段东西。
+
+    ⚠️ 整只函数兜住异常 —— 观测件坏掉最多少一条日志,绝不许把直调打断。
+    """
+    try:
+        level = logging.WARNING if elapsed >= slow_seconds else logging.INFO
+        logger.log(
+            level,
+            # 用"结束"不用"完成":三种落点里有一种是没拿到回答,写"完成"就是句假话。
+            "模型直调结束 model=%s 耗时=%.1fs %s%s",
+            model_name,
+            elapsed,
+            outcome,
+            f"(超过 {slow_seconds:.0f}s 阈值)" if level == logging.WARNING else "",
+        )
+    except Exception:  # noqa: BLE001 —— 观测绝不许把主路径打断
+        with suppress(Exception):
+            logger.debug("模型直调耗时观测失败,已忽略", exc_info=True)
+
+
 async def ainvoke(
     model: BaseChatModel,
     messages: MessagesInput,
@@ -970,21 +1024,38 @@ async def ainvoke(
         而且它与预热是正向配合:带闸的预热会拒绝把失败烤进缓存。
     """
     settings = get_settings()
-    stamp: _CacheStamp | None = None
-    if settings.llm_cache_enabled:
-        stamp = _cache_stamp(_model_name_of(model), messages, cache_extra)
-        cached = _cache_read(stamp, settings)
-        if cached is not None:
-            logger.debug("命中大模型缓存:%s", stamp.key)
-            return cached
+    # 提前取一次模型名:下面 finally 记账要用,而缓存关掉时原来那一处根本不会执行。
+    model_name = _model_name_of(model)
+    started = time.monotonic()
+    # 抛异常时的落点(重试全败 / 上游硬错)。放在 try 外面,保证 finally 里一定有值。
+    outcome = _OUTCOME_FAILED
+    try:
+        stamp: _CacheStamp | None = None
+        if settings.llm_cache_enabled:
+            stamp = _cache_stamp(model_name, messages, cache_extra)
+            cached = _cache_read(stamp, settings)
+            if cached is not None:
+                logger.debug("命中大模型缓存:%s", stamp.key)
+                outcome = _OUTCOME_CACHED
+                return cached
 
-    message = await _invoke_with_retry(_for_direct_call(model), messages, settings, max_attempts)
-    if stamp is not None:
-        if is_usable is None or is_usable(message):
-            _cache_write(stamp, message, settings)
-        else:
-            logger.info("回答未通过调用方校验,不写缓存(避免把失败永久钉住):%s", stamp.key)
-    return message
+        message = await _invoke_with_retry(
+            _for_direct_call(model), messages, settings, max_attempts
+        )
+        outcome = _OUTCOME_CALLED
+        if stamp is not None:
+            if is_usable is None or is_usable(message):
+                _cache_write(stamp, message, settings)
+            else:
+                logger.info("回答未通过调用方校验,不写缓存(避免把失败永久钉住):%s", stamp.key)
+        return message
+    finally:
+        # 这里用 finally(而不是像 tool_guard 那样用 else 段):失败的直调**尤其**
+        # 要记 —— 「重试 4 轮、每轮都等满 150 秒超时」正是最值得看见的一种慢,
+        # 而它永远走不到成功分支。落点写在 outcome 里,不会把失败说成"完成"。
+        _log_direct_elapsed(
+            model_name, time.monotonic() - started, outcome, settings.llm_slow_warn_s
+        )
 
 
 __all__ = [
