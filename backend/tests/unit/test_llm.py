@@ -171,23 +171,63 @@ def test_model_name_from_settings(monkeypatch: pytest.MonkeyPatch, chat_spy: Spy
 
 @pytest.mark.parametrize(
     ("purpose", "expected"),
-    [("text", THINKING_OFF), ("vision", None), ("tool", None)],
+    [("text", THINKING_OFF), ("vision", THINKING_OFF), ("tool", None)],
 )
-def test_thinking_disabled_only_for_text(
+def test_文本档和视觉档都关思考_而工具备胎档不关(
     chat_spy: SpyCalls, purpose: str, expected: dict[str, Any] | None
 ) -> None:
-    """关思考是 DeepSeek 文本模型的低延迟需要(路由场景),不许误加到 Kimi 上。"""
+    """两档都关,但**理由不同**,所以配置里是两个独立开关。
+
+    · text   —— 路由/转述是执行类任务,要的是低延迟,不是长篇推理。
+    · vision —— 2026-08-20 实测:同一张图关掉思考后 **23.0s → 7.5s、
+                输出 779 → 210 tok**,而正文反而更完整(348 → 458 字符,
+                还多识别出一条隐患)。那 779 里有 596 是思考,占 76%,
+                而视觉档是 $3/M —— 工友在工地上等的就是这一段。
+
+    ⚠️ **这条测试 2026-08-20 之前断的是相反的事**(名字叫
+       `test_thinking_disabled_only_for_text`,docstring 写「不许误加到 Kimi 上」)。
+       当时那个判断是错的 —— 它把「视觉端不许传采样参数」(temperature / top_p /
+       n / presence_penalty / frequency_penalty,传了会 400)误当成了「什么参数都不许传」。
+       thinking **不在那张受控清单里**,已实测不会 400。别照着旧名字改回去。
+
+    ⚠️ `tool` 档**故意不跟**:它是工具调用评测不达标时的备胎(`model_tool_fallback`),
+       走的是"需要模型认真挑工具"的场景,思考在那儿是有用的。
+       改它之前先想清楚那条路径上谁在等 —— 不是工地上的工友。
+    """
     llm.get_chat_model(purpose)  # type: ignore[arg-type]
     assert chat_spy[-1].get("extra_body") == expected
     # 顺带钉死:不许退回 model_kwargs 那条会打 UserWarning 的路径
     assert "model_kwargs" not in chat_spy[-1]
 
 
-def test_thinking_follows_config(monkeypatch: pytest.MonkeyPatch, chat_spy: SpyCalls) -> None:
-    """配置里把「关思考」关掉后,就不该再传这个参数(留给需要深推理的场景)。"""
-    _reset_settings(monkeypatch, GYT_DISABLE_THINKING_FOR_TEXT="false")
-    llm.get_chat_model("text")
+@pytest.mark.parametrize(
+    ("purpose", "env"),
+    [("text", "GYT_DISABLE_THINKING_FOR_TEXT"), ("vision", "GYT_DISABLE_THINKING_FOR_VISION")],
+)
+def test_关思考跟着各自的配置走(
+    monkeypatch: pytest.MonkeyPatch, chat_spy: SpyCalls, purpose: str, env: str
+) -> None:
+    """两个开关各管各的一档,能单独放开(留给需要深推理的对照实验)。
+
+    钉「两个开关独立」这件事本身:合并成一个的话,想为某张疑难照片单独放开视觉思考,
+    就会把文本档的低延迟一起赔进去。
+    """
+    _reset_settings(monkeypatch, **{env: "false"})
+    llm.get_chat_model(purpose)  # type: ignore[arg-type]
     assert "extra_body" not in chat_spy[-1]
+
+
+def test_放开视觉思考不影响文本档(monkeypatch: pytest.MonkeyPatch, chat_spy: SpyCalls) -> None:
+    """上一条的反向:只放开视觉那个开关,文本档必须照旧关着。
+
+    ⚠️ 这条是**交叉污染**的守卫。判据写成「两档各自独立」而不是「各自正确」——
+       实现若写成一个共用变量,单测各自跑都能过,只有交叉着测才露馅。
+    """
+    _reset_settings(monkeypatch, GYT_DISABLE_THINKING_FOR_VISION="false")
+    llm.get_chat_model("vision")
+    assert "extra_body" not in chat_spy[-1]
+    llm.get_chat_model("text")
+    assert chat_spy[-1].get("extra_body") == THINKING_OFF
 
 
 def test_thinking_param_lands_on_real_model() -> None:

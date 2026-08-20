@@ -60,6 +60,7 @@
     "../frontend-overrides/supervision-lib.ts",
     "../frontend-overrides/lang-lib.ts",
     "../frontend-overrides/hant-convert.tsx",
-    "../frontend-overrides/image-compress.ts"
+    "../frontend-overrides/image-compress.ts",
+    "../frontend-overrides/timing-lib.ts"
   ]
 }

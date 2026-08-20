@@ -193,6 +193,31 @@ class Settings(BaseSettings):
     # 文本模型默认关思考模式:路由这类场景要的是低延迟,不是长篇推理。
     disable_thinking_for_text: bool = True
 
+    # 视觉模型也默认关思考。**2026-08-20 实测,同一张图、同一提示词、唯一差别是这个开关**:
+    #
+    #                     默认(不关)      关掉
+    #     耗时            23.0 s          7.5 s      ← 快 3 倍
+    #     输出 tokens     779             210        ← 省 73%,而视觉档是 $3/M
+    #     其中思考        596             —          ← 76% 的算力花在没人看得见的地方
+    #     正文长度        348 字符        458 字符   ← **反而更完整**,还多识别出一条隐患
+    #
+    # 线上那次 129.5 秒的识图就是这件事的放大版:输出 4,117 token,绝大部分是思考。
+    # 工友在工地举着手机等的就是这一段,而等来的东西里四分之三他永远看不到。
+    #
+    # ⚠️ 已实测 `thinking: disabled` 在视觉端**不会 400** —— CLAUDE.md 那条
+    #    「视觉档不许传采样参数」说的是 temperature / top_p / n / presence_penalty /
+    #    frequency_penalty 那一类,thinking 不在其中,别把两件事混起来。
+    #
+    # ⚠️ 这个开关**不会作废视觉缓存**:识图走路径乙,`_cache_stamp` 的键是
+    #    {model, prompt_version, messages, extra},**不含 extra_body**
+    #    (路径甲才含 llm_string)。所以焐了 22 分钟的演示缓存是安全的 ——
+    #    TODO-11 那条铁律点名的三样(vision_prompt.md 正文 / prompt_version /
+    #    视觉模型)这里一样都没动。
+    #
+    # 留一个开关而不是写死:哪天遇到一张必须靠推理才判得准的照片,
+    # 可以 GYT_DISABLE_THINKING_FOR_VISION=false 单独放开做对照,不用改代码。
+    disable_thinking_for_vision: bool = True
+
     # 文本档的采样温度。**默认 0 = 尽可能确定**。
     #
     # 为什么必须是 0(2026-08-07 起全栈实测后加的):文本档承担的是**执行类**任务 ——
