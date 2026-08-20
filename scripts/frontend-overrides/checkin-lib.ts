@@ -358,7 +358,23 @@ export async function sha256Hex(bytes: ArrayBuffer | Uint8Array): Promise<string
   if (!subtle) {
     throw new CheckinContractError(CHECKIN_MESSAGES.insecureContext);
   }
-  const digest = await subtle.digest("SHA-256", bytes);
+  // ⚠️ **不能把 `bytes` 原样丢给 `subtle.digest`。** TypeScript 6 把 `BufferSource`
+  //    收窄成了 `ArrayBufferView<ArrayBuffer> | ArrayBuffer`,而裸 `Uint8Array` 的
+  //    默认类型参数是 `ArrayBufferLike` —— 它**可能**由 `SharedArrayBuffer` 支撑,
+  //    于是整个联合类型不再可赋值,构建期 TS2345。
+  //
+  //    🔴 2026-08-21 部署时撞到,而它是**只在干净机器上出现**的那一类:
+  //    那次因为删掉 `frontend/` 重新 clone,拿到的上游把 TypeScript 从 5.8 抬到
+  //    了 6.0;开发机那份 `frontend/` 是旧 clone(还是 5.8),`tsc` 与
+  //    `make test-frontend`(自己的 TS 也是 5.8)**全绿**。也就是说本地一切正常、
+  //    只有全新环境构建才红 —— 这类错最难查,所以判据留在这儿。
+  //
+  //    做法是取一段**确定由普通 ArrayBuffer 支撑**的字节。`slice()` 保证这一点
+  //    (顺带也更正确:带 byteOffset 的视图直接取 `.buffer` 会把整个底层缓冲区
+  //    都算进去)。代价是一次拷贝 —— 照片压缩后 ≤600KB,可忽略。
+  //    换来的是**不依赖任何 TS 版本的写法**:下次上游再抬版本不用回来改。
+  const input = bytes instanceof Uint8Array ? bytes.slice().buffer : bytes;
+  const digest = await subtle.digest("SHA-256", input);
   return [...new Uint8Array(digest)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
