@@ -1472,6 +1472,7 @@ def test_emit_timing自己整个坏掉时工具也照常返回(monkeypatch: pyte
     那测不到 ``_emit_tool_timing`` 的 try/except。这条直接让跨模块这一步炸,
     才把 errors.py 那一层真正压到。
     """
+
     # Arrange
     def _一调就炸(**_kwargs: Any) -> None:
         raise RuntimeError("推事件整个坏了")
