@@ -454,12 +454,34 @@ function ThreadInner() {
               className={cn(
                 "absolute inset-0 overflow-y-scroll px-4 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 [&::-webkit-scrollbar-track]:bg-transparent",
                 // mt-[25vh] 是首页把大标题往下压到视觉中心用的,桌面上好看,
-                // 手机上是纯亏损:390×844 实测,顶栏 + 2×2 卡片已吃掉 ~330px,
+                // 屏幕一矮就是纯亏损:390×844 实测,顶栏 + 2×2 卡片已吃掉 ~330px,
                 // 再扣 25vh(211px)后滚动视口只剩 303px,而底部那坨(大标题 + 输入框 +
                 // 动作条)要 312px —— sticky bottom-0 塞不下,动作条被顶到 y=873,
                 // **整条动作条连同「打卡」按钮落在 844 的屏幕之外**,不滚动根本看不见。
-                // 窄屏收到 mt-4,≥640px 原样恢复 25vh。
-                !chatStarted && "mt-4 flex flex-col items-stretch sm:mt-[25vh]",
+                //
+                // 🔴 **第一版把判据写成了宽度(`sm:`),那是错的**(2026-08-20 复发实测):
+                //    真正的约束是**高度**。1600×800 的窗口(宽得很,但矮)照样溢出 38px,
+                //    而带一张附件的输入框还要再高一截 —— 实测发送键底边:
+                //
+                //        视口 1180 → 富余 247px      视口 900 → 富余 37px(已贴边)
+                //        视口 1000 → 富余 112px      视口 800 → **溢出 38px**
+                //
+                //    笔记本不最大化、外接显示器开半屏,都落在这一档。宽度断点拦不住。
+                //
+                // 所以改成按高度**连续退让**,不设断点(断点必然选错,内容高度是变的):
+                //
+                //        max(1rem, min(25vh, 100vh - 700px))
+                //          ↑ 再挤也留 1rem   ↑ 再宽松也不超过原来的 25vh
+                //                            ↑ 永远给下面那坨留 700px
+                //
+                //    H=1180 → 295px(与改前一模一样,桌面观感不变)
+                //    H=900  → 200px      H=800 → 100px      H≤716 → 16px
+                //    没有悬崖:高度一点点变矮,留白就一点点收,不会某个像素突然跳。
+                //    700 这个数 = 实测 mt-4 时发送键底边 654px + ~46px 余量(第二排附件)。
+                //    ⚠️ 改这个数要回去重量一遍,别拍脑袋 —— 量法:附一张图,
+                //       逐档设 viewport 高度,读发送键的 getBoundingClientRect().bottom。
+                !chatStarted &&
+                  "mt-4 flex flex-col items-stretch sm:mt-[max(1rem,min(25vh,100vh-700px))]",
                 chatStarted && "grid grid-rows-[1fr_auto]",
               )}
               contentClassName="pt-8 pb-16 max-w-3xl mx-auto flex flex-col gap-4 w-full"
