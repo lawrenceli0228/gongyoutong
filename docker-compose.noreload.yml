@@ -63,3 +63,7 @@ services:
       - --no-browser
       - --no-reload
       - --allow-blocking
+      # 并发 2。理由与「为什么不能靠环境变量」写在 backend/Dockerfile 的 CMD 上方
+      # (那份是主注释)。⚠️ 三处必须一致,见上面「为什么要把整个 command 抄一遍」。
+      - --n-jobs-per-worker
+      - "2"

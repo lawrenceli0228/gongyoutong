@@ -313,9 +313,29 @@ EXPOSE 2024
 # --no-browser   :容器里没有浏览器可开
 # --no-reload    :演示/生产不需要热重载,省内存也更稳
 # --allow-blocking:BGE-M3 本地推理是同步阻塞调用,不放行会被框架判定为违规操作
+#
+# --n-jobs-per-worker 2:后台任务并发数。**不给这个参数的默认值是 1**,不是 2 也不是 10。
+#   ⚠️ 别信它自己的 --help(写着「Default is None (meaning 10)」)—— 那句是错的。
+#      真值在 langgraph_api/cli.py:
+#          N_JOBS_PER_WORKER=str(n_jobs_per_worker if n_jobs_per_worker is not None else 1)
+#      注意它是 **patch_environment**:同名环境变量会被这行**覆盖**,
+#      所以往 .env / compose environment 里塞 N_JOBS_PER_WORKER 是**没用的**,
+#      只能走这个命令行参数。
+#
+#   为什么必须改:2026-08-19 线上实测,同一个人连传两张照片,第二条 run 的
+#   run_wait_time_ms = 101994 —— **干等了 102 秒才轮到**,因为并发是 1、
+#   第一条还在跑。识图那条链单次三分钟量级,两个工友同时拍照就会互相堵死,
+#   而界面上只是一直转,没有任何「你在排队」的信号。
+#
+#   为什么是 2 而不是更大:线上 VPS 是 **2 核 / 2GB**。这条链的耗时几乎全在等
+#   远端模型(I/O 密集),CPU 不是瓶颈,但**内存是** —— 每条在飞的 run 都握着
+#   照片 base64 与检查点。调大的失败模式是 OOM 把整个容器打死,
+#   那比排队严重得多(排队只是慢,OOM 是全站挂)。要往上调,先在 VPS 上
+#   压测两条并发的常驻内存,别拍脑袋。
 CMD ["langgraph", "dev", \
      "--host", "0.0.0.0", \
      "--port", "2024", \
      "--no-browser", \
      "--no-reload", \
-     "--allow-blocking"]
+     "--allow-blocking", \
+     "--n-jobs-per-worker", "2"]
