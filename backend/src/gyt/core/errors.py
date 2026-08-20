@@ -179,6 +179,9 @@ def _guard_detail(fn: Callable[..., Any], exc: BaseException) -> str:
 #
 #     模型调用记了 198 秒  → 在调用里面,查模型侧 / 网络
 #     模型调用记了 2 秒    → 在调用之前,查工具与图调度 ← 这条日志说话
+#
+# 同一份数还会**推一份给前端**(custom 事件,kind="tool"),理由同样在
+# core/timing.py 的头注:日志只有我看得见,而在工地上等的是工友。
 # ---------------------------------------------------------------------------
 
 _NO_SLOW_THRESHOLD = float("inf")
@@ -202,6 +205,35 @@ def _tool_slow_threshold() -> float:
         return _NO_SLOW_THRESHOLD
 
 
+def _emit_tool_timing(name: str, elapsed: float, *, succeeded: bool, slow: bool) -> None:
+    """把这条耗时也推给前端(custom 事件,``kind="tool"``)。
+
+    ⚠️ **整只函数兜住异常** —— 同 ``_log_tool_elapsed``:界面上少一行耗时是小事,
+       把工友的提问弄失败是大事。连兜底那句 debug 也再兜一层(会抛的 logger
+       在 test_timing.py 里是真实存在的替身)。
+
+    🔴 **`from gyt.core.timing import ...` 必须留在函数体里,不许提到文件顶部。**
+       ``core/errors.py`` 至今是 langchain-free 的,而 ``core/timing.py`` 要拉
+       langchain(``LlmCallTiming`` 的基类 ``BaseCallbackHandler``)+ 间接拉
+       langgraph。attendance/cleanup.py、core/doc_no.py、attendance/messages.py
+       三个轻量入口都还靠着这条,``test_timing.py`` 里有一条守卫钉死了
+       **模块级** import 一行都不许有。
+       放函数里是安全的:真会走到这儿的进程一定在跑 Agent,那时 timing 早
+       import 好了,只剩一次 sys.modules 字典查找。
+
+    ⚠️ 为什么不在这儿自己写一份推送、而要跨模块去取:事件契约(八个键的名字)
+       只能有一份真相。抄一份的下场是哪天改字段名只改了一边,而两边都不报错 ——
+       前端按 ``kind`` 分流时静默少掉工具那一整类。
+    """
+    try:
+        from gyt.core.timing import KIND_TOOL, emit_timing
+
+        emit_timing(kind=KIND_TOOL, name=name, seconds=elapsed, ok=succeeded, slow=slow)
+    except Exception:  # noqa: BLE001 —— 观测件绝不许把工具打断
+        with suppress(Exception):
+            logger.debug("工具耗时推事件失败,已忽略", exc_info=True)
+
+
 def _log_tool_elapsed(name: str, elapsed: float, failed: str | None = None) -> None:
     """给一次工具执行记一条耗时。``failed`` 非空表示走的是异常路径。
 
@@ -217,26 +249,46 @@ def _log_tool_elapsed(name: str, elapsed: float, failed: str | None = None) -> N
        入口都还靠着这条(它们现在 import 完 sys.modules 里没有 langchain_core)。
        为省这十几行去换一条重依赖不划算。**改这里的分级判据,记得回 timing.py
        看一眼那一条**,别让两边漂了。
+
+       ⚠️ 上面这条**在推事件那件事上让了一步、而且只让这一步**:``_emit_tool_timing``
+          会去 timing.py 取 ``emit_timing``,但那是**函数体内**的 import,模块级
+          依然一行 langchain 都没有(守卫仍在 test_timing.py)。让步的理由是
+          "事件契约的八个键只能有一份真相",和这里的分级判据无关 ——
+          **别拿它当借口把分级代码也合过去**。
     """
+    # 阈值取不出来时 `_tool_slow_threshold` 已经退回 inf,不会抛;这里再给 slow 一个
+    # 初值,是为了让下面那句推事件在 logger 半路炸掉时也有个数可用(推的是"不算慢",
+    # 保守方向:宁可漏标一次慢,也不许凭空标一个)。
+    slow = False
     try:
+        threshold = _tool_slow_threshold()
+        # 判据是 `>=` 不是 `>`,边界那一下归"慢" —— 与 core/timing.py 同一条。
+        slow = elapsed >= threshold
         if failed is not None:
             # 失败路径也要记 —— 「慢且最终失败」那一类不记就永远看不见。
             # 堆栈由调用方的 logger.exception 负责,这里只补"耗时"这一个数。
+            #
+            # ⚠️ 失败一律 warning,**不看阈值** —— 失败本身就值得看见。但 `slow`
+            #    那个字段照样按阈值如实算:那是"超没超时限"这件事,和日志分级
+            #    不是同一回事,别因为这里恒 warning 就把 slow 也写死成 True。
             logger.warning("工具执行失败 name=%s 耗时=%.1fs 类型=%s", name, elapsed, failed)
-            return
-        slow = _tool_slow_threshold()
-        # 超阈值抬到 warning:线上日志量很大,慢调用要能一眼捞出来。
-        level = logging.WARNING if elapsed >= slow else logging.INFO
-        logger.log(
-            level,
-            "工具执行完成 name=%s 耗时=%.1fs%s",
-            name,
-            elapsed,
-            f"(超过 {slow:.0f}s 阈值)" if level == logging.WARNING else "",
-        )
+        else:
+            # 超阈值抬到 warning:线上日志量很大,慢调用要能一眼捞出来。
+            level = logging.WARNING if slow else logging.INFO
+            logger.log(
+                level,
+                "工具执行完成 name=%s 耗时=%.1fs%s",
+                name,
+                elapsed,
+                f"(超过 {threshold:.0f}s 阈值)" if level == logging.WARNING else "",
+            )
     except Exception:  # noqa: BLE001 —— 同上,观测件绝不许把工具打断
         with suppress(Exception):
             logger.debug("工具耗时观测失败,已忽略", exc_info=True)
+    # 日志记完**再**推事件,顺序同 core/timing.py:日志是最后的兜底,前端那条
+    # 通道断了还能翻日志,反过来不成立。放在 try 外面,是为了让"日志器坏了"和
+    # "推送坏了"这两件事互不牵连 —— 各自兜各自的。
+    _emit_tool_timing(name, elapsed, succeeded=failed is None, slow=slow)
 
 
 def tool_guard(fn: F) -> F:

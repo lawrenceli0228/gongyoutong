@@ -497,14 +497,25 @@ apply_override "thread-provider.tsx" "src/providers/Thread.tsx"
 #    「站点打得开、每次提问 401」。
 apply_override "api-key.tsx" "src/lib/api-key.tsx"
 
+# 「每一步花了多久」(2026-08-20)—— 让工友和评委看得见时间花在哪儿。
+# 本件是**接线**:上游这份 Stream.tsx 已经给 useStream 传了 onCustomEvent
+# (langgraph-sdk 正是靠它决定要不要往 stream_mode 里加 "custom",所以线上抓到的
+#  ['values','messages-tuple','custom'] 是真的),但那个回调**只认 UI 消息**,
+# 别的事件进来判一下就函数结束 —— 后端推的 `{ gyt_timing: {…} }` 在那儿静默蒸发。
+# 🔴 而这是**唯一**的接入点:useStream 只在这一处构造,组件拿到的
+#    useStreamContext() 里根本没有 custom 事件这一维,在别处收是收不到的。
+# ⚠️ 漏装本件的表现不是报错,是「一行耗时都不出」,而查的人会先去怀疑后端没推。
+#    与它成组的是下面 install_new_file 的 timing-lib.ts + GytTimingRows.tsx。
+apply_override "stream-provider.tsx" "src/providers/Stream.tsx"
+
 # 打卡三件(W7 §4.4):**本仓自有**的新文件,上游没有对应物,走 install_new_file
 # (apply_override 对不存在的目标只会 warning 跳过,永远装不上,见函数头注)。
 #   checkin-lib.ts —— 纯函数库,scripts/frontend-tests/ 的 vitest 直接测它
 #   qrcode.tsx     —— 电脑端二维码面板(依赖下面步骤 2.6 装的 qrcode.react)
 #   checkin.tsx    —— 自拍打卡组件,thread-index.tsx 的动作条里是它的入口
-# ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override 十二件 + install_new_file
-#    **十一件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
-#    合并之后数出来永远对不上。
+# ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override **十三件** + install_new_file
+#    **十三件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
+#    合并之后数出来永远对不上。**两个数眼下相等纯属巧合**,别因此合并。
 #    (2026-08-15 校过:上一版这里写的是「十一件 + 三件」,而 apply_override 那时
 #     确实是十一件、install_new_file 却已经是五件 —— 队友那两件
 #     ProjectUploadPanel/GytStatusCards 合流时没回来改这个数。
@@ -525,6 +536,14 @@ apply_override "api-key.tsx" "src/lib/api-key.tsx"
 #     ⚠️ 顺手补正:上面那个头数在「八」上停了两批 —— W12 两批都只改了历史记录、
 #        没回头改它,而真值那时已经是十。**改数是两处一起**:头一行的数 + 追加历史。
 #        这就是本段开头那条教训的第三次复发,而它照旧一声不吭。)
+#    (2026-08-20 perf·每步耗时:**两个数同时动** —— apply_override 十二 → **十三**
+#     (加了 stream-provider.tsx:上游那份 Stream.tsx 订阅了 custom 却把非 UI 的事件
+#      整个扔掉,而它是全站唯一能收 custom 事件的地方);
+#     install_new_file 十一 → **十三**(timing-lib.ts 那个零依赖纯 TS 库 +
+#      GytTimingRows.tsx 那一坨耗时行)。
+#     这是本段历史上**第一次两个数一起变**,前面几批都只动一个 ——
+#     照着「上一批只改了 install 这个数」的惯性只改一半,又会复发一次。
+#     ⚠️ 两个数**现在都等于十三,那是巧合**,不是可以合并的信号。)
 #    数法:grep -cE '^\s*apply_override ' scripts/setup-frontend.sh
 #          grep -cE '^\s*install_new_file ' scripts/setup-frontend.sh
 install_new_file "checkin-lib.ts" "src/lib/checkin-lib.ts"
@@ -567,6 +586,20 @@ install_new_file "GytStatusCards.tsx" "src/components/thread/GytStatusCards.tsx"
 install_new_file "supervision-lib.ts" "src/lib/supervision-lib.ts"
 install_new_file "supervision.tsx" "src/components/thread/supervision.tsx"
 install_new_file "supervision-entry.tsx" "src/components/thread/supervision-entry.tsx"
+
+# 「每一步花了多久」两件(2026-08-20)。与上面 apply_override 的 stream-provider.tsx
+# 是**一组**,三件缺一整条链就断:那件负责收 custom 事件,这两件负责存和显示。
+#   timing-lib.ts     —— 零依赖纯 TS:契约解析 + 排版 + run 级 store。
+#                        scripts/frontend-tests/ 的 vitest 直接测它,所以必须保持零依赖。
+#                        ⚠️ 加进 scripts/frontend-tests/tsconfig.json 的 include 了 ——
+#                           漏了不报错,只是 import 进来全成 any(CLAUDE.md 明写)。
+#   GytTimingRows.tsx —— 消息区末尾那一坨耗时行,受「隱藏中間步驟」开关控制。
+# ⚠️ 漏装任一件 = 前端构建 Module not found(thread-index.tsx 与 Stream.tsx 都 import
+#    它们),这个坏法是响的、不难查。安静的坏法在**契约漂移**:timing-lib.ts 里的
+#    字段名(gyt_timing / input_tokens / reasoning_tokens …)镜像后端推的那个对象,
+#    漂了一声不吭 —— 解析全返回 null,界面上一行都不出,控制台干净。
+install_new_file "timing-lib.ts" "src/lib/timing-lib.ts"
+install_new_file "GytTimingRows.tsx" "src/components/thread/GytTimingRows.tsx"
 
 # -----------------------------------------------------------------------------
 # 步骤 2.6:装二维码库(checkin 三件里唯一的新依赖)

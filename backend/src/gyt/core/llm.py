@@ -330,9 +330,21 @@ def get_chat_model(purpose: Purpose = "text", **overrides: Any) -> BaseChatModel
         # 钉死 Chat Completions:两家供应商都没实现 Responses API(见文件顶部核实记录)。
         "use_responses_api": False,
     }
-    # 路由这类场景要的是低延迟而不是长篇推理,所以文本模型默认关掉思考模式。
-    # 字面量每次新建,不共享可变默认值(不可变优先)。
-    if purpose == "text" and settings.disable_thinking_for_text:
+    # 关思考模式。字面量每次新建,不共享可变默认值(不可变优先)。
+    #
+    # 文本档:路由这类场景要的是低延迟而不是长篇推理。
+    # 视觉档:2026-08-20 实测,同一张图关掉思考后 **23.0s → 7.5s、输出 779 → 210 tok**,
+    #        而正文反而更完整(348 → 458 字符,还多识别出一条隐患)——
+    #        那 779 里有 596 是思考,占 76%,工友在工地上等的就是这一段。
+    #        完整数据与「为什么不作废视觉缓存」写在 config.disable_thinking_for_vision 上方。
+    #
+    # ⚠️ 两个开关分开留,别合成一个:文本档和视觉档的取舍理由不同
+    #    (一个是路由要快,一个是识图要省钱且更准),哪天想单独放开一边做对照,
+    #    合并了就得改代码。
+    disable_thinking = (purpose == "text" and settings.disable_thinking_for_text) or (
+        purpose == "vision" and settings.disable_thinking_for_vision
+    )
+    if disable_thinking:
         params["extra_body"] = {"thinking": {"type": "disabled"}}
     # 采样温度只给文本档。视觉档(kimi-k3)官方要求把采样参数**从请求里省略**
     # (temperature/top_p/n/presence_penalty/frequency_penalty 都是固定值),传了可能 400。

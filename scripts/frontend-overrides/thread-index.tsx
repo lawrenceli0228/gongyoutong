@@ -31,6 +31,7 @@ import {
   useCurrentProjectId,
 } from "./ProjectUploadPanel";
 import { GytStatusCards } from "./GytStatusCards";
+import { GytTimingRows } from "./GytTimingRows";
 import { toast } from "sonner";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { Label } from "../ui/label";
@@ -492,6 +493,15 @@ function ThreadInner() {
                       handleRegenerate={handleRegenerate}
                     />
                   )}
+                  {/* 「每一步花了多久」(2026-08-20)。数据源是后端经 custom 流推的
+                      `{ gyt_timing: {…} }`,在 providers/Stream.tsx 收下、存进
+                      @/lib/timing-lib 那个 run 级 store —— **不是**从 messages 里
+                      倒推的(耗时消息里根本没有,倒推不出来)。
+                      🔴 受 hideToolCalls 控制,与工具调用痕迹同一档:它俩是同一类
+                      东西(讲架构有用、给工地师傅看纯属干扰),开关只有一个,
+                      漏了这个条件的表现是「关了中间步骤,底下还挂着一坨秒数」。
+                      放在消息之后、加载点之前:一轮跑的过程中能看着它一行行长出来。 */}
+                  {!hideToolCalls && <GytTimingRows />}
                   {isLoading && !firstTokenReceived && (
                     <AssistantMessageLoading />
                   )}
