@@ -1404,6 +1404,43 @@ docker exec gyt-backend cat /app/langgraph.json                  → **连 http 
   > ⚠️ 顺带一条容易误判的:当天负责人先撞到的是**照片**打不开
   > (「照片暫時打不開」),那个跟本条**无关** —— 只是 `make serve-artifacts`
   > 没起。而且那张卡能渲染出来本身证明 `(照片编号:…)` 的正则是好的。
+  >
+  > 🔴 **2026-08-21 找到了「渲染过、跑完就掉」的确切机制,并且把它关掉了。**
+  >
+  > 上面写的「流式过程中 `useStream` 会把子 Agent 的工具返回推上来」是对的,
+  > 但没说清是**哪条通道**推的、以及为什么跑完会掉。确切链条:
+  >
+  > 1. 三处提交都带着 `streamSubgraphs: true`(**上游 agent-chat-ui 的默认值**,
+  >    2026-08-09 那次把整份 `thread-index.tsx` 拷进来当覆盖件时原样带进来的,
+  >    不是我们要的 —— 那行旁边一句我们写的注释都没有);
+  > 2. 于是子图(safety / report / inspection)的 `values` 事件也推上来,
+  >    里面**有**子 Agent 的全部内部消息;
+  > 3. 而 SDK 对**每个** values 事件是**整份替换**主状态、不是合并 ——
+  >    `@langchain/langgraph-sdk` 的 `dist/ui/manager.js:447` 那句裸 `return data`;
+  > 4. 父节点跑完再推一份短的(`output_mode="last_message"` 只回灌最后一条),
+  >    **整份替换** → 刚才那些消息连同卡片一起消失。
+  >
+  > 探针实证(不调模型,复刻 `_make_call_agent` 的形状):
+  >
+  > ```
+  > 子图  messages=3   [人:看看这张照片 / 安全:三条隐患… / 记录:巡检记录已出…]
+  > 父图  messages=2   [人:看看这张照片 / 记录:巡检记录已出…]   ← 安全那条整条没了
+  > ```
+  >
+  > 2026-08-21 已把三处 `streamSubgraphs` 关掉(`thread-index.tsx` 的
+  > `handleSubmit` / `handleRegenerate` + `human.tsx` 的编辑后重发)。
+  >
+  > ⚠️ **这只治了「闪一下再消失」,没治「卡片能显示」** —— 关掉之后那张卡
+  > **一次都不出现**了。对负责人报的那个症状(「看到了但是又消失了」)是修好的:
+  > 先给再拿走比从来不给更像系统丢了东西。但本条欠账本身**仍然开着**,
+  > 修法不变:并进一个有自己数据源的常驻面板,照 W10 那条先例。
+  >
+  > 顺带记一条**架构上的判据**,它比这次的具体修法更值钱:
+  > **子 Agent 的话要么一直不进主对话、要么一直留着 —— 唯独不许先进后出。**
+  > Claude Code 那套子 Agent 就是前者(官方文档原话:子 Agent 在独立上下文里跑,
+  > 「returns only the summary」,内部工具调用与推理全不进主对话),所以它没有
+  > 可收回的东西。工友通此前是**后端隔离、前端不隔离**,两边对同一个问题的答案
+  > 不一致 —— 不一致本身就是那个 bug。
 - **四个前端覆盖件超 800 行**:`supervision.tsx` 1402、`supervision-lib.ts` ~1230、
   `checkin.tsx` 1046、`ProjectUploadPanel.tsx` 1047、`checkin-lib.ts` 914。
   **一起拆,别只拆一个** —— 只拆一个是 churn 而不是原则;而且拆错的失败模式
@@ -1620,6 +1657,75 @@ GET  /artifacts/by-id/49f71a6b…      响应体   3,109,100 字节(3.11MB)
 base64 后 ×4/3 ≈ 7,975,320,而返回 16,018,812 ≈ **2.01 倍** —— 也就是每张图的 base64
 在那份响应里大约出现了**两次**。真要坐实「每步几份」,判据在这儿:把那次 `/history`
 的响应存成文件,`grep -o 'base64,' | wc -l` 数一遍。没人数过,别把「两份」当结论引用。
+
+> ### ✅ 2026-08-21:上面那个开着的问题有答案了,而且多出一个放大器
+>
+> **答案:每张图只出现一次,「2.01 倍」是两张图各一份。** 不是「每张两份」。
+> 机制:`uploads.py` 的 `RemoveMessage` 把 base64 换成「照片编号」文本是在
+> **step 9**,而带 base64 的那条 `HumanMessage` **step 8 就已经落进检查点**了 ——
+> 追不回来。所以每张图**恰好**在一个检查点里留一份永久拷贝。
+>
+> **放大器(这条是新的)**:`frontend/src/providers/Stream.tsx` 有一行
+> `fetchStateHistory: true`。⚠️ **那是上游 agent-chat-ui 自己的默认值**
+> (2026-08-21 从上游仓库直接核过,在它的第 96 行),不是我们加的 ——
+> 所以别去 `scripts/frontend-overrides/` 里找,那儿没有。而 SDK 拿到 `true` 之后 ——
+>
+> ```js
+> // @langchain/langgraph-sdk/dist/react/stream.lgp.js:26
+> const limit = typeof options?.limit === "number" ? options.limit : 10
+> ```
+>
+> `true` 不是 number,**落到 10**:每次打开一条会话都拉 **10 份完整状态快照**,
+> 每份都带整条线程的完整 messages。哪几份里有图,哪几份就驮着 MB 级的 base64。
+>
+> 本机解开真实检查点量出来的数(不是估算,线程 `01a00b29`,13 个 root checkpoint):
+>
+> ```
+> fetchStateHistory: true → history(limit=10)   7,501,333 B
+> 实际渲染只要的 head 状态                          8,248 B      ← 909 倍
+> 十份里两份各驮一整张图:3,314,495 B + 4,150,200 B
+> ```
+>
+> 逐版本实证,同一条线程:
+> ```
+> v005  3,314,613 B  content = [{'type':'image','mimeType':'image/png','data':'iVBORw0KGgo…'}]
+> v006      2,098 B  content = "看看这张照片。(照片编号:005bedf1…)"
+> ```
+>
+> **可自证伪的预测**:传过照片的会话慢,纯文字的会话不慢。本机 8 条线程里
+> 3 条是 MB 级(7.5 / 3.3 / 2.2 MB),5 条是 5–162 KB。
+>
+> **顺带**:界面上那几秒是**纯白板** —— SDK 在 `stream.lgp.js:515` 暴露了
+> `isThreadLoading`,而 `thread-index.tsx` 一处都没读,连骨架屏都没有。
+>
+> **顺带之二(同一根因,独立成灾)**:`data/langgraph/` 现在 **132 MB,约 97%
+> 是照片 base64**,而 langgraph 的内存持久层**每 10 秒无条件全量 pickle 一遍**
+> (`langgraph_runtime_inmem/_persistence.py:17` 的 `_flush_interval = 10`,
+> `:51-63` **没有脏标记**)。本机纯 CPU 实测 288 ms / 10 秒。两核 VPS 上就是
+> 周期性持 GIL 的卡顿 + 常态写盘,而且随会话数线性变糟。
+> ⚠️ 线上那个目录**就是对话历史本体**(`docker-compose.vps.yml:131`),
+> 删它是真删,不是清缓存。
+>
+> ### 便宜的修法与它的坑(**尚未动手,等拍板**)
+>
+> · **一行 `{ limit: 1 }`** 能把 7.5 MB 打到 8 KB。🔴 **但有静默出错的风险**:
+>   `ai.tsx:179` 与 `human.tsx:304` 读 `meta?.firstSeenState?.parent_checkpoint`
+>   做「编辑重发 / 重新生成」的分叉点。只剩一份快照时每条消息的 `firstSeenState`
+>   都指向 head,**编辑老消息会从错的检查点分叉,而且不报任何错**。
+> · **安全的那个**:SDK 的 `options.thread` 是公开选项(`dist/ui/types.d.ts:861`),
+>   传了它内建 fetch 就不发。首屏用 `getState()`(8 KB)立刻出字,分支数据等用户
+>   真点「编辑」时再拉。零功能损失。
+>   ⚠️ **它要改 `src/providers/Stream.tsx`,而那件覆盖件 2026-08-21 已经删了**
+>   (耗时换通道之后它没别的职责了)—— 走这条路要把它重新加回来,
+>   `apply_override` 的数会从十二回到十三。
+> · **根治**仍是本条标题那件事:别让 base64 进 state。前端提交前先把图 POST 到
+>   直连接口换成 32 位编号 —— 这条路仓库里已有两个先例(`checkin_api`、
+>   `/supervision/photo`),而且契约两头都现成:`uploads.py` 产的就是那个文本,
+>   `human.tsx` 已经能把它渲染回真图。
+>
+> ⚠️ **压缩上线并没有解决它**:`image-compress.ts` 落于 `8e2711c`(2026-08-19 12:46 UTC),
+> 而线程 `01a01a37` 建于 **13:30 UTC**、仍带 2.2 MB base64 JPEG。600 KB 的 JPEG
+> base64 之后也有 ~800 KB,照样能落进那 10 份里一两次。**减轻,不解决。**
 
 ### ② 用户看到的是什么(这一条最误导人)
 

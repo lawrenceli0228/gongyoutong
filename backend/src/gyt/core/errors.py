@@ -206,11 +206,19 @@ def _tool_slow_threshold() -> float:
 
 
 def _emit_tool_timing(name: str, elapsed: float, *, succeeded: bool, slow: bool) -> None:
-    """把这条耗时也推给前端(custom 事件,``kind="tool"``)。
+    """把这条耗时也记进后端缓冲(``kind="tool"``),前端自己来取。
 
     ⚠️ **整只函数兜住异常** —— 同 ``_log_tool_elapsed``:界面上少一行耗时是小事,
        把工友的提问弄失败是大事。连兜底那句 debug 也再兜一层(会抛的 logger
        在 test_timing.py 里是真实存在的替身)。
+
+    🔴 **这里不传 ``thread_id``,是刻意的。** ``emit_timing`` 取不到就会自己去问
+       LangGraph 运行时(``timing._current_thread_id``),而那句 ``import langgraph``
+       在**它那边**的函数体里 —— 于是 ``core/errors.py`` 至今一行 langgraph 都不用碰,
+       下面那条"模块级不许 import langchain"的守卫继续成立。
+       顺手在这儿 ``from langgraph.config import get_config`` 会当场破掉它。
+       ``agent`` 同理不传:工具跑在哪个节点这件事,值不值得为它破守卫是另一码事,
+       今天的答案是不值得 —— 界面上工具那一类本来就按工具名显示。
 
     🔴 **`from gyt.core.timing import ...` 必须留在函数体里,不许提到文件顶部。**
        ``core/errors.py`` 至今是 langchain-free 的,而 ``core/timing.py`` 要拉
@@ -221,9 +229,9 @@ def _emit_tool_timing(name: str, elapsed: float, *, succeeded: bool, slow: bool)
        放函数里是安全的:真会走到这儿的进程一定在跑 Agent,那时 timing 早
        import 好了,只剩一次 sys.modules 字典查找。
 
-    ⚠️ 为什么不在这儿自己写一份推送、而要跨模块去取:事件契约(八个键的名字)
-       只能有一份真相。抄一份的下场是哪天改字段名只改了一边,而两边都不报错 ——
-       前端按 ``kind`` 分流时静默少掉工具那一整类。
+    ⚠️ 为什么不在这儿自己写一份、而要跨模块去取:记录契约(``timing.RECORD_KEYS``
+       那十个键的名字)只能有一份真相。抄一份的下场是哪天改字段名只改了一边,
+       而两边都不报错 —— 前端按 ``kind`` 分流时静默少掉工具那一整类。
     """
     try:
         from gyt.core.timing import KIND_TOOL, emit_timing
@@ -250,10 +258,10 @@ def _log_tool_elapsed(name: str, elapsed: float, failed: str | None = None) -> N
        为省这十几行去换一条重依赖不划算。**改这里的分级判据,记得回 timing.py
        看一眼那一条**,别让两边漂了。
 
-       ⚠️ 上面这条**在推事件那件事上让了一步、而且只让这一步**:``_emit_tool_timing``
+       ⚠️ 上面这条**在记耗时那件事上让了一步、而且只让这一步**:``_emit_tool_timing``
           会去 timing.py 取 ``emit_timing``,但那是**函数体内**的 import,模块级
           依然一行 langchain 都没有(守卫仍在 test_timing.py)。让步的理由是
-          "事件契约的八个键只能有一份真相",和这里的分级判据无关 ——
+          "记录契约的十个键只能有一份真相",和这里的分级判据无关 ——
           **别拿它当借口把分级代码也合过去**。
     """
     # 阈值取不出来时 `_tool_slow_threshold` 已经退回 inf,不会抛;这里再给 slow 一个
@@ -285,9 +293,9 @@ def _log_tool_elapsed(name: str, elapsed: float, failed: str | None = None) -> N
     except Exception:  # noqa: BLE001 —— 同上,观测件绝不许把工具打断
         with suppress(Exception):
             logger.debug("工具耗时观测失败,已忽略", exc_info=True)
-    # 日志记完**再**推事件,顺序同 core/timing.py:日志是最后的兜底,前端那条
-    # 通道断了还能翻日志,反过来不成立。放在 try 外面,是为了让"日志器坏了"和
-    # "推送坏了"这两件事互不牵连 —— 各自兜各自的。
+    # 日志记完**再**记缓冲,顺序同 core/timing.py:日志是最后的兜底,前端那条
+    # 路断了还能翻日志,反过来不成立。放在 try 外面,是为了让"日志器坏了"和
+    # "记缓冲坏了"这两件事互不牵连 —— 各自兜各自的。
     _emit_tool_timing(name, elapsed, succeeded=failed is None, slow=slow)
 
 

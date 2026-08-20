@@ -381,6 +381,37 @@ log_step "套用界面覆盖件"
 
 OVERRIDES_DIR="${REPO_ROOT}/scripts/frontend-overrides"
 
+check_retired_override() {
+  # 已**退休**的覆盖件在旧机器上留下的残骸检查。
+  #
+  # 🔴 为什么必须有这一道:`frontend/` 是生成物、不进 git,而本脚本对已存在的
+  #    目录是**跳过 clone、原地打补丁**的。删掉一件 apply_override 之后,
+  #    脚本再也不会去碰那个目标文件 —— 于是**新机器拿到的是上游原版(对的),
+  #    老机器留着上一版的补丁(错的)**,两边行为不一样而没有任何东西说话。
+  #    具体到 2026-08-21 删掉的 stream-provider.tsx:老机器上那份 Stream.tsx
+  #    还 `import { recordTiming } from "@/lib/timing-lib"`,而那个导出已经没了,
+  #    表现是 `pnpm build` 报 Module not found —— 响是响的,但查的人会先去
+  #    怀疑 timing-lib 写错了,而不是想到「这台机器的 frontend/ 是旧的」。
+  #
+  # 判据是**内容里的标志串**,不是文件是否存在:目标文件在上游本来就有,
+  # 存在与否说明不了任何事。
+  local dst="${FRONTEND_DIR}/$1"
+  local marker="$2"
+  local what="$3"
+  [[ -f "${dst}" ]] || return 0
+  grep -q -- "${marker}" "${dst}" 2>/dev/null || return 0
+  die "这台机器的 frontend/ 还带着**已退休**的覆盖件:$1
+      (${what})
+      它不会被自动修好 —— 本脚本对已存在的目录只打补丁、不还原。
+      修法:rm -rf \"${FRONTEND_DIR}\" 然后重跑 make frontend(整个目录是生成物,删了没损失)。"
+}
+
+# 2026-08-21 退休:耗时行改走直连接口 GET /timing 之后,这件覆盖件没有职责了。
+check_retired_override \
+  "src/providers/Stream.tsx" \
+  "recordTiming" \
+  "耗时行已改走直连接口,这份 Stream.tsx 还在 import 一个已经删掉的导出"
+
 apply_override() {
   local src="${OVERRIDES_DIR}/$1"
   local dst="${FRONTEND_DIR}/$2"
@@ -497,25 +528,28 @@ apply_override "thread-provider.tsx" "src/providers/Thread.tsx"
 #    「站点打得开、每次提问 401」。
 apply_override "api-key.tsx" "src/lib/api-key.tsx"
 
-# 「每一步花了多久」(2026-08-20)—— 让工友和评委看得见时间花在哪儿。
-# 本件是**接线**:上游这份 Stream.tsx 已经给 useStream 传了 onCustomEvent
-# (langgraph-sdk 正是靠它决定要不要往 stream_mode 里加 "custom",所以线上抓到的
-#  ['values','messages-tuple','custom'] 是真的),但那个回调**只认 UI 消息**,
-# 别的事件进来判一下就函数结束 —— 后端推的 `{ gyt_timing: {…} }` 在那儿静默蒸发。
-# 🔴 而这是**唯一**的接入点:useStream 只在这一处构造,组件拿到的
-#    useStreamContext() 里根本没有 custom 事件这一维,在别处收是收不到的。
-# ⚠️ 漏装本件的表现不是报错,是「一行耗时都不出」,而查的人会先去怀疑后端没推。
-#    与它成组的是下面 install_new_file 的 timing-lib.ts + GytTimingRows.tsx。
-apply_override "stream-provider.tsx" "src/providers/Stream.tsx"
+# 🪦 这里曾经有一件 `apply_override "stream-provider.tsx" "src/providers/Stream.tsx"`
+#    (2026-08-20 加,2026-08-21 删)。它的全部职责是给 useStream 的 onCustomEvent
+#    接上耗时事件 —— 而耗时**已经不走聊天流了**,改成了直连接口 `GET /timing`。
+#
+#    🔴 换掉的理由值得留在这儿,因为它同时是另一个 bug 的解药:值得看的模型调用
+#       全在子图里,子图的 custom 事件要 `streamSubgraphs: true` 才出得来,
+#       而一开它,子图的 `values` 会**整份替换**前端主状态 —— 子 Agent 说的话
+#       先出现再消失(「话被收回去了」)。两件是同一个开关的两头。
+#       完整推演在 backend/src/gyt/core/timing.py 的模块头注。
+#
+#    ⚠️ 别因为「以后可能还要改 Stream.tsx」就把这件空壳留着:一个不再改动任何东西
+#       的整文件覆盖件,等于把我们悄悄钉死在某一版上游快照上,而升级时不会有人发现。
+#       真要再改它,那天重新加回来。
 
 # 打卡三件(W7 §4.4):**本仓自有**的新文件,上游没有对应物,走 install_new_file
 # (apply_override 对不存在的目标只会 warning 跳过,永远装不上,见函数头注)。
 #   checkin-lib.ts —— 纯函数库,scripts/frontend-tests/ 的 vitest 直接测它
 #   qrcode.tsx     —— 电脑端二维码面板(依赖下面步骤 2.6 装的 qrcode.react)
 #   checkin.tsx    —— 自拍打卡组件,thread-index.tsx 的动作条里是它的入口
-# ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override **十三件** + install_new_file
+# ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override **十二件** + install_new_file
 #    **十三件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
-#    合并之后数出来永远对不上。**两个数眼下相等纯属巧合**,别因此合并。
+#    合并之后数出来永远对不上。
 #    (2026-08-15 校过:上一版这里写的是「十一件 + 三件」,而 apply_override 那时
 #     确实是十一件、install_new_file 却已经是五件 —— 队友那两件
 #     ProjectUploadPanel/GytStatusCards 合流时没回来改这个数。
@@ -544,6 +578,12 @@ apply_override "stream-provider.tsx" "src/providers/Stream.tsx"
 #     这是本段历史上**第一次两个数一起变**,前面几批都只动一个 ——
 #     照着「上一批只改了 install 这个数」的惯性只改一半,又会复发一次。
 #     ⚠️ 两个数**现在都等于十三,那是巧合**,不是可以合并的信号。)
+#    (2026-08-21 fix·耗时换通道:apply_override 十三 → **十二**,删掉了
+#     stream-provider.tsx(墓碑在上面几十行处,理由写在那儿)。
+#     install_new_file 仍是**十三** —— timing-lib.ts 与 GytTimingRows.tsx 都还在,
+#     只是内部从「收 custom 事件」改成了「轮询直连接口」。
+#     ⚠️ **这是本段第一次有数变小。** 上一批那句「两个数都等于十三是巧合」
+#        当天就应验了:一批之后它们又不相等了。)
 #    数法:grep -cE '^\s*apply_override ' scripts/setup-frontend.sh
 #          grep -cE '^\s*install_new_file ' scripts/setup-frontend.sh
 install_new_file "checkin-lib.ts" "src/lib/checkin-lib.ts"
@@ -587,17 +627,21 @@ install_new_file "supervision-lib.ts" "src/lib/supervision-lib.ts"
 install_new_file "supervision.tsx" "src/components/thread/supervision.tsx"
 install_new_file "supervision-entry.tsx" "src/components/thread/supervision-entry.tsx"
 
-# 「每一步花了多久」两件(2026-08-20)。与上面 apply_override 的 stream-provider.tsx
-# 是**一组**,三件缺一整条链就断:那件负责收 custom 事件,这两件负责存和显示。
-#   timing-lib.ts     —— 零依赖纯 TS:契约解析 + 排版 + run 级 store。
+# 「每一步花了多久」两件(2026-08-20 加,2026-08-21 换了数据源)。
+# **这两件现在是自足的** —— 原本还有第三件 stream-provider.tsx 负责收 custom 事件,
+# 换成直连接口之后它没用了、已删(墓碑在上面 apply_override 那一段)。
+#   timing-lib.ts     —— 零依赖纯 TS:拼地址 + 解信封 + 排版 + store。
 #                        scripts/frontend-tests/ 的 vitest 直接测它,所以必须保持零依赖。
 #                        ⚠️ 加进 scripts/frontend-tests/tsconfig.json 的 include 了 ——
 #                           漏了不报错,只是 import 进来全成 any(CLAUDE.md 明写)。
-#   GytTimingRows.tsx —— 消息区末尾那一坨耗时行,受「隱藏中間步驟」开关控制。
-# ⚠️ 漏装任一件 = 前端构建 Module not found(thread-index.tsx 与 Stream.tsx 都 import
-#    它们),这个坏法是响的、不难查。安静的坏法在**契约漂移**:timing-lib.ts 里的
-#    字段名(gyt_timing / input_tokens / reasoning_tokens …)镜像后端推的那个对象,
-#    漂了一声不吭 —— 解析全返回 null,界面上一行都不出,控制台干净。
+#   GytTimingRows.tsx —— 消息区末尾那一坨耗时行,自己轮询 `GET /timing`,
+#                        受「隱藏中間步驟」开关控制。
+# ⚠️ 漏装任一件 = 前端构建 Module not found(thread-index.tsx import 它们),
+#    这个坏法是响的、不难查。安静的坏法有两种,都是一行不出而控制台干净:
+#      ① **契约漂移** —— timing-lib.ts 的字段名镜像后端 `core/timing.RECORD_KEYS`,
+#         漂了一声不吭(解析全返回 null);
+#      ② **路由没挂** —— 后端 webapp.py 少铺 `*TIMING_ROUTES` 时接口 404,
+#         而前端对非 2xx 是**故意安静走开**的(观测件绝不许打扰工友)。
 install_new_file "timing-lib.ts" "src/lib/timing-lib.ts"
 install_new_file "GytTimingRows.tsx" "src/components/thread/GytTimingRows.tsx"
 

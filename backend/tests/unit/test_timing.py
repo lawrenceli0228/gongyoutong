@@ -6,13 +6,16 @@
 那 198 秒是**在模型调用里面**,还是**在发出请求之前**。三处计时(路径甲的回调、
 路径乙的 ainvoke、所有工具的 tool_guard)合起来才把那段黑箱切开。
 
-所以本文件盯的不是"有没有日志",而是三条判据:
+所以本文件盯的不是"有没有日志",而是四条判据:
 
 1. **耗时那个数对不对** —— 它本身就是判据,写错了整件事就白做。
    用假时钟把数钉死,真时钟只能断言"大于 0",断不出日志里写的是不是那个数。
 2. **慢/不慢分级对不对** —— 超阈值必须抬到 warning,不然线上满屏日志里捞不出来。
 3. 🔴 **观测件坏掉时业务一点不受影响** —— 这条最要紧。为了看清楚慢调用而把
    用户的提问弄失败,是这件东西能犯的最蠢的错。
+4. **同一份数给工友那一份对不对**(F / G 两组,2026-08-21 从"推 custom 事件"
+   改成"记后端缓冲 + 前端来取",为什么改见 F 组组头)—— 记录的形状是前端
+   已经按着写的契约,归档与游标是前端拉取循环的地基。这两样坏起来都不报错。
 
 铁律:秒级、全 mock、绝不联网,也不真等。模型一律用假替身;缓存读写在需要时
 打桩掉,不碰磁盘。**本文件不许在顶部 import gyt.graph**(那会真建图、真要 API Key)。
@@ -24,7 +27,7 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -39,13 +42,17 @@ from gyt.core import llm as llm_mod
 from gyt.core import timing as timing_mod
 from gyt.core.errors import ErrorCode, ok, tool_guard
 from gyt.core.timing import (
+    _BUFFER_MAX_THREADS,
+    _BUFFER_PER_THREAD,
     _MAX_TRACKED,
-    EVENT_KEY,
     KIND_LLM,
     KIND_TOOL,
+    RECORD_KEYS,
     LlmCallTiming,
     _fmt_tokens,
     emit_timing,
+    recent_timings,
+    reset_timings,
 )
 
 # --- 常量:测试里同样不许散落魔法值 --------------------------------------------
@@ -65,19 +72,47 @@ LLM_LOGGER = "gyt.core.llm"
 
 QUESTION = [HumanMessage(content="工地上安全帽要怎么检查?")]
 
-# 事件契约的**全部八个键**(唯一真相是 core/timing.py 的 emit_timing docstring)。
-# 写成集合而不是散在各条断言里:少一个键前端就得多判一次 undefined,
-# 多一个键就是没人认得的脏数据 —— 两种都要当场红。
-契约字段 = {
-    "kind",
-    "name",
-    "seconds",
-    "input_tokens",
-    "output_tokens",
-    "reasoning_tokens",
-    "slow",
-    "ok",
-}
+# 一条记录的字段集合 —— **从 core/timing.py 的 RECORD_KEYS 派生,不许在这儿手抄一份**。
+# 手抄的下场很具体:改字段名时只改了源码那边,而这里的集合还是旧的,于是
+# "字段集合漂了"这条判据永远比对的是两个不同时代的东西,测试照绿。
+# 契约本身(那十个键的名字与含义)的唯一真相在 RECORD_KEYS 的 docstring。
+契约字段 = set(RECORD_KEYS)
+
+# 契约有几个键。**这个数字必须手写**,不能也从 RECORD_KEYS 派生 ——
+# 上面那个集合比对在"源码删了一个键"时两边一起缩,盖不住;只有一个写死的数
+# 才在那个方向上说话。少一个键的表现是前端每处都得判一次 undefined,
+# 而漏判时界面上一行都不出、控制台干净。
+契约键数 = 10
+
+# 缓冲发的号从 1 起(``_TimingBuffer.add`` 是先 +1 再用)。
+# 每条用例前都会 reset_timings(),所以"本用例记的第一条"的 seq 恒等于它。
+首条序号 = 1
+
+# 测试里统一用的会话号。真货是 chat-ui 那个 threadId(一串 uuid),
+# 这里取个看得懂的名字,断言失败时一眼认得出是哪一格。
+默认会话 = "会话-单测"
+另一个会话 = "会话-隔壁"
+
+
+# --- 环境隔离 ------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _清空耗时缓冲() -> Iterator[None]:
+    """每条用例前后都把缓冲清空 —— **用例之间绝不许串味**。
+
+    缓冲是 ``core/timing.py`` 的**模块级单例**(进程内共享,理由见那个类的头注),
+    不清的话有两种坏法,而且都不会明说自己坏了:
+
+      · ``_取唯一记录`` 会数到上一条用例留下的记录,断言红在一个跟本用例无关的地方;
+      · ``seq`` 全进程共用一个计数器,不清就没法断言"本用例记的第一条 seq 是 1",
+        而 seq 恰恰是前端增量拉取的判据,得有东西钉着它。
+
+    收尾也清一次:免得最后一条用例把残留漏给别的测试文件(整套跑起来是同一个进程)。
+    """
+    reset_timings()
+    yield
+    reset_timings()
 
 
 # --- 测试替身 ------------------------------------------------------------------
@@ -132,33 +167,31 @@ class 会抛的日志器:
         return _炸
 
 
-class 假写手:
-    """冒充 LangGraph 的 stream writer,把推上来的事件原样收进列表。
+class 会抛的缓冲:
+    """一写就炸的缓冲替身,模拟"记录这一步自己坏了"。
 
-    真货是 ``get_stream_writer()`` 的返回值 —— 一个吃 dict 的可调用对象,
-    图在 ``stream_mode="custom"`` 下把它写的东西转给前端。
-    """
+    这不是臆想出来的形态:锁在别的线程手里出了岔子、上游改了 ``add`` 的签名、
+    记录里塞了个序列化不了的东西,都会落到同一个地方。而工友的提问
+    **一点都不该受影响**。
 
-    def __init__(self) -> None:
-        self.事件: list[Any] = []
+    ⚠️ **刻意不实现 ``since``** —— 读那一侧不该在写坏的时候被连累。哪天有人把读写
+       揉进一个 try 里,这个替身会因为缺方法当场把它抓出来。
 
-    def __call__(self, 事件: Any) -> None:
-        self.事件.append(事件)
-
-
-class 会抛的写手:
-    """一写就炸的 writer,模拟"推送这一步自己坏了"。
-
-    这不是臆想出来的形态:前端断开、事件序列化不了、上游改了 writer 的契约,
-    都会落到同一个地方。而工友的提问**一点都不该受影响**。
+    ⚠️ ``clear`` 却必须实现,而且必须是空操作。踩过一次:``_清空耗时缓冲`` 那个
+       autouse fixture 的收尾**跑在 monkeypatch 撤销之前**,于是它清的是这个替身
+       而不是真缓冲 —— 少这个方法的话,用例本身全绿、teardown 一片 AttributeError。
+       空操作是对的:真缓冲下一条用例开头还会再清一次。
     """
 
     def __init__(self) -> None:
         self.被调用次数 = 0
 
-    def __call__(self, _事件: Any) -> None:
+    def add(self, *_args: Any, **_kwargs: Any) -> None:
         self.被调用次数 += 1
-        raise RuntimeError("写手坏了")
+        raise RuntimeError("缓冲坏了")
+
+    def clear(self) -> None:
+        """空操作,理由见类的 docstring。"""
 
 
 台账信封 = ok({"count": 3}, user_msg="查到 3 条记录。")
@@ -170,7 +203,7 @@ def 查台账() -> Any:
 
     刻意不写成用例里的嵌套函数:``tool_guard`` 记的是 ``__qualname__``,嵌套函数的
     qualname 长成 ``test_xxx.<locals>.查台账``,而真工具(``analyze_site_photo``
-    那种模块级函数)的 qualname 就是裸名字。要验"事件里 name 到底长什么样",
+    那种模块级函数)的 qualname 就是裸名字。要验"记录里 name 到底长什么样",
     就得拿真形状来验 —— 拿嵌套函数验,断言只能松成"包含",而"包含"盖不住
     name 里混进一大段测试文件名这种事。
     """
@@ -197,10 +230,32 @@ class 假模型:
 # --- 工具函数 --------------------------------------------------------------------
 
 
-def _起一次(处理器: LlmCallTiming, *, model: str = "deepseek-v4-flash") -> UUID:
-    """模拟 langchain 发出的 on_chat_model_start,返回这次调用的 run_id。"""
+def _起一次(
+    处理器: LlmCallTiming,
+    *,
+    model: str = "deepseek-v4-flash",
+    thread_id: str | None = 默认会话,
+    node: str | None = None,
+) -> UUID:
+    """模拟 langchain 发出的 on_chat_model_start,返回这次调用的 run_id。
+
+    ``metadata`` 里那两样是 ``_mark`` 唯一的取数口:会话号(记到哪个会话名下)与
+    ``langgraph_node``(记录里的 ``agent``)。🔴 **只有起点这个钩子拿得到它们** ——
+    实测 ``on_llm_end`` 的 metadata 是空的,所以这里必须递进去,不能等终点再取。
+
+    默认给一个会话号,是为了让只关心日志的 A 组用例一个字都不用改;
+    要验"不在会话里"那条路,显式传 ``thread_id=None``。
+
+    ⚠️ 传 None 的那一格**整个不放进 metadata**,而不是放一个 ``None`` 值:
+       图外调用的 metadata 里压根没有这两个键,塞个 None 进去测的就是另一回事了。
+    """
     run_id = uuid4()
-    处理器.on_chat_model_start({}, [], run_id=run_id, invocation_params={"model": model})
+    元数据 = {
+        键: 值 for 键, 值 in (("thread_id", thread_id), ("langgraph_node", node)) if 值 is not None
+    }
+    处理器.on_chat_model_start(
+        {}, [], run_id=run_id, invocation_params={"model": model}, metadata=元数据
+    )
     return run_id
 
 
@@ -256,25 +311,64 @@ def _带思考的用量(prompt: int, completion: int, reasoning: int) -> LLMResu
     )
 
 
-def _假装在图内(monkeypatch: pytest.MonkeyPatch) -> 假写手:
-    """把 ``get_stream_writer`` 换成"拿得到写手"的版本 —— 冒充"正在图里跑"。
+def _假装在图内(monkeypatch: pytest.MonkeyPatch, thread_id: str = 默认会话) -> str:
+    """把 ``get_config`` 换成"问得到会话号"的版本 —— 冒充"正在图里跑"。返回那个会话号。
 
     ⚠️ **换的是 langgraph.config 上的那个名字,不是 timing_mod 上的。**
-       ``emit_timing`` 里那句 import 刻意留在**函数体内**(理由写在它的注释里),
-       所以每次调用都重新去 ``langgraph.config`` 取。换 timing_mod 上的同名属性
-       是无效的 —— 而无效的打桩不会报错,用例会永远绿着什么都没测到。
+       ``_current_thread_id`` 里那句 import 刻意留在**函数体内**(理由写在它的
+       docstring 里:提上去要给每个 import 到 llm 的入口白加半秒,还会把
+       "langgraph 装没装好"变成 import 期硬失败),所以每次调用都重新去
+       ``langgraph.config`` 取。换 timing_mod 上的同名属性是无效的 ——
+       而无效的打桩不会报错,用例会永远绿着什么都没测到。
+
+    这条路盖住的是 ``tool_guard`` 那一侧:它**刻意不传** thread_id,全靠
+    ``_current_thread_id()`` 去问运行时(这样 core/errors.py 一行 langgraph
+    都不用碰)。模型那一侧则走 metadata,见 ``_起一次``。
     """
-    写手 = 假写手()
-    monkeypatch.setattr(langgraph_config, "get_stream_writer", lambda: 写手)
-    return 写手
+    monkeypatch.setattr(
+        langgraph_config, "get_config", lambda: {"configurable": {"thread_id": thread_id}}
+    )
+    return thread_id
 
 
-def _取事件(写手: 假写手) -> dict[str, Any]:
-    """拿出唯一那条事件的正文,顺带守住"顶层只包一层 gyt_timing"。"""
-    assert len(写手.事件) == 1, f"期望正好一条事件,实际收到 {写手.事件!r}"
-    包 = 写手.事件[0]
-    assert set(包) == {EVENT_KEY}, f"顶层只许有 {EVENT_KEY} 一个键(custom 通道是共用的):{包!r}"
-    return 包[EVENT_KEY]
+def _取唯一记录(thread_id: str = 默认会话) -> dict[str, Any]:
+    """拿出这个会话里**唯一**那条记录,顺带守住游标指到了它。
+
+    多一条少一条都当场红:多一条多半是同一次调用记了两遍(前端会画出两行),
+    少一条就是压根没记上 —— 而后者在没有这条断言时表现为"断言在比 None"。
+    """
+    记录, 游标 = recent_timings(thread_id)
+    assert len(记录) == 1, f"期望正好一条记录,实际收到 {记录!r}"
+    assert 游标 == 记录[0]["seq"], f"游标必须指到最后一条的 seq:{游标} vs {记录[0]!r}"
+    return 记录[0]
+
+
+def _缓冲里的会话() -> set[str]:
+    """缓冲里现在一共有哪些会话。
+
+    刻意直读私有字段:``recent_timings`` 只能**按会话号**查,查不出"有没有偷偷记到
+    别的名下"。而"拿不到会话号时退到一个默认桶里继续记"正是要防的那种回归 ——
+    它一点都不报错,只是那些记录永远没人取得到,而缓冲照涨。
+    """
+    return set(timing_mod._BUFFER._threads)
+
+
+def _记一条(thread_id: str, *, name: str = "某工具") -> None:
+    """往指定会话里记一条最简单的记录。
+
+    会话号直接当参数递进去(``emit_timing`` 本来就收),这样验缓冲行为的用例
+    不用为了换个会话号反复打桩 —— **打桩越少,测到的越是真东西**。
+    """
+    emit_timing(kind=KIND_TOOL, name=name, seconds=0.1, ok=True, slow=False, thread_id=thread_id)
+
+
+def _问运行时就抛() -> Any:
+    """冒充"不在 LangGraph 运行时里"。
+
+    这句话不是编的:图外调用真的 ``get_config()`` 就是抛这个
+    (实测 RuntimeError「Called get_config outside of a runnable context」)。
+    """
+    raise RuntimeError("Called get_config outside of a runnable context")
 
 
 def _timing日志条数(caplog: pytest.LogCaptureFixture) -> int:
@@ -956,7 +1050,7 @@ def test_errors模块没有被拉进langchain依赖() -> None:
     都还靠着这条。哪天有人"顺手把重复的十几行合并了",这个用例当场红。
 
     ⚠️ **这条守的是"模块级",不是"一次都不许 import"**:``_emit_tool_timing``
-       会去 timing.py 取 ``emit_timing`` + ``KIND_TOOL``(事件契约只能有一份真相),
+       会去 timing.py 取 ``emit_timing`` + ``KIND_TOOL``(记录契约只能有一份真相),
        但那句 import 在**函数体内**,是缩进的,不在下面 ``导入行`` 的口径里 ——
        这正是它必须留在函数体内的原因。看到"errors 现在也用 timing 了"就把
        import 提上去,这个用例会当场红,别改判据去迁就。
@@ -984,68 +1078,82 @@ def test_errors模块没有被拉进langchain依赖() -> None:
 
 
 # ==============================================================================
-# F 组:推给前端的 custom 事件
+# F 组:记进后端缓冲、前端自己来取
 #
-# 为什么加这一组(2026-08-20,和上面那几组同一天):上面记的耗时**只有能翻日志的
-# 人看得见**。工友举着手机在工地上等三分钟,界面上从头到尾只有一句「正在忙」——
-# 他分不出是在等识图、在等台账,还是已经卡死了。所以同一份数再推一条 custom 事件
-# 给界面(「隱藏中間步驟」开关就是它的位置)。
+# 为什么有这一组(2026-08-20),以及为什么 2026-08-21 整组改写:
 #
-# 🔴 选 custom 通道而不是挂在工具返回上,是因为 supervisor 的
-#    output_mode="last_message" 会把子 Agent 的工具返回整个丢掉(那正是巡检记录卡
-#    至今渲染不出来的原因,TODO-47)。custom 是独立通道,不受它影响。
+# 上面记的耗时**只有能翻日志的人看得见**。工友举着手机在工地上等三分钟,界面上
+# 从头到尾只有一句「正在忙」—— 他分不出是在等识图、在等台账,还是已经卡死了。
+# 所以同一份数得给界面一份(「隱藏中間步驟」开关就是它的位置)。
 #
-# 本组盯三条判据:
+# 🔴 第一版走的是 ``stream_mode="custom"``,理由当时写得也对(supervisor 的
+#    ``output_mode="last_message"`` 会把子 Agent 的工具返回整个丢掉,而 custom 是
+#    独立通道)。**但它一条都没显示出来过** —— 根因不在那条通道,在它的作用域:
+#    值得看的模型调用全在子图里,子图发的 custom 事件要 ``subgraphs=True`` 才出得来;
+#    而一开它,子图的 values 事件也跟着出来,SDK 对 values 是**整份替换** ——
+#    子 Agent 说的话先出现、再消失,工友看见的是「话被收回去了」。两件是同一个开关
+#    的两头,走聊天流只能二选一。完整推演在 core/timing.py 头注那一整节。
+#
+#    所以改成:**后端进程内缓冲 + timing_api.py 直连接口**,照 W7 打卡、W10 监理
+#    操作台的先例 ——「操作台不是聊天产物,它有自己的入口和自己的数据源。」
+#
+# 本组盯的还是同三条判据,只是"推事件 / 收事件"换成了"记缓冲 / 取记录":
 #   1. **形状对不对** —— 契约是前端已经按着写的,字段名漂了界面上就是一片 undefined;
-#   2. 🔴 **不在图内时安静跳过** —— 评测/单测/CLI 全都不在图内,那是**正常情况**;
-#   3. 🔴 **推送坏了业务一点不受影响** —— 同 C 组那条,这是这件东西能犯的最蠢的错。
+#   2. 🔴 **不在会话里时安静跳过** —— 评测/单测/CLI 全都不在会话里,那是**正常情况**;
+#   3. 🔴 **记录写坏了业务一点不受影响** —— 同 C 组那条,这是这件东西能犯的最蠢的错。
 # ==============================================================================
 
 
-def test_在图内推出的事件与契约逐字段一致(monkeypatch: pytest.MonkeyPatch) -> None:
-    """把整个事件正文按契约逐字段钉死。
+def test_在会话里记下的记录与契约逐字段一致(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把整条记录按契约逐字段钉死。
 
-    用 ``==`` 整体比而不是一条条 ``in``:整体比才盖得住"多推了个没人认得的键"
-    和"少推了一个键"这两种改动 —— 前者是脏数据,后者让前端每处都得判 undefined。
+    用 ``==`` 整体比而不是一条条 ``in``:整体比才盖得住"多记了个没人认得的键"
+    和"少记了一个键"这两种改动 —— 前者是脏数据,后者让前端每处都得判 undefined。
     """
     # Arrange:数字用 2026-08-20 那次识图的真数(输出 779 / 其中思考 596)
-    写手 = _假装在图内(monkeypatch)
     monkeypatch.setattr(timing_mod, "time", 假时钟([100.0, 107.5]))
     处理器 = LlmCallTiming(永远不算慢)
 
     # Act
-    run_id = _起一次(处理器, model="kimi-k3")
+    run_id = _起一次(处理器, model="kimi-k3", node="safety")
     处理器.on_llm_end(_带思考的用量(1200, 779, 596), run_id=run_id)
 
     # Assert
-    assert _取事件(写手) == {
+    assert _取唯一记录() == {
+        "seq": 首条序号,
         "kind": KIND_LLM,
         "name": "kimi-k3",
+        "agent": "safety",
         "seconds": 7.5,
+        "ok": True,
+        "slow": False,
         "input_tokens": 1200,
         "output_tokens": 779,
         "reasoning_tokens": 596,
-        "slow": False,
-        "ok": True,
     }
 
 
-def test_耗时只保留一位小数(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_耗时只保留一位小数且与日志里是同一个数(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     """契约写死了一位小数,而且要**和日志里那个 %.1f 是同一个数**。
 
     两边不一致的坏法很隐蔽:对账的人看见日志写 7.5 秒、界面写 7.483210 秒,
     会以为这是两次不同的调用,然后去查"为什么多调了一次"。
+    所以这里不光断"是 7.5",还把两边的数直接对上。
     """
     # Arrange
-    写手 = _假装在图内(monkeypatch)
     monkeypatch.setattr(timing_mod, "time", 假时钟([0.0, 7.483_21]))
     处理器 = LlmCallTiming(永远不算慢)
 
     # Act
-    处理器.on_llm_end(_用量(1, 1), run_id=_起一次(处理器))
+    with caplog.at_level(logging.INFO, logger=TIMING_LOGGER):
+        处理器.on_llm_end(_用量(1, 1), run_id=_起一次(处理器))
 
     # Assert
-    assert _取事件(写手)["seconds"] == 7.5
+    记录 = _取唯一记录()
+    assert 记录["seconds"] == 7.5
+    assert 记录["seconds"] == pytest.approx(_取耗时(caplog)), "记录里的数和日志里的数漂了"
 
 
 @pytest.mark.parametrize(
@@ -1072,9 +1180,7 @@ def test_耗时只保留一位小数(monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.param(lambda: _无用量(), None, id="命中缓存整个没用量"),
     ],
 )
-def test_思考token取得到就报取不到给None(
-    monkeypatch: pytest.MonkeyPatch, 用量: Any, 期望: int | None
-) -> None:
+def test_思考token取得到就报取不到给None(用量: Any, 期望: int | None) -> None:
     """🔴 取不到时必须是 ``None``,**不许退成 0**。
 
     0 在界面上会被读成"这次没花思考 token",而真相是"不知道" —— 把不知道写成 0
@@ -1085,19 +1191,18 @@ def test_思考token取得到就报取不到给None(
     不是每家供应商都报这个字段,所以"取不到"是**常态**,不是故障。
     """
     # Arrange
-    写手 = _假装在图内(monkeypatch)
     处理器 = LlmCallTiming(永远不算慢)
 
     # Act
     处理器.on_llm_end(用量(), run_id=_起一次(处理器))
 
     # Assert
-    事件 = _取事件(写手)
-    assert 事件["reasoning_tokens"] == 期望
-    assert 事件["reasoning_tokens"] is not 0  # noqa: F632 —— 就是要区分 None 和 0
+    记录 = _取唯一记录()
+    assert 记录["reasoning_tokens"] == 期望
+    assert 记录["reasoning_tokens"] is not 0  # noqa: F632 —— 就是要区分 None 和 0
 
 
-def test_思考token藏在对象里也取得出来(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_思考token藏在对象里也取得出来() -> None:
     """实测 langchain_openai 递进来的是纯 dict,但**别把这当成保证**。
 
     换供应商 / 换版本完全可能给一个 pydantic 对象(openai SDK 自己的
@@ -1109,7 +1214,6 @@ def test_思考token藏在对象里也取得出来(monkeypatch: pytest.MonkeyPat
     class 用量详情:
         reasoning_tokens = 596
 
-    写手 = _假装在图内(monkeypatch)
     处理器 = LlmCallTiming(永远不算慢)
     响应 = LLMResult(
         generations=[],
@@ -1122,38 +1226,36 @@ def test_思考token藏在对象里也取得出来(monkeypatch: pytest.MonkeyPat
     处理器.on_llm_end(响应, run_id=_起一次(处理器))
 
     # Assert
-    assert _取事件(写手)["reasoning_tokens"] == 596
+    assert _取唯一记录()["reasoning_tokens"] == 596
 
 
-def test_命中缓存时三个token字段都是None而不是0(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_命中缓存时三个token字段都是None而不是0() -> None:
     """命中缓存 langchain 照样触发回调,但 llm_output 里没有用量。
 
     这时候三个字段一律 None —— 契约上写的就是这个("命中缓存时 None")。
     """
     # Arrange
-    写手 = _假装在图内(monkeypatch)
     处理器 = LlmCallTiming(永远不算慢)
 
     # Act
     处理器.on_llm_end(_无用量(), run_id=_起一次(处理器))
 
     # Assert
-    事件 = _取事件(写手)
-    assert (事件["input_tokens"], 事件["output_tokens"], 事件["reasoning_tokens"]) == (
+    记录 = _取唯一记录()
+    assert (记录["input_tokens"], 记录["output_tokens"], 记录["reasoning_tokens"]) == (
         None,
         None,
         None,
     )
 
 
-def test_模型调用失败也推事件而且ok是False(monkeypatch: pytest.MonkeyPatch) -> None:
-    """只推成功的话,**最该看见的那一类恰好看不见**。
+def test_模型调用失败也记一条而且ok是False(monkeypatch: pytest.MonkeyPatch) -> None:
+    """只记成功的话,**最该看见的那一类恰好看不见**。
 
     界面上「这一步失败了、还花了 213 秒」和「这一步很慢」是两回事,前端按 ok 分流。
     失败时没有 LLMResult,三个 token 字段留 None —— 编不出数来就别编。
     """
     # Arrange
-    写手 = _假装在图内(monkeypatch)
     monkeypatch.setattr(timing_mod, "time", 假时钟([10.0, 223.0]))
     处理器 = LlmCallTiming(永远不算慢)
 
@@ -1161,19 +1263,21 @@ def test_模型调用失败也推事件而且ok是False(monkeypatch: pytest.Monk
     处理器.on_llm_error(TimeoutError("上游超时"), run_id=_起一次(处理器, model="deepseek-v4-flash"))
 
     # Assert
-    assert _取事件(写手) == {
+    assert _取唯一记录() == {
+        "seq": 首条序号,
         "kind": KIND_LLM,
         "name": "deepseek-v4-flash",
+        "agent": None,
         "seconds": 213.0,
+        "ok": False,
+        "slow": False,
         "input_tokens": None,
         "output_tokens": None,
         "reasoning_tokens": None,
-        "slow": False,
-        "ok": False,
     }
 
 
-def test_失败事件的slow照阈值如实算不许写死成True(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_失败记录的slow照阈值如实算不许写死成True() -> None:
     """🔴 日志那句"失败一律 warning"是**日志侧**的分级(失败本身就值得看见),
     和 ``slow`` 这个字段不是同一件事。
 
@@ -1181,53 +1285,51 @@ def test_失败事件的slow照阈值如实算不许写死成True(monkeypatch: p
     而超没超时限恰恰是判断"该不该去查网络"的那个判据。
     """
     # Arrange:阈值 0 → 任何耗时都算慢;这次故意让它**该是 True**
-    写手 = _假装在图内(monkeypatch)
     处理器 = LlmCallTiming(永远算慢)
 
     # Act
     处理器.on_llm_error(RuntimeError("炸了"), run_id=_起一次(处理器))
 
     # Assert:该 True 的时候是 True(上一条用例守的是该 False 的时候是 False)
-    事件 = _取事件(写手)
-    assert 事件["slow"] is True
-    assert 事件["ok"] is False
+    记录 = _取唯一记录()
+    assert 记录["slow"] is True
+    assert 记录["ok"] is False
 
 
-def test_超过阈值的模型调用事件里slow是True(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_超过阈值的模型调用记录里slow是True() -> None:
     """``slow`` 是界面上"这一步不正常"的唯一依据,分级漂了界面就跟着漂。"""
     # Arrange
-    写手 = _假装在图内(monkeypatch)
     处理器 = LlmCallTiming(永远算慢)
 
     # Act
     处理器.on_llm_end(_用量(1, 1), run_id=_起一次(处理器))
 
     # Assert
-    assert _取事件(写手)["slow"] is True
+    assert _取唯一记录()["slow"] is True
 
 
-# --- F 组:不在图内 ------------------------------------------------------------
+# --- F 组:不在会话里 ------------------------------------------------------------
 
 
-def test_不在图内时安静跳过而日志照记(caplog: pytest.LogCaptureFixture) -> None:
-    """🔴 本组最要紧的一条 —— ``get_stream_writer()`` 在 LangGraph 运行时**之外会抛**。
+def test_不在会话里时安静跳过而日志照记(caplog: pytest.LogCaptureFixture) -> None:
+    """🔴 本组最要紧的一条 —— ``get_config()`` 在 LangGraph 运行时**之外会抛**。
 
-    评测、单测、CLI、attendance 清理脚本全都不在图内,那是**正常情况,不是故障**。
+    评测、单测、CLI、attendance 清理脚本全都不在会话里,那是**正常情况,不是故障**。
     兜不住的话,这件"给工友看时间"的东西会把评测和单测全打断。
 
     ⚠️ 本用例**故意不打桩** —— 单测进程本来就不在图里,走的是真的
-       ``get_stream_writer``。先把"它真的会抛"这个前提钉住:哪天上游改成
+       ``get_config``。先把"它真的会抛"这个前提钉住:哪天上游改成
        "外面调用返回 None 不抛",这条用例就变成在测另一回事了,而没人会发现。
     """
     # Arrange:前提断言(不是多余的 —— 没有它,这条用例可能悄悄变成空转)
     with pytest.raises(RuntimeError):
-        langgraph_config.get_stream_writer()
+        langgraph_config.get_config()
 
     处理器 = LlmCallTiming(永远不算慢)
 
-    # Act:不许抛
+    # Act:metadata 里也不给会话号 —— 图外调用的 metadata 就是这个形状。不许抛
     with caplog.at_level(logging.DEBUG, logger=TIMING_LOGGER):
-        处理器.on_llm_end(_用量(120, 45), run_id=_起一次(处理器))
+        处理器.on_llm_end(_用量(120, 45), run_id=_起一次(处理器, thread_id=None))
 
     # Assert:日志一条不少
     assert "模型调用完成" in caplog.text
@@ -1235,10 +1337,17 @@ def test_不在图内时安静跳过而日志照记(caplog: pytest.LogCaptureFix
     # 而且**一条噪声都不许多**:这条路径每次调用都会走到,
     # 记一行 debug 就是刷屏,刷屏会把真告警埋掉。所以连 debug 都不许有。
     assert _timing日志条数(caplog) == 1
+    # 缓冲里干干净净 —— 问不到会话号就是**丢掉这条**,不是退到某个默认桶里接着记
+    assert _缓冲里的会话() == set()
 
 
-def test_不在图内时工具照常返回结果且日志照记(caplog: pytest.LogCaptureFixture) -> None:
-    """同上,验工具那一侧(它才是评测/CLI 里真会跑到的那条路)。"""
+def test_不在会话里时工具照常返回结果且日志照记(caplog: pytest.LogCaptureFixture) -> None:
+    """同上,验工具那一侧(它才是评测/CLI 里真会跑到的那条路)。
+
+    ⚠️ 工具这一侧**没有** metadata 那条退路:``_emit_tool_timing`` 刻意不传会话号
+       (那样 core/errors.py 一行 langgraph 都不用碰),全靠去问运行时。
+       所以"问不到就安静走开"在这一侧是唯一的兜底。
+    """
     # Arrange
     信封 = ok({"count": 3}, user_msg="查到 3 条记录。")
 
@@ -1250,44 +1359,50 @@ def test_不在图内时工具照常返回结果且日志照记(caplog: pytest.L
     with caplog.at_level(logging.DEBUG, logger=ERRORS_LOGGER):
         结果 = 查台账()
 
-    # Assert:返回值一个字节没变,日志照旧
+    # Assert:返回值一个字节没变,日志照旧,缓冲里什么都没有
     assert 结果 is 信封
     assert "工具执行完成" in caplog.text
     assert "查台账" in caplog.text
+    assert _缓冲里的会话() == set()
 
 
 @pytest.mark.parametrize(
     "坏法",
     [
-        pytest.param(lambda: (_ for _ in ()).throw(RuntimeError("不在图内")), id="取writer就抛"),
-        pytest.param(lambda: None, id="writer是None"),
+        pytest.param(_问运行时就抛, id="问运行时就抛"),
+        pytest.param(lambda: {}, id="config里没有configurable"),
+        pytest.param(lambda: {"configurable": None}, id="configurable是None"),
+        pytest.param(lambda: {"configurable": {}}, id="configurable里没有thread_id"),
+        pytest.param(lambda: {"configurable": {"thread_id": ""}}, id="thread_id是空串"),
     ],
 )
-def test_拿不到writer时安静跳过(monkeypatch: pytest.MonkeyPatch, 坏法: Any) -> None:
-    """两种"拿不到"都要安静走开:抛异常的,和给了个 None 的。
+def test_问不到会话号时安静跳过(monkeypatch: pytest.MonkeyPatch, 坏法: Any) -> None:
+    """五种"问不到"都要安静走开,一条都不许记。
 
-    第二种不是臆想:``get_stream_writer`` 取的是 ``runtime.stream_writer``,
-    上游哪天在没订阅 custom 时改成给 None,这里就会 ``None(...)`` 当场 TypeError——
-    而那会发生在**真的图里**,炸的是工友的提问。
+    后四种不是臆想:``get_config()`` 在图里返回的是一份 RunnableConfig,
+    ``configurable`` 里有什么全看调用方递了什么 —— 少一层、给个 None、给个空串,
+    在真实调用里都出现得了。任何一种没兜住,炸的都是**图里**工友的那次提问,
+    而不是这里的测试。
     """
     # Arrange
-    monkeypatch.setattr(langgraph_config, "get_stream_writer", 坏法)
+    monkeypatch.setattr(langgraph_config, "get_config", 坏法)
 
-    # Act / Assert:不许抛
+    # Act / Assert:不许抛,也不许记
     emit_timing(kind=KIND_LLM, name="kimi-k3", seconds=1.0, ok=True, slow=False)
+    assert _缓冲里的会话() == set()
 
 
 # --- F 组:tool_guard 那一侧 ----------------------------------------------------
 
 
-def test_同步工具推出kind为tool的事件且返回值语义不变(monkeypatch: pytest.MonkeyPatch) -> None:
-    """加推事件**不许改变返回值语义** —— 返回的必须还是原来那个对象本身。
+def test_同步工具记下kind为tool的记录且返回值语义不变(monkeypatch: pytest.MonkeyPatch) -> None:
+    """加记账**不许改变返回值语义** —— 返回的必须还是原来那个对象本身。
 
     用模块级的 ``查台账``(真工具的形状,见它的 docstring),这样 ``name``
     那一格才能拿裸名字逐字节比。
     """
     # Arrange
-    写手 = _假装在图内(monkeypatch)
+    会话 = _假装在图内(monkeypatch)
     monkeypatch.setattr(errors_mod, "time", 假时钟([500.0, 507.3]))
 
     # Act
@@ -1295,26 +1410,30 @@ def test_同步工具推出kind为tool的事件且返回值语义不变(monkeypa
 
     # Assert:返回值 —— 同一个对象,不是"内容相等的另一个"
     assert 结果 is 台账信封
-    # 事件 —— 工具那一侧三个 token 字段恒为 None,但**键必须在**
-    assert _取事件(写手) == {
+    # 记录 —— 工具那一侧三个 token 字段与 agent 恒为 None,但**键必须在**
+    # (``agent`` 恒 None 是刻意的:取它就得在 errors.py 里 import langgraph,
+    #  而工具那一类界面上本来就按工具名显示,不值得为它破那条守卫)
+    assert _取唯一记录(会话) == {
+        "seq": 首条序号,
         "kind": KIND_TOOL,
         "name": "查台账",
+        "agent": None,
         "seconds": 7.3,
+        "ok": True,
+        "slow": False,
         "input_tokens": None,
         "output_tokens": None,
         "reasoning_tokens": None,
-        "slow": False,
-        "ok": True,
     }
 
 
-def test_async工具推出kind为tool的事件且返回值语义不变(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_async工具记下kind为tool的记录且返回值语义不变(monkeypatch: pytest.MonkeyPatch) -> None:
     """同上,验 async 那一份包装器 —— 它是**独立的一段代码**。
 
     漏一份的表现是"有的工具界面上有耗时、有的没有",而人会以为那个工具没被调用过。
     """
     # Arrange
-    写手 = _假装在图内(monkeypatch)
+    会话 = _假装在图内(monkeypatch)
     monkeypatch.setattr(errors_mod, "time", 假时钟([0.0, 2.5]))
     信封 = ok({"hazards": []}, user_msg="没查到隐患。")
 
@@ -1327,22 +1446,22 @@ def test_async工具推出kind为tool的事件且返回值语义不变(monkeypat
 
     # Assert
     assert 结果 is 信封
-    事件 = _取事件(写手)
-    assert 事件["kind"] == KIND_TOOL
+    记录 = _取唯一记录(会话)
+    assert 记录["kind"] == KIND_TOOL
     # 嵌套函数的 qualname 带一长串前缀,所以这儿只能收尾比 ——
     # 裸名字那条判据由上一条用例(模块级的 查台账)逐字节钉着。
-    assert 事件["name"].endswith("查隐患")
-    assert 事件["seconds"] == 2.5
-    assert 事件["ok"] is True
+    assert 记录["name"].endswith("查隐患")
+    assert 记录["seconds"] == 2.5
+    assert 记录["ok"] is True
 
 
 @pytest.mark.parametrize("是async", [False, True], ids=["同步", "async"])
-def test_工具抛异常时推ok为False且照常返回fail信封(
+def test_工具抛异常时记下ok为False且照常返回fail信封(
     monkeypatch: pytest.MonkeyPatch, 是async: bool
 ) -> None:
-    """异常路径:事件里 ``ok=False``,而返回值仍是老契约的 fail 信封(永不向上抛)。"""
+    """异常路径:记录里 ``ok=False``,而返回值仍是老契约的 fail 信封(永不向上抛)。"""
     # Arrange
-    写手 = _假装在图内(monkeypatch)
+    会话 = _假装在图内(monkeypatch)
 
     @tool_guard
     def 同步会炸() -> Any:
@@ -1360,17 +1479,17 @@ def test_工具抛异常时推ok为False且照常返回fail信封(
     assert 结果["error_code"] == ErrorCode.INTERNAL.value
     assert 结果["data"] is None
     assert "数据库连不上" not in 结果["user_msg"]  # detail 只进日志,老契约顺带守一道
-    # 事件
-    事件 = _取事件(写手)
-    assert 事件["kind"] == KIND_TOOL
-    assert 事件["ok"] is False
-    assert set(事件) == 契约字段
+    # 记录
+    记录 = _取唯一记录(会话)
+    assert 记录["kind"] == KIND_TOOL
+    assert 记录["ok"] is False
+    assert set(记录) == 契约字段
 
 
-def test_超过工具阈值时事件里slow是True(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_超过工具阈值时记录里slow是True(monkeypatch: pytest.MonkeyPatch) -> None:
     """工具那一侧的 ``slow`` 走真配置(GYT_TOOL_SLOW_WARN_S),不是另抄一个数。"""
     # Arrange:阈值 20,造一次 30 秒的调用
-    写手 = _假装在图内(monkeypatch)
+    会话 = _假装在图内(monkeypatch)
     _设阈值(monkeypatch, GYT_TOOL_SLOW_WARN_S="20")
     monkeypatch.setattr(errors_mod, "time", 假时钟([0.0, 30.0]))
 
@@ -1382,19 +1501,19 @@ def test_超过工具阈值时事件里slow是True(monkeypatch: pytest.MonkeyPat
     慢工具()
 
     # Assert
-    assert _取事件(写手)["slow"] is True
+    assert _取唯一记录(会话)["slow"] is True
 
 
 def test_工具的kind不是手抄的字符串而是取自timing(monkeypatch: pytest.MonkeyPatch) -> None:
     """🔴 同源守卫:``KIND_TOOL`` 的唯一真相在 core/timing.py。
 
-    做法是把 timing 上那个常量换成一个哨兵值,再看事件里推的是不是它 ——
+    做法是把 timing 上那个常量换成一个哨兵值,再看记录里落的是不是它 ——
     errors.py 要是自己手抄了个 ``"tool"``,这条当场红。
     手抄的下场很隐蔽:前端按 ``kind`` 分流时**静默少掉工具那一整类**
     (界面上只剩模型耗时),而前后端都不报错。
     """
     # Arrange
-    写手 = _假装在图内(monkeypatch)
+    会话 = _假装在图内(monkeypatch)
     monkeypatch.setattr(timing_mod, "KIND_TOOL", "哨兵-不是tool")
 
     @tool_guard
@@ -1405,24 +1524,25 @@ def test_工具的kind不是手抄的字符串而是取自timing(monkeypatch: py
     工具()
 
     # Assert
-    assert _取事件(写手)["kind"] == "哨兵-不是tool"
+    assert _取唯一记录(会话)["kind"] == "哨兵-不是tool"
 
 
-# --- F 组:推送坏了不许连累业务 --------------------------------------------------
+# --- F 组:记坏了不许连累业务 ----------------------------------------------------
 
 
 @pytest.mark.parametrize("是async", [False, True], ids=["同步", "async"])
-def test_推事件抛异常时被包的业务函数照常返回正确结果(
+def test_记录写坏时被包的业务函数照常返回正确结果(
     monkeypatch: pytest.MonkeyPatch, 是async: bool
 ) -> None:
     """🔴 本组最要紧的一条(和 C 组那条同一个道理)。
 
     为了在界面上多显示一行耗时而把工友的提问弄失败,是这件东西能犯的最蠢的错。
-    这里让 **writer 本身一写就炸**,验业务结果一个字节都没变。
+    这里让**缓冲本身一写就炸**,验业务结果一个字节都没变。
     """
     # Arrange
-    坏写手 = 会抛的写手()
-    monkeypatch.setattr(langgraph_config, "get_stream_writer", lambda: 坏写手)
+    _假装在图内(monkeypatch)
+    坏缓冲 = 会抛的缓冲()
+    monkeypatch.setattr(timing_mod, "_BUFFER", 坏缓冲)
     信封 = ok({"count": 7}, user_msg="查到 7 条。")
 
     @tool_guard
@@ -1438,21 +1558,21 @@ def test_推事件抛异常时被包的业务函数照常返回正确结果(
 
     # Assert
     assert 结果 is 信封
-    # 反向守卫:确认坏写手**真的被调到了**(不然这条用例什么都没测到)
-    assert 坏写手.被调用次数 > 0
+    # 反向守卫:确认坏缓冲**真的被写到了**(不然这条用例什么都没测到)
+    assert 坏缓冲.被调用次数 > 0
 
 
-def test_推事件抛异常时模型调用的日志照记(
+def test_记录写坏时模型调用的日志照记(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """回调那一侧同理:推送炸了,日志不许跟着丢。
+    """回调那一侧同理:缓冲炸了,日志不许跟着丢。
 
-    顺序是刻意的 —— **日志是最后的兜底**:前端那条通道断了我还能翻日志,
-    反过来不成立。所以推送的任何环节都不许挡在日志前面。
+    顺序是刻意的 —— **日志是最后的兜底**:前端那条路断了我还能翻日志,
+    反过来不成立。所以记缓冲的任何环节都不许挡在日志前面。
     """
     # Arrange
-    坏写手 = 会抛的写手()
-    monkeypatch.setattr(langgraph_config, "get_stream_writer", lambda: 坏写手)
+    坏缓冲 = 会抛的缓冲()
+    monkeypatch.setattr(timing_mod, "_BUFFER", 坏缓冲)
     处理器 = LlmCallTiming(永远不算慢)
 
     # Act:不许抛
@@ -1462,20 +1582,20 @@ def test_推事件抛异常时模型调用的日志照记(
     # Assert
     assert "模型调用完成" in caplog.text
     assert "输入 120 / 输出 45 tok" in caplog.text
-    assert 坏写手.被调用次数 > 0
+    assert 坏缓冲.被调用次数 > 0
 
 
 def test_emit_timing自己整个坏掉时工具也照常返回(monkeypatch: pytest.MonkeyPatch) -> None:
     """把 ``emit_timing`` 整个换成"一调就炸",验的是 **errors.py 自己那层兜底**。
 
-    上一条(坏写手)炸在 timing.py 里、被 ``emit_timing`` 自己兜住了 ——
+    上一条(坏缓冲)炸在 timing.py 里、被 ``emit_timing`` 自己兜住了 ——
     那测不到 ``_emit_tool_timing`` 的 try/except。这条直接让跨模块这一步炸,
     才把 errors.py 那一层真正压到。
     """
 
     # Arrange
     def _一调就炸(**_kwargs: Any) -> None:
-        raise RuntimeError("推事件整个坏了")
+        raise RuntimeError("记耗时整个坏了")
 
     monkeypatch.setattr(timing_mod, "emit_timing", _一调就炸)
     信封 = ok({"count": 1})
@@ -1488,37 +1608,43 @@ def test_emit_timing自己整个坏掉时工具也照常返回(monkeypatch: pyte
     assert 工具() is 信封
 
 
-def test_日志器坏掉时事件照样推得出去(monkeypatch: pytest.MonkeyPatch) -> None:
-    """反方向:日志坏了,推送不许跟着丢。
+def test_日志器坏掉时记录照样进得了缓冲(monkeypatch: pytest.MonkeyPatch) -> None:
+    """反方向:日志坏了,记账不许跟着丢。
 
     两件事各自兜各自的(``_emit_tool_timing`` 刻意放在 try 外面),
     合并成一个 try 的话,日志器一坏界面上就同时没了耗时 —— 两条路一起断。
     """
     # Arrange
-    写手 = _假装在图内(monkeypatch)
+    会话 = _假装在图内(monkeypatch)
     monkeypatch.setattr(errors_mod, "logger", 会抛的日志器())
 
     # Act
     结果 = 查台账()
 
-    # Assert:业务照常、事件照推
+    # Assert:业务照常、记录照落
     assert 结果 is 台账信封
-    assert _取事件(写手)["name"] == "查台账"
+    assert _取唯一记录(会话)["name"] == "查台账"
 
 
 # --- F 组:端到端 ----------------------------------------------------------------
 
 
-def test_真跑一张图能从custom流里收到耗时事件() -> None:
-    """🔴 端到端:**不打任何桩**,真建一张 LangGraph 图跑一遍。
+def test_真跑一张带子图的图能从缓冲里取到耗时记录() -> None:
+    """🔴 端到端:**不打任何桩**,真建一张**带子图**的 LangGraph 图跑一遍。
 
-    上面那些用例全靠替换 ``get_stream_writer`` 来冒充"在图里",而这条替换本身
-    就是个假设 —— 假设 ① 图里真拿得到 writer;② 拿到的东西吃 dict;
-    ③ ``stream_mode="custom"`` 真会把它转出来。三条里错一条,单测全绿而线上
-    界面上一个字都没有,**且没有任何报错**(推送失败是安静跳过的)。
+    上面那些用例要么把会话号当参数直接递进去、要么把 ``get_config`` 换掉,而
+    "换掉"本身就是个假设 —— 假设 ① 图里真拿得到 config;② 里面真有
+    ``configurable.thread_id``;③ **子图里也拿得到**。三条里错一条,单测全绿而
+    线上界面上一个字都没有,**且没有任何报错**(问不到会话号是安静跳过的)。
+    所以这条用例把假设本身验掉。
 
-    所以这条用例把假设本身验掉。它不联网、不要 API Key、不碰磁盘:
-    图里只有一个节点,节点里调一个假工具。
+    🔴 **子图那一层是重点,不是摆设。** 真实的 safety / schedule 全是
+       ``create_supervisor`` 挂进去的独立 Pregel,由父节点在**函数体里**
+       ``.invoke()``。第一版走 custom 事件正是栽在这个作用域上(子图发的事件
+       得 ``subgraphs=True`` 才出得来)—— 只跑一张平图的话,验的是一个线上根本
+       不存在的形状。
+
+    它不联网、不要 API Key、不碰磁盘:图里只有一个节点,节点里调一个假工具。
 
     ⚠️ 这里建的是**本用例自己的一张小图**,不是 ``gyt.graph`` ——
        后者一 import 就真建图、真要 API Key(本文件头注那条铁律)。
@@ -1526,12 +1652,15 @@ def test_真跑一张图能从custom流里收到耗时事件() -> None:
     # Arrange:延迟 import,理由同上(顺带别给整个文件加建图的开销)
     from typing import TypedDict
 
+    from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.graph import START, StateGraph
 
     class 状态(TypedDict):
         次数: int
 
-    def 节点(state: 状态) -> dict[str, int]:
+    def 子节点(state: 状态) -> dict[str, int]:
+        # 工具那一侧**不传**会话号,全靠 _current_thread_id() 去问运行时 ——
+        # 这条路在子图里通不通,只有这个用例说得清。
         assert 查台账() is 台账信封, "图里跑的工具返回值也不许变"
         emit_timing(
             kind=KIND_LLM,
@@ -1545,16 +1674,209 @@ def test_真跑一张图能从custom流里收到耗时事件() -> None:
         )
         return {"次数": state["次数"] + 1}
 
-    图 = StateGraph(状态).add_node(节点).add_edge(START, "节点").compile()
+    子图 = StateGraph(状态).add_node(子节点).add_edge(START, "子节点").compile()
 
-    # Act
-    收到 = list(图.stream({"次数": 0}, stream_mode="custom"))
+    def 父节点(state: 状态) -> dict[str, int]:
+        # 在函数体里 .invoke() 子图 —— 与 create_supervisor 的 _make_call_agent 同形
+        return 子图.invoke(state)
+
+    图 = (
+        StateGraph(状态)
+        .add_node(父节点)
+        .add_edge(START, "父节点")
+        .compile(checkpointer=InMemorySaver())
+    )
+    会话 = "会话-端到端"
+
+    # Act:会话号只出现在这一处 —— 下面那两条记录能不能归到它名下,就是本用例问的事
+    图.invoke({"次数": 0}, config={"configurable": {"thread_id": 会话}})
 
     # Assert:两条都到了,顺序就是发生的顺序(工具在前、模型在后)
-    正文 = [条[EVENT_KEY] for 条 in 收到]
-    assert [条["kind"] for 条 in 正文] == [KIND_TOOL, KIND_LLM]
-    assert [条["name"] for 条 in 正文] == ["查台账", "kimi-k3"]
-    assert all(set(条) == 契约字段 for 条 in 正文), f"字段集合漂了:{正文!r}"
-    # 模型那条的数完整走通了一遍(含思考 token —— 它是这次改动的重点)
-    assert 正文[1]["seconds"] == 7.5
-    assert 正文[1]["reasoning_tokens"] == 596
+    记录, 游标 = recent_timings(会话)
+    assert [条["kind"] for 条 in 记录] == [KIND_TOOL, KIND_LLM]
+    assert [条["name"] for 条 in 记录] == ["查台账", "kimi-k3"]
+    assert all(set(条) == 契约字段 for 条 in 记录), f"字段集合漂了:{记录!r}"
+    # 模型那条的数完整走通了一遍(含思考 token —— 它是这件东西的重点)
+    assert 记录[1]["seconds"] == 7.5
+    assert 记录[1]["reasoning_tokens"] == 596
+    # 游标指到最后一条,前端下一轮拿它去拉增量
+    assert 游标 == 记录[-1]["seq"]
+    # 反向守卫:别的会话名下一条都没有 —— 会话号真的起作用了,
+    # 不是"反正只有一个桶,取谁都一样"
+    assert _缓冲里的会话() == {会话}
+
+
+# ==============================================================================
+# G 组:缓冲本身 —— 会话隔离、游标语义、两道防泄漏闸
+#
+# 这一组和上面那些的区别:上面验的是"一条记录长什么样、什么时候该记",这里验的是
+# **一堆记录怎么归档、怎么增量取、涨到头了淘汰谁**。前端的拉取循环全靠这四件事,
+# 而它们坏起来的样子都不报错 —— 要么界面上串了别人的耗时,要么同一段行成倍重复,
+# 要么某个会话的记录忽然全没了。
+# ==============================================================================
+
+
+def test_一条记录的键与RECORD_KEYS逐键一致() -> None:
+    """契约有没有漏键这件事,要有东西替人数,别在心里数。
+
+    两个方向都得挡住,所以断言也是两条:
+      · 拿 ``RECORD_KEYS`` 比集合 —— 挡住"记录里多了/少了一个键";
+      · 拿写死的 ``契约键数`` 比长度 —— 挡住"源码把某个键整个删了"。
+        那种改动里 ``契约字段`` 和记录**两边一起缩**,上一条完全看不见。
+
+    ⚠️ 别把 ``契约键数`` 也改成 ``len(RECORD_KEYS)``,那就等于自证。
+    """
+    # Arrange / Act
+    _记一条(默认会话)
+
+    # Assert
+    记录 = _取唯一记录()
+    assert set(记录) == set(RECORD_KEYS), f"字段集合漂了:{sorted(记录)}"
+    assert len(RECORD_KEYS) == 契约键数, "契约的键数变了 —— 前端那份镜像要一起改"
+    assert len(set(RECORD_KEYS)) == len(RECORD_KEYS), "RECORD_KEYS 里有重复的键名"
+
+
+def test_agent取自langgraph_node没有节点概念时是None() -> None:
+    """``agent`` 是界面上那个中文名(「識隱患」)的来源 —— 它查的是**图节点名**。
+
+    取不到给 None 是**正常路径**,不是故障:路径乙(直调 ainvoke)和图外调用
+    压根没有"节点"这个概念。编一个名字出来只会让界面把两类调用混成一类。
+
+    ⚠️ 节点名必须在**起点**取:实测 ``on_llm_end`` 的 metadata 是空的
+       (``on_chat_model_start`` 那边有 11 个键)。哪天有人"顺手"挪到终点去取,
+       这条当场红 —— 否则每条记录的 agent 会静默恒为 None。
+    """
+    # Arrange
+    处理器 = LlmCallTiming(永远不算慢)
+
+    # Act:一次带节点名(图里),一次不带(路径乙 / 图外)
+    处理器.on_llm_end(_用量(1, 1), run_id=_起一次(处理器, node="safety"))
+    处理器.on_llm_end(_用量(1, 1), run_id=_起一次(处理器))
+
+    # Assert
+    记录, _ = recent_timings(默认会话)
+    assert [条["agent"] for 条 in 记录] == ["safety", None]
+
+
+def test_模型那一侧的会话号取自metadata而不是运行时(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔴 ``LlmCallTiming`` **必须**把会话号显式递给 ``emit_timing``,不许改成去问运行时。
+
+    理由是实测出来的:这个 callback 跑在 langchain 的线程执行器里
+    (2026-08-21 量到"跟图跑在同一个线程:False"),而 metadata 里那个会话号是
+    **当参数递进来的** —— 比 contextvar 那条路可靠。
+
+    做法是把运行时那条路**整个打断**,记录照样落地。哪天有人"简化"成统一走
+    ``_current_thread_id()``,这条当场红。
+    """
+    # Arrange:让问运行时必炸
+    monkeypatch.setattr(langgraph_config, "get_config", _问运行时就抛)
+    处理器 = LlmCallTiming(永远不算慢)
+
+    # Act
+    处理器.on_llm_end(_用量(1, 1), run_id=_起一次(处理器))
+
+    # Assert
+    assert _取唯一记录()["name"] == "deepseek-v4-flash"
+
+
+def test_两个会话各记各的互相取不到() -> None:
+    """🔴 缓冲按会话号归档 —— 串了会话就等于把别人的耗时显示到你界面上。
+
+    ⚠️ ``seq`` 是**全进程共用**一个计数器(不是每会话一个),所以两个会话的号是
+       交错的。这是刻意的设计(见 RECORD_KEYS 的 docstring:会话内递增就够用),
+       顺带在这儿钉住 —— 哪天有人改成每会话各发各的号,增量拉取的语义就变了。
+    """
+    # Arrange / Act:交替往两个会话里记
+    _记一条(默认会话, name="甲-1")
+    _记一条(另一个会话, name="乙-1")
+    _记一条(默认会话, name="甲-2")
+
+    # Assert:各是各的
+    甲, 甲游标 = recent_timings(默认会话)
+    乙, 乙游标 = recent_timings(另一个会话)
+    assert [条["name"] for 条 in 甲] == ["甲-1", "甲-2"]
+    assert [条["name"] for 条 in 乙] == ["乙-1"]
+    # 号全进程共用,所以是交错的:甲、乙、甲
+    assert [条["seq"] for 条 in 甲] == [首条序号, 首条序号 + 2]
+    assert 乙游标 == 首条序号 + 1
+    assert 甲游标 == 首条序号 + 2
+    # 没记过的会话取回来是空,游标原样退回
+    assert recent_timings("会话-压根没有过") == ([], 0)
+
+
+def test_游标只给新记录没有新记录时原样退回() -> None:
+    """🔴 ``next_since`` 在没有新记录时**原样退回传入的 since**,不是 0。
+
+    退成 0 的坏法很具体:前端下一轮把整段重新拉一遍,界面上耗时行成倍重复,
+    而前后端都不报错 —— 只有"看起来变多了"这一个症状,查起来毫无线索。
+    """
+    # Arrange:先记两条,整段拉一次
+    _记一条(默认会话, name="第一条")
+    _记一条(默认会话, name="第二条")
+    第一批, 游标 = recent_timings(默认会话)
+    assert [条["name"] for 条 in 第一批] == ["第一条", "第二条"], "前提没成立"
+
+    # Act / Assert:没有新记录 —— 空列表,游标原样退回
+    assert recent_timings(默认会话, 游标) == ([], 游标)
+
+    # Act / Assert:又来一条 —— 只给新的那条
+    _记一条(默认会话, name="第三条")
+    增量, 新游标 = recent_timings(默认会话, 游标)
+    assert [条["name"] for 条 in 增量] == ["第三条"]
+    assert 新游标 == 游标 + 1
+
+    # 游标比现有记录都大时(前端算错了、或者后端重启过)同样原样退回,不许翻回 0 ——
+    # 翻回 0 等于把整段重发给一个自认为已经看过的前端
+    离谱游标 = 新游标 + 999
+    assert recent_timings(默认会话, 离谱游标) == ([], 离谱游标)
+
+
+def test_单个会话的记录条数有上限超了淘汰最早的() -> None:
+    """``_BUFFER_PER_THREAD`` 那道防泄漏闸(同 ``_MAX_TRACKED`` 那条)。
+
+    一次「拍照 → 出巡检记录」大约十几条,200 条够翻十几轮;而一条会话聊上一整天
+    就能把进程吃垮 —— **观测件绝不许把进程吃垮**。丢掉最早的那几条,后果只是
+    "很早以前那几步翻不出耗时了",业务一点不受影响。
+    """
+    # Arrange
+    超出条数 = 10
+    超量 = _BUFFER_PER_THREAD + 超出条数
+
+    # Act
+    for 序 in range(超量):
+        _记一条(默认会话, name=f"工具-{序}")
+
+    # Assert:涨到上限就不再涨,丢的是最早那几条
+    记录, _ = recent_timings(默认会话)
+    assert len(记录) == _BUFFER_PER_THREAD
+    assert 记录[0]["name"] == f"工具-{超出条数}", "淘汰的应该是最早那几条"
+    assert 记录[-1]["name"] == f"工具-{超量 - 1}", "最新那条必须留着"
+
+
+def test_会话数有上限淘汰的是最久没动过的那个() -> None:
+    """🔴 判据是"最久**没动过**",**不是"最早建的"** —— 两者只在"老会话中途又被
+    写过"这种情形下才分得开,所以这条用例专门把那个情形造出来。
+
+    弄反的后果很具体:一个人开着页面聊了一下午(会话很老,但一直在用),旁边有人
+    新建了几十个会话,他那条就被挤掉了 —— 界面上耗时行忽然全没了,而没有任何报错。
+    """
+    # Arrange:先把上限填满。会话-000 是**最早建的**那个
+    会话名 = [f"会话-{序:03d}" for 序 in range(_BUFFER_MAX_THREADS)]
+    for 会话 in 会话名:
+        _记一条(会话)
+    assert len(_缓冲里的会话()) == _BUFFER_MAX_THREADS, "前提没成立:没填满"
+    最早建的, 最久没动的 = 会话名[0], 会话名[1]
+
+    # Act:把最早建的那个盘活(它于是成了"最近动过的"),再新建一个把上限挤破
+    _记一条(最早建的, name="又写了一次")
+    _记一条("会话-新来的")
+
+    # Assert:被淘汰的是最久没动过的那个,不是最早建的
+    当前会话 = _缓冲里的会话()
+    assert 最早建的 in 当前会话, "老会话只要还在用,就不该因为别人新建而被挤掉"
+    assert 最久没动的 not in 当前会话
+    assert "会话-新来的" in 当前会话
+    assert len(当前会话) == _BUFFER_MAX_THREADS
+    # 盘活那次记的那条也还在 —— 淘汰只该动别人,不该顺手清空自己
+    记录, _ = recent_timings(最早建的)
+    assert [条["name"] for 条 in 记录] == ["某工具", "又写了一次"]
