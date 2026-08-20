@@ -171,6 +171,15 @@ services:
     #                   (这不是把服务暴露到局域网 —— 拦在宿主侧的端口绑定上,见下)
     #   --no-browser    容器里没有浏览器可开
     #   --allow-blocking 见上面那条铁律,别删
+    #   --n-jobs-per-worker 2  后台任务并发。**不给这个参数的默认值是 1**
+    #                   (它自己的 --help 写「Default is None (meaning 10)」是错的,
+    #                    真值见 langgraph_api/cli.py 那行 `else 1`);而且它是
+    #                    patch_environment,**同名环境变量会被覆盖**,只能走命令行。
+    #                    完整理由(含 2026-08-19 那次「第二个人干等 102 秒」的实测)
+    #                    写在 backend/Dockerfile 的 CMD 上方,那份是主注释。
+    # ⚠️ 这串命令一共有**三份**(本文件 / docker-compose.noreload.yml /
+    #    backend/Dockerfile 的 CMD),compose 对 command 是标量覆盖不是合并,
+    #    所以加一个参数要三处一起改。CLAUDE.md 的同源清单有登记。
     command:
       - langgraph
       - dev
@@ -180,6 +189,8 @@ services:
       - "2024"
       - --no-browser
       - --allow-blocking
+      - --n-jobs-per-worker
+      - "2"
 
 # =============================================================================
 # 这个文件永远不许出现的东西:ports
