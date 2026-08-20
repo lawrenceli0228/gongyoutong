@@ -745,6 +745,15 @@ async def layer_stats(drawing: str, *, config: RunnableConfig) -> Envelope:
     )
 
 
+def _outlier_msg(name: str) -> str:
+    """离群图元/大地坐标把外框撑爆时的统一话术:整图渲出来是「一个点浮在巨大空白里」,
+    如实说没出、指回能查的东西。判据在 parse._extents_outlier,索引里落成 extents_outlier。"""
+    return (
+        f"{name}坐标异常:有离群图元把图纸范围撑得极大,整张渲出来内容会缩成一个点、"
+        "几乎空白,这次先没出。图层、构件、标注尺寸都能正常查——想看哪样直接说。"
+    )
+
+
 _PREVIEW_DESCRIPTION = (
     "把整张图纸渲染成一张 PNG 预览图,方便用户直接看图。"
     "用户说「看看这张图长啥样」「出个预览」时调它。drawing 填图纸名字或编号。"
@@ -763,7 +772,7 @@ async def render_preview(drawing: str, *, config: RunnableConfig) -> Envelope:
     name = _display_name(drawing_id)
 
     if _is_pdf(idx):
-        # PDF 走 pypdfium2 栅格化首页,没有「图元太多」这道 matplotlib 专属的拦阻。
+        # PDF 走 pypdfium2 栅格化首页,没有「图元太多」这道 DXF 渲染专属的拦阻。
         path = await asyncio.to_thread(artifacts.resolve, drawing_id)
         try:
             png_bytes = await asyncio.to_thread(render.pdf_to_png, path)
@@ -785,8 +794,8 @@ async def render_preview(drawing: str, *, config: RunnableConfig) -> Envelope:
             ),
         )
 
-    # 渲染前先按图元数拦一道:真实工程图上千图元,matplotlib 逐个画会卡几分钟(实测 268s),
-    # 而且大地坐标系的真图渲染出来常是空白。超阈值就**不渲染、如实说**,别硬撑到超时。
+    # 渲染前先按图元数拦一道:图元数越大 SVG→PDF 越慢(见 config.drawing_render_max_entities
+    # 的伸缩实测),而且大地坐标系的真图渲染出来常是空白。超阈值就**不渲染、如实说**,别硬撑到超时。
     entities_total = sum(idx["entities_by_kind"].values())
     max_entities = get_settings().drawing_render_max_entities
     if entities_total > max_entities:
@@ -797,6 +806,12 @@ async def render_preview(drawing: str, *, config: RunnableConfig) -> Envelope:
                 "不过图层、构件、标注尺寸都能正常查——你想看哪样直接说。"
             ),
             detail=f"render 跳过:entities={entities_total} > {max_entities}",
+        )
+    if idx.get("extents_outlier"):
+        return fail(
+            ErrorCode.FILE_TOO_LARGE,
+            user_msg=_outlier_msg(name),
+            detail="render 跳过:extents_outlier(外框被离群图元撑爆)",
         )
 
     path = await asyncio.to_thread(artifacts.resolve, drawing_id)
@@ -1015,6 +1030,8 @@ async def open_drawing(drawing: str, *, config: RunnableConfig) -> Envelope:
                     "图层、构件、标注尺寸都能正常查——想看哪样直接说。"
                 ),
             )
+        if idx.get("extents_outlier"):
+            return fail(ErrorCode.FILE_TOO_LARGE, user_msg=_outlier_msg(name))
     return ok(
         data={
             "action": "preview",
@@ -1107,6 +1124,12 @@ async def export_drawing_pdf(drawing: str, *, config: RunnableConfig) -> Envelop
                 "图层、构件、标注尺寸都能正常查——想看哪样直接说。"
             ),
             detail=f"export_pdf 跳过:entities={entities_total} > {max_entities}",
+        )
+    if idx.get("extents_outlier"):
+        return fail(
+            ErrorCode.FILE_TOO_LARGE,
+            user_msg=_outlier_msg(name),
+            detail="export_pdf 跳过:extents_outlier(外框被离群图元撑爆)",
         )
 
     try:

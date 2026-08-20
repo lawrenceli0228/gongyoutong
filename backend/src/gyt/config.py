@@ -289,11 +289,14 @@ class Settings(BaseSettings):
     # 原来的 10MB 会把整本规范挡在门外;.env 里调 GYT_DOCUMENT_MAX_MB 可覆盖。
     document_max_mb: float = Field(default=100.0, gt=0)  # PDF/DOCX/TXT/MD
     photo_max_mb: float = Field(default=10.0, gt=0)  # 工地照片原图
-    # DXF 预览渲染的图元数上限:超过就**不渲染**、如实告知(改查图层/尺寸/构件)。
-    # 真实工程图动辄上千图元,matplotlib 逐个画,实测 2300 图元的图渲染 268 秒 ——
-    # 同步工具里塞这个必卡死。而且大地坐标系的真图往往渲染出来还是空白(视野被离群点撑爆)。
-    # 预览本就是锦上添花,不值得为它冒卡死风险;演示主线是「查」不是「看图」。
-    drawing_render_max_entities: int = Field(default=1000, ge=1)
+    # DXF 预览/导出渲染的图元数上限:超过就**不渲染**、如实告知(改查图层/尺寸/构件)。
+    # 2026-08-20 从 1000 提到 4000:渲染后端从 matplotlib 换成 ezdxf 原生 SVG 后端
+    # (见 render.py),同图快约 7x,1000 那道旧闸把绝大多数真图挡在门外已无必要。
+    # 为什么不无脑拉到几万:换后瓶颈在 SVG→PDF(svglib),实测大致线性 ——
+    # 3000 图元约 9s、9000 约 54s、18000 约 110s。上限本质是**同步请求的墙钟预算**:
+    # 4000 图元约 12s 内可控,再高就有超时风险(而且大地坐标系的真图常渲成空白,不值当等)。
+    # 单机联调想看更大的图,.env 里调 GYT_DRAWING_RENDER_MAX_ENTITIES 覆盖即可。
+    drawing_render_max_entities: int = Field(default=4000, ge=1)
     # PDF 图纸「文字选不中」(文字转图形/扫描件)时,渲染成图交给视觉模型认字用的栅格化倍率
     # (agents/cad/vision.py)。比预览的 _PDF_RENDER_SCALE(2.0)高:小字更清、识别更准。
     # 注意:VLM 输入普遍会被降采样到 ~1568px,一张 A1 大图的小字仍可能糊 —— 再高倍率也救不回,

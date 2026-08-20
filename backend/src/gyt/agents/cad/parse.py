@@ -231,6 +231,71 @@ def _bounds(msp: Any) -> dict[str, list[float]] | None:
     }
 
 
+# 离群/坐标异常两个阈值,超了就当「整图渲出来是一个点浮在巨大空白里」处理。
+# ① offset:内容外框离原点的最大偏移 > 内容自身尺寸的 K 倍 = 大地坐标系(测绘绝对坐标)。
+#    渲染画布从原点铺到内容处,内容缩成一个点。正常图内容在原点附近、偏移≈尺寸(比值 1~数倍);
+#    大地坐标图比值动辄上万(遂川总图实测 ~4万,而正常的 test-3 仅 2.3)。K=100 留足余量。
+_EXTENTS_OFFSET_RATIO = 100.0
+# ② spread:全跨度 > 核心跨度(2–98 百分位)的 K 倍 = 个别野点把内容范围本身撑大,
+#    多数图元其实挤在一小簇里(offset 判据抓不到这种 —— 野点同时放大尺寸和偏移,比值≈1)。
+_EXTENTS_SPREAD_RATIO = 20.0
+_EXTENTS_MIN_ENTITIES = 20  # 图元太少,离群统计没意义,不判
+
+
+def _dim_blown(sorted_vals: list[float]) -> bool:
+    """某一维:核心跨度(2–98 百分位)撑不满全跨度的 1/K 就算被野点撑大。
+
+    核心跨度用百分位算,天然躲开野点本身;核心退化成 0(多数图元中心挤在一条线上)
+    不判 —— 那更像「一行文字 + 远处标题栏」的正常图,别误伤。
+    """
+    n = len(sorted_vals)
+    full = sorted_vals[-1] - sorted_vals[0]
+    if full <= 0:
+        return False
+    core = sorted_vals[int(0.98 * (n - 1))] - sorted_vals[int(0.02 * (n - 1))]
+    if core <= 0:
+        return False
+    return full / core >= _EXTENTS_SPREAD_RATIO
+
+
+def _spread_blown(msp: Any) -> bool:
+    """野点判据:逐图元中心的全跨度远大于 2–98 百分位核心跨度(见 _dim_blown)。"""
+    xs: list[float] = []
+    ys: list[float] = []
+    for box in bbox.multi_flat(msp, fast=True):
+        center = box.center
+        xs.append(center.x)
+        ys.append(center.y)
+    if len(xs) < _EXTENTS_MIN_ENTITIES:
+        return False
+    xs.sort()
+    ys.sort()
+    return _dim_blown(xs) or _dim_blown(ys)
+
+
+def _extents_outlier(msp: Any) -> bool:
+    """整图外框是否会让渲染画布爆成一张几乎空白的巨图(大地坐标系 / 个别野点)。
+
+    这类图整张渲出来内容会缩成一个点、几乎空白(config.drawing_render_max_entities 注释
+    与 render.py 都提过),与其给用户一张没用的巨图,不如在渲染前如实拦下、改走
+    「查图层/构件/尺寸」。两种成因分别用 offset / spread 两个判据,任一命中即判。
+    阻塞:一次整图 bbox +(必要时)逐图元 bbox,与 _bounds 同量级。
+    """
+    ext = bbox.extents(msp, fast=True)
+    if not ext.has_data:
+        return False
+    lo, hi = ext.extmin, ext.extmax
+    size = max(hi.x - lo.x, hi.y - lo.y)
+    if size <= 0:
+        return False
+    # ① 大地坐标系:内容离原点极远(短路,命中就不用再扫逐图元)
+    offset = max(abs(lo.x), abs(hi.x), abs(lo.y), abs(hi.y))
+    if offset > size * _EXTENTS_OFFSET_RATIO:
+        return True
+    # ② 野点:内容范围本身被个别图元撑大
+    return _spread_blown(msp)
+
+
 def _detect_tianzheng(doc: Any, by_kind: Counter, per_layer: dict[str, Counter]) -> dict[str, Any]:
     """检出天正(TArch)私有构件,产出 ``{detected, component_kinds}``。
 
@@ -296,6 +361,7 @@ def parse_dxf(path: Path) -> dict[str, Any]:
         "dimensions": _dimensions(msp),
         "annotations": _texts(msp),
         "bounds": _bounds(msp),
+        "extents_outlier": _extents_outlier(msp),
         "tianzheng": _detect_tianzheng(doc, by_kind, per_layer),
     }
 
