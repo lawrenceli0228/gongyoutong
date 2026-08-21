@@ -60,6 +60,30 @@ skip() { printf '  %s–%s %s\n' "${DIM}" "${OFF}" "$1"; SKIP=$((SKIP+1)); }
 note() { printf '    %s%s%s\n' "${DIM}" "$1" "${OFF}"; }
 head_() { printf '\n%s\n' "$1"; }
 
+# 🔴 启动自检:上面这几个报数函数必须真的存在。
+#
+# 补这道闸的理由是实证:2026-08-21 发现第 ⑧ 组的失败分支调的是 `fail` ——
+# 一个**从来没定义过**的名字。本脚本 `set -uo pipefail` 但**没有 -e**,
+# 未定义函数只让那一行返回 127 就继续往下走,`FAIL` 一动不动,
+# 末尾 `if [[ "${FAIL}" -gt 0 ]]` 判为假 → 打印「全部通过」→ exit 0。
+# 也就是说:**那一组永远不会失败**,而它恰好是为「前端镜像编的是旧源码」
+# 这种全绿事故写的。
+#
+# 为什么非得在运行时查:CI 的 lint-shell 只跑 `bash -n`,而 `bash -n` 是语法检查,
+# **未定义函数它一句话都不说**(实测这个文件带着 `fail` 通过 `bash -n`)。
+# shellcheck 的 SC2154 一类能抓,但当前 CI 一个 shellcheck 都没跑。
+#
+# 放在这儿(定义之后、任何检查之前)是刻意的:错了就在第一秒炸,
+# 而不是等跑到第 ⑧ 组才悄悄放过。
+for _fn in ok bad warn skip note head_; do
+  if ! declare -F "${_fn}" >/dev/null 2>&1; then
+    printf '%s内部错误:报数函数 %s 没有定义 —— 这个脚本判不了失败,先修它。%s\n' \
+      "${RED}" "${_fn}" "${OFF}" >&2
+    exit 2
+  fi
+done
+unset _fn
+
 usage() {
   cat <<'EOF'
 工友通 · 上线后功能验证(部署完成之后跑)
@@ -784,7 +808,14 @@ else
   if [[ "${OV_STALE}" -eq 0 && "${OV_MISS}" -eq 0 ]]; then
     ok "${OV_SAME} 个覆盖件与 scripts/frontend-overrides/ 逐字节一致"
   else
-    fail "有 ${OV_STALE} 个覆盖件是旧的、${OV_MISS} 个缺失 —— **前端镜像编的是旧源码**"
+    # 🔴 这里 2026-08-21 之前写的是 `fail` —— 一个**根本不存在的函数**
+    #    (本脚本只有 ok/bad/warn/skip/note)。脚本是 `set -uo pipefail`、没有 `-e`,
+    #    所以未定义函数只让那一行返回 127,`FAIL` 一动不动,末尾的汇总判为假,
+    #    于是打印「全部通过」并 exit 0。**这一组的失败分支从来没有真正失败过。**
+    #    而它正是为 W8 那次「前端两次构建全是空跑,而前七组全绿」写的 ——
+    #    抓那种事故的闸,自己也以全绿收场。`bash -n` 查不出未定义函数(实测通过),
+    #    所以下面另加了一道启动自检。
+    bad "有 ${OV_STALE} 个覆盖件是旧的、${OV_MISS} 个缺失 —— **前端镜像编的是旧源码**"
     note "修法:在 VPS 上重跑 bash scripts/setup-frontend.sh(没有 pnpm 见 W7 §2.7 的一次性容器写法),"
     note "然后重建 frontend 镜像并 up -d --no-deps --no-build frontend。"
     note "⚠️ 只重建镜像没用 —— 源码没换,构建一百次也还是旧的。"
