@@ -528,26 +528,26 @@ apply_override "thread-provider.tsx" "src/providers/Thread.tsx"
 #    「站点打得开、每次提问 401」。
 apply_override "api-key.tsx" "src/lib/api-key.tsx"
 
-# 🪦 这里曾经有一件 `apply_override "stream-provider.tsx" "src/providers/Stream.tsx"`
-#    (2026-08-20 加,2026-08-21 删)。它的全部职责是给 useStream 的 onCustomEvent
-#    接上耗时事件 —— 而耗时**已经不走聊天流了**,改成了直连接口 `GET /timing`。
+# 线程历史两阶段取数(2026-08-21)—— 治「打开历史会话要等好几秒,而且是纯白板」。
 #
-#    🔴 换掉的理由值得留在这儿,因为它同时是另一个 bug 的解药:值得看的模型调用
-#       全在子图里,子图的 custom 事件要 `streamSubgraphs: true` 才出得来,
-#       而一开它,子图的 `values` 会**整份替换**前端主状态 —— 子 Agent 说的话
-#       先出现再消失(「话被收回去了」)。两件是同一个开关的两头。
-#       完整推演在 backend/src/gyt/core/timing.py 的模块头注。
+# 上游那份写的是 `fetchStateHistory: true`,而 SDK 把 `true` 读成 `limit = 10`
+# (`stream.lgp.js:26` 那个 `: 10`)—— 一次拉十份完整状态快照。而照片的 base64
+# 会永久留在某个检查点里,于是本机实测 **7,501,329 字节**,而首屏真正要的 head
+# 只有 **8,248 字节**。本件把它换成 `thread:` 这个公开选项,自己两阶段供:
+# 先 `getState()` 出字,再后台补 `getHistory()`(分支功能靠后者)。
 #
-#    ⚠️ 别因为「以后可能还要改 Stream.tsx」就把这件空壳留着:一个不再改动任何东西
-#       的整文件覆盖件,等于把我们悄悄钉死在某一版上游快照上,而升级时不会有人发现。
-#       真要再改它,那天重新加回来。
+# ⚠️ **这件覆盖件是「二进宫」**:2026-08-20 因为耗时的 custom 事件加过一次,
+#    08-21 因为耗时改走直连接口删过一次,当天又因为**另一个理由**回来。
+#    别把它当成那件事的复活 —— 耗时行**不**经过这里,它自己轮询 `GET /timing`。
+# ⚠️ 漏装本件的表现:功能全对,**只是每次打开会话都慢几秒**,而且没有任何报错。
+apply_override "stream-provider.tsx" "src/providers/Stream.tsx"
 
 # 打卡三件(W7 §4.4):**本仓自有**的新文件,上游没有对应物,走 install_new_file
 # (apply_override 对不存在的目标只会 warning 跳过,永远装不上,见函数头注)。
 #   checkin-lib.ts —— 纯函数库,scripts/frontend-tests/ 的 vitest 直接测它
 #   qrcode.tsx     —— 电脑端二维码面板(依赖下面步骤 2.6 装的 qrcode.react)
 #   checkin.tsx    —— 自拍打卡组件,thread-index.tsx 的动作条里是它的入口
-# ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override **十二件** + install_new_file
+# ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override **十三件** + install_new_file
 #    **十三件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
 #    合并之后数出来永远对不上。
 #    (2026-08-15 校过:上一版这里写的是「十一件 + 三件」,而 apply_override 那时
@@ -579,11 +579,16 @@ apply_override "api-key.tsx" "src/lib/api-key.tsx"
 #     照着「上一批只改了 install 这个数」的惯性只改一半,又会复发一次。
 #     ⚠️ 两个数**现在都等于十三,那是巧合**,不是可以合并的信号。)
 #    (2026-08-21 fix·耗时换通道:apply_override 十三 → **十二**,删掉了
-#     stream-provider.tsx(墓碑在上面几十行处,理由写在那儿)。
-#     install_new_file 仍是**十三** —— timing-lib.ts 与 GytTimingRows.tsx 都还在,
-#     只是内部从「收 custom 事件」改成了「轮询直连接口」。
+#     stream-provider.tsx。install_new_file 仍是**十三** —— timing-lib.ts 与
+#     GytTimingRows.tsx 都还在,只是内部从「收 custom 事件」改成了「轮询直连接口」。
 #     ⚠️ **这是本段第一次有数变小。** 上一批那句「两个数都等于十三是巧合」
 #        当天就应验了:一批之后它们又不相等了。)
+#    (2026-08-21 perf·线程历史两阶段:apply_override 十二 → **十三**,
+#     stream-provider.tsx **同一天回来了** —— 因为**另一个**理由(上游那行
+#     `fetchStateHistory: true` 被 SDK 读成 limit=10,一次拉 7.5 MB)。
+#     install_new_file 仍是**十三**。
+#     ⚠️ 一天之内同一件覆盖件删了又加,而两次的理由**毫不相干**。
+#        下次看见它别顺手按「上次为什么删」去推理。)
 #    数法:grep -cE '^\s*apply_override ' scripts/setup-frontend.sh
 #          grep -cE '^\s*install_new_file ' scripts/setup-frontend.sh
 install_new_file "checkin-lib.ts" "src/lib/checkin-lib.ts"
