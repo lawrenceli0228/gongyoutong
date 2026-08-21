@@ -96,8 +96,10 @@ import {
   actionNeedsPhoto,
   availableActions,
   currentGrade,
+  confirmBatchPrompt,
   confirmBody,
   confirmPrompt,
+  SIGNER_NAME_STORAGE_KEY,
   describeDocuments,
   describePhotoFile,
   describeSharedPhotoCoverage,
@@ -1806,6 +1808,50 @@ export function SupervisionPanel({
   const [armed, setArmed] = useState<{ hazardNo: string; action: DisposalAction; at: number } | null>(
     null,
   );
+  /**
+   * 批量确认的举手时刻(null = 还没举手)。复用单条那套 `IssueConfirmBar`。
+   *
+   * 🔴 **为什么批量确认必须问一句** —— 它是这个面板上唯一一扇单向门:
+   * 「确认」把隐患推到 `open`,而后端的删除是
+   * `DELETE … WHERE status = 'pending'` —— 只有还没确认的才删得掉。
+   * 也就是说这一下**亲手拆掉了唯一的逃生口**:一条识别错了的隐患
+   * (白色安全帽认成没戴)从此再也删不掉,唯一出路是为一个不存在的隐患
+   * 真的签一份法律文书,再拍照登记「复查合格」。
+   *
+   * 而在 2026-08-21 之前,这颗按钮只有一个 `disabled={busy}`,旁边就是「全選」——
+   * 面板上护栏最少的一颗,后果却是不可逆的。三颗有确认条的
+   * (suspend/escalate/reject)反而都是能另走流程补救的。
+   */
+  const [armedBatch, setArmedBatch] = useState<number | null>(null);
+  /**
+   * 签发人**自己报的名字**,记在 localStorage(键见 `SIGNER_NAME_STORAGE_KEY`)。
+   *
+   * ⚠️ **不复用打卡那个 `gyt:checkin:worker-name`**:那存的是工友自己的名字,
+   * 这里要的是监理的名字。同一台手机上完全可能是两个人 —— 复用等于把签发人
+   * 记成别人,而那比不记更坏:一片空白至少诚实。
+   *
+   * 🔴 **它不是认证身份**(这套系统只有一把共享口令、没有角色),
+   * 界面上那行小字必须把这一点说出来,别让人以为系统在验身份。
+   */
+  const [signerName, setSignerName] = useState("");
+  useEffect(() => {
+    // 挂载后再读:这个面板是点开才挂载的,不存在 SSR/hydration 顾虑,
+    // 但读 localStorage 仍然放进 effect —— 与 checkin.tsx 同一个姿势。
+    try {
+      setSignerName(window.localStorage.getItem(SIGNER_NAME_STORAGE_KEY) ?? "");
+    } catch {
+      // 隐私模式下 localStorage 会抛。记不住名字不该让面板打不开。
+    }
+  }, []);
+  const rememberSigner = useCallback((name: string) => {
+    setSignerName(name);
+    try {
+      window.localStorage.setItem(SIGNER_NAME_STORAGE_KEY, name);
+    } catch {
+      // 同上:记不住就算了,这一次的签发照样带得上名字。
+    }
+  }, []);
+
   const [forms, setForms] = useState<Record<string, FormState>>({});
   const [failures, setFailures] = useState<Record<string, string>>({});
   /**
@@ -2481,6 +2527,9 @@ export function SupervisionPanel({
           afterPhotoId: photoId,
           grade,
           result,
+          // 签发人自报的名字。没填就不带这个键(actionBody 自己判),
+          // 后端记 NULL —— 别在这儿做成必填,理由见 supervision-lib 的 `issuedBy`。
+          issuedBy: signerName,
         });
       } catch (err) {
         // 校验没过就把举手状态一并收掉:让确认条退回按钮,人先去把那一格填对。
@@ -2595,7 +2644,7 @@ export function SupervisionPanel({
         setBusy(false);
       }
     },
-    [apiBase, forms, sharedPhotoState, setFailure, invalidateDetail, loadDetail],
+    [apiBase, forms, sharedPhotoState, setFailure, invalidateDetail, loadDetail, signerName],
   );
 
   // ── 面板这一层要上屏的字(界面恒繁體)──────────────────────────────────────
@@ -2660,6 +2709,33 @@ export function SupervisionPanel({
           </div>
         </div>
 
+        {/* 签发人。**放在筛子上面、面板一打开就看得见** —— 它要在人点签发之前
+            就设好,而不是在确认条上临时问(那时候文书已经渲染落盘了,
+            见后端 `_issued_by` 的取舍)。
+            🔴 那行小字必须说清「系统不验身份」:这套系统只有一把共享口令、
+            没有角色,写成「签发人认证」会让人以为它验过。 */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <label
+            htmlFor="gyt-signer-name"
+            className="text-[13px] whitespace-nowrap text-gray-700"
+          >
+            簽發人
+          </label>
+          <input
+            id="gyt-signer-name"
+            type="text"
+            value={signerName}
+            onChange={(e) => rememberSigner(e.target.value)}
+            placeholder="你的姓名"
+            maxLength={40}
+            autoComplete="name"
+            className="min-w-0 flex-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-[13px] text-gray-900 placeholder:text-gray-500 focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:outline-none pointer-coarse:min-h-11"
+          />
+          <span className="w-full text-[12px] text-gray-600">
+            記在這台手機上,簽發文書時一起存進台賬。系統不驗身份,只是留個記錄。
+          </span>
+        </div>
+
         {/* 四档筛子。**顺序就是 HAZARD_SCOPES 的顺序**(受控词表,后端词表外直接 400)——
             所以这里 map 那个常量,不手写四颗按钮:手写的下场是哪天后端加一档而界面上没有,
             或者拼错一个字然后每次都 400。刻意不做自由输入框,理由同上。 */}
@@ -2715,7 +2791,23 @@ export function SupervisionPanel({
           </div>
         )}
 
-        {pending.length > 0 && (
+        {/* 举了手就把整条橙条换成确认条 —— 与单条处置同一个形状(顶掉原按钮,
+            不是在旁边多长一个框)。理由见 IssueConfirmBar 头注:一个不可逆的动作
+            不能建在一个可能被浏览器悄悄关掉的 window.confirm 上。 */}
+        {pending.length > 0 && armedBatch !== null && (
+          <IssueConfirmBar
+            prompt={confirmBatchPrompt(selectablePending.length)}
+            confirmLabel={`確認 ${selectablePending.length} 條`}
+            armedAt={armedBatch}
+            onCancel={() => setArmedBatch(null)}
+            onConfirm={() => {
+              setArmedBatch(null);
+              void confirmSelected();
+            }}
+          />
+        )}
+
+        {pending.length > 0 && armedBatch === null && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-3 py-2">
             <div className="text-[13px] text-amber-900">
               待確認 {pending.length} 條 —— 確認之後才進正式流程(簽文書、算整改率、能被升級)。
@@ -2741,7 +2833,8 @@ export function SupervisionPanel({
               <Button
                 size="sm"
                 disabled={busy || selectablePending.length === 0}
-                onClick={() => void confirmSelected()}
+                // 不直接确认,先举手 —— 这一下是单向门,见 armedBatch 那段红字。
+                onClick={() => setArmedBatch(Date.now())}
                 className="pointer-coarse:min-h-11"
               >
                 {busy ? (

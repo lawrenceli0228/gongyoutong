@@ -815,6 +815,45 @@ export function confirmPrompt(action: DisposalAction, hazard: HazardBrief): stri
 /** 产物编号:`core/artifacts.py` 是 `uuid4().hex` —— 32 位小写十六进制。 */
 const ARTIFACT_ID_PATTERN = /^[0-9a-f]{32}$/;
 
+/**
+ * 批量确认的二次确认话术(2026-08-21 补)。
+ *
+ * ===========================================================================
+ * 🔴 为什么批量确认必须问一句 —— 它是这个面板上**唯一一扇单向门**
+ * ---------------------------------------------------------------------------
+ * 「确认」把隐患从 `pending` 推到 `open`,而这一下**亲手拆掉了唯一的逃生口**:
+ * 后端的删除是 `DELETE … WHERE status = 'pending'`(`db/hazards.py`)——
+ * 只有还没确认的隐患才删得掉。确认之后,一条识别错了的隐患
+ * (比如把白色安全帽认成没戴)就**再也删不掉了**,唯一的出路是
+ * 为一个不存在的隐患真的签发一份法律文书,再拍照登记「复查合格」。
+ *
+ * 而在这之前,`全選 → 確認選中 N 條` 只有一个 `disabled={busy}`,
+ * 旁边就是「全選」—— 而 `actionNeedsConfirm` 那三颗(suspend/escalate/reject)
+ * 全都有确认条。**护栏最少的那一颗,后果却是不可逆的。**
+ *
+ * 措辞照 `confirmPrompt` 的规矩:说清楚**后果**和**不可撤销**,不写「确定吗?」,
+ * 并且给出**这一刻还能做的事**(先扫一眼、认错的先否决)——
+ * 一句只讲坏消息的确认框,人只会闭着眼点「确定」。
+ * ⚠️ 里面不许写 markdown 记号(** 会原样显示成星号),同 `confirmPrompt`。
+ */
+export function confirmBatchPrompt(count: number): string {
+  return (
+    `要把選中的 ${count} 條隱患都確認下來嗎?\n\n` +
+    "確認之後這些隱患就進了正式台賬,不能再「否決」刪掉 ——\n" +
+    "只能走「簽發文書 → 複查合格」這條路收尾。\n\n" +
+    "先掃一眼有沒有認錯的;認錯的請先逐條否決,再確認剩下的。"
+  );
+}
+
+/** 签发人名字记在 localStorage 的哪个键。
+ *
+ * ⚠️ **与打卡那个 `gyt:checkin:worker-name` 是两个键,别复用。**
+ * 那个存的是**工友**自己的名字(他在这台手机上打卡用的),而这里要的是
+ * **监理**的名字。同一台手机上两者完全可能是不同的人 —— 复用等于把
+ * 签发人记成别人,而那比不记更坏:一片空白至少诚实。
+ */
+export const SIGNER_NAME_STORAGE_KEY = "gyt:supervision:signer-name";
+
 /** 一次批量确认的条数上限,镜像 supervision_api._MAX_CONFIRM_BATCH。 */
 export const MAX_CONFIRM_BATCH = 200;
 
@@ -840,6 +879,18 @@ export interface ActionInput {
   result?: "pass" | "fail";
   /** reinspect 必填:整改后那张现场照片的 32 位编号。 */
   afterPhotoId?: string;
+  /**
+   * 签发人**自己报的名字**(2026-08-21)。所有动作都可以带,后端记进
+   * `hazard_docs.issued_by`。
+   *
+   * 🔴 **不是认证身份**:这套系统只有一把共享口令、没有角色。它能提供的只是
+   * 「有个名字总比一片空白强」—— 在它之前,「这份《工程暂停令》是谁签的」
+   * 在系统里**无解**。完整推演在后端 `db/hazards.DocDraft.issued_by`。
+   *
+   * 可以不填。**别在前端做成必填** —— 后端那边到这一步文书已经渲染落盘了,
+   * 为一个补充性的审计字段挡住法律文书的签发不划算(理由同后端 `_issued_by`)。
+   */
+  issuedBy?: string;
 }
 
 /**
@@ -855,6 +906,15 @@ export function actionBody(action: DisposalAction, input: ActionInput): Record<s
     throw new SupervisionContractError("沒説是哪條隱患(缺隱患編號)。");
   }
   const body: Record<string, unknown> = { hazard_no: hazardNo };
+
+  // 签发人放在这儿(**所有早返回分支之前**)是刻意的:每个动作各自 return,
+  // 塞在任何一个分支里都等于只有那一条路记得下人,而漏掉的那几条不会报错。
+  // 空就不发这个键 —— 后端 `_issued_by` 对缺失和空串一视同仁记 NULL,
+  // 但少发一个空键让请求体里「有没有报名字」一眼可见。
+  const issuedBy = (input.issuedBy ?? "").trim();
+  if (issuedBy) {
+    body.issued_by = issuedBy;
+  }
 
   if (action === "grade") {
     const grade = (input.grade ?? "").trim();

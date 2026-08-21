@@ -24,6 +24,7 @@ import {
   actionNeedsDuePhrase,
   actionNeedsPhoto,
   availableActions,
+  confirmBatchPrompt,
   confirmBody,
   confirmPrompt,
   describeDocuments,
@@ -2059,5 +2060,77 @@ describe("共用照片这条链的文案(它们会原样上屏,所以在这里�
 
   it("SHARED_PHOTO_MESSAGES 是冻的 —— 运行时被改掉的话,错的话会一路传到屏幕上", () => {
     expect(Object.isFrozen(SHARED_PHOTO_MESSAGES)).toBe(true);
+  });
+});
+
+describe("签发人留痕 issued_by(2026-08-21)", () => {
+  it("报了名字就进请求体", () => {
+    const body = actionBody("notice", {
+      hazardNo: "GYT-H-20260816-090000-0001",
+      duePhrase: "下週三",
+      issuedBy: "陳大文",
+    });
+
+    expect(body.issued_by).toBe("陳大文");
+  });
+
+  it("🔴 每一个动作都带得上 —— 塞在某个分支里就只有那条路记得下人", () => {
+    // actionBody 每个动作各自 return,这条穷举所有分支。
+    // 漏掉的那几条不会报错,只是那类文书永远查不出是谁签的。
+    const cases: Array<[Parameters<typeof actionBody>[0], Record<string, unknown>]> = [
+      ["notice", { duePhrase: "下週三" }],
+      ["suspend", { duePhrase: "下週三" }],
+      // ⚠️ 这里必须是**简体**「严重」:它是发给后端的线上值(镜像
+      // db/hazards.GRADE_SEVERE),不是界面上给人看的字。写成繁體会被
+      // actionBody 的受控词表当场拒掉 —— 我第一版就是这么写的。
+      ["grade", { grade: "严重" }],
+      ["reinspect", { result: "pass", afterPhotoId: "a".repeat(32) }],
+      ["resume", {}],
+      ["escalate", {}],
+    ];
+
+    for (const [action, extra] of cases) {
+      const body = actionBody(action, {
+        hazardNo: "GYT-H-20260816-090000-0001",
+        issuedBy: "陳大文",
+        ...extra,
+      });
+      expect(body.issued_by, `${action} 没带上签发人`).toBe("陳大文");
+    }
+  });
+
+  it("没报名字就不发这个键 —— 让「有没有报」在请求体里一眼可见", () => {
+    const body = actionBody("notice", {
+      hazardNo: "GYT-H-20260816-090000-0001",
+      duePhrase: "下週三",
+    });
+
+    expect("issued_by" in body).toBe(false);
+  });
+
+  it("只打了空格等于没报", () => {
+    const body = actionBody("notice", {
+      hazardNo: "GYT-H-20260816-090000-0001",
+      duePhrase: "下週三",
+      issuedBy: "   ",
+    });
+
+    expect("issued_by" in body).toBe(false);
+  });
+});
+
+describe("批量确认的护栏话术(2026-08-21)", () => {
+  it("说清楚不可逆,并且给出这一刻还能做的事", () => {
+    const text = confirmBatchPrompt(12);
+
+    expect(text).toContain("12");
+    // 后果:进正式台账、不能再否决
+    expect(text).toContain("否決");
+    // 出路:先扫一眼、认错的先否决 —— 只讲坏消息的确认框，人只会闭眼点确定
+    expect(text).toContain("先掃一眼");
+  });
+
+  it("不许带 markdown 记号 —— 这句话是拿去弹框的,星号会原样上屏", () => {
+    expect(confirmBatchPrompt(3)).not.toContain("**");
   });
 });
