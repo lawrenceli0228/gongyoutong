@@ -32,8 +32,8 @@ D9/D18:那套连接样板曾是**故意**的第四份拷贝(先照抄、重构�
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
-from contextlib import AbstractContextManager
+from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from typing import Final, NamedTuple
 
 from gyt.attendance.receipt import make_snapshot
@@ -239,7 +239,11 @@ CREATE TABLE IF NOT EXISTS hazard_docs (
   artifact_id TEXT,
   photo_id    TEXT,
   result      TEXT CHECK (result IS NULL OR result IN ({in_clause(DOC_RESULTS)})),
-  created_at  TEXT NOT NULL
+  created_at  TEXT NOT NULL,
+  -- 🔴 issued_by 必须在**最末**:ALTER TABLE ADD COLUMN 只能往末尾追加,
+  --    DDL 也写末尾,新建的库与迁移过来的旧库物理列序才完全一致
+  --    (同 db/tasks.py 的 hazard_no 那条)。语义见 DocDraft.issued_by 的红字。
+  issued_by   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_hazard_docs_no ON hazard_docs(hazard_no);
 
@@ -306,6 +310,7 @@ class HazardDocRow(NamedTuple):
     photo_id: str | None  # 仅 reinspect 行:复查照片
     result: str | None  # 仅 reinspect 行:DOC_RESULTS 之一
     created_at: str
+    issued_by: str | None  # 见下方那段红字。**自报的名字,不是认证过的身份**
 
 
 class IngestFailureRow(NamedTuple):
@@ -331,6 +336,30 @@ class DocDraft(NamedTuple):
     artifact_id: str | None = None
     photo_id: str | None = None
     result: str | None = None
+    issued_by: str | None = None
+    """签发这份文书的人**自己报的名字**(2026-08-21 加)。
+
+    ===========================================================================
+    🔴 它不是认证过的身份,别当成身份用
+    ---------------------------------------------------------------------------
+    这套系统只有**一把共享口令**(``auth.py`` 的 ``permissions`` 是空列表),
+    没有用户体系、没有角色。所以这一列能提供的只是「**有个名字总比一片空白强**」:
+    出事时它是一条**可疑但可查的线索**,不是证据。
+
+    在它之前的状态更糟:``hazard_docs`` 八列里**没有任何一列记谁签的** ——
+    施工方的律师问「这份《工程暂停令》是谁签发的」,系统答得出时间、隐患、照片,
+    **答不出人**。而那份文书后面跟着停工与索赔。
+
+    ⚠️ 允许为空,而且**故意允许**:
+      · 旧数据(2026-08-21 之前签发的)补不出来,留 NULL 比编一个名字诚实;
+      · ``reinspect`` 那种复查记录行本来也不是"签发"。
+    ⚠️ 真正的解法是 TODO-3 的用户体系。这一列是在那之前把「谁签的」这个问题
+    从**无解**变成**有一条线索**,别拿它去做权限判断。
+
+    与 docx 里那个**刻意留空的签字栏**(``agents/supervision/docgen.py``)是两回事:
+    那里留空是因为"系统替他填等于伪造",而这里记的是"谁在界面上点的那一下"。
+    两者都不构成签字。
+    """
 
 
 class Registration(NamedTuple):
@@ -494,8 +523,52 @@ def _hazard_db() -> AbstractContextManager[sqlite3.Connection]:
     (事务内是 no-op、且一声不吭),所以它只能是公共件的参数 —— 这里拿到的连接已经在事务里,
     自己执行必然放错位置。漏开的表现是外键**静默不校验**:``hazard_docs`` 挂在一个根本不存在
     的 ``hazard_no`` 上,而证据链要到上报主管部门那天才发现引不出隐患。原委见 ``open_db``。
+
+    **本域比另外三个多一步 ``_migrate``**(2026-08-21 起),所以这里是个真正的
+    contextmanager 而不是一句 ``return open_db(...)`` —— 补列必须在同一条连接、
+    建完表之后跑。姿势与 ``db/tasks.py`` 的 ``_task_db`` 逐字相同。
     """
-    return open_db(_DDL, foreign_keys=True)
+    ctx = open_db(_DDL, foreign_keys=True)
+    return _with_migrations(ctx)
+
+
+@contextmanager
+def _with_migrations(
+    ctx: AbstractContextManager[sqlite3.Connection],
+) -> Iterator[sqlite3.Connection]:
+    """把 ``open_db`` 拿到的连接过一遍幂等补列,再交出去。"""
+    with ctx as conn:
+        _migrate(conn)
+        yield conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """幂等补列:``PRAGMA table_info`` 问一遍现有列名,缺哪列补哪列。
+
+    与 ``_DDL`` 一起在连接进场处每次执行(姿势照搬 ``db/tasks.py:_migrate``)。
+    对**新建**的库这里恒为空转(``_DDL`` 已经把列建全);只有线上那种 2026-08-21
+    之前建的 ``hazard_docs`` 才会真的走一次 ALTER,之后每次都空转。
+
+    代价是每次操作多一次 ``PRAGMA table_info`` —— 读的是已经在内存里的 schema,
+    与 ``CREATE TABLE IF NOT EXISTS`` 同一量级,换来的是「谁负责升级」这件事
+    根本不用有人负责。
+
+    ⚠️ ``ALTER TABLE ADD COLUMN`` **只能往末尾追加**,所以 ``_DDL`` 里新列也必须
+    写在末尾 —— 两种库的物理列序才一致。本层所有 SELECT 都显式列名,列序不一致
+    本身不会出错,但任何一句手写的 ``SELECT *`` 都会**只在一种库上**出事,
+    而那种 bug 在本机永远复现不出来。
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(hazard_docs)").fetchall()}
+    for column, statement in _DOC_MIGRATIONS:
+        if column not in existing:
+            conn.execute(statement)
+
+
+_DOC_MIGRATIONS: Final[tuple[tuple[str, str], ...]] = (
+    # 2026-08-21:签发人留痕。语义见 DocDraft.issued_by 的红字 ——
+    # 自报的名字、不是认证身份、允许为空(旧行补不出来,留 NULL 比编一个诚实)。
+    ("issued_by", "ALTER TABLE hazard_docs ADD COLUMN issued_by TEXT"),
+)
 
 
 # --- hazards:登记与读取 ------------------------------------------------------
@@ -669,7 +742,10 @@ def _insert_docs(
         return
     conn.executemany(
         _INSERT_DOC_SQL,
-        [(hazard_no, d.doc_type, d.doc_no, d.artifact_id, d.photo_id, d.result, now) for d in docs],
+        [
+            (hazard_no, d.doc_type, d.doc_no, d.artifact_id, d.photo_id, d.result, now, d.issued_by)
+            for d in docs
+        ],
     )
 
 

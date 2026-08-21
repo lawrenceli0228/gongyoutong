@@ -118,6 +118,9 @@ def _doc(doc_type: str, doc_no: str, **overrides: object) -> hazards.HazardDocRo
         photo_id=None,
         result=None,
         created_at="2026-08-16 09:30:00",
+        # 2026-08-21 加的签发人留痕。这里默认给 None,是在替**旧数据**说话:
+        # 那一列上线之前签发的文书全是 NULL,而文书渲染必须对它们照常工作。
+        issued_by=None,
     )
     return hazards.HazardDocRow(**{**base, **overrides})  # type: ignore[arg-type]
 

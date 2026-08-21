@@ -2130,3 +2130,62 @@ class Test照片直传:
         第二次 = _传照片(client, FAKE_JPEG).json()["data"]["photo_id"]
 
         assert 第一次 != 第二次
+
+
+class Test签发人留痕:
+    """``issued_by``(2026-08-21)—— 在它之前,「这份《工程暂停令》是谁签的」**无解**。
+
+    ⚠️ 它是**自报的名字,不是认证身份**:这套系统只有一把共享口令、没有角色。
+    这几条用例守的是「界面报上来的名字确实进了库」,不是「这个人真是他」。
+    """
+
+    def test_签发时报的名字进了证据链(self, client: TestClient) -> None:
+        hazard_no = _arrive(hazards.STATUS_OPEN)
+
+        resp = client.post(
+            "/supervision/notice",
+            json={"hazard_no": hazard_no, "due_phrase": DUE_PHRASE, "issued_by": "陳大文"},
+        )
+
+        assert resp.status_code == 200
+        assert [d.issued_by for d in hazards.docs_of([hazard_no])] == ["陳大文"]
+
+    def test_不报名字也签得出去_记成空(self, client: TestClient) -> None:
+        """🔴 别改成必填:拒绝的时候文书**已经渲染落盘了**,为一个补充性的审计字段
+        挡住法律文书的签发不划算。留空比编一个名字诚实。"""
+        hazard_no = _arrive(hazards.STATUS_OPEN)
+
+        resp = client.post(
+            "/supervision/notice", json={"hazard_no": hazard_no, "due_phrase": DUE_PHRASE}
+        )
+
+        assert resp.status_code == 200
+        assert [d.issued_by for d in hazards.docs_of([hazard_no])] == [None]
+
+    def test_名字超长就截断_而不是拒绝签发(self, client: TestClient) -> None:
+        """同上那条取舍。它会原样进库、将来进导出的台账,所以要有上限;
+        但上限的处理方式是截断,不是把签发挡下来。"""
+        hazard_no = _arrive(hazards.STATUS_OPEN)
+
+        resp = client.post(
+            "/supervision/notice",
+            json={"hazard_no": hazard_no, "due_phrase": DUE_PHRASE, "issued_by": "陳" * 200},
+        )
+
+        assert resp.status_code == 200
+        recorded = hazards.docs_of([hazard_no])[0].issued_by
+        assert recorded == "陳" * 40
+
+    def test_三份文书一起签时每一份都记上(self, client: TestClient) -> None:
+        """暂停令那条路一次出三份 —— 三份都该记到同一个人,不能只记第一份。"""
+        hazard_no = _arrive(hazards.STATUS_OPEN, grade=hazards.GRADE_SEVERE)
+
+        resp = client.post(
+            "/supervision/suspend",
+            json={"hazard_no": hazard_no, "due_phrase": DUE_PHRASE, "issued_by": "總監"},
+        )
+
+        assert resp.status_code == 200
+        issued = hazards.docs_of([hazard_no])
+        assert len(issued) == 3
+        assert {d.issued_by for d in issued} == {"總監"}

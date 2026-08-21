@@ -821,3 +821,90 @@ def test_登记失败落表可事后统计() -> None:
     assert all_rows[0].created_at.endswith("+08:00")
 
     assert [row.photo_id for row in hazards.list_ingest_failures(project_id="")] == ["photo-y"]
+
+
+# ---------------------------------------------------------------------------
+# 签发人留痕 issued_by(2026-08-21)—— 在它之前,「这份暂停令是谁签的」无解
+# ---------------------------------------------------------------------------
+
+
+def test_文书能记下签发人_而复查记录也一样() -> None:
+    """整条证据链上每一个「人做的动作」都该留下是谁做的。
+
+    复查那条尤其要有:「复查合格」是离销项最近的一步,由人下结论(D11),
+    而它不出文书、没有编号 —— 在这一列之前,它是全链唯一一个连时间以外
+    什么都不记的动作。
+    """
+    no = _register().row.hazard_no
+    hazards.confirm(no)
+    hazards.mark_notified(
+        no,
+        DUE,
+        expected_grade=hazards.GRADE_NORMAL,
+        docs=[hazards.DocDraft("notice", "GYT-TZ-记名", artifact_id="a" * 32, issued_by="陳大文")],
+    )
+    hazards.mark_reinspect_failed(
+        no,
+        docs=[
+            hazards.DocDraft(
+                "reinspect", "GYT-FC-记名", photo_id="p", result="fail", issued_by="李四"
+            )
+        ],
+    )
+
+    got = {d.doc_no: d.issued_by for d in hazards.docs_of([no])}
+    assert got == {"GYT-TZ-记名": "陳大文", "GYT-FC-记名": "李四"}
+
+
+def test_不报名字也签得出去_记成空() -> None:
+    """🔴 **故意允许为空**,别改成必填。
+
+    必填的后果很难看:界面上没填名字 → 拒绝 → 而这时候文书**已经渲染落盘了**
+    (``_sign`` 那条孤儿文件)。为一个补充性的审计字段挡住法律文书的签发,不划算。
+    留 NULL 也比编一个名字诚实 —— 查的人一眼看得出「这条没记到人」。
+    """
+    no = _register().row.hazard_no
+    hazards.confirm(no)
+    hazards.mark_notified(
+        no,
+        DUE,
+        expected_grade=hazards.GRADE_NORMAL,
+        docs=[hazards.DocDraft("notice", "GYT-TZ-无名", artifact_id="a" * 32)],
+    )
+
+    assert [d.issued_by for d in hazards.docs_of([no])] == [None]
+
+
+def test_旧库缺这一列时进场自动补上_且旧行原样保留() -> None:
+    """幂等补列的守门断言(姿势照搬 db/tasks.py 的 _migrate)。
+
+    线上那张 ``hazard_docs`` 是 2026-08-21 之前建的,没有这一列。补列必须:
+      ① 真的加上;② **不动旧行**(它们的 issued_by 就该是 NULL);
+      ③ 加在**末尾** —— ALTER TABLE 只能追加,DDL 也写末尾,
+        新建的库与迁移过来的旧库物理列序才一致。
+
+    做旧的手法是 ``ALTER TABLE … DROP COLUMN``(sqlite 3.35+),
+    比手搓一张旧表可靠:它保证除了这一列之外**其余部分与真库逐字节同构**。
+    """
+    no = _register().row.hazard_no
+    hazards.confirm(no)
+    hazards.mark_notified(
+        no,
+        DUE,
+        expected_grade=hazards.GRADE_NORMAL,
+        docs=[
+            hazards.DocDraft("notice", "GYT-TZ-旧行", artifact_id="a" * 32, issued_by="会被抹掉")
+        ],
+    )
+
+    with closing(_raw_connect()) as conn, conn:
+        conn.execute("ALTER TABLE hazard_docs DROP COLUMN issued_by")
+    assert "issued_by" not in _table_columns("hazard_docs")
+
+    hazards.list_rows()  # 任意一次操作都会在进场处跑 _migrate
+
+    columns = _table_columns("hazard_docs")
+    assert columns[-1] == "issued_by", "新列必须在最末 —— ALTER TABLE 只能追加"
+    assert columns == list(hazards.HazardDocRow._fields)
+    docs = hazards.docs_of([no])
+    assert [(d.doc_no, d.issued_by) for d in docs] == [("GYT-TZ-旧行", None)]

@@ -653,6 +653,34 @@ def _text(body: dict[str, Any], key: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+_ISSUED_BY_MAX_LEN: Final[int] = 40
+"""签发人名字的长度上限。姓名 + 职务(「陳大文 總監理工程師」)绰绰有余,
+而它会原样进库、将来会出现在导出的台账里,不设上限等于开一个塞任意长文本的口子。"""
+
+
+def _issued_by(body: dict[str, Any]) -> str | None:
+    """签发人**自己报的名字**。空 → None(允许,理由见下)。
+
+    ===========================================================================
+    为什么不做成必填
+    ---------------------------------------------------------------------------
+    做成必填会有一个很难看的后果:界面上没填名字 → 400 → 而这时候文书**已经渲染
+    落盘了**(``_sign`` 的孤儿文件那条)。为了一个补充性的审计字段去挡住法律文书的
+    签发,取舍不划算。
+
+    所以规矩是:**界面负责问、后端负责记**。界面上那颗确认按钮会把名字带上来
+    (``supervision.tsx`` 的签发人输入框),没带就记 NULL —— 与 2026-08-21 之前
+    那批旧数据同一个形状,查的人一眼看得出「这条没记到人」,而不是看到一个编的名字。
+
+    🔴 **它不是认证身份**,别拿它做任何权限判断。完整推演在
+    ``db/hazards.DocDraft.issued_by`` 的红字。
+
+    超长直接截断而不是报错:同上,不值得为它挡住签发。截断留档比拒绝签发安全。
+    """
+    name = _text(body, "issued_by")
+    return name[:_ISSUED_BY_MAX_LEN] or None
+
+
 # ---------------------------------------------------------------------------
 # 四道闸:隐患存在 → 已定级 → 级别方向 → 状态机
 # ---------------------------------------------------------------------------
@@ -892,6 +920,8 @@ def _sign(
     ctx: DocContext,
     snap: TimeSnapshot,
     apply: Callable[[list[hazards.DocDraft]], bool],
+    *,
+    issued_by: str | None,
 ) -> list[_IssuedDoc]:
     """签发 N 份文书并落库。返回 ``documents`` 数组的素材(顺序 = ``kinds`` 的顺序)。
 
@@ -903,11 +933,21 @@ def _sign(
       · 撞号     → ``sqlite3.IntegrityError``(``doc_no UNIQUE``),整轮重来
                    (重摇号 + **重渲染**,因为编号印在正文里),旧文件成孤儿;
       · 状态被抢 → ``apply`` 回 False,409。**库一行没动**,盘上留孤儿文件(§6.4 认了)。
+
+    ``issued_by`` 是签发人**自己报的名字**(2026-08-21 加,语义见
+    ``db/hazards.DocDraft.issued_by`` 的红字)。**必填形参、可以是 None** ——
+    做成关键字必填是为了让新加的签发路径必须停下来想一句「这条路谁签的」,
+    而不是默默地又落一批查不出人的文书。
     """
     for attempt in range(1 + _SIGN_RETRY_MAX):
         issued = _issue_documents(kinds, ctx, snap)
         drafts = [
-            hazards.DocDraft(doc_type=d.doc_type, doc_no=d.doc_no, artifact_id=d.artifact_id)
+            hazards.DocDraft(
+                doc_type=d.doc_type,
+                doc_no=d.doc_no,
+                artifact_id=d.artifact_id,
+                issued_by=issued_by,
+            )
             for d in issued
         ]
         try:
@@ -1090,6 +1130,7 @@ def _work_notice(body: dict[str, Any]) -> _Result:
         lambda drafts: hazards.mark_notified(
             row.hazard_no, due_date, expected_grade=row.grade, docs=drafts
         ),
+        issued_by=_issued_by(body),
     )
     logger.info("隐患 %s 已签发通知单 %s(期限 %s)", row.hazard_no, issued[0].doc_no, due_date)
     return _issued_payload(
@@ -1121,6 +1162,7 @@ def _work_suspend(body: dict[str, Any]) -> _Result:
         lambda drafts: hazards.mark_suspended(
             row.hazard_no, due_date, expected_grade=row.grade, docs=drafts
         ),
+        issued_by=_issued_by(body),
     )
     logger.info(
         "隐患 %s 已出具暂停令三文书:%s(期限 %s)",
@@ -1168,6 +1210,10 @@ def _work_reinspect_result(body: dict[str, Any]) -> _Result:
             doc_no=f"{row.hazard_no}{_REINSPECT_NO_MARK}{secrets.token_hex(_REINSPECT_TAIL_BYTES)}",
             photo_id=photo_id,
             result=result,
+            # 复查结论**由人下**(D11),所以它同样该留下是谁下的这个结论 ——
+            # 「复查合格」是整条链上离销项最近的一步,而它不出文书、没有编号,
+            # 在这之前是全链唯一一个连时间以外什么都不记的动作。
+            issued_by=_issued_by(body),
         )
         try:
             if passed:
@@ -1228,6 +1274,7 @@ def _work_resume(body: dict[str, Any]) -> _Result:
         ctx,
         snap,
         lambda drafts: hazards.mark_resumed(row.hazard_no, docs=drafts),
+        issued_by=_issued_by(body),
     )
     logger.info("隐患 %s 已签发复工令 %s", row.hazard_no, issued[0].doc_no)
     return _issued_payload(
@@ -1252,6 +1299,7 @@ def _work_escalate(body: dict[str, Any]) -> _Result:
         ctx,
         snap,
         lambda drafts: hazards.mark_escalated(row.hazard_no, docs=drafts),
+        issued_by=_issued_by(body),
     )
     logger.info("隐患 %s 已升级上报,监理报告 %s", row.hazard_no, issued[0].doc_no)
     return _issued_payload(
