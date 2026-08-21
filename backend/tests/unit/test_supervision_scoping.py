@@ -82,6 +82,10 @@ def _行(
         closed_at=None,
         created_at="2026-08-16 09:00:00",
         updated_at="2026-08-16 09:00:00",
+        # 2026-08-21 加的两列(dismiss():不出文书关掉时的理由 + 谁关的)。
+        # 这里给 None = 「这一行不是那么关掉的」,与绝大多数真实行一致。
+        closed_reason=None,
+        closed_by=None,
     )
 
 

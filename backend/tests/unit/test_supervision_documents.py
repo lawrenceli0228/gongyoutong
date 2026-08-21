@@ -104,6 +104,9 @@ def _row(**overrides: object) -> hazards.HazardRow:
         closed_at=None,
         created_at="2026-08-16 08:00:00",
         updated_at="2026-08-16 09:30:00",
+        # 见 test_supervision_scoping 里同名两列的注释。
+        closed_reason=None,
+        closed_by=None,
     )
     return hazards.HazardRow(**{**base, **overrides})  # type: ignore[arg-type]
 

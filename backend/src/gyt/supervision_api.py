@@ -66,6 +66,22 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
         🔴 回执里的 ``status`` 是 ``"deleted"``,**全项目唯一一个不属于 ``db.STATUSES``
         八档的状态值** —— 那一行已经从库里删掉了,没有状态可报(见 ``_STATUS_DELETED``)。
 
+    POST /supervision/dismiss            {"hazard_no": …, "reason": "白色安全帽,现场核过",
+                                          "issued_by": "陈大文"}
+        「这条不是隐患 / 已当场整改」——**不出任何文书**把 ``open`` 关掉。
+        2026-08-21 加。在它之前 ``open`` 只有两条出口而两条都要签发法律文书,
+        于是一条识别错了的隐患**关不掉**:唯一的出路是为一个不存在的隐患真的签一份
+        《监理通知单》,再拍张照登记「复查合格」——**纠错的代价是往证据链里塞假文书**。
+
+        与 ``reject`` 的分工(别搞混):
+            reject   pending → 整行**删掉**,什么都不留(还没人确认过,没有留档价值)
+            dismiss  open    → 行还在、编号还在、照片还在,标成 closed 并**写明理由**
+
+        🔴 ``reason`` 必填(至少 4 个字),原样进 ``hazards.closed_reason`` ——
+        它是事后唯一能回答「这条为什么关的」的地方,也是它与「删掉」的本质区别。
+        ⚠️ **状态闸排在理由闸前面**:「这条路你根本走不通」比「你的理由太短」更根本。
+        签过文书的、还没确认的一律 409(后者会另外指一句「请用否决」)。
+
     POST /supervision/grade              {"hazard_no": …, "grade": "一般"|"严重"}
         人工定级,清 needs_grading。**只允许在还没签过任何文书时改**
         (状态 pending / open;理由见 ``_GRADABLE_STATUSES``)。
@@ -1582,6 +1598,84 @@ def _detail_user_msg(
     return "".join(parts)
 
 
+_DISMISS_REASON_MIN_LEN: Final[int] = 4
+"""理由的最短长度。四个字("认错了""重复了")是底线,挡的是「.」「1」这种敷衍。
+
+不设更高:真的就是「白帽认成没戴」这么简单的事,逼人写作文只会让人复制粘贴同一句。
+"""
+
+_DISMISS_REASON_MAX_LEN: Final[int] = 200
+
+
+def _work_dismiss(body: dict[str, Any]) -> _Result:
+    """POST /supervision/dismiss —— 「这条不是隐患 / 已当场整改」,**不出文书**把它关掉。
+
+    ===========================================================================
+    为什么要有这条端点
+    ---------------------------------------------------------------------------
+    在它之前 ``open`` 只有两条出口,而两条都要签发法律文书。于是一条识别错了的
+    隐患(白色安全帽被认成没戴、拍到的是隔壁工地)在系统里**关不掉** ——
+    唯一的出路是为一个不存在的隐患真的签一份《监理通知单》,再拍张照登记
+    「复查合格」。**纠错的代价是往证据链里塞一份假文书。**
+
+    而「确认」这一下是单向门(``delete_pending`` 只删 pending),确认之后连否决
+    都没了。这条端点把那扇门变回可回退的。
+
+    ===========================================================================
+    它与「否决」(``_work_reject``)的分工 —— 别搞混
+    ---------------------------------------------------------------------------
+        否决   pending  → 整行**删掉**,什么都不留(还没人确认过,没有留档价值)
+        关掉   open     → 行还在、编号还在、照片还在,只是标成 closed 并**写明理由**
+
+    也就是说:确认之前用否决,确认之后用这条。两条都不出文书,但只有这条留痕。
+
+    ⚠️ **理由必填**,而且会原样进台账。这是它与「删掉」的本质区别 ——
+    事后能回答「这几条为什么关的」。空理由在这里拦下(db 层不管这个:
+    那层只保证存取保真与状态机合法性)。
+    """
+    hazard_no = _text(body, "hazard_no")
+    row = _require_hazard(hazard_no)
+    reason = _text(body, "reason")[:_DISMISS_REASON_MAX_LEN]
+
+    # ⚠️ **状态闸排在理由闸前面**,顺序是刻意的:
+    #    「这条路你根本走不通」比「你的理由太短」更根本。反过来的话,一个
+    #    pending 的隐患会先被要求补写理由,人认真写完再提交,才被告知
+    #    「这条不该走这儿」—— 白费一趟,而且他会以为是理由的问题。
+    # 先读只为说人话;真正说了算的是下面那个 rowcount(同 _work_reject 的规矩)。
+    if row.status != hazards.STATUS_OPEN:
+        extra = (
+            "这条还没人确认过,要拿掉请用「否决」。"
+            if row.status == hazards.STATUS_PENDING
+            else "这条路只给还没签过任何文书的隐患用 —— 纸已经发出去的,"
+            "得走复查或上报那条路收尾,不然台账和现场对不上。"
+        )
+        raise _refuse(
+            409,
+            ErrorCode.CONFLICT,
+            f"隐患「{hazard_no}」现在是「{_zh(row.status)}」,不能这样关掉。{extra}",
+        )
+
+    if len(reason) < _DISMISS_REASON_MIN_LEN:
+        raise _refuse(
+            400,
+            ErrorCode.INVALID_INPUT,
+            "关掉这条隐患要写清为什么(比如「白色安全帽,现场核过」「已当场整改」)。"
+            "这句话会留在台账里,是事后唯一能回答「这条为什么关的」的地方。",
+        )
+
+    closed = hazards.dismiss(hazard_no, reason=reason, issued_by=_issued_by(body))
+    if not closed:
+        raise _refuse(409, ErrorCode.CONFLICT, _MSG_RACED)
+
+    logger.info("隐患 %s 不出文书关掉,理由:%s", hazard_no, reason)
+    return _issued_payload(
+        hazard_no,
+        hazards.STATUS_CLOSED,
+        (),
+        f"隐患「{hazard_no}」已关掉,没有出文书。理由留在台账里了:{reason}",
+    )
+
+
 def _work_reject(body: dict[str, Any]) -> _Result:
     """POST /supervision/reject —— 否决一条**待确认**的隐患(状态机图里 pending 那条否决支)。
 
@@ -1950,6 +2044,11 @@ async def post_confirm(request: Request) -> JSONResponse:
     return await _handle(request, _work_confirm)
 
 
+async def post_dismiss(request: Request) -> JSONResponse:
+    """POST /supervision/dismiss —— 不出文书关掉一条 open 的隐患(必须写理由)。"""
+    return await _handle(request, _work_dismiss)
+
+
 async def post_reject(request: Request) -> JSONResponse:
     """POST /supervision/reject —— 否决一条待确认的隐患(只删 pending,确认过的拒)。"""
     return await _handle(request, _work_reject)
@@ -2003,9 +2102,10 @@ SUPERVISION_ROUTES: Final[list[Route]] = [
     # starlette 不会拿一条去遮另一条,这里的先后只为好读:先清单、后详情。
     Route("/supervision/hazards", get_hazards, methods=["GET"]),
     Route("/supervision/hazards/{hazard_no}", get_hazard_detail, methods=["GET"]),
-    # 写入八条(W9 七条 + W10 的 reject)。
+    # 写入九条(W9 七条 + W10 的 reject + 2026-08-21 的 dismiss)。
     Route("/supervision/confirm", post_confirm, methods=["POST"]),
     Route("/supervision/reject", post_reject, methods=["POST"]),
+    Route("/supervision/dismiss", post_dismiss, methods=["POST"]),
     Route("/supervision/grade", post_grade, methods=["POST"]),
     Route("/supervision/notice", post_notice, methods=["POST"]),
     Route("/supervision/suspend", post_suspend, methods=["POST"]),
@@ -2072,6 +2172,7 @@ __all__ = [
     "get_hazard_detail",
     "get_hazards",
     "post_confirm",
+    "post_dismiss",
     "post_escalate",
     "post_grade",
     "post_notice",

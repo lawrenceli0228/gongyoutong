@@ -734,9 +734,9 @@ function IssueConfirmBar({
   );
 }
 
-type FormState = { due: string; photo: string };
+type FormState = { due: string; photo: string; reason: string };
 
-const EMPTY_FORM: FormState = { due: "", photo: "" };
+const EMPTY_FORM: FormState = { due: "", photo: "", reason: "" };
 
 /**
  * 一条隐患的**详情/证据链**取数三态(W10)。
@@ -1301,6 +1301,7 @@ function HazardRow({
   const isPending = hazard.status === "pending";
   const needsDue = actions.some(actionNeedsDuePhrase);
   const needsPhoto = actions.some(actionNeedsPhoto);
+  const needsReason = actions.includes("dismiss");
   /**
    * 期限那一行只在**源里真给了这个键**时出现(`due_date !== undefined`)。
    * 老路(聊天里的工具返回)没有这几个字段,渲成「期限:—」看着像后端没下期限,
@@ -1506,6 +1507,28 @@ function HazardRow({
             placeholder={`如:${DUE_PHRASE_SAMPLE}`}
             disabled={busy}
           />
+        </div>
+      )}
+
+      {needsReason && (
+        <div className="flex flex-col gap-1">
+          <Label htmlFor={`gyt-reason-${hazard.hazard_no}`} className="text-[12px]">
+            關掉的原因(不出文書時要寫)
+          </Label>
+          {/* 🔴 这句话会**原样留在台账里**,是事后唯一能回答「这条为什么关的」的地方。
+              placeholder 给的是两个真实例子而不是「請輸入原因」—— 后者的结果是
+              一屏「不用了」「已处理」,而那些字事后什么都回答不了。 */}
+          <Input
+            id={`gyt-reason-${hazard.hazard_no}`}
+            value={form.reason}
+            onChange={(e) => onFormChange({ reason: e.target.value })}
+            placeholder="如:白色安全帽,現場核過"
+            maxLength={200}
+            disabled={busy}
+          />
+          <span className="text-[12px] text-gray-600">
+            關掉之後這條就是終點,系統裏開不回來。這句話會留在台賬裏。
+          </span>
         </div>
       )}
 
@@ -2492,6 +2515,7 @@ export function SupervisionPanel({
         actionBody(action, {
           hazardNo: hazard.hazard_no,
           duePhrase: form.due,
+          reason: form.reason,
           // 与 `runAction` 走同一个 `effectivePhotoId` —— 两处各写一份的话,
           // 举手时验的是 A 张、真发出去的是 B 张,而中间隔着一句「不能撤销」。
           afterPhotoId: effectivePhotoId(form.photo, sharedPhotoState),
@@ -2524,6 +2548,7 @@ export function SupervisionPanel({
         body = actionBody(action, {
           hazardNo: hazard.hazard_no,
           duePhrase: form.due,
+          reason: form.reason,
           afterPhotoId: photoId,
           grade,
           result,

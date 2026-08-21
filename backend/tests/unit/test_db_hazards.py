@@ -98,8 +98,17 @@ def _attempt(hazard_no: str, dst: str) -> bool:
     if dst == hazards.STATUS_RESUMING:
         return hazards.start_resumption(hazard_no)
     if dst == hazards.STATUS_CLOSED:
-        # 两条路都通向 closed:复查合格直接销项 / 出复工令。任一条成即算迁到了。
-        return hazards.close_after_pass(hazard_no) or hazards.mark_resumed(hazard_no)
+        # **三条**路通向 closed,任一条成即算迁到了:
+        #   · close_after_pass  复查合格直接销项(没停过工的)
+        #   · mark_resumed      出复工令(停过工的)
+        #   · dismiss           不出文书关掉(2026-08-21 加,只从 open 出发)
+        # 漏掉第三条的表现很具体:补集用例会报「open → closed 该成却没成」——
+        # 它不是在说 dismiss 坏了,是在说这个 helper 不知道有这条路。
+        return (
+            hazards.close_after_pass(hazard_no)
+            or hazards.mark_resumed(hazard_no)
+            or hazards.dismiss(hazard_no, reason="补集测试:不出文书关掉")
+        )
     if dst == hazards.STATUS_ESCALATED:
         return hazards.mark_escalated(hazard_no)
     # pending 没有任何迁移函数以它为目标 —— 只有登记会落 pending,而且回不去。
