@@ -48,22 +48,37 @@ import {
 } from "@/lib/lang-lib";
 
 /** 子 Agent 的中文名。加新 Agent 时往这里补一行,不补也不会坏(会退回显示英文名)。
- *  导出给 ai.tsx 覆盖件用(子 Agent 正文折叠行也要念中文名)。 */
+ *  导出给 ai.tsx 覆盖件用(子 Agent 正文折叠行也要念中文名)。
+ *
+ *  🔴 **这张表要和后端 `graph.AGENT_REGISTRY` 的 name 对齐,而它没有守卫。**
+ *     同一份名单在前端有三份拷贝,另外两份(`timing-lib.ts` 的 `AGENT_LABELS`、
+ *     `GytStatusCards.tsx` 的 `AGENT_TO_CARD`)有一条**读源码比对**的测试盯着,
+ *     六天里一个字没漂;**只有这份没有守卫,就漂了** —— W7 加 attendance 时漏补,
+ *     于是工友问「上周谁来过」,一整屏繁體里冒出「轉給 attendance」。
+ *     ⚠️ 补一行只是修今天这次;真正该做的是照 `timing-lib.test.ts` 那套
+ *     `readAgentToCard` 加一条读 `graph.py` 的守卫(排在 P3)。 */
 export const AGENT_NAMES: Record<string, string> = {
   supervisor: "調度中樞",
   safety: "安全巡檢員",
   // inspection 是「巡检出记录」英雄链(safety ─硬边→ report)编译成的子图。
   // 漏了这一行的代价很具体:它是演示第一跳,界面上会显示英文「转给 inspection」。
   inspection: "巡檢出記錄",
-  ping: "連通性自檢",
   knowledge: "規範檢索",
   schedule: "任務管理",
   cad: "圖紙查詢",
   report: "報告生成",
+  // W7 的 attendance Agent。它**只管查** —— 打卡写入走 checkin_api.py 直连接口,
+  // 不经任何 Agent(D15)。所以这里只会出现「转给考勤」这一种交接痕迹。
+  // ⚠️ 这一行 2026-08-15 W7 落地时漏了,一直到 08-21 才补 —— 六天里界面上
+  //    一直显示的是英文 agent 名,零报错。别再漏第二次。
+  attendance: "考勤查詢",
   // W9 的 supervision Agent(S5 泳道落地)。它**只查、只建议** —— 改状态和出文书
   // 全部走 HTTP 端点,不经 LLM(方案 §5.1:法律行为不能由概率性系统单方面触发)。
   // 这一行现在补上,是为了 S5 一挂进 AGENT_REGISTRY,界面上不会冒出「转给 supervision」。
   supervision: "監理處置",
+  // 墓碑:`ping` 曾经在这儿。2026-08-08 它已从 AGENT_REGISTRY **摘除**
+  // (理由见 graph.py 该常量顶部的三连实锤),`transfer_to_ping` 这条路不存在,
+  // 留着只会让下一个人以为它还能被路由到。要复活先改后端注册表。
 };
 
 /** 业务工具的中文名。
@@ -103,7 +118,12 @@ const TOOL_NAMES: Record<string, string> = {
   list_hazards: "查隱患清單",
   get_hazard: "查隱患詳情",
   suggest_disposal: "看該怎麼處置",
-  // ping(链路自检,不是业务工具)
+  // attendance(考勤 —— **同款只读形态**,W7/D15。打卡写入走 checkin_api.py 直连接口)
+  // ⚠️ 与上面的 AGENT_NAMES 同一批漏登记,补于 2026-08-21。
+  list_attendance_days: "查誰來過",
+  list_attendance_detail: "查打卡明細",
+  // ping(链路自检,不是业务工具)。它的 Agent 早已摘除(见 AGENT_NAMES 的墓碑),
+  // 但 echo 这个工具名留着无害 —— 真跑起来它不会出现,出现了也念得出中文。
   echo: "回聲自檢",
 };
 
