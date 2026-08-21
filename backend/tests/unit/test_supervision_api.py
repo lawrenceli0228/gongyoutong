@@ -129,6 +129,10 @@ UNASSIGNED: Final[str] = ""
 _ALL_ENDPOINTS: list[tuple[str, dict[str, Any]]] = [
     ("/supervision/confirm", {"hazard_nos": ["GYT-H-20260816-090000-0001"]}),
     ("/supervision/reject", {"hazard_no": "GYT-H-20260816-090000-0001"}),
+    (
+        "/supervision/dismiss",
+        {"hazard_no": "GYT-H-20260816-090000-0001", "reason": "白色安全帽,現場核過"},
+    ),
     ("/supervision/grade", {"hazard_no": "GYT-H-20260816-090000-0001", "grade": "一般"}),
     ("/supervision/notice", {"hazard_no": "GYT-H-20260816-090000-0001", "due_phrase": DUE_PHRASE}),
     ("/supervision/suspend", {"hazard_no": "GYT-H-20260816-090000-0001", "due_phrase": DUE_PHRASE}),
@@ -223,32 +227,36 @@ def _arrive(status: str, *, due: str = FAR_FUTURE_ISO, **kwargs: Any) -> str:
     「全部一条都不筛」那条用例测了个寂寞 —— 两个筛子返回同一批,断言照样绿。
     """
     hazard_no = _new_hazard(**kwargs)
+    # 写前守卫要「你按哪个级别做的决定」——造数这儿就是 kwargs 里那个
+    # (没给就是 _new_hazard 的默认值)。写死常量的话,造一条严重隐患时
+    # mark_* 会因为守卫不命中而静默不迁移,用例失败的样子和真 bug 一模一样。
+    grade = kwargs.get("grade", hazards.GRADE_NORMAL)
     if status == hazards.STATUS_PENDING:
         return hazard_no
     hazards.confirm(hazard_no)
     if status == hazards.STATUS_OPEN:
         return hazard_no
     if status == hazards.STATUS_NOTIFIED:
-        hazards.mark_notified(hazard_no, due)
+        hazards.mark_notified(hazard_no, due, expected_grade=grade)
         return hazard_no
     if status == hazards.STATUS_SUSPENDED:
-        hazards.mark_suspended(hazard_no, due)
+        hazards.mark_suspended(hazard_no, due, expected_grade=grade)
         return hazard_no
     if status == hazards.STATUS_REINSPECT_FAILED:
-        hazards.mark_notified(hazard_no, due)
+        hazards.mark_notified(hazard_no, due, expected_grade=grade)
         hazards.mark_reinspect_failed(hazard_no)
         return hazard_no
     if status == hazards.STATUS_RESUMING:
-        hazards.mark_suspended(hazard_no, due)
+        hazards.mark_suspended(hazard_no, due, expected_grade=grade)
         hazards.pass_reinspection(hazard_no)
         return hazard_no
     if status == hazards.STATUS_CLOSED:
         # 没停过工的复查合格 → 直接 closed(挑边由 db 按 was_suspended 决定)
-        hazards.mark_notified(hazard_no, due)
+        hazards.mark_notified(hazard_no, due, expected_grade=grade)
         hazards.pass_reinspection(hazard_no)
         return hazard_no
     if status == hazards.STATUS_ESCALATED:
-        hazards.mark_notified(hazard_no, due)
+        hazards.mark_notified(hazard_no, due, expected_grade=grade)
         hazards.mark_reinspect_failed(hazard_no)
         hazards.mark_escalated(hazard_no)
         return hazard_no
@@ -278,7 +286,7 @@ def _产物文件() -> set[Path]:
 # ---------------------------------------------------------------------------
 
 
-def test_十一条路由都挂进了webapp() -> None:
+def test_十二条路由都挂进了webapp() -> None:
     """webapp.py 是自定义路由唯一的挂载点,漏铺 = 全部 404 且**没有任何启动报错**。
 
     ⚠️ 2026-08-16(W10·S4)实测到这条用例守不住的那一半,别把它当成全部保障:
@@ -293,14 +301,18 @@ def test_十一条路由都挂进了webapp() -> None:
     declared = {route.path for route in supervision_api.SUPERVISION_ROUTES}
 
     assert declared <= mounted, f"这些路由没挂进 webapp.py:{sorted(declared - mounted)}"
-    # 八条 POST(W9 七条 + W10 的 reject)+ 两条 GET(W10)+ 一条上传(照片直传)
-    assert len(declared) == 11, "加了路由要连同这个数一起改 —— 它是「有没有漏铺」的对账锚"
+    # 九条 POST(W9 七条 + W10 的 reject + 2026-08-21 的 dismiss)
+    # + 两条 GET(W10)+ 一条上传(照片直传)
+    assert len(declared) == 12, "加了路由要连同这个数一起改 —— 它是「有没有漏铺」的对账锚"
     # 逐条点名 W10 那三条与上传那条:只对总数会在「删一条旧的、加一条新的」时对上而失效。
     for 新路径 in (
         "/supervision/hazards",
         "/supervision/hazards/{hazard_no}",
         "/supervision/reject",
         "/supervision/photo",
+        # 2026-08-21:不出文书关掉。逐条点名是因为只对总数会在
+        # 「删一条旧的、加一条新的」时对上而失效。
+        "/supervision/dismiss",
     ):
         assert 新路径 in declared and 新路径 in mounted, f"{新路径} 没挂上"
 
@@ -918,6 +930,7 @@ class Test人工定级:
             hazards.mark_notified(
                 hazard_no,
                 "2026-12-31",
+                expected_grade=hazards.GRADE_NORMAL,
                 docs=[hazards.DocDraft("notice", "GYT-TZ-抢跑", artifact_id="a" * 32)],
             )
             return 真的(*args, **kwargs)
@@ -2125,3 +2138,156 @@ class Test照片直传:
         第二次 = _传照片(client, FAKE_JPEG).json()["data"]["photo_id"]
 
         assert 第一次 != 第二次
+
+
+class Test签发人留痕:
+    """``issued_by``(2026-08-21)—— 在它之前,「这份《工程暂停令》是谁签的」**无解**。
+
+    ⚠️ 它是**自报的名字,不是认证身份**:这套系统只有一把共享口令、没有角色。
+    这几条用例守的是「界面报上来的名字确实进了库」,不是「这个人真是他」。
+    """
+
+    def test_签发时报的名字进了证据链(self, client: TestClient) -> None:
+        hazard_no = _arrive(hazards.STATUS_OPEN)
+
+        resp = client.post(
+            "/supervision/notice",
+            json={"hazard_no": hazard_no, "due_phrase": DUE_PHRASE, "issued_by": "陳大文"},
+        )
+
+        assert resp.status_code == 200
+        assert [d.issued_by for d in hazards.docs_of([hazard_no])] == ["陳大文"]
+
+    def test_不报名字也签得出去_记成空(self, client: TestClient) -> None:
+        """🔴 别改成必填:拒绝的时候文书**已经渲染落盘了**,为一个补充性的审计字段
+        挡住法律文书的签发不划算。留空比编一个名字诚实。"""
+        hazard_no = _arrive(hazards.STATUS_OPEN)
+
+        resp = client.post(
+            "/supervision/notice", json={"hazard_no": hazard_no, "due_phrase": DUE_PHRASE}
+        )
+
+        assert resp.status_code == 200
+        assert [d.issued_by for d in hazards.docs_of([hazard_no])] == [None]
+
+    def test_名字超长就截断_而不是拒绝签发(self, client: TestClient) -> None:
+        """同上那条取舍。它会原样进库、将来进导出的台账,所以要有上限;
+        但上限的处理方式是截断,不是把签发挡下来。"""
+        hazard_no = _arrive(hazards.STATUS_OPEN)
+
+        resp = client.post(
+            "/supervision/notice",
+            json={"hazard_no": hazard_no, "due_phrase": DUE_PHRASE, "issued_by": "陳" * 200},
+        )
+
+        assert resp.status_code == 200
+        recorded = hazards.docs_of([hazard_no])[0].issued_by
+        assert recorded == "陳" * 40
+
+    def test_三份文书一起签时每一份都记上(self, client: TestClient) -> None:
+        """暂停令那条路一次出三份 —— 三份都该记到同一个人,不能只记第一份。"""
+        hazard_no = _arrive(hazards.STATUS_OPEN, grade=hazards.GRADE_SEVERE)
+
+        resp = client.post(
+            "/supervision/suspend",
+            json={"hazard_no": hazard_no, "due_phrase": DUE_PHRASE, "issued_by": "總監"},
+        )
+
+        assert resp.status_code == 200
+        issued = hazards.docs_of([hazard_no])
+        assert len(issued) == 3
+        assert {d.issued_by for d in issued} == {"總監"}
+
+
+class Test不出文书关掉:
+    """``POST /supervision/dismiss``(2026-08-21)——「这条不是隐患 / 已当场整改」。
+
+    🔴 它存在的理由:在它之前 ``open`` 只有两条出口,而两条都要**签发法律文书**。
+    一条识别错了的隐患(白色安全帽被认成没戴)在系统里关不掉 —— 唯一的出路是
+    为一个不存在的隐患真的签一份《监理通知单》,再拍张照登记「复查合格」。
+    **纠错的代价是往证据链里塞一份假文书。**
+
+    ⚠️ 它同时是一个能让隐患「消失」的口子,所以下面几条守的都是那几道约束。
+    """
+
+    def test_关掉并把理由和人一起留在台账里(self, client: TestClient) -> None:
+        hazard_no = _arrive(hazards.STATUS_OPEN)
+
+        resp = client.post(
+            "/supervision/dismiss",
+            json={
+                "hazard_no": hazard_no,
+                "reason": "白色安全帽,現場核過",
+                "issued_by": "陳大文",
+            },
+        )
+
+        assert resp.status_code == 200
+        row = hazards.fetch(hazard_no)
+        assert row is not None
+        assert row.status == hazards.STATUS_CLOSED
+        assert row.closed_reason == "白色安全帽,現場核過"
+        assert row.closed_by == "陳大文"
+        assert row.closed_at is not None
+
+    def test_不出任何文书_这是它与签发的分界(self, client: TestClient) -> None:
+        """🔴 一个字都不许往证据链里写:那正是这条路要避免的东西。"""
+        hazard_no = _arrive(hazards.STATUS_OPEN)
+
+        client.post(
+            "/supervision/dismiss",
+            json={"hazard_no": hazard_no, "reason": "已當場整改"},
+        )
+
+        assert hazards.docs_of([hazard_no]) == []
+        assert _docx_files() == []
+
+    def test_不写理由就拒(self, client: TestClient) -> None:
+        """理由是它与「删掉」的本质区别 —— 事后能回答「这条为什么关的」。"""
+        hazard_no = _arrive(hazards.STATUS_OPEN)
+
+        resp = client.post("/supervision/dismiss", json={"hazard_no": hazard_no})
+
+        assert resp.status_code == 400
+        assert resp.json()["error_code"] == "INVALID_INPUT"
+        assert hazards.fetch(hazard_no).status == hazards.STATUS_OPEN
+
+    def test_敷衍的理由也拒(self, client: TestClient) -> None:
+        """挡的是「.」「1」这种。不设更高的门槛:逼人写作文只会让人复制粘贴同一句。"""
+        resp = client.post(
+            "/supervision/dismiss",
+            json={"hazard_no": _arrive(hazards.STATUS_OPEN), "reason": "。"},
+        )
+
+        assert resp.status_code == 400
+
+    def test_签过文书的不许这样关(self, client: TestClient) -> None:
+        """🔴 纸已经发出去了,系统里悄悄关掉等于台账与现场对不上。"""
+        hazard_no = _arrive(hazards.STATUS_NOTIFIED)
+
+        resp = client.post(
+            "/supervision/dismiss",
+            json={"hazard_no": hazard_no, "reason": "想抹掉這條"},
+        )
+
+        assert resp.status_code == 409
+        assert hazards.fetch(hazard_no).status == hazards.STATUS_NOTIFIED
+
+    def test_还没确认的也不许_那条路是否决(self, client: TestClient) -> None:
+        """pending 走「否决」(整行删掉),open 走这条(留行 + 留理由)。
+        两条不许互相顶替 —— 否决之后什么都不剩,而这条是要留下为什么。
+
+        ⚠️ 顺带钉住**校验顺序**:状态闸必须排在理由闸前面。反过来的话,
+        这条用例会拿到 400(嫌理由短)而不是 409 —— 那正是我第一版写的顺序,
+        它让人先认真补写理由、提交之后才被告知「这条不该走这儿」。
+        """
+        hazard_no = _arrive(hazards.STATUS_PENDING)
+
+        resp = client.post(
+            "/supervision/dismiss",
+            json={"hazard_no": hazard_no, "reason": "認錯了"},  # 3 个字,短于理由下限
+        )
+
+        assert resp.status_code == 409
+        assert "否決" in resp.json()["user_msg"] or "否决" in resp.json()["user_msg"]
+        assert hazards.fetch(hazard_no).status == hazards.STATUS_PENDING

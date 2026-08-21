@@ -81,7 +81,7 @@ def open_db(ddl: str, *, foreign_keys: bool = False) -> Iterator[sqlite3.Connect
 
     🔴 **WAL 会多出 ``-wal`` / ``-shm`` 两个文件**,这条会咬到库外面:
     备份不能再 ``cp`` 或 rsync 单个 ``gyt.sqlite3``(那样拿到的是不完整状态),
-    必须走 ``sqlite3 .backup``。``docker-compose.vps.yml`` 的备份服务就是这么写的,
+    必须走 ``sqlite3 .backup``。``docker-compose.vps.yml`` 的 housekeeping 服务就是这么写的,
     ``docs/W7_上线实录与部署踩坑.md`` 里那条手动 rsync 命令同理 —— 它拷的是整个
     ``data/`` 目录,三个文件一起走,所以仍然成立,但**别把它"优化"成只拷库文件**。
 

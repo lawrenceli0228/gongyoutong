@@ -90,16 +90,25 @@ def _attempt(hazard_no: str, dst: str) -> bool:
     if dst == hazards.STATUS_OPEN:
         return hazards.confirm(hazard_no)
     if dst == hazards.STATUS_NOTIFIED:
-        return hazards.mark_notified(hazard_no, DUE)
+        return hazards.mark_notified(hazard_no, DUE, expected_grade=hazards.GRADE_NORMAL)
     if dst == hazards.STATUS_SUSPENDED:
-        return hazards.mark_suspended(hazard_no, DUE)
+        return hazards.mark_suspended(hazard_no, DUE, expected_grade=hazards.GRADE_NORMAL)
     if dst == hazards.STATUS_REINSPECT_FAILED:
         return hazards.mark_reinspect_failed(hazard_no)
     if dst == hazards.STATUS_RESUMING:
         return hazards.start_resumption(hazard_no)
     if dst == hazards.STATUS_CLOSED:
-        # 两条路都通向 closed:复查合格直接销项 / 出复工令。任一条成即算迁到了。
-        return hazards.close_after_pass(hazard_no) or hazards.mark_resumed(hazard_no)
+        # **三条**路通向 closed,任一条成即算迁到了:
+        #   · close_after_pass  复查合格直接销项(没停过工的)
+        #   · mark_resumed      出复工令(停过工的)
+        #   · dismiss           不出文书关掉(2026-08-21 加,只从 open 出发)
+        # 漏掉第三条的表现很具体:补集用例会报「open → closed 该成却没成」——
+        # 它不是在说 dismiss 坏了,是在说这个 helper 不知道有这条路。
+        return (
+            hazards.close_after_pass(hazard_no)
+            or hazards.mark_resumed(hazard_no)
+            or hazards.dismiss(hazard_no, reason="补集测试:不出文书关掉")
+        )
     if dst == hazards.STATUS_ESCALATED:
         return hazards.mark_escalated(hazard_no)
     # pending 没有任何迁移函数以它为目标 —— 只有登记会落 pending,而且回不去。
@@ -260,7 +269,10 @@ def test_一般隐患_通知单到复查合格直接销项() -> None:
 
     assert (
         hazards.mark_notified(
-            no, DUE, docs=[hazards.DocDraft("notice", "GYT-TZ-0001", artifact_id="a" * 32)]
+            no,
+            DUE,
+            expected_grade=hazards.GRADE_NORMAL,
+            docs=[hazards.DocDraft("notice", "GYT-TZ-0001", artifact_id="a" * 32)],
         )
         is True
     )
@@ -297,7 +309,7 @@ def test_严重隐患_停过工的复查合格必须先出复工令() -> None:
         hazards.DocDraft("owner_report", "GYT-JS-0002", artifact_id="c" * 32),
     ]
 
-    assert hazards.mark_suspended(no, DUE, docs=three) is True
+    assert hazards.mark_suspended(no, DUE, docs=three, expected_grade=hazards.GRADE_SEVERE) is True
     suspended = hazards.fetch(no)
     assert suspended is not None
     assert suspended.status == hazards.STATUS_SUSPENDED
@@ -329,12 +341,104 @@ def test_严重隐患_停过工的复查合格必须先出复工令() -> None:
     assert closed.closed_at is not None
 
 
+# ---------------------------------------------------------------------------
+# 级别的写前守卫(2026-08-21)—— 端点的硬拦判的是快照,这两条守的是写的那一刻
+# ---------------------------------------------------------------------------
+
+
+def test_签通知单那一刻级别被抢改成严重_一行都不写() -> None:
+    """🔴 「该停工的没停」那条路的守门断言。
+
+    端点侧 ``_refuse_severe_notice`` 是拿**先读的那份快照**判的,而快照和 UPDATE
+    之间隔着渲染三份 docx 的时间。这中间另一个请求完全可以把级别改掉
+    —— ``_SET_GRADE_SQL`` 只要求 status 还在可定级档,而这时候它确实还是 open。
+
+    不加守卫的结果:**严重隐患只拿到一份通知单**,而台账、界面、日志都不会说话。
+    """
+    no = _register(grade=hazards.GRADE_NORMAL).row.hazard_no
+    hazards.confirm(no)
+    decided = hazards.GRADE_NORMAL  # 端点按「一般」做的决定:只签一份通知单
+
+    # 「另一个请求」抢在 UPDATE 之前把它改成严重
+    assert hazards.set_grade(no, hazards.GRADE_SEVERE) is True
+
+    moved = hazards.mark_notified(
+        no,
+        DUE,
+        expected_grade=decided,
+        docs=[hazards.DocDraft("notice", "GYT-TZ-抢级别", artifact_id="a" * 32)],
+    )
+
+    assert moved is False
+    row = hazards.fetch(no)
+    assert row is not None
+    assert row.status == hazards.STATUS_OPEN  # 状态没动
+    assert row.due_date is None  # 期限没写进去
+    assert row.grade == hazards.GRADE_SEVERE  # 抢改的那次是生效的
+    assert hazards.docs_of([no]) == []  # 文书没挂上 —— 整个事务一行没写
+
+
+def test_签暂停令那一刻级别被抢改成一般_一行都不写() -> None:
+    """反方向:「一般隐患签了暂停令」= 平白停一片人的工。
+
+    ``was_suspended`` 尤其要断言:它一旦被置 1,此后即使复查合格也必须先出复工令
+    (Codex#6)。守卫漏了的话,一条本来只该收张通知单的隐患会永远背着那面旗。
+    """
+    no = _register(grade=hazards.GRADE_SEVERE).row.hazard_no
+    hazards.confirm(no)
+    decided = hazards.GRADE_SEVERE  # 端点按「严重」做的决定:三份文书
+
+    assert hazards.set_grade(no, hazards.GRADE_NORMAL) is True
+
+    moved = hazards.mark_suspended(
+        no,
+        DUE,
+        expected_grade=decided,
+        docs=[
+            hazards.DocDraft("notice", "GYT-TZ-抢级别2", artifact_id="a" * 32),
+            hazards.DocDraft("suspension", "GYT-ZT-抢级别2", artifact_id="b" * 32),
+            hazards.DocDraft("owner_report", "GYT-JS-抢级别2", artifact_id="c" * 32),
+        ],
+    )
+
+    assert moved is False
+    row = hazards.fetch(no)
+    assert row is not None
+    assert row.status == hazards.STATUS_OPEN
+    assert row.was_suspended == 0  # 那面旗没被立起来
+    assert hazards.docs_of([no]) == []
+
+
+def test_级别没被动过时照常签得出去() -> None:
+    """守卫不许把正常路径也拦掉 —— 上面两条只证明「抢改会被拦」,这条证明「不抢就通」。
+
+    少了它,把 ``AND grade = ?`` 写成恒假(比如手抖写成 ``AND grade = ''``)
+    照样两红一绿看不出来。
+    """
+    no = _register(grade=hazards.GRADE_NORMAL).row.hazard_no
+    hazards.confirm(no)
+
+    assert (
+        hazards.mark_notified(
+            no,
+            DUE,
+            expected_grade=hazards.GRADE_NORMAL,
+            docs=[hazards.DocDraft("notice", "GYT-TZ-没人抢", artifact_id="a" * 32)],
+        )
+        is True
+    )
+    row = hazards.fetch(no)
+    assert row is not None
+    assert row.status == hazards.STATUS_NOTIFIED
+    assert row.due_date == DUE
+
+
 def test_复查不合格可以反复复查也可以升级() -> None:
     """``reinspect_failed`` 自环 = 再复查又不合格;升级只能从这里进 ——
     举证链是「通知过 + 期限到了 + 复查过 + 他没改」,没复查过就升级等于拿乱账指控施工方。"""
     no = _register().row.hazard_no
     hazards.confirm(no)
-    hazards.mark_notified(no, DUE)
+    hazards.mark_notified(no, DUE, expected_grade=hazards.GRADE_NORMAL)
 
     assert hazards.mark_reinspect_failed(no) is True
     assert hazards.mark_reinspect_failed(no) is True  # 再复查、又不合格
@@ -353,8 +457,12 @@ def test_复查不合格可以反复复查也可以升级() -> None:
 def test_不存在的编号所有迁移都返回False() -> None:
     """False 是"这个编号查不到"的唯一信号源:靠 rowcount 说话,不靠异常。"""
     assert hazards.confirm("GYT-H-没这个号") is False
-    assert hazards.mark_notified("GYT-H-没这个号", DUE) is False
-    assert hazards.mark_suspended("GYT-H-没这个号", DUE) is False
+    assert (
+        hazards.mark_notified("GYT-H-没这个号", DUE, expected_grade=hazards.GRADE_NORMAL) is False
+    )
+    assert (
+        hazards.mark_suspended("GYT-H-没这个号", DUE, expected_grade=hazards.GRADE_NORMAL) is False
+    )
     assert hazards.mark_reinspect_failed("GYT-H-没这个号") is False
     assert hazards.pass_reinspection("GYT-H-没这个号") is None
     assert hazards.mark_resumed("GYT-H-没这个号") is False
@@ -425,7 +533,15 @@ def test_迁移被拒时一份文书都不写() -> None:
     """
     no = _register().row.hazard_no  # 还是 pending,没确认过
 
-    assert hazards.mark_notified(no, DUE, docs=[hazards.DocDraft("notice", "GYT-TZ-9999")]) is False
+    assert (
+        hazards.mark_notified(
+            no,
+            DUE,
+            expected_grade=hazards.GRADE_NORMAL,
+            docs=[hazards.DocDraft("notice", "GYT-TZ-9999")],
+        )
+        is False
+    )
 
     assert hazards.docs_of([no]) == []
     row = hazards.fetch(no)
@@ -439,7 +555,12 @@ def test_证据链一次取回多条隐患的文书() -> None:
     second = _register().row.hazard_no
     for no, doc_no in ((first, "GYT-TZ-1001"), (second, "GYT-TZ-1002")):
         hazards.confirm(no)
-        hazards.mark_notified(no, DUE, docs=[hazards.DocDraft("notice", doc_no, artifact_id="a")])
+        hazards.mark_notified(
+            no,
+            DUE,
+            expected_grade=hazards.GRADE_NORMAL,
+            docs=[hazards.DocDraft("notice", doc_no, artifact_id="a")],
+        )
     hazards.mark_reinspect_failed(
         first, docs=[hazards.DocDraft("reinspect", "GYT-FC-1001", photo_id="p", result="fail")]
     )
@@ -601,7 +722,10 @@ def test_摘项目_只摘不删且证据链原样在() -> None:
     pending = _register(project_id="gyt-a3").row.hazard_no
     hazards.confirm(kept)
     hazards.mark_notified(
-        kept, DUE, docs=[hazards.DocDraft("notice", "GYT-TZ-7001", artifact_id="a")]
+        kept,
+        DUE,
+        expected_grade=hazards.GRADE_NORMAL,
+        docs=[hazards.DocDraft("notice", "GYT-TZ-7001", artifact_id="a")],
     )
 
     moved = hazards.detach_project("gyt-a3")
@@ -665,8 +789,8 @@ def test_列表一次取全_有期限在前无期限垫底() -> None:
     early = _register().row.hazard_no
     for no in (late, early):
         hazards.confirm(no)
-    hazards.mark_notified(late, "2026-08-25")
-    hazards.mark_notified(early, "2026-08-18")
+    hazards.mark_notified(late, "2026-08-25", expected_grade=hazards.GRADE_NORMAL)
+    hazards.mark_notified(early, "2026-08-18", expected_grade=hazards.GRADE_NORMAL)
 
     got = [row.hazard_no for row in hazards.list_rows()]
 
@@ -706,3 +830,90 @@ def test_登记失败落表可事后统计() -> None:
     assert all_rows[0].created_at.endswith("+08:00")
 
     assert [row.photo_id for row in hazards.list_ingest_failures(project_id="")] == ["photo-y"]
+
+
+# ---------------------------------------------------------------------------
+# 签发人留痕 issued_by(2026-08-21)—— 在它之前,「这份暂停令是谁签的」无解
+# ---------------------------------------------------------------------------
+
+
+def test_文书能记下签发人_而复查记录也一样() -> None:
+    """整条证据链上每一个「人做的动作」都该留下是谁做的。
+
+    复查那条尤其要有:「复查合格」是离销项最近的一步,由人下结论(D11),
+    而它不出文书、没有编号 —— 在这一列之前,它是全链唯一一个连时间以外
+    什么都不记的动作。
+    """
+    no = _register().row.hazard_no
+    hazards.confirm(no)
+    hazards.mark_notified(
+        no,
+        DUE,
+        expected_grade=hazards.GRADE_NORMAL,
+        docs=[hazards.DocDraft("notice", "GYT-TZ-记名", artifact_id="a" * 32, issued_by="陳大文")],
+    )
+    hazards.mark_reinspect_failed(
+        no,
+        docs=[
+            hazards.DocDraft(
+                "reinspect", "GYT-FC-记名", photo_id="p", result="fail", issued_by="李四"
+            )
+        ],
+    )
+
+    got = {d.doc_no: d.issued_by for d in hazards.docs_of([no])}
+    assert got == {"GYT-TZ-记名": "陳大文", "GYT-FC-记名": "李四"}
+
+
+def test_不报名字也签得出去_记成空() -> None:
+    """🔴 **故意允许为空**,别改成必填。
+
+    必填的后果很难看:界面上没填名字 → 拒绝 → 而这时候文书**已经渲染落盘了**
+    (``_sign`` 那条孤儿文件)。为一个补充性的审计字段挡住法律文书的签发,不划算。
+    留 NULL 也比编一个名字诚实 —— 查的人一眼看得出「这条没记到人」。
+    """
+    no = _register().row.hazard_no
+    hazards.confirm(no)
+    hazards.mark_notified(
+        no,
+        DUE,
+        expected_grade=hazards.GRADE_NORMAL,
+        docs=[hazards.DocDraft("notice", "GYT-TZ-无名", artifact_id="a" * 32)],
+    )
+
+    assert [d.issued_by for d in hazards.docs_of([no])] == [None]
+
+
+def test_旧库缺这一列时进场自动补上_且旧行原样保留() -> None:
+    """幂等补列的守门断言(姿势照搬 db/tasks.py 的 _migrate)。
+
+    线上那张 ``hazard_docs`` 是 2026-08-21 之前建的,没有这一列。补列必须:
+      ① 真的加上;② **不动旧行**(它们的 issued_by 就该是 NULL);
+      ③ 加在**末尾** —— ALTER TABLE 只能追加,DDL 也写末尾,
+        新建的库与迁移过来的旧库物理列序才一致。
+
+    做旧的手法是 ``ALTER TABLE … DROP COLUMN``(sqlite 3.35+),
+    比手搓一张旧表可靠:它保证除了这一列之外**其余部分与真库逐字节同构**。
+    """
+    no = _register().row.hazard_no
+    hazards.confirm(no)
+    hazards.mark_notified(
+        no,
+        DUE,
+        expected_grade=hazards.GRADE_NORMAL,
+        docs=[
+            hazards.DocDraft("notice", "GYT-TZ-旧行", artifact_id="a" * 32, issued_by="会被抹掉")
+        ],
+    )
+
+    with closing(_raw_connect()) as conn, conn:
+        conn.execute("ALTER TABLE hazard_docs DROP COLUMN issued_by")
+    assert "issued_by" not in _table_columns("hazard_docs")
+
+    hazards.list_rows()  # 任意一次操作都会在进场处跑 _migrate
+
+    columns = _table_columns("hazard_docs")
+    assert columns[-1] == "issued_by", "新列必须在最末 —— ALTER TABLE 只能追加"
+    assert columns == list(hazards.HazardDocRow._fields)
+    docs = hazards.docs_of([no])
+    assert [(d.doc_no, d.issued_by) for d in docs] == [("GYT-TZ-旧行", None)]

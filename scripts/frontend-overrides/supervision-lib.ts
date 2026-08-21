@@ -65,6 +65,10 @@ export const SUPERVISION_ENDPOINTS = [
   // W10 新增:否决一条**待确认**的隐患(自动识别的误报)。它是删除,不是状态流转 ——
   // 所以它不在 db/hazards.py 的状态机里,回执报的 status 也不是八档里的词(见 ActionResult)。
   "reject",
+  // 2026-08-21 新增:「这条不是隐患 / 已当场整改」——**不出文书**把 open 关掉。
+  // 与 reject 的分工:reject 删的是 pending(还没人确认、没有留档价值),
+  // dismiss 关的是 open(行还在、编号还在、照片还在,只是写明了为什么关)。
+  "dismiss",
 ] as const;
 export type SupervisionEndpoint = (typeof SUPERVISION_ENDPOINTS)[number];
 
@@ -310,6 +314,9 @@ export const SUPERVISION_MESSAGES = Object.freeze({
   badPhotoId: "複查照片編號不對:要 32 位的編號(在聊天記錄裏那張照片下面能看到)。",
   badGrade: "級別只能選「一般」或「嚴重」。",
   noSelection: "先勾選要確認的隱患。",
+  // 2026-08-21:不出文书关掉时要写的原因。措辞给两个真实例子 ——
+  // 只说「要写原因」的话人会写「不用了」,而那句话事后什么都回答不了。
+  missingReason: "關掉之前要寫清為什麼(比如「白色安全帽,現場核過」「已當場整改」)。這句話會留在台賬裏。",
 });
 
 export interface NormalizedError {
@@ -645,6 +652,7 @@ export const DISPOSAL_ACTIONS = [
   "resume",
   "escalate",
   "reject",
+  "dismiss",
 ] as const;
 export type DisposalAction = (typeof DISPOSAL_ACTIONS)[number];
 
@@ -658,6 +666,7 @@ export const ACTION_ENDPOINT: Readonly<Record<DisposalAction, SupervisionEndpoin
     resume: "resume",
     escalate: "escalate",
     reject: "reject",
+    dismiss: "dismiss",
   });
 
 /**
@@ -675,6 +684,9 @@ export const ACTION_LABEL: Readonly<Record<DisposalAction, string>> = Object.fre
   resume: "簽發工程復工令",
   escalate: "上報主管部門",
   reject: "否決(誤報,刪掉)",
+  // 与 reject 只差一个字都不行:那两颗会并排出现在不同状态的隐患上,
+  // 而后果完全不同(一个整行删掉、一个留行留理由)。
+  dismiss: "關掉(不出文書,要寫原因)",
 });
 
 /**
@@ -739,7 +751,14 @@ export function availableActions(hazard: HazardBrief): DisposalAction[] {
       // 「否决」跟它是同一个岔路口的另一条:确认 = 这确实是隐患,否决 = 识错了,删掉。
       return ["grade", "reject"];
     case "open":
-      return hazard.grade === GRADE_SEVERE ? ["suspend", "grade"] : ["notice", "grade"];
+      // 第三颗 `dismiss`(2026-08-21)是**纠错出口**,排在最后:主要动作在前。
+      // 🔴 它非有不可:在它之前 open 只有两条出口而两条都要签发法律文书,
+      //    于是一条识别错了的隐患关不掉 —— 唯一的出路是为一个不存在的隐患
+      //    真的签一份《监理通知单》,再拍照登记「复查合格」。
+      //    而「确认」这一下是单向门(否决只删 pending),确认之后连否决都没了。
+      return hazard.grade === GRADE_SEVERE
+        ? ["suspend", "grade", "dismiss"]
+        : ["notice", "grade", "dismiss"];
     case "notified":
     case "suspended":
       return ["reinspect"];
@@ -781,7 +800,15 @@ export function actionNeedsPhoto(action: DisposalAction): boolean {
  * 每一颗按钮都弹确认框的下场是人闭着眼点「确定」,那时真正该拦的三颗也就废了。
  */
 export function actionNeedsConfirm(action: DisposalAction): boolean {
-  return action === "suspend" || action === "escalate" || action === "reject";
+  return (
+    action === "suspend" ||
+    action === "escalate" ||
+    action === "reject" ||
+    // `dismiss`(2026-08-21):`closed` 是**终态**(ALLOWED_TRANSITIONS 里它的
+    // 出边是空集),关掉之后系统里没有任何一条路能把它开回来。
+    // 判据仍是那句「这一下能不能反悔」—— 不能,所以要问。
+    action === "dismiss"
+  );
 }
 
 /** 二次确认框里那句话。写清楚**后果**和**不可撤销**,不写「确定吗?」。 */
@@ -792,6 +819,14 @@ export function confirmPrompt(action: DisposalAction, hazard: HazardBrief): stri
       `要把隱患「${hazard.item}」(${hazard.hazard_no})從台賬裏刪掉嗎?\n\n` +
       "這一條會整行刪掉,不是標記成已處理 —— 刪了就找不回來了。\n" +
       "只有還沒確認的隱患能這麼刪;確實是隱患的,請改用「確認」。"
+    );
+  }
+  if (action === "dismiss") {
+    return (
+      `要把隱患「${hazard.item}」(${hazard.hazard_no})關掉嗎?\n\n` +
+      "不出任何文書,但這一行會留在台賬裏,寫着你填的原因。\n" +
+      "🔴 關掉之後就是終點,系統裏沒有任何一條路能把它開回來。\n" +
+      "還不確定的話,先別關 —— 它留在「在辦」裏不會催你。"
     );
   }
   if (action === "suspend") {
@@ -814,6 +849,49 @@ export function confirmPrompt(action: DisposalAction, hazard: HazardBrief): stri
 
 /** 产物编号:`core/artifacts.py` 是 `uuid4().hex` —— 32 位小写十六进制。 */
 const ARTIFACT_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+/**
+ * 批量确认的二次确认话术(2026-08-21 补)。
+ *
+ * ===========================================================================
+ * 🔴 为什么批量确认必须问一句 —— 它是这个面板上**唯一一扇单向门**
+ * ---------------------------------------------------------------------------
+ * 「确认」把隐患从 `pending` 推到 `open`,而这一下**亲手拆掉了唯一的逃生口**:
+ * 后端的删除是 `DELETE … WHERE status = 'pending'`(`db/hazards.py`)——
+ * 只有还没确认的隐患才删得掉。确认之后,一条识别错了的隐患
+ * (比如把白色安全帽认成没戴)就**再也删不掉了**,唯一的出路是
+ * 为一个不存在的隐患真的签发一份法律文书,再拍照登记「复查合格」。
+ *
+ * 而在这之前,`全選 → 確認選中 N 條` 只有一个 `disabled={busy}`,
+ * 旁边就是「全選」—— 而 `actionNeedsConfirm` 那三颗(suspend/escalate/reject)
+ * 全都有确认条。**护栏最少的那一颗,后果却是不可逆的。**
+ *
+ * 措辞照 `confirmPrompt` 的规矩:说清楚**后果**和**不可撤销**,不写「确定吗?」,
+ * 并且给出**这一刻还能做的事**(先扫一眼、认错的先否决)——
+ * 一句只讲坏消息的确认框,人只会闭着眼点「确定」。
+ * ⚠️ 里面不许写 markdown 记号(** 会原样显示成星号),同 `confirmPrompt`。
+ */
+export function confirmBatchPrompt(count: number): string {
+  return (
+    `要把選中的 ${count} 條隱患都確認下來嗎?\n\n` +
+    "確認之後這些隱患就進了正式台賬,不能再「否決」刪掉 ——\n" +
+    "只能走「簽發文書 → 複查合格」這條路收尾。\n\n" +
+    "先掃一眼有沒有認錯的;認錯的請先逐條否決,再確認剩下的。"
+  );
+}
+
+/** 签发人名字记在 localStorage 的哪个键。
+ *
+ * ⚠️ **与打卡那个 `gyt:checkin:worker-name` 是两个键,别复用。**
+ * 那个存的是**工友**自己的名字(他在这台手机上打卡用的),而这里要的是
+ * **监理**的名字。同一台手机上两者完全可能是不同的人 —— 复用等于把
+ * 签发人记成别人,而那比不记更坏:一片空白至少诚实。
+ */
+export const SIGNER_NAME_STORAGE_KEY = "gyt:supervision:signer-name";
+
+/** 关掉理由的最短字数,**镜像后端 `supervision_api._DISMISS_REASON_MIN_LEN`**。
+ * 漂了的表现不算静默(后端会回 400,那句人话原样上屏),但会让人以为是自己按错了。 */
+export const DISMISS_REASON_MIN_LEN = 4;
 
 /** 一次批量确认的条数上限,镜像 supervision_api._MAX_CONFIRM_BATCH。 */
 export const MAX_CONFIRM_BATCH = 200;
@@ -840,6 +918,20 @@ export interface ActionInput {
   result?: "pass" | "fail";
   /** reinspect 必填:整改后那张现场照片的 32 位编号。 */
   afterPhotoId?: string;
+  /** dismiss 必填:为什么不出文书就关掉。原样进台账,是事后唯一能回答这个问题的地方。 */
+  reason?: string;
+  /**
+   * 签发人**自己报的名字**(2026-08-21)。所有动作都可以带,后端记进
+   * `hazard_docs.issued_by`。
+   *
+   * 🔴 **不是认证身份**:这套系统只有一把共享口令、没有角色。它能提供的只是
+   * 「有个名字总比一片空白强」—— 在它之前,「这份《工程暂停令》是谁签的」
+   * 在系统里**无解**。完整推演在后端 `db/hazards.DocDraft.issued_by`。
+   *
+   * 可以不填。**别在前端做成必填** —— 后端那边到这一步文书已经渲染落盘了,
+   * 为一个补充性的审计字段挡住法律文书的签发不划算(理由同后端 `_issued_by`)。
+   */
+  issuedBy?: string;
 }
 
 /**
@@ -856,12 +948,32 @@ export function actionBody(action: DisposalAction, input: ActionInput): Record<s
   }
   const body: Record<string, unknown> = { hazard_no: hazardNo };
 
+  // 签发人放在这儿(**所有早返回分支之前**)是刻意的:每个动作各自 return,
+  // 塞在任何一个分支里都等于只有那一条路记得下人,而漏掉的那几条不会报错。
+  // 空就不发这个键 —— 后端 `_issued_by` 对缺失和空串一视同仁记 NULL,
+  // 但少发一个空键让请求体里「有没有报名字」一眼可见。
+  const issuedBy = (input.issuedBy ?? "").trim();
+  if (issuedBy) {
+    body.issued_by = issuedBy;
+  }
+
   if (action === "grade") {
     const grade = (input.grade ?? "").trim();
     if (!(HAZARD_GRADES as readonly string[]).includes(grade)) {
       throw new SupervisionContractError(SUPERVISION_MESSAGES.badGrade);
     }
     body.grade = grade;
+    return body;
+  }
+
+  if (action === "dismiss") {
+    const reason = (input.reason ?? "").trim();
+    // 长度下限镜像后端 `_DISMISS_REASON_MIN_LEN`(4)。前端先说一句是体验,
+    // **不是安全边界** —— 服务端那一份一条都不能省(同本函数头注)。
+    if (reason.length < DISMISS_REASON_MIN_LEN) {
+      throw new SupervisionContractError(SUPERVISION_MESSAGES.missingReason);
+    }
+    body.reason = reason;
     return body;
   }
 

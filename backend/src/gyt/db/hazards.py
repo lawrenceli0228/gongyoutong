@@ -32,8 +32,8 @@ D9/D18:那套连接样板曾是**故意**的第四份拷贝(先照抄、重构�
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
-from contextlib import AbstractContextManager
+from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from typing import Final, NamedTuple
 
 from gyt.attendance.receipt import make_snapshot
@@ -109,7 +109,18 @@ DOC_RESULTS: Final[tuple[str, ...]] = ("pass", "fail")
 
 ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     STATUS_PENDING: frozenset({STATUS_OPEN}),
-    STATUS_OPEN: frozenset({STATUS_NOTIFIED, STATUS_SUSPENDED}),
+    # 🔴 `closed` 是 2026-08-21 补的第三条出口 —— 「这条不是隐患 / 已当场整改,
+    # 不出文书就关掉」(见 dismiss())。
+    #
+    # 为什么非补不可:在它之前 open 只有两条出口,而两条都要**签发法律文书**。
+    # 于是一条识别错了的隐患(白色安全帽被认成没戴)在系统里**关不掉** ——
+    # 唯一的出路是为一个不存在的隐患真的签一份《监理通知单》,再拍张照
+    # 登记「复查合格」。也就是说:纠错的代价是往证据链里塞一份假文书。
+    # 这条出口把「确认」从单向门变回可回退,代价是必须写清理由(dismiss 强制)。
+    #
+    # ⚠️ 它**只从 open 出发**。notified/suspended 之后不许走这条 ——
+    # 那时候纸已经发出去了,系统里悄悄关掉等于台账与现场对不上。
+    STATUS_OPEN: frozenset({STATUS_NOTIFIED, STATUS_SUSPENDED, STATUS_CLOSED}),
     # notified 的行 was_suspended 恒为 0(没有任何路径能把停过工的行送回 notified),
     # 所以复查合格直接 closed;它到不了 resuming,写进来反而等于允许滥发复工令。
     STATUS_NOTIFIED: frozenset({STATUS_CLOSED, STATUS_REINSPECT_FAILED}),
@@ -135,7 +146,12 @@ ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
                           │ 确认
                        <open>
                           │
-              ┌───────────┴───────────┐   ← 分岔由 grade 决定,代码判,不是 LLM 判
+              ┌───────────┼───────────┬─────────────────────────┐
+              │           │           │                         │
+              │           │      不是隐患 / 已当场整改 ──► <closed>
+              │           │      (dismiss():不出文书,但必须写理由)
+              │           │
+              ├───────────┴───────────┐   ← 分岔由 grade 决定,代码判,不是 LLM 判
           grade=一般               grade=严重
               │                       │
        《监理通知单》         《通知单》+《暂停令》+《致建设单位报告》
@@ -207,6 +223,24 @@ def _sources_for(target: str, *sources: str) -> tuple[str, ...]:
 # 建表 —— 与方案 §4.1 逐列一致,幂等,每次操作都执行
 # ---------------------------------------------------------------------------
 
+# 🔴 **`_DDL` 里一行 SQL 注释都不许写。** 说明写在这上面(Python 注释)。
+#
+# 理由是 2026-08-21 CI 上抓到的,而且只在 python 3.12 那个 job 红、3.11 绿:
+# sqlite 把建表语句**原样存进 `sqlite_master`,注释一起存**。而
+# `ALTER TABLE … DROP COLUMN` 的实现是「把那段列定义从存下来的 SQL 文本里剪掉、
+# 再重新解析一遍」—— 被删的列前面正好有一行 `--` 注释时,剪完剩下的文本里
+# 注释把后半句吞掉,于是报 `error in table hazard_docs after drop column:
+# incomplete input`。sqlite 版本不同,吞与不吞的边界也不同(本机 3.53 不复现)。
+#
+# 也就是说:一条**只是为了讲清楚**的注释,会让这张表在某些机器上再也 DROP 不了列。
+#
+# ── 下面这几列的位置约束(原本写在 SQL 里的那几句)──────────────────────
+# · `hazards.closed_reason` / `closed_by` 在**列定义的最末**(UNIQUE 是表级约束,
+#   不算列);`hazard_docs.issued_by` 同理。
+#   `ALTER TABLE ADD COLUMN` 只能往末尾追加,DDL 也写末尾,新建的库与迁移过来的
+#   旧库物理列序才完全一致(同 `db/tasks.py` 的 `hazard_no` 那条)。
+# · 语义:`closed_reason` / `closed_by` 只有 `dismiss()`(不出文书关掉)会写;
+#   `issued_by` 见 `DocDraft.issued_by` 的红字 —— 自报的名字,不是认证身份。
 _DDL: Final[str] = f"""
 CREATE TABLE IF NOT EXISTS hazards (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,6 +261,8 @@ CREATE TABLE IF NOT EXISTS hazards (
   closed_at       TEXT,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL,
+  closed_reason   TEXT,
+  closed_by       TEXT,
   UNIQUE (project_id, photo_sha256, item)
 );
 CREATE INDEX IF NOT EXISTS idx_hazards_proj_status ON hazards(project_id, status);
@@ -239,7 +275,8 @@ CREATE TABLE IF NOT EXISTS hazard_docs (
   artifact_id TEXT,
   photo_id    TEXT,
   result      TEXT CHECK (result IS NULL OR result IN ({in_clause(DOC_RESULTS)})),
-  created_at  TEXT NOT NULL
+  created_at  TEXT NOT NULL,
+  issued_by   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_hazard_docs_no ON hazard_docs(hazard_no);
 
@@ -293,6 +330,8 @@ class HazardRow(NamedTuple):
     closed_at: str | None
     created_at: str
     updated_at: str
+    closed_reason: str | None  # 只有 dismiss()(不出文书关掉)会写它,见那个函数
+    closed_by: str | None  # 同上。**自报的名字,不是认证身份**
 
 
 class HazardDocRow(NamedTuple):
@@ -306,6 +345,7 @@ class HazardDocRow(NamedTuple):
     photo_id: str | None  # 仅 reinspect 行:复查照片
     result: str | None  # 仅 reinspect 行:DOC_RESULTS 之一
     created_at: str
+    issued_by: str | None  # 见下方那段红字。**自报的名字,不是认证过的身份**
 
 
 class IngestFailureRow(NamedTuple):
@@ -331,6 +371,30 @@ class DocDraft(NamedTuple):
     artifact_id: str | None = None
     photo_id: str | None = None
     result: str | None = None
+    issued_by: str | None = None
+    """签发这份文书的人**自己报的名字**(2026-08-21 加)。
+
+    ===========================================================================
+    🔴 它不是认证过的身份,别当成身份用
+    ---------------------------------------------------------------------------
+    这套系统只有**一把共享口令**(``auth.py`` 的 ``permissions`` 是空列表),
+    没有用户体系、没有角色。所以这一列能提供的只是「**有个名字总比一片空白强**」:
+    出事时它是一条**可疑但可查的线索**,不是证据。
+
+    在它之前的状态更糟:``hazard_docs`` 八列里**没有任何一列记谁签的** ——
+    施工方的律师问「这份《工程暂停令》是谁签发的」,系统答得出时间、隐患、照片,
+    **答不出人**。而那份文书后面跟着停工与索赔。
+
+    ⚠️ 允许为空,而且**故意允许**:
+      · 旧数据(2026-08-21 之前签发的)补不出来,留 NULL 比编一个名字诚实;
+      · ``reinspect`` 那种复查记录行本来也不是"签发"。
+    ⚠️ 真正的解法是 TODO-3 的用户体系。这一列是在那之前把「谁签的」这个问题
+    从**无解**变成**有一条线索**,别拿它去做权限判断。
+
+    与 docx 里那个**刻意留空的签字栏**(``agents/supervision/docgen.py``)是两回事:
+    那里留空是因为"系统替他填等于伪造",而这里记的是"谁在界面上点的那一下"。
+    两者都不构成签字。
+    """
 
 
 class Registration(NamedTuple):
@@ -430,18 +494,34 @@ _SOURCES_CLOSE_ON_PASS: Final = _sources_for(
 )
 _SOURCES_RESUMED: Final = _sources_for(STATUS_CLOSED, STATUS_RESUMING)
 _SOURCES_ESCALATE: Final = _sources_for(STATUS_ESCALATED, STATUS_REINSPECT_FAILED)
+_SOURCES_DISMISS: Final = _sources_for(STATUS_CLOSED, STATUS_OPEN)
 
 _CONFIRM_SQL: Final[str] = _transition_sql(
     STATUS_OPEN, _SOURCES_CONFIRM, extra_set=", confirmed_at = ?"
 )
+# ``AND grade = ?`` 是**级别的写前守卫**,和 status 那道同一个道理,2026-08-21 补。
+#
+# 🔴 不加它的失败长这样(端点侧「先读再判再写」的两步之间):
+#       线程甲  row = 读到 grade='一般'
+#       线程甲  _refuse_severe_notice(row) 拿快照判 → 放行
+#       线程乙  POST /supervision/grade 改成 '严重'  ← status 还是 open,定级照样成功
+#       线程甲  mark_notified(...)  ← 只守 status,照样命中
+#   结果:**严重隐患只拿到一份通知单**。这正是 supervision_api 那段硬拦注释里
+#   写的「该停工的没停」—— 硬拦本身是对的,只是它守的是快照、不是写的那一刻。
+#
+# 反方向早就堵住了:``_SET_GRADE_SQL`` 的 ``WHERE status IN (GRADABLE_STATUSES)``
+# 让「签发之后再改级别」失败。所以这次只补这一个方向。
 _NOTIFY_SQL: Final[str] = _transition_sql(
-    STATUS_NOTIFIED, _SOURCES_NOTIFY, extra_set=", due_date = ?"
+    STATUS_NOTIFIED, _SOURCES_NOTIFY, extra_set=", due_date = ?", extra_where=" AND grade = ?"
 )
 # ``was_suspended = 1`` 是字面量、不是运行期的值,所以可以进 SQL 文本。这一列是 Codex#6 的修法:
 # 复查失败后 notified 与 suspended 都坍缩成 reinspect_failed,没有它,再次合格时状态机分不清
 # 该直接关闭还是必须先出复工令 —— 漏发或滥发复工令。
 _SUSPEND_SQL: Final[str] = _transition_sql(
-    STATUS_SUSPENDED, _SOURCES_SUSPEND, extra_set=", due_date = ?, was_suspended = 1"
+    STATUS_SUSPENDED,
+    _SOURCES_SUSPEND,
+    extra_set=", due_date = ?, was_suspended = 1",
+    extra_where=" AND grade = ?",  # 同 _NOTIFY_SQL,反方向:一般隐患被抢着签暂停令
 )
 _FAIL_SQL: Final[str] = _transition_sql(STATUS_REINSPECT_FAILED, _SOURCES_FAIL)
 _START_RESUMPTION_SQL: Final[str] = _transition_sql(
@@ -457,6 +537,21 @@ _RESUMED_SQL: Final[str] = _transition_sql(
     STATUS_CLOSED, _SOURCES_RESUMED, extra_set=", closed_at = ?"
 )
 _ESCALATE_SQL: Final[str] = _transition_sql(STATUS_ESCALATED, _SOURCES_ESCALATE)
+# 「不出文书关掉」。**只从 open 出发**,而且必须写理由(理由由上层校验非空)。
+#
+# ⚠️ `AND was_suspended = 0` 看着恒真 —— 今天确实没有任何路径能让一行既是 open
+#    又停过工(was_suspended 只在 open→suspended 那一步置 1,而没有回到 open 的边)。
+#    我第一版据此**没写**这道守卫,理由是「多写一条恒真的条件只会让人以为那里有语义」。
+#    补集测试当场把那个「恒真」证伪了:它会用上帝视角强行摆出 open + was_suspended=1,
+#    而那时 dismiss 会把一条**挂着暂停令的隐患不出复工令就关掉** —— 正是 Codex#6
+#    那一类。今天摆不出这个状态,不等于明天加一条边之后还摆不出。
+#    本仓的规矩是结构件优先于推理,所以这道守卫留着。
+_DISMISS_SQL: Final[str] = _transition_sql(
+    STATUS_CLOSED,
+    _SOURCES_DISMISS,
+    extra_set=", closed_at = ?, closed_reason = ?, closed_by = ?",
+    extra_where=" AND was_suspended = 0",
+)
 
 
 def _now_iso() -> str:
@@ -479,8 +574,68 @@ def _hazard_db() -> AbstractContextManager[sqlite3.Connection]:
     (事务内是 no-op、且一声不吭),所以它只能是公共件的参数 —— 这里拿到的连接已经在事务里,
     自己执行必然放错位置。漏开的表现是外键**静默不校验**:``hazard_docs`` 挂在一个根本不存在
     的 ``hazard_no`` 上,而证据链要到上报主管部门那天才发现引不出隐患。原委见 ``open_db``。
+
+    **本域比另外三个多一步 ``_migrate``**(2026-08-21 起),所以这里是个真正的
+    contextmanager 而不是一句 ``return open_db(...)`` —— 补列必须在同一条连接、
+    建完表之后跑。姿势与 ``db/tasks.py`` 的 ``_task_db`` 逐字相同。
     """
-    return open_db(_DDL, foreign_keys=True)
+    ctx = open_db(_DDL, foreign_keys=True)
+    return _with_migrations(ctx)
+
+
+@contextmanager
+def _with_migrations(
+    ctx: AbstractContextManager[sqlite3.Connection],
+) -> Iterator[sqlite3.Connection]:
+    """把 ``open_db`` 拿到的连接过一遍幂等补列,再交出去。"""
+    with ctx as conn:
+        _migrate(conn)
+        yield conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """幂等补列:``PRAGMA table_info`` 问一遍现有列名,缺哪列补哪列。
+
+    与 ``_DDL`` 一起在连接进场处每次执行(姿势照搬 ``db/tasks.py:_migrate``)。
+    对**新建**的库这里恒为空转(``_DDL`` 已经把列建全);只有线上那种 2026-08-21
+    之前建的 ``hazard_docs`` 才会真的走一次 ALTER,之后每次都空转。
+
+    代价是每次操作多一次 ``PRAGMA table_info`` —— 读的是已经在内存里的 schema,
+    与 ``CREATE TABLE IF NOT EXISTS`` 同一量级,换来的是「谁负责升级」这件事
+    根本不用有人负责。
+
+    ⚠️ ``ALTER TABLE ADD COLUMN`` **只能往末尾追加**,所以 ``_DDL`` 里新列也必须
+    写在末尾 —— 两种库的物理列序才一致。本层所有 SELECT 都显式列名,列序不一致
+    本身不会出错,但任何一句手写的 ``SELECT *`` 都会**只在一种库上**出事,
+    而那种 bug 在本机永远复现不出来。
+    """
+    for table, migrations in _MIGRATIONS:
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for column, statement in migrations:
+            if column not in existing:
+                conn.execute(statement)
+
+
+_MIGRATIONS: Final[tuple[tuple[str, tuple[tuple[str, str], ...]], ...]] = (
+    (
+        "hazard_docs",
+        (
+            # 2026-08-21:签发人留痕。语义见 DocDraft.issued_by 的红字 ——
+            # 自报的名字、不是认证身份、允许为空(旧行补不出来,留 NULL 比编一个诚实)。
+            ("issued_by", "ALTER TABLE hazard_docs ADD COLUMN issued_by TEXT"),
+        ),
+    ),
+    (
+        "hazards",
+        (
+            # 2026-08-21:不出文书关掉时的理由。语义见 dismiss() 的头注。
+            ("closed_reason", "ALTER TABLE hazards ADD COLUMN closed_reason TEXT"),
+            ("closed_by", "ALTER TABLE hazards ADD COLUMN closed_by TEXT"),
+        ),
+    ),
+)
+"""每张表缺哪列补哪列。表名是模块内的字面量(拼进 PRAGMA 不违反「全参数化」——
+那条红线管的是**运行期的值**,而且 PRAGMA 的表名也没法用占位符)。"""
 
 
 # --- hazards:登记与读取 ------------------------------------------------------
@@ -529,6 +684,10 @@ def create(
         closed_at=None,
         created_at=now,
         updated_at=now,
+        # 登记时恒 NULL:这两样只有 dismiss()(不出文书关掉)会写,
+        # 同 status / was_suspended / due_date 那三样 —— 登记不许抄近路。
+        closed_reason=None,
+        closed_by=None,
     )
     with _hazard_db() as conn:
         inserted = conn.execute(_INSERT_SQL, tuple(draft)[1:]).rowcount > 0
@@ -654,7 +813,10 @@ def _insert_docs(
         return
     conn.executemany(
         _INSERT_DOC_SQL,
-        [(hazard_no, d.doc_type, d.doc_no, d.artifact_id, d.photo_id, d.result, now) for d in docs],
+        [
+            (hazard_no, d.doc_type, d.doc_no, d.artifact_id, d.photo_id, d.result, now, d.issued_by)
+            for d in docs
+        ],
     )
 
 
@@ -680,30 +842,43 @@ def confirm(hazard_no: str) -> bool:
     return _run_transition(_CONFIRM_SQL, hazard_no, (), now, params)
 
 
-def mark_notified(hazard_no: str, due_date: str, *, docs: Sequence[DocDraft] = ()) -> bool:
+def mark_notified(
+    hazard_no: str, due_date: str, *, expected_grade: str, docs: Sequence[DocDraft] = ()
+) -> bool:
     """签发《监理通知单》:``open`` → ``notified``,写整改期限。
 
     ⚠️ ``due_date`` **必须是解析成功的日期**(Codex#12):端点收用户原话、用
     ``agents/schedule/dates.py`` 换算,解析不出就 fail、**不许留空** —— ``due_date`` 为空的
     隐患永远进不了超期清单,也就永远不会被升级。格式校验归端点,但别拿空串当"没期限"传进来。
 
-    ``grade='严重'`` 不许只签通知单这件事由端点硬拦(Codex#3):那是"该走哪条路"的业务判断,
-    这层只回答"这条路的状态迁移合不合法"。
+    ``grade='严重'`` 不许只签通知单这件**业务判断**仍归端点(Codex#3):走哪条路是它的事。
+    但那条硬拦判的是**先读的快照**,而 2026-08-21 发现快照和写之间有并发窗口 ——
+    所以这层多收一个 ``expected_grade``:端点按哪个级别做的决定,就把哪个级别传进来,
+    它会进 UPDATE 的 WHERE。写的那一刻级别变了 = rowcount 0 = 回 False,
+    端点照现有的 409 出口告诉人「刷新再看」。完整推演在 ``_NOTIFY_SQL`` 头上。
+
+    🔴 **必填、且不许给默认值**。给了默认值 = 忘了传的调用方静默退回无守卫状态,
+    而那正是这次要修的东西。
     """
     now = _now_iso()
-    params = (STATUS_NOTIFIED, now, due_date, hazard_no, *_SOURCES_NOTIFY)
+    params = (STATUS_NOTIFIED, now, due_date, hazard_no, *_SOURCES_NOTIFY, expected_grade)
     return _run_transition(_NOTIFY_SQL, hazard_no, docs, now, params)
 
 
-def mark_suspended(hazard_no: str, due_date: str, *, docs: Sequence[DocDraft] = ()) -> bool:
+def mark_suspended(
+    hazard_no: str, due_date: str, *, expected_grade: str, docs: Sequence[DocDraft] = ()
+) -> bool:
     """签发《通知单》+《工程暂停令》+《致建设单位报告》:``open`` → ``suspended``。
 
     三份文书随 ``docs`` 一起进来,与状态改动在**同一个事务**(§6.4 ③);文件必须先落盘拿到
     ``artifact_id`` 再调这里。同时把 ``was_suspended`` 置 1:此后即使复查合格也**必须先出
     复工令**(Codex#6)。
+
+    ``expected_grade`` 同 ``mark_notified``:守的是反方向 —— 一般隐患被抢着签了暂停令,
+    「平白停一片人的工」。
     """
     now = _now_iso()
-    params = (STATUS_SUSPENDED, now, due_date, hazard_no, *_SOURCES_SUSPEND)
+    params = (STATUS_SUSPENDED, now, due_date, hazard_no, *_SOURCES_SUSPEND, expected_grade)
     return _run_transition(_SUSPEND_SQL, hazard_no, docs, now, params)
 
 
@@ -774,6 +949,52 @@ def mark_escalated(hazard_no: str, *, docs: Sequence[DocDraft] = ()) -> bool:
     now = _now_iso()
     params = (STATUS_ESCALATED, now, hazard_no, *_SOURCES_ESCALATE)
     return _run_transition(_ESCALATE_SQL, hazard_no, docs, now, params)
+
+
+def dismiss(hazard_no: str, *, reason: str, issued_by: str | None = None) -> bool:
+    """「这条不是隐患 / 已当场整改」——**不出文书**把 ``open`` 关掉,但必须写清理由。
+
+    ===========================================================================
+    🔴 为什么需要这条路
+    ---------------------------------------------------------------------------
+    2026-08-21 之前 ``open`` 只有两条出口,而两条都要**签发法律文书**
+    (通知单 / 暂停令三文书)。于是一条识别错了的隐患 —— 白色安全帽被认成
+    没戴、拍到的是隔壁工地 —— 在系统里**关不掉**:唯一的出路是为一个不存在的
+    隐患真的签一份《监理通知单》,再拍张照登记「复查合格」。
+    **纠错的代价是往证据链里塞一份假文书。**
+
+    而「确认」这一下是单向门:后端的删除是 ``DELETE … WHERE status = 'pending'``,
+    确认之后连否决都没了。这条出口把那扇门变回可回退的。
+
+    ===========================================================================
+    ⚠️ 它同时是一个可以让隐患「消失」的口子,所以有三道约束
+    ---------------------------------------------------------------------------
+    ① **只从 open 出发**(``_SOURCES_DISMISS``)。签过文书之后不许走 ——
+       那时纸已经发出去了,系统里悄悄关掉等于台账与现场对不上。
+    ② **理由必填**,而且**留档**(``closed_reason``)。这条与「删掉」的本质区别
+       就在这儿:行还在、编号还在、照片关联还在,只是标成了「不出文书关掉」
+       并写着为什么。事后能问「这几条为什么关的」,而被否决的 pending 行是
+       真的没了。
+    ③ **谁按的这一下要留痕**(``closed_by``)。这个动作比签发更该记:
+       签发留下一份纸,而这一下是让隐患从在办台账上**消失**的唯一途径。
+       同 ``hazard_docs.issued_by``:自报的名字,不是认证身份。
+
+    ⚠️ 理由的非空校验归**上层**(端点):这层只保证存取保真与状态机合法性
+    (见模块头注的职责边界)。空理由在这里会原样入库,而端点会先说人话拦下。
+    """
+    now = _now_iso()
+    params = (STATUS_CLOSED, now, now, reason, issued_by, hazard_no, *_SOURCES_DISMISS)
+    return _run_transition(
+        _DISMISS_SQL,
+        hazard_no,
+        # 不出文书,但复查那种「记一笔」是有的:这里刻意**不挂任何 hazard_docs 行** ——
+        # doc_type 那张受控词表里没有「不是隐患」这一类,硬塞一条会让
+        # `docs_of` 回一条没有编号也没有产物的东西,而证据链的读者按文书理解它。
+        # 理由存在 hazards.closed_reason,与「这一行为什么关掉」在同一个地方。
+        (),
+        now,
+        params,
+    )
 
 
 # --- 文书 / 证据链 ------------------------------------------------------------
