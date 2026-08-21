@@ -43,6 +43,22 @@
  *
  * ⚠️ 这**不减少字节**,只是把它挪出关键路径:7.5 MB 照样要下,只是不再挡着首屏。
  *    真正的根治是别让 base64 进 state(TODOS.md 的 TODO-51),那是另一件事。
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 🔴 一个副作用:`stream.history` 与 `stream.experimental_branchTree` 现在会抛
+ * ───────────────────────────────────────────────────────────────────────────
+ * SDK 那两个是**惰性 getter**,里面写着(`stream.lgp.js:511` / `:517`):
+ *
+ *     if (historyLimit === false)
+ *       throw new Error("`fetchStateHistory` must be set to `true` to use `history`")
+ *
+ * 不传 `fetchStateHistory` 就等于 `historyLimit === false`。2026-08-21 核过:
+ * **全仓一处都没读它们**(编辑重发 / 重新生成走的是 `getMessagesMetadata`,
+ * 那条路直接用 `branchContext`,不经过这两个 getter)—— 所以今天不会抛。
+ *
+ * ⚠️ 但哪天有人写了 `stream.history`,拿到的是一句**英文异常**、当场白屏,
+ *    而且那句话会把人指向「去把 fetchStateHistory 打开」—— 那正好是本文件要治的
+ *    毛病。真需要那份数据时,读上面这个 hook 的 `data`,别去开那个开关。
  */
 
 import React, {
