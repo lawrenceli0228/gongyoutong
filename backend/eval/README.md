@@ -196,12 +196,64 @@
 > **不会**直接扣「编造」的帽子 —— 诚实拒答只是换了个说法,和真编造要分得开,
 > 否则看报告的人会去加强「不许编造」的约束,方向完全错。
 
+### orchestration.csv —— 测整条链做没做完(2026-08-22 加的第四套)
+
+| 列 | 说明 |
+|---|---|
+| `id` | O01、O02…… |
+| `type` | 恒 `orchestration` |
+| `user_input` | **工地师傅或监理真会打出来的话**。⚠️ 里面不许有逗号(csv 会裂) |
+| `expected_path` | `>` 分隔的 Agent 名序列,如 `safety>knowledge`。**空 = 不该派给任何人** |
+| `requires_project` | `true` / `false` —— 这条是不是必须先选工地 |
+| `expected_status` | `success` 做完 / `clarify` 该追问 / `fail` 该如实说做不了 |
+| `max_handoffs` | 整数。实际交接数不许超过它 |
+| `note` | 这条在守什么 |
+
+**判分:期望路径是实际路径的前缀,且实际交接数 ≤ `max_handoffs`,且状态相符。**
+
+用「前缀」而不是「完全相等」是刻意的:给「supervisor 多问了一句但路径对」留一点余量。
+而 `max_handoffs` 把这点余量卡死 —— 多派一跳就超,判不过。
+
+> **🔴 它和 routing.csv 的分工,别混**:
+> - `routing` 只判**第一跳派给谁**,而且在第一跳就停流(`hooks.run_routing_row` 的头注写着
+>   理由:让子 Agent 继续跑既慢又烧钱)。33 行里绝大多数只需要这个。
+> - `orchestration` **跑完整条链**,每行贵 10-20 倍(子 Agent 的整个工具循环都要跑,
+>   含识图的每次 7-10 秒)。所以它只放**真的需要验整链**的样本。
+> **别把 routing.csv 的行搬过来。**
+
+> **状态是怎么判出来的**(`hooks.classify_outcome`,纯函数):
+> ```
+> 图抛异常(熔断/超时)      → fail
+> 交接数 > 0                → success
+> 交接数 = 0 且末尾有问号     → clarify
+> 交接数 = 0 且末尾没问号     → fail
+> ```
+> ⚠️ **`交接数 > 0` 一律算 success,哪怕子 Agent 回的是「查不到」** —— 这套测的是调度,
+> 内容对不对归 rag / safety 那两套。把内容判据混进来的下场:一条路由完全正确的样本
+> 因为库里恰好没数据而判红,而人会去查 supervisor 的提示词。
+>
+> ⚠️ 最后那条(0 跳 + 没问号 = fail)刻意往严里判 —— supervisor 在该派活时自己编答案
+> 正是这套要抓的。代价是它会把「你好」这种正当闲聊自答也判 fail,
+> **所以这份数据集里不许放闲聊行**,那类归 routing 套的 `expected_agent=none`。
+
+> **想量递归上限就设 `GYT_EVAL_RECURSION_LIMIT`**(`hooks.RECURSION_LIMIT_ENV`):
+> 同一份数据集在 8 / 10 / 12 / 16 四档下各跑一遍,熔断会被收敛成 `status=fail` 而不是
+> 让整行记成「跑挂了」。这条路走得通是因为**调用时 config 里的 recursion_limit 会盖掉
+> 编译时钉的那个**(CLAUDE.md 记的 2026-08-11 实测)。
+
+> **样本量下限刻意留了余量**:数据集 25 行、`eval_min_rows_orchestration` = 15,富余 10 行。
+> 教训来自现状 —— safety 30/30、rag 20/20 **两套都卡死在线上**,掉一行就触硬闸整套 FAIL,
+> 于是没人敢删一行,连明显是坏样本的也不敢动。
+
+---
+
 ---
 
 ## 三、怎么跑
 
-> **三套都接通了**:safety(2026-08-07)、routing 与 rag(2026-08-09,随 knowledge 落地)。
-> `make eval` 不带 `SUITE` 就是三套全真跑。
+> **四套都接通了**:safety(2026-08-07)、routing 与 rag(2026-08-09,随 knowledge 落地)、
+> orchestration(2026-08-22)。`make eval` 不带 `SUITE` 就是四套全真跑 ——
+> ⚠️ 加上 orchestration 之后全量会明显变贵,平时按 `SUITE=` 单跑。
 >
 > 这段以前写着「routing / rag 还没接,跑起来打印 SKIP —— 那是正常状态」。**现在不是了** ——
 > 今天再看到 SKIP,说明数据集或 `--runners` 注入点出了问题,别当正常状态放过去。

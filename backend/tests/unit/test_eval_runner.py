@@ -1023,8 +1023,16 @@ async def test_run_suites_runs_each_registered_suite(tmp_path: Path) -> None:
     )
 
     # Assert
-    assert [r.suite for r in reports] == ["routing", "safety", "rag"]
-    assert [r.status for r in reports] == [Status.PASSED, Status.SKIPPED, Status.SKIPPED]
+    assert [r.suite for r in reports] == ["routing", "safety", "rag", "orchestration"]
+    assert [r.status for r in reports] == [
+        Status.PASSED,
+        Status.SKIPPED,
+        Status.SKIPPED,
+        # 第四条是 orchestration(2026-08-22 加)。这条用例刻意把
+        # 「跑了哪几套」和「各是什么状态」分成两句断言 —— 加套时两句都要跟,
+        # 只改一句的表现是另一句报「Left contains one more item」,而人会先去查 runner。
+        Status.SKIPPED,
+    ]
 
 
 async def test_safety_suite_runs_end_to_end_with_fake_vision(tmp_path: Path) -> None:
@@ -1284,7 +1292,12 @@ def test_main_verbose_flag_prints_passing_rows(
     assert "R01" in capsys.readouterr().out
 
 
-FILLED_DATASETS: Final[dict[str, int]] = {"safety": 30, "routing": 33, "rag": 20}
+FILLED_DATASETS: Final[dict[str, int]] = {
+    "safety": 30,
+    "routing": 33,
+    "rag": 20,
+    "orchestration": 25,
+}
 """已经填完真数据的套 → 应有的可判分行数。
 
 三套**都已填完**:safety 于 2026-08-07(27 张人工标注 + 3 张自备干扰项)、
@@ -1294,6 +1307,7 @@ routing 与 rag 于 2026-08-09(随 cad / knowledge 落地)。所以下面那条
 
 数字必须 ≥ config 里的 eval_min_rows_*(20 / 30 / 20),否则跑分脚本会直接判不通过。
 ⚠️ **safety 与 rag 卡死在下限上,一条不多**:safety 30=30、rag 20=20;
+orchestration 刻意不这样 —— 25 行 / 下限 15,富余 10 行,理由写在 config 里那个字段上;
 routing 33(下限 20:W7 加了 R23-R26 的 attendance 四行,W9 又加了 R27-R33 的
 supervision 五行 + 两行对抗行,现在富余 13 条)。
 删数据行、或让某行的备注里蹦出「待替换/请替换」被剔出分母,都会当场把整套打到硬闸以下。
@@ -1301,12 +1315,14 @@ supervision 五行 + 两行对抗行,现在富余 13 条)。
 
 
 def test_shipped_datasets_are_readable() -> None:
-    """仓库里现有的三份 CSV 必须能读、表头齐全。
+    """仓库里现有的四份 CSV 必须能读、表头齐全。
 
     这条用例同时是给「填数据的人」用的进度指示器:
       · 还没填的套 —— 必须仍能看出是占位状态(有「待替换」字样);
       · 填完的套 —— 登记进 FILLED_DATASETS,改为断言**真实可判分条数**。
-    三套现在都在 FILLED_DATASETS 里,所以走的全是第二条分支;第一条分支留给将来的第四套。
+    四套现在都在 FILLED_DATASETS 里,所以走的全是第二条分支;
+    第一条分支留给将来的第五套 —— 2026-08-22 加 orchestration 时它**一次都没走到**
+    (数据集是一次填满的,没经过占位状态),这说明那条分支从写下来到现在没被验证过。
     """
     for name, spec in SUITES.items():
         rows = load_rows(spec)

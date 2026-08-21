@@ -51,9 +51,11 @@ from typing import Any, Final
 from eval.scorers import (
     DatasetError,
     RowScore,
+    score_orchestration,
     score_rag,
     score_routing,
     score_safety,
+    validate_orchestration_row,
     validate_rag_row,
     validate_routing_row,
     validate_safety_row,
@@ -142,9 +144,30 @@ SUITES: Final[Mapping[str, SuiteSpec]] = MappingProxyType(
             validate=validate_rag_row,
             score=score_rag,
         ),
+        # orchestration(2026-08-22 加的第四套)—— 与 routing 的分工写在 eval/README.md:
+        # routing 只判**第一跳派给谁**并在第一跳停流;这一套**跑完整条链**,
+        # 判「整件事有没有做完、有没有多跳、该追问时有没有追问」。
+        # 🔴 别把 routing.csv 的行搬进来:那 33 行绝大多数只需要验第一跳,
+        #    而这一套每行贵 10-20 倍(子 Agent 的整个工具循环都要跑)。
+        "orchestration": SuiteSpec(
+            name="orchestration",
+            dataset="orchestration.csv",
+            threshold_field="eval_threshold_orchestration",
+            min_rows_field="eval_min_rows_orchestration",
+            required_columns=(
+                "id",
+                "type",
+                "user_input",
+                "expected_path",
+                "expected_status",
+                "max_handoffs",
+            ),
+            validate=validate_orchestration_row,
+            score=score_orchestration,
+        ),
     }
 )
-"""三套评测的注册表。门槛只写字段名,真值一律现从 get_settings() 取。"""
+"""四套评测的注册表。门槛只写字段名,真值一律现从 get_settings() 取。"""
 
 
 @dataclass(frozen=True, slots=True)

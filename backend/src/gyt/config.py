@@ -428,6 +428,12 @@ class Settings(BaseSettings):
     eval_threshold_routing: float = Field(default=0.90, ge=0.0, le=1.0)
     eval_threshold_safety: float = Field(default=0.80, ge=0.0, le=1.0)
     eval_threshold_rag: float = Field(default=0.80, ge=0.0, le=1.0)
+    # orchestration(整链调度,2026-08-22 加)比 routing 松 5 个点。
+    # 理由:routing 只判**第一跳派给谁**,一次文本调用定胜负;这一套要跑完整条链,
+    # 中间任何一步的模型抖动都会让整行红 —— 同样的模型质量下它天然更难。
+    # 0.85 是**起始值不是定论**:第一次全量跑完拿到真实基线之后回来重定
+    # (与 safety 的 0.80 同一个来历 —— 那个数也是先跑了才定的)。
+    eval_threshold_orchestration: float = Field(default=0.85, ge=0.0, le=1.0)
 
     # --- 评测最小样本量(条)-----------------------------------------------
     # 光有门槛是不够的:可判分的行只剩 1 条时,「100%(1/1)」照样是 PASS + exit 0,
@@ -436,6 +442,16 @@ class Settings(BaseSettings):
     eval_min_rows_routing: int = Field(default=20, ge=1)
     eval_min_rows_safety: int = Field(default=30, ge=1)
     eval_min_rows_rag: int = Field(default=20, ge=1)
+    # 🔴 orchestration 的下限**刻意留了余量**:数据集 25 行、下限 15,富余 10 行。
+    #
+    # 教训来自现状:safety 30 行 / 下限 30、rag 20 行 / 下限 20 —— **两套都卡死在线上**,
+    # 掉一行就触硬闸、整套 FAIL(CLAUDE.md 的评测那一节把这件事单独记了一段)。
+    # 于是没人敢删一行,连明显是坏样本的行也不敢动,而数据集是要随开发演进的。
+    #
+    # 15 这个数的依据:25 行里覆盖分布最小的一类是「该如实说做不了」2 条,
+    # 删掉整整一类(约 5-7 行)之后仍在下限之上 —— 也就是说余量足够做一次真正的调整,
+    # 而不是只够掉一两行。
+    eval_min_rows_orchestration: int = Field(default=15, ge=1)
 
     # ------------------------------------------------------------------
     # 派生路径(只读 property)

@@ -17,7 +17,8 @@ W2/W3 按泳道各自往这里加,互不相交(D11「结构即分工,合并冲�
              report/      日报/巡检两个模板,python-docx 渲染落盘
 
 加新 Agent 时只需往 ``gyt.graph.AGENT_REGISTRY``(模块级常量)追加一条
-``AgentSpec(name=..., summary=..., build=...)``,Supervisor 会自动生成对应的交接工具,
+``AgentSpec(name=..., summary=..., build=..., requires_project=...)``,
+Supervisor 会自动生成对应的交接工具,
 其余地方一个字都不用改。
 
     ⚠️ 挂载点只有 AGENT_REGISTRY 这**一处**,别去动 build_graph() 的函数体 ——

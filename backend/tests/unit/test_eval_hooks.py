@@ -385,3 +385,69 @@ async def test_rag没填question时炸() -> None:
 
     with pytest.raises(EvalRunnerError, match="question"):
         await run_rag_row({"id": "K01", "question": "  "})
+
+
+# ---------------------------------------------------------------------------
+# orchestration(整链调度,2026-08-22 加的第四套)
+#
+# 这一段全部**不碰模型、不建图**:被测的是 hooks 这一侧的两件纯逻辑 ——
+# 结果归档(classify_outcome)与轨迹收集(去重、回程不算跳、熔断收敛成事实)。
+# 真跑整图是 `make eval SUITE=orchestration` 的事,那要花钱。
+# ---------------------------------------------------------------------------
+
+
+class _假消息:
+    """冒充 langchain 的 message:只要有 tool_calls 和 content 两个属性就够了。
+
+    刻意不 import 真的 AIMessage —— 那会把 langchain 拽进这个测试文件,
+    而本段测的是「hooks 怎么读消息」,不是「langchain 的消息长什么样」。
+    """
+
+    def __init__(self, tool_calls: list[dict[str, str]] | None = None, content: str = "") -> None:
+        self.tool_calls = tool_calls or []
+        self.content = content
+
+
+def _交接(name: str, call_id: str) -> dict[str, str]:
+    return {"name": f"transfer_to_{name}", "id": call_id}
+
+
+class Test结果归档:
+    """``classify_outcome`` 的四条判据。判据本身的推演在它的 docstring 里。"""
+
+    def test_熔断算失败_而不是抛出去(self) -> None:
+        """🔴 熔断**不是异常,是观测结果** —— 这套评测存在的一半理由就是量它。
+
+        抛出去的话 runner 会把整行记成「跑挂了」,而我们要的是「这一档上限不够」。
+        """
+        assert hooks.classify_outcome(2, "", "熔断:Recursion limit of 8 reached") == "fail"
+
+    def test_派了活并跑完就算成功_哪怕子Agent说查不到(self) -> None:
+        """这套测的是**调度**不是**答得对不对**。
+
+        「查到 0 条」是合法答案 —— 调度做对了,内容对不对归 rag / safety 那两套管。
+        把内容判据混进来的下场:一条路由完全正确的样本因为库里恰好没数据而判红,
+        而人会去查 supervisor 的提示词。
+        """
+        assert hooks.classify_outcome(1, "知识库里查不到依据。", None) == "success"
+
+    def test_没派活但回头问了一句_算追问(self) -> None:
+        assert hooks.classify_outcome(0, "你是说哪个工地?", None) == "clarify"
+        assert hooks.classify_outcome(0, "要看哪张图纸？", None) == "clarify"  # 全角问号
+
+    def test_没派活也没问_算失败(self) -> None:
+        """刻意往严里判:supervisor 在该派活时自己编一个答案,正是这套要抓的东西。
+
+        ⚠️ 代价是它也会把「你好」这种正当的闲聊自答判成 fail ——
+        所以 orchestration.csv 里不许放闲聊行,那类归 routing 套的 expected_agent=none。
+        """
+        assert hooks.classify_outcome(0, "好的,我已经帮你安排好了。", None) == "fail"
+
+    def test_判追问只认问号_不认哪和是要那类词(self) -> None:
+        """🔴 判据宁可窄。
+
+        「哪」「是要」这些字在正常答话里也大量出现(「这条隐患在哪个工地」是陈述),
+        拿它们当判据会把正常回答误判成追问 —— 而误判的方向是**放行**:
+        一条本该派活却自己答了的样本会被判成「追问,正确」。漏判是红灯,误判是假绿灯。
+        """
+        assert hooks.classify_outcome(0, "这条隐患在哪个工地我查一下", None) == "fail"

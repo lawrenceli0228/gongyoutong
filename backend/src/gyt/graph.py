@@ -213,11 +213,24 @@ class AgentSpec(NamedTuple):
         summary: 一句中文能力说明，会被拼进 supervisor 的系统提示词，
                  决定「这活该派给谁」。写得越具体，路由准确率越高（D18 评测门槛 0.90 靠它）。
         build:   无参构造函数，返回已编译的子 Agent。
+        requires_project:
+                 这位同事的活儿**要不要先选中「当前工地」才做得准**。True 会让它的名字被
+                 render_project_notice 拼进 supervisor 提示词,于是用户没选工地又要干这类活时,
+                 supervisor 会先提醒他去顶栏选,而不是闷头派活(理由见那个函数的说明)。
+                 ⚠️ 判据是**「没选工地时它的工具会不会给出落错地方 / 张冠李戴的结果」**,
+                 不是「它的库表里有没有 project_id 这一列」—— tasks 与 attendance 两张表
+                 都预留了这一列却「写入恒 NULL、不进任何函数签名」(定案 #11),
+                 按列判会把这两位错标成 True,于是每次记任务、查考勤都白提醒一遍。
+                 每一条的取值依据都写在下面登记表里它自己那行旁边,**填之前先去读那个
+                 Agent 的 tools.py**,别照着 summary 猜。
+                 ⚠️ 刻意**不给默认值**:加第八个 Agent 时漏填会当场 TypeError(响的),
+                 好过默认成 False 把它悄悄排除在提醒之外(那种漏是零报错的)。
     """
 
     name: str
     summary: str
     build: Callable[[], CompiledStateGraph]
+    requires_project: bool
 
 
 AGENT_REGISTRY: tuple[AgentSpec, ...] = (
@@ -244,6 +257,24 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             # 缺编号的追问本来就归 safety/prompt.md 管，supervisor 不该在路由层重复把关。
         ),
         build=build_safety_agent,
+        # 🔴 False。这一条**被翻过案**,理由值得完整留着,免得下一个人照直觉再改回去。
+        #
+        # 反方的理由(听起来很有道理):`analyze_site_photo` 用 project_from_config(config)
+        # 取当前工地去登记隐患,没选就是空串 =「未归属」。隐患进了库却不属于任何一个工地的
+        # 清单 —— 生产上那批未归属隐患就是这么攒出来的。所以「该提醒」。
+        #
+        # 但本字段问的**不是**「不选工地会不会有副作用」,而是
+        # **「不选工地的话,回给用户的那句话本身是不是错的」**。识图这条上:
+        #   · 结论完全正确,user_msg 一个字都不会变;
+        #   · 「未归属」那批**是可见的** —— 监理面板专门有一句「未归属共 N 条」,
+        #     supervision 的工具在选了工地时也会额外报一句。它没被藏起来。
+        #
+        # 而标 True 的代价是实打实的:**工友每传一张照片没选工地都要挨一次唠叨** ——
+        # 包括站在临边旁边只想问一句「这样危险吗」的那个人。这跟「后端硬拦掉分析」
+        # 是同一种错,只是软了一档:**「未归属的隐患」比「没做的分析」好。**
+        #
+        # 归属错了该由「把未归属补归到工地」那件事去修(单独排期),不该在这儿用提醒糊。
+        requires_project=False,
     ),
     AgentSpec(
         name=INSPECTION_AGENT_NAME,
@@ -260,6 +291,12 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             # 规范问题撞上「临边」关键词。safety 的 summary 一直带条文免责句,这里此前漏了。
         ),
         build=build_inspection_chain,
+        # False,与 safety 同因同果(那条的完整推演见上面那段红字,一并适用)。
+        # 英雄链第一跳就是 safety 本体,登记隐患那半段一模一样地跑;第二跳 report
+        # 不会再登记一遍(它走的是零副作用的纯函数 _recognize),所以整条链上
+        # 「隐患落进未归属」只有第一跳这一个落点,不是两个。
+        # 巡检记录本身的内容与选没选工地无关 —— 照片是什么就是什么。
+        requires_project=False,
     ),
     AgentSpec(
         name=SCHEDULE_AGENT_NAME,
@@ -274,6 +311,14 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             # 把照片/条文请求钓过来(路由回归时若 R06 被钓走,先查这条的措辞)。
         ),
         build=build_schedule_agent,
+        # 依据 agents/schedule/tools.py:**通篇一个 project 字样都没有**,四个工具
+        # (记/查/改/销)都不读 config 里的当前工地;db/tasks.py 那句定案 #11 说得更死 ——
+        # 「project_id 只在这里出现:建表即预留、写入恒 NULL、不进任何函数签名」。
+        # 也就是说任务台账当前是**全工地共用一本**,选不选工地记出来的任务逐字节相同,
+        # 标 True 只会让每一句「记一下」都白挨一次提醒 —— 提醒喊多了就没人听了。
+        # ⚠️ 哪天 tasks 真按项目分账(那一列不再恒 NULL),这里必须跟着改成 True,
+        # 否则「记一下」会静默记到错的工地上,而回执里的 T 号看起来完全正常。
+        requires_project=False,
     ),
     AgentSpec(
         name=CAD_AGENT_NAME,
@@ -293,6 +338,15 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             #    query_dimension 会如实说做不了 —— 路由对了、能力边界也诚实,可接受。
         ),
         build=build_cad_agent,
+        # 依据 agents/cad/tools.py 的三处作用域代码,没选工地时**全部回落到「全部项目」**:
+        #   · list_drawings:project_id 为空 → db.list_drawings(project_id=None) 列所有项目的图,
+        #     并且把 demo 样例图一起端上来(选了工地才不掺 demo);
+        #   · _load_index / _locate_drawing_sync:按**图名**找项目图时,给了工地才限定在该项目内,
+        #     没给就跨项目找(函数头注原话「没给才跨项目找(旧行为)」)。
+        # 所以坏法不是「查不了」而是**「查得出、但可能是别人家的图」** —— list_drawings 那条 ⚠️
+        # 注释记着的「问项目2的图层却报出项目1的图」正是这么来的:图名一样,LLM 顺手挑了一张,
+        # 尺寸和图层清单都言之凿凿,零报错。图纸报错了尺寸是要出事的,所以这条必须提醒。
+        requires_project=True,
     ),
     AgentSpec(
         name=KNOWLEDGE_AGENT_NAME,
@@ -307,6 +361,14 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             # 正域写足(消防/防火/安全/施工 + 数值/程序/标准的口语说法),结尾带同款免责句。
         ),
         build=build_knowledge_agent,
+        # 依据 agents/knowledge/tools.py 的 _scope_filter:没选工地时过滤条件是
+        # {"scope": SCOPE_GLOBAL} —— 只查**全局规范**,而国标那类条文本来就对所有工地通用,
+        # 不选工地查出来的原文、页码一字不差。选了工地只是**多**捞该项目自己的规范/任务书
+        # (「全局 + 该项目」,永不串到别的项目),属于加分不是及格线。
+        # 也就是说这里没选工地的退化是「查不到项目私有资料」,而那条路已经有兜底:
+        # 工具说明里明写着「不填就只查对所有项目通用的全局规范」,查不到时走 EMPTY_RESULT
+        # 如实说没有(不硬答)。既然不会答错,就不该在这儿拦一道 —— 全局规范才是它的常见场景。
+        requires_project=False,
     ),
     AgentSpec(
         name=ATTENDANCE_AGENT_NAME,
@@ -323,6 +385,15 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             # 让「请点界面上的打卡按钮」这句标准答复出自 prompt.md,而不是 supervisor 现编。
         ),
         build=build_attendance_agent,
+        # 依据 agents/attendance/tools.py:与 schedule 一样**通篇没有 project 字样**,
+        # 两个查询工具都按「姓名 + 时间范围」走,压根不注入 config 里的当前工地;
+        # db/attendance.py 的 project_id 是照搬 tasks 的同款处理 ——
+        # 「建表即预留、写入恒 NULL、不进任何函数签名」。
+        # 语义上也对得上:打卡回答的是「这个人今天来没来」,不是「他在哪个工地」,
+        # 写入侧那条直连接口(checkin_api.py,D15)也从来不收工地。
+        # ⚠️ 别看见 db 表里那列 project_id 就改成 True —— 那正是本字段 docstring 里
+        # 点名的错判法,改了的后果是每次查考勤都被提醒一句用不上的话。
+        requires_project=False,
     ),
     AgentSpec(
         name=SUPERVISION_AGENT_NAME,
@@ -346,6 +417,15 @@ AGENT_REGISTRY: tuple[AgentSpec, ...] = (
             # 必须整套重跑(方案 §6.5 原话)。
         ),
         build=build_supervision_agent,
+        # 依据 agents/supervision/tools.py 的 list_hazards:它把 project_from_config(config)
+        # 原样传给 db.list_rows(project_id=...),而 db/hazards.py 的 list_rows 头注写死了
+        # 这两者语义**完全不同**:「project_id=None 是"不筛项目";project_id="" 是
+        # "只看未归属的"」。没选工地时拿到的是空串 —— 于是「隐患还剩几条没销」
+        # 答的是**未归属那一堆的条数**,不是「全部工地」,更不是用户心里那个工地。
+        # 这是本字段里最阴的一条:数字给得出、格式正确、还很像那么回事。
+        # 工具自己已经尽了力(选了工地时会额外报一句「另外还有 N 条没归到任何工地」),
+        # 但那句话只在**选了**工地的路径上出现 —— 没选的时候没人会说破,所以要在这儿提醒。
+        requires_project=True,
     ),
     # W2/W3 在这里往下追加，一个 Agent 一行。改这里就等于改路由能力，
     # 记得同步更新 D18 的路由评测集（backend/eval/datasets/routing.csv，
@@ -367,7 +447,7 @@ _SUPERVISOR_PROMPT_TEMPLATE = """\
 # 你手下的同事
 
 {roster}
-
+{project_notice}
 # 派活规则
 
 1. 一次只派给一位同事。等他把结果交回来，再决定是继续派下一位，还是直接答复用户。
@@ -416,6 +496,59 @@ _SUPERVISOR_PROMPT_TEMPLATE = """\
 用简体中文。说人话，句子短，别用书面语和专业术语绕。
 面对的是戴着安全帽、可能在噪音里看手机的师傅，一句话讲不明白就分成两句讲。
 """
+# ⚠️ 上面那个 {project_notice} 占位符**故意**独占一行、上下各留一个换行:
+# render_project_notice 没人需要工地时返回空串,此时这一段塌成
+# 「{roster}\n\n# 派活规则」—— 与加这个字段之前的排版逐字节相同,不会多出一个空行。
+# 非空时它自带首尾换行,拼出来正好是标准的 markdown 段间距。改这里的空行数之前先看那个函数。
+
+
+_PROJECT_NOTICE_TEMPLATE = """
+# 先看用户选没选工地
+
+下列同事的活儿**要先选中工地才做得准**:{names}。
+用户没选工地又要干这类活时,先用一句短话提醒他到界面顶栏把工地选上,别闷头派活。
+注意:派出去也**不会报错** —— 活照干、话照答、数字照样给,只是答的不是他要的那个工地
+(图纸可能拿的是别的项目那张;隐患条数数的是没归到任何工地的那一堆)。
+他自己看不出来,所以这一步得你替他把住。
+用户明说「不限项目 / 看全部工地」的,那是他自己的选择,照办就行,不用再提醒。
+"""
+"""「哪些活儿离不开当前工地」这一节的模板。{names} 由 render_project_notice 现算填入。
+
+⚠️ **括号里那两句举例必须和当前 requires_project=True 的那几个对得上。**
+2026-08-22 翻案时就在这儿留过一条尾巴:safety 从 True 改成 False 之后,
+括号里还写着「隐患会记成未归属」—— 而那是 safety 的坏法,不是 cad / supervision 的。
+模型会照着这句话去理解「为什么要提醒」,举例对不上就等于给它一个错的心智模型,
+而**名单是现算的、举例是写死的**,这两半漂开不会有任何东西报错。
+名单再变时,回来核这两句。"""
+
+
+def render_project_notice(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> str:
+    """把「哪些同事的活儿离不开当前工地」渲染成提示词里的一节;没有这样的同事就返回**空串**。
+
+    为什么要有这一节 —— 修的是生产上那批「未归属」隐患:工友没在界面上选工地就拍了照,
+    隐患照样进台账、只是 project_id 是空串。⚠️ **那不是 bug,是 D6 这个有记录的决定**
+    (db/hazards.py 模块 docstring):project_id 做成 NOT NULL DEFAULT '' 而不是可空,
+    因为幂等键 (project_id, photo_sha256, item) 用 NULL 会失效(SQL 里 NULL != NULL),
+    同一张照片重传就能无限新增行。所以后端**不能**在写入侧硬拦,空串是刻意留的落点 ——
+    不登记等于丢隐患。能做的只有把「这活儿离不开工地」这条知识提前交到 supervisor 手上,
+    让它在派活之前先提醒人去选,而不是等东西落错了地方再补救。
+
+    名单**从登记表现算**,不写死:写死的话加第八个 Agent 时这句话会悄悄过期 ——
+    新同事的活儿明明离不开工地,提示词里却没它的名字,而且不会有任何报错。
+
+    与 render_current_project 的分工(两边都要有,单靠哪一边都不够):
+      · 那边是**逐轮**的现场信息 —— 此刻选没选、选的是哪个工地,随 config 每轮变;
+      · 这边是**静态**的能力知识 —— 哪些活儿离不开工地,随登记表变。
+    只有那边,模型知道「没选」却不知道这活儿要不要紧,于是要么每句话都唠叨、要么全不提;
+    只有这边,模型知道「要紧」却不知道此刻到底选没选,只能瞎猜。
+
+    一个 True 都没有时返回空串(而不是「暂时没有同事需要选工地」这类话),是刻意的:
+    那句话对模型**无从执行**,只会白占 token,还可能被读成「工地这事不重要」。
+    """
+    names = [spec.name for spec in specs if spec.requires_project]
+    if not names:
+        return ""
+    return _PROJECT_NOTICE_TEMPLATE.format(names="、".join(names))
 
 
 def render_roster(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> str:
@@ -432,8 +565,14 @@ def build_supervisor_prompt(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> str:
 
     「当前工地」这类每轮都会变的现场信息不在这里 —— 它随 config 逐轮变化，
     由 build_supervisor_prompt_runnable 在调模型前动态续到这段后面。
+
+    两段都从同一份 specs 现算,所以「加 Agent 只改 AGENT_REGISTRY」这条约定对
+    名单和「哪些活儿离不开工地」这两件事同时成立,不会一半跟着变、一半留在原地。
     """
-    return _SUPERVISOR_PROMPT_TEMPLATE.format(roster=render_roster(specs))
+    return _SUPERVISOR_PROMPT_TEMPLATE.format(
+        roster=render_roster(specs),
+        project_notice=render_project_notice(specs),
+    )
 
 
 def render_current_project(config: RunnableConfig | None) -> str:
@@ -616,5 +755,6 @@ __all__ = [
     "build_supervisor_prompt_runnable",
     "graph",
     "render_current_project",
+    "render_project_notice",
     "render_roster",
 ]
