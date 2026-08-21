@@ -186,14 +186,35 @@ ssh animego-old 'df -h /; docker system df; docker images; docker ps'</pre>
 
   <h3>1.2 同步代码 —— ⚠️ 别用旧文档里那条命令</h3>
 <pre># 演练:先看清楚要删什么(<b>必做</b>)
-rsync -azn --delete -i --no-o --no-g --filter=':- .gitignore' --exclude '.git' \
+rsync -azn --delete -i --no-o --no-g --filter=':- .gitignore' \
+  --exclude '.git' <b>--exclude 'backups/'</b> \
   ./ animego-old:/opt/gyt/
 
 # 确认无误再真跑
-rsync -az --delete <b>--no-o --no-g --filter=':- .gitignore' --exclude '.git'</b> \
+rsync -az --delete <b>--no-o --no-g --filter=':- .gitignore' \
+  --exclude '.git' --exclude 'backups/'</b> \
   ./ animego-old:/opt/gyt/</pre>
-  <p>三个开关缺一不可,理由分别见 §2.2(<code>--filter</code>)、§2.3(<code>--no-o --no-g</code>)、
-    §2.2(<code>--exclude '.git'</code>)。</p>
+  <p>四个开关缺一不可,理由分别见 §2.2(<code>--filter</code>)、§2.3(<code>--no-o --no-g</code>)、
+    §2.2(<code>--exclude '.git'</code>)、下面这一段(<code>--exclude 'backups/'</code>)。</p>
+
+  <div class="box b-bad">
+    <span class="hd">🔴 <code>--exclude 'backups/'</code> 是 2026-08-21 部署时演练档当场抓到的,别删</span>
+    <p>那次加了备份服务(<code>docker-compose.vps.yml</code> 的 <code>backup</code>),它往宿主
+      <code>backups/</code> 写;<code>.gitignore</code> 里也加了 <code>/backups/</code>。
+      按「让 rsync 直接读 .gitignore」这条单一真相的设计,它<b>应该</b>被保护住 ——
+      §2.2 ④ 那条也写着「<code>--delete</code> 默认不删被排除的文件」。</p>
+    <p><b>但演练档第一行就是 <code>*deleting backups/</code>。</b>
+      实测结论:经 <code>--filter=':- .gitignore'</code> 合并进来的规则,在这个组合下
+      没能把接收端那个目录保护住,只有显式 <code>--exclude</code> 才行。</p>
+    <p>危害等级和 §2.2 那次一样、甚至更高:一旦备份服务跑起来,那个目录里装的是
+      <b>这台机器唯一的备份</b>,而删它的正是那条用来部署的命令。</p>
+    <p>⚠️ 教训不是「多加一个 exclude」,是<b>演练档必须真的看</b>:这条命令的三个已知坑
+      (对话历史、属主、<code>.git</code>)全是演练档抓出来的,这是第四个。
+      数一下 <code>deleting</code> 的行数比逐行读更省事:</p>
+<pre>rsync -azn --delete -i --no-o --no-g --filter=':- .gitignore' \
+  --exclude '.git' --exclude 'backups/' ./ animego-old:/opt/gyt/ | grep -c deleting
+# 期望 0。非 0 就逐行看清楚每一条,别 rsync 完再后悔。</pre>
+  </div>
 
   <h3>1.3 构建后端 —— <b>在 VPS 上构,不要在开发机构了传</b></h3>
 <pre>ssh animego-old 'cd /opt/gyt &amp;&amp; DOCKER_BUILDKIT=1 \
