@@ -223,32 +223,36 @@ def _arrive(status: str, *, due: str = FAR_FUTURE_ISO, **kwargs: Any) -> str:
     「全部一条都不筛」那条用例测了个寂寞 —— 两个筛子返回同一批,断言照样绿。
     """
     hazard_no = _new_hazard(**kwargs)
+    # 写前守卫要「你按哪个级别做的决定」——造数这儿就是 kwargs 里那个
+    # (没给就是 _new_hazard 的默认值)。写死常量的话,造一条严重隐患时
+    # mark_* 会因为守卫不命中而静默不迁移,用例失败的样子和真 bug 一模一样。
+    grade = kwargs.get("grade", hazards.GRADE_NORMAL)
     if status == hazards.STATUS_PENDING:
         return hazard_no
     hazards.confirm(hazard_no)
     if status == hazards.STATUS_OPEN:
         return hazard_no
     if status == hazards.STATUS_NOTIFIED:
-        hazards.mark_notified(hazard_no, due)
+        hazards.mark_notified(hazard_no, due, expected_grade=grade)
         return hazard_no
     if status == hazards.STATUS_SUSPENDED:
-        hazards.mark_suspended(hazard_no, due)
+        hazards.mark_suspended(hazard_no, due, expected_grade=grade)
         return hazard_no
     if status == hazards.STATUS_REINSPECT_FAILED:
-        hazards.mark_notified(hazard_no, due)
+        hazards.mark_notified(hazard_no, due, expected_grade=grade)
         hazards.mark_reinspect_failed(hazard_no)
         return hazard_no
     if status == hazards.STATUS_RESUMING:
-        hazards.mark_suspended(hazard_no, due)
+        hazards.mark_suspended(hazard_no, due, expected_grade=grade)
         hazards.pass_reinspection(hazard_no)
         return hazard_no
     if status == hazards.STATUS_CLOSED:
         # 没停过工的复查合格 → 直接 closed(挑边由 db 按 was_suspended 决定)
-        hazards.mark_notified(hazard_no, due)
+        hazards.mark_notified(hazard_no, due, expected_grade=grade)
         hazards.pass_reinspection(hazard_no)
         return hazard_no
     if status == hazards.STATUS_ESCALATED:
-        hazards.mark_notified(hazard_no, due)
+        hazards.mark_notified(hazard_no, due, expected_grade=grade)
         hazards.mark_reinspect_failed(hazard_no)
         hazards.mark_escalated(hazard_no)
         return hazard_no
@@ -918,6 +922,7 @@ class Test人工定级:
             hazards.mark_notified(
                 hazard_no,
                 "2026-12-31",
+                expected_grade=hazards.GRADE_NORMAL,
                 docs=[hazards.DocDraft("notice", "GYT-TZ-抢跑", artifact_id="a" * 32)],
             )
             return 真的(*args, **kwargs)

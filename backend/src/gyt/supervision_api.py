@@ -465,8 +465,18 @@ _MSG_DOC_NO_EXHAUSTED: Final[str] = (
 (它的头注:异常文本别原样透给用户)。
 """
 
-_MSG_RACED: Final[str] = "这条隐患的状态刚被改过(可能有人同时在处理),刷新一下再看看。"
-"""db 层 rowcount=0 时的人话 —— 先读的那份快照说可以、写的时候不行,就是并发。"""
+_MSG_RACED: Final[str] = (
+    "这条隐患的状态或级别刚被改过(可能有人同时在处理),什么都没签出去。刷新一下再看看。"
+)
+"""db 层 rowcount=0 时的人话 —— 先读的那份快照说可以、写的时候不行,就是并发。
+
+2026-08-21 扩了两处措辞:
+  · 加「或级别」—— 那天给 ``_NOTIFY_SQL`` / ``_SUSPEND_SQL`` 补了 ``AND grade = ?``
+    的写前守卫,于是 rowcount=0 又多了一种成因。只写「状态」会让人去翻状态、翻不出东西。
+  · 加「什么都没签出去」—— 这条路上盘里其实已经渲了文书文件(``_sign`` 的头注:
+    409 时「库一行没动,盘上留孤儿文件」)。不说清楚的话,监理会去列表里找一份
+    并不存在的文书,和 ``_MSG_DOC_NO_EXHAUSTED`` 当初要防的是同一种误会。
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -1077,7 +1087,9 @@ def _work_notice(body: dict[str, Any]) -> _Result:
         (DocKind.NOTICE,),
         ctx,
         snap,
-        lambda drafts: hazards.mark_notified(row.hazard_no, due_date, docs=drafts),
+        lambda drafts: hazards.mark_notified(
+            row.hazard_no, due_date, expected_grade=row.grade, docs=drafts
+        ),
     )
     logger.info("隐患 %s 已签发通知单 %s(期限 %s)", row.hazard_no, issued[0].doc_no, due_date)
     return _issued_payload(
@@ -1106,7 +1118,9 @@ def _work_suspend(body: dict[str, Any]) -> _Result:
         (DocKind.NOTICE, DocKind.SUSPENSION, DocKind.OWNER_REPORT),
         ctx,
         snap,
-        lambda drafts: hazards.mark_suspended(row.hazard_no, due_date, docs=drafts),
+        lambda drafts: hazards.mark_suspended(
+            row.hazard_no, due_date, expected_grade=row.grade, docs=drafts
+        ),
     )
     logger.info(
         "隐患 %s 已出具暂停令三文书:%s(期限 %s)",

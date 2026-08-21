@@ -524,7 +524,10 @@ def test_删项目_名下隐患转未归属而不是跟着项目消失(
     在办 = _hazard_of(pid, sha="sha-在办")
     hazards.confirm(在办)
     hazards.mark_notified(
-        在办, "2026-12-31", docs=[hazards.DocDraft("notice", "GYT-TZ-9001", artifact_id="a" * 32)]
+        在办,
+        "2026-12-31",
+        expected_grade=hazards.GRADE_NORMAL,
+        docs=[hazards.DocDraft("notice", "GYT-TZ-9001", artifact_id="a" * 32)],
     )
 
     resp = client.delete(f"/projects/{pid}")

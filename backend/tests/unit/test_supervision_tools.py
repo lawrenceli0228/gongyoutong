@@ -120,13 +120,13 @@ def _make(
         return hazard_no
 
     if status in (db.STATUS_SUSPENDED, db.STATUS_RESUMING):
-        assert db.mark_suspended(hazard_no, due)
+        assert db.mark_suspended(hazard_no, due, expected_grade=grade)
         if status == db.STATUS_RESUMING:
             # 停过工的复查合格 → resuming(等复工令),分支由 was_suspended 决定
             assert db.pass_reinspection(hazard_no) == db.STATUS_RESUMING
         return hazard_no
 
-    assert db.mark_notified(hazard_no, due)
+    assert db.mark_notified(hazard_no, due, expected_grade=grade)
     if status == db.STATUS_NOTIFIED:
         return hazard_no
     if status == db.STATUS_CLOSED:
@@ -407,6 +407,7 @@ async def test_证据链带中文名与结论() -> None:
     assert db.mark_notified(
         hazard_no,
         FUTURE,
+        expected_grade=db.GRADE_NORMAL,
         docs=[db.DocDraft(doc_type="notice", doc_no=notice_no, artifact_id="a" * 32)],
     )
     assert db.mark_reinspect_failed(

@@ -434,14 +434,29 @@ _SOURCES_ESCALATE: Final = _sources_for(STATUS_ESCALATED, STATUS_REINSPECT_FAILE
 _CONFIRM_SQL: Final[str] = _transition_sql(
     STATUS_OPEN, _SOURCES_CONFIRM, extra_set=", confirmed_at = ?"
 )
+# ``AND grade = ?`` 是**级别的写前守卫**,和 status 那道同一个道理,2026-08-21 补。
+#
+# 🔴 不加它的失败长这样(端点侧「先读再判再写」的两步之间):
+#       线程甲  row = 读到 grade='一般'
+#       线程甲  _refuse_severe_notice(row) 拿快照判 → 放行
+#       线程乙  POST /supervision/grade 改成 '严重'  ← status 还是 open,定级照样成功
+#       线程甲  mark_notified(...)  ← 只守 status,照样命中
+#   结果:**严重隐患只拿到一份通知单**。这正是 supervision_api 那段硬拦注释里
+#   写的「该停工的没停」—— 硬拦本身是对的,只是它守的是快照、不是写的那一刻。
+#
+# 反方向早就堵住了:``_SET_GRADE_SQL`` 的 ``WHERE status IN (GRADABLE_STATUSES)``
+# 让「签发之后再改级别」失败。所以这次只补这一个方向。
 _NOTIFY_SQL: Final[str] = _transition_sql(
-    STATUS_NOTIFIED, _SOURCES_NOTIFY, extra_set=", due_date = ?"
+    STATUS_NOTIFIED, _SOURCES_NOTIFY, extra_set=", due_date = ?", extra_where=" AND grade = ?"
 )
 # ``was_suspended = 1`` 是字面量、不是运行期的值,所以可以进 SQL 文本。这一列是 Codex#6 的修法:
 # 复查失败后 notified 与 suspended 都坍缩成 reinspect_failed,没有它,再次合格时状态机分不清
 # 该直接关闭还是必须先出复工令 —— 漏发或滥发复工令。
 _SUSPEND_SQL: Final[str] = _transition_sql(
-    STATUS_SUSPENDED, _SOURCES_SUSPEND, extra_set=", due_date = ?, was_suspended = 1"
+    STATUS_SUSPENDED,
+    _SOURCES_SUSPEND,
+    extra_set=", due_date = ?, was_suspended = 1",
+    extra_where=" AND grade = ?",  # 同 _NOTIFY_SQL,反方向:一般隐患被抢着签暂停令
 )
 _FAIL_SQL: Final[str] = _transition_sql(STATUS_REINSPECT_FAILED, _SOURCES_FAIL)
 _START_RESUMPTION_SQL: Final[str] = _transition_sql(
@@ -680,30 +695,43 @@ def confirm(hazard_no: str) -> bool:
     return _run_transition(_CONFIRM_SQL, hazard_no, (), now, params)
 
 
-def mark_notified(hazard_no: str, due_date: str, *, docs: Sequence[DocDraft] = ()) -> bool:
+def mark_notified(
+    hazard_no: str, due_date: str, *, expected_grade: str, docs: Sequence[DocDraft] = ()
+) -> bool:
     """签发《监理通知单》:``open`` → ``notified``,写整改期限。
 
     ⚠️ ``due_date`` **必须是解析成功的日期**(Codex#12):端点收用户原话、用
     ``agents/schedule/dates.py`` 换算,解析不出就 fail、**不许留空** —— ``due_date`` 为空的
     隐患永远进不了超期清单,也就永远不会被升级。格式校验归端点,但别拿空串当"没期限"传进来。
 
-    ``grade='严重'`` 不许只签通知单这件事由端点硬拦(Codex#3):那是"该走哪条路"的业务判断,
-    这层只回答"这条路的状态迁移合不合法"。
+    ``grade='严重'`` 不许只签通知单这件**业务判断**仍归端点(Codex#3):走哪条路是它的事。
+    但那条硬拦判的是**先读的快照**,而 2026-08-21 发现快照和写之间有并发窗口 ——
+    所以这层多收一个 ``expected_grade``:端点按哪个级别做的决定,就把哪个级别传进来,
+    它会进 UPDATE 的 WHERE。写的那一刻级别变了 = rowcount 0 = 回 False,
+    端点照现有的 409 出口告诉人「刷新再看」。完整推演在 ``_NOTIFY_SQL`` 头上。
+
+    🔴 **必填、且不许给默认值**。给了默认值 = 忘了传的调用方静默退回无守卫状态,
+    而那正是这次要修的东西。
     """
     now = _now_iso()
-    params = (STATUS_NOTIFIED, now, due_date, hazard_no, *_SOURCES_NOTIFY)
+    params = (STATUS_NOTIFIED, now, due_date, hazard_no, *_SOURCES_NOTIFY, expected_grade)
     return _run_transition(_NOTIFY_SQL, hazard_no, docs, now, params)
 
 
-def mark_suspended(hazard_no: str, due_date: str, *, docs: Sequence[DocDraft] = ()) -> bool:
+def mark_suspended(
+    hazard_no: str, due_date: str, *, expected_grade: str, docs: Sequence[DocDraft] = ()
+) -> bool:
     """签发《通知单》+《工程暂停令》+《致建设单位报告》:``open`` → ``suspended``。
 
     三份文书随 ``docs`` 一起进来,与状态改动在**同一个事务**(§6.4 ③);文件必须先落盘拿到
     ``artifact_id`` 再调这里。同时把 ``was_suspended`` 置 1:此后即使复查合格也**必须先出
     复工令**(Codex#6)。
+
+    ``expected_grade`` 同 ``mark_notified``:守的是反方向 —— 一般隐患被抢着签了暂停令,
+    「平白停一片人的工」。
     """
     now = _now_iso()
-    params = (STATUS_SUSPENDED, now, due_date, hazard_no, *_SOURCES_SUSPEND)
+    params = (STATUS_SUSPENDED, now, due_date, hazard_no, *_SOURCES_SUSPEND, expected_grade)
     return _run_transition(_SUSPEND_SQL, hazard_no, docs, now, params)
 
 
