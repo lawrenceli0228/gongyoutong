@@ -48,6 +48,7 @@ from gyt.db import hazards
 from gyt.db import projects as db
 from gyt.supervision_api import SUPERVISION_ROUTES
 from gyt.timing_api import TIMING_ROUTES
+from gyt.upload_api import UPLOAD_ROUTES
 
 logger = logging.getLogger(__name__)
 
@@ -860,6 +861,18 @@ app = Starlette(
         # ⚠️ 删掉这一行 = 界面上耗时行**一行都不出、控制台干净**(前端拿到 404
         #    是安静吞掉的:观测件坏了不许打扰工友)。不会有任何东西说话。
         *TIMING_ROUTES,
+        # 聊天附件直传(gyt/upload_api.py 的 UPLOAD_ROUTES)—— 一条:
+        #   POST /attachments?name=…   收原始字节 → 登记产物 → 回一个 32 位编号
+        #
+        # 🔴 为什么要它:老路是 base64 随消息发上来、pre_model_hook 再改写成编号,
+        # 而**改写在第 9 步、那条带 base64 的消息第 8 步就已经进检查点了** ——
+        # RemoveMessage 追不回来,于是每张照片在某个检查点里留一份永久拷贝。
+        # 线上实测 11 条会话 = langgraph 内存库 1.1 GB,而机器一共 1966 MB,
+        # 每 10 秒还要全量 pickle 一遍 —— 一条零载荷的 404 都要 12.7 秒。
+        # 完整推演在 gyt/upload_api.py 与 gyt/core/uploads.py 的模块头注。
+        # ⚠️ 删掉这一行 = 前端传附件时拿到 404,而它**会退回老路**(base64 进消息)——
+        #    也就是说功能不坏、只是慢病复发,而且没有任何东西会说话。
+        *UPLOAD_ROUTES,
     ]
 )
 
