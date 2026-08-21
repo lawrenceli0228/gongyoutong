@@ -155,6 +155,11 @@ const HISTORY_LIMIT = 10;
  *
  * ⚠️ 阶段二的失败**不上屏**:那时消息已经在了,弹一个工友看不懂的红框只会吓人。
  *    代价是分支功能静默不可用 —— 取舍写在这儿,别当成漏了处理。
+ *    🔴 落实这条要**只 console.error、不碰 `setError`**:`error` 是 SDK 直接暴露
+ *    给界面的字段(`thread-index.tsx` 拿它弹 toast「出錯了,請再試一次」),
+ *    往里写就等于上屏,注释与实现会当场对不上。**2026-08-21 就这么错过一次**:
+ *    catch 里写着 `setError(e)`,而它上面三行的注释写着「不上屏」。
+ *    顺带一个更隐蔽的代价:`error` 一被占住,SDK 的 `interrupts` 也跟着被吞。
  */
 function useLazyThreadHistory(
   apiUrl: string,
@@ -171,10 +176,29 @@ function useLazyThreadHistory(
     [apiUrl, apiKey, authScheme],
   );
 
+  // 🔴 用 ref 存最新的 threadId。两个用途,缺一不可:
+  //    ① 给 `mutate` 用 —— 它的参数是可选的(SDK 有时不传),不能只靠参数;
+  //       而把 threadId 放进 useCallback 的依赖里会让 mutate 的引用每次换会话都变,
+  //       SDK 把它当依赖用,引用抖动会多跑几轮。
+  //    ② 给 `fetchFull` 落盘前做**串会话守卫** —— 见那个函数里的红字。
+  //    ⚠️ 声明必须排在 `fetchFull` 前面:它在 `fetchFull` 的函数体里被读,
+  //       写在后面虽然也能跑(闭包里才求值),但读代码的人会以为存在 TDZ 问题。
+  const threadIdRef = useRef<string | null>(threadId);
+  threadIdRef.current = threadId;
+
   /**
    * 取完整历史。SDK 在每轮 run 结束后会调 `mutate` 拿新的 head
    * (`stream.lgp.js:380`:`(await history.mutate(id))?.at(0)`)——
    * 所以这里**必须回整份数组**,而且 `at(0)` 得是新的那一份。
+   *
+   * 🔴 **落盘前必须核一次「这条会话还是当前这条吗」。** 这个 await 少则几百毫秒,
+   *    工友完全来得及在这中间点开另一条历史会话。没有这道守卫的话:
+   *    A 的历史会**覆盖掉** B 的 —— 屏幕上是 A 的消息、地址栏是 B 的 id,
+   *    而此时编辑一条老消息,会从**另一条会话的检查点**分叉出去
+   *    (`ai.tsx` / `human.tsx` 读的 `firstSeenState` 就来自这份 data)。
+   *    **零报错、控制台干净。** 2026-08-21 上线当天就带着这个缺陷。
+   *    ⚠️ 守卫只挡 `setData`,**照样把数据 return 出去** —— `mutate` 的调用方
+   *    (SDK)拿它的返回值当 head 用,吞掉会让那条路径拿到 undefined。
    */
   const fetchFull = useCallback(
     async (id: string): Promise<ThreadState<StateType>[] | undefined> => {
@@ -182,27 +206,23 @@ function useLazyThreadHistory(
         const full = (await client.threads.getHistory(id, {
           limit: HISTORY_LIMIT,
         })) as ThreadState<StateType>[];
-        setData(full);
-        setError(undefined);
+        if (threadIdRef.current === id) {
+          setData(full);
+          setError(undefined);
+        }
         return full;
       } catch (e) {
-        // 只记不弹:见函数头注最后那条取舍。
+        // 只记不弹:见函数头注那条取舍 —— **不许在这儿 `setError`**,
+        // `error` 是 SDK 暴露给界面的字段,写了就是上屏。
         // ⚠️ 这句是**给开发者看的控制台消息,不是界面文案**,所以写英文 ——
         //    与 image-compress.ts 里那几句同一个先例。写中文的话要么得转成繁體、
         //    要么得进 hant-keep-hans.mjs 的例外登记表,而它根本不上屏,两样都不该占。
         console.error("thread history backfill failed (branching unavailable):", e);
-        setError(e);
         return undefined;
       }
     },
     [client],
   );
-
-  // 🔴 用 ref 存最新的 threadId,给 `mutate` 用。`mutate` 的参数是可选的
-  //    (SDK 有时不传),不能只靠它;而把 threadId 放进 useCallback 的依赖里
-  //    会让 mutate 的引用每次换会话都变 —— SDK 把它当依赖用,引用抖动会多跑几轮。
-  const threadIdRef = useRef<string | null>(threadId);
-  threadIdRef.current = threadId;
 
   useEffect(() => {
     if (!threadId) {
