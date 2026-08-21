@@ -194,6 +194,25 @@ else
   fi
 fi
 
+# backups/ —— 2026-08-21 加的备份服务往这儿写(docker-compose.vps.yml 的 backup)。
+# 单列一条是因为它的失败很容易被当成"没配好而已":备份是后台服务,
+# 写不进去的时候界面、日志、监控**都不会说话**,而人恰恰是在最需要备份的
+# 那一刻才发现一份都没有。
+if [[ ! -d backups ]]; then
+  warn "backups/ 不存在 —— 备份服务写不进去,这台机器等于没有备份。"
+  note "mkdir -p backups && sudo chown 10001:999 backups"
+elif [[ "$(uname -s)" != "Linux" ]]; then
+  ok "backups/ 在(非 Linux,跳过属主检查)"
+else
+  BK_OWNER=$(stat -c '%u' backups 2>/dev/null || echo "?")
+  if [[ "${BK_OWNER}" == "10001" ]]; then
+    ok "backups/ 属主是 10001(备份服务写得进去)"
+  else
+    bad "backups/ 属主是 ${BK_OWNER},不是 10001 —— 备份容器首轮就写不进去、会反复重启。"
+    note "sudo chown 10001:999 backups"
+  fi
+fi
+
 if [[ ! -f frontend/package.json ]]; then
   bad "frontend/ 还没生成。先 bash scripts/setup-frontend.sh"
   note "它不在 git 里,是从上游 clone 生成的。"

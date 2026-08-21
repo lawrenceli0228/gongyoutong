@@ -128,7 +128,8 @@ TEST_IN_CONTAINER = sh -c 'cmp -s $(IMAGE_LOCK_PATH) $(HOST_LOCK_PATH) || { echo
 # make 会认为"文件已存在且是最新的"而直接跳过,现象是命令看着跑了其实什么都没干。
 # (build-knowledge 就漏过一次 —— 合并 knowledge agent 时忘了加。)
 .PHONY: help setup dev dev-docker dev-docker-stable test test-docker cov build-knowledge eval eval-smoke \
-        lint lint-ci fmt up down e2e frontend serve-artifacts attendance-clean test-frontend
+        lint lint-ci fmt up down e2e frontend serve-artifacts attendance-clean test-frontend \
+        backup
 
 help: ## 打印所有可用目标
 	@# 宽度按最长的目标名留(serve-artifacts 15 字),窄了会把说明挤得参差不齐。
@@ -355,6 +356,15 @@ attendance-clean: ## 清理到期考勤凭证图与孤儿(默认演练;真删 ma
 	@# ⚠️ Intel Mac 本机 uv run 会因 torch 装不上而失败(见 CLAUDE.md),
 	@#    本机想跑用:cd backend && .venv/bin/python -m gyt.attendance.cleanup
 	cd backend && uv run --env-file ../.env python -m gyt.attendance.cleanup $(if $(APPLY),--apply,)
+
+backup: ## 备一次台账与对话历史到 backups/(线上有 backup 服务每天自动跑,这条是手动入口)
+	@# 线上不靠这条命令 —— docker-compose.vps.yml 的 backup 服务每天自己跑。
+	@# 这条是给「上线前手动备一次」和「本机验证脚本还能跑」用的。
+	@# 备什么、不备什么(artifacts 122MB 刻意不备)见 backend/scripts/backup_data.py 头注。
+	@# 演练:make backup DRY=1
+	@# ⚠️ Intel Mac 本机 uv run 会因 torch 装不上而失败(同 attendance-clean),
+	@#    本机想跑用:cd backend && .venv/bin/python -m scripts.backup_data --backup-dir ../backups
+	cd backend && uv run python -m scripts.backup_data --backup-dir ../backups $(if $(DRY),--dry-run,)
 
 test-frontend: ## 跑前端纯函数测试(vitest,scripts/frontend-tests,不碰 frontend/)
 	@# 测的是 scripts/frontend-overrides/checkin-lib.ts —— 打卡链前端的全部可测逻辑

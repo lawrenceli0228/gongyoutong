@@ -259,6 +259,76 @@ services:
     logging: *default-logging
 
   # ---------------------------------------------------------------------------
+  # 备份:每天把「丢了就再也回不来」的那几样备一份,并当场验证备份能打开
+  # ---------------------------------------------------------------------------
+  # 为什么要有这个服务(2026-08-21 五路复查里最硬的一条):
+  #   在它之前,这个文件七个服务里**没有一个是备份**。唯一的「备份」是
+  #   docs/W7_上线实录与部署踩坑.md 里一条要人在部署前手动跑的 rsync ——
+  #   而那条 rsync 已经删掉过一次对话历史、改过 data/ 属主(§2.3 / §2.5)。
+  #   也就是说:防数据丢失的机制,本身就是已经出过事的那一个,而且要人记得跑。
+  #   而库里装着**已签发的《工程暂停令》/《复工令》记录**。
+  #
+  # 为什么放 compose 而不是宿主 crontab / systemd timer:
+  #   宿主配置不进 git、review 不到、换机器不跟着走 —— 那正是考勤那条
+  #   「90 天自动删除」在登录页的法律声明里写着、而机器上 `crontab -l` 是
+  #   `no crontab for root` 的成因(同一次复查抓到的)。放这儿它跟着部署走。
+  #   ⚠️ 考勤清理器(gyt.attendance.cleanup)将来也该挂进**这个**服务,
+  #      别再去开一个宿主 cron。
+  #
+  # 备什么、不备什么:见 backend/scripts/backup_data.py 的头注。
+  # 一句话:台账(88 KB)和对话历史备;artifacts(122 MB)**不备** ——
+  # 同一块盘上多放几份不叫备份,盘坏了一起没,它要的是机器外面的同步。
+  backup:
+    image: gyt-backend:vps   # 复用后端镜像:它有 python 和 gyt 包,不用再引一个镜像进来
+    container_name: gyt-backup
+
+    # ⚠️ 一个 ports 都不许有 —— 和 backend / frontend / artifacts 同一条红线。
+    # preflight ⑤ 组数「发布端口总数」,应当恒为 3(80 / 443tcp / 443udp)。
+
+    # 不覆盖 user:镜像自己就跑在 uid 10001(gyt),与 data/ 的属主一致。
+    # 🔴 宿主上的 ./backups 必须先建好并且属主是 10001,否则容器写不进去:
+    #      mkdir -p backups && sudo chown 10001:999 backups
+    #    忘了的后果不是静默 —— 首轮就写不成,容器退出,`docker compose ps`
+    #    里会看到 Restarting(下面那个循环刻意这么设计的)。
+    command:
+      - sh
+      - -c
+      - |
+        # 首轮立刻备一次:别让「有没有备份」这件事等 24 小时才有答案。
+        # 退出码约定见 backup_data.py 头注:1 = 库还没建(全新部署,正常),
+        # 2 = 备份没通过验证(真故障 —— 退出,让 ps 里的 Restarting 说话)。
+        python -m scripts.backup_data
+        code=$$?
+        if [ "$$code" = "2" ]; then
+          echo "首轮备份没通过验证 —— 容器退出。docker compose ps 会显示 Restarting。"
+          exit 1
+        fi
+        while true; do
+          sleep 86400
+          python -m scripts.backup_data || echo "这一轮备份没成(码 $$?),下一轮再试。"
+        done
+
+    volumes:
+      # 🔴 data 必须是**可写**挂载,不能加 :ro。
+      #    SQLite 开了 WAL 之后(core/sqlite_util.py,2026-08-21),读者也需要能写
+      #    -shm 那个共享内存文件;只读挂载会让备份直接打不开库。
+      #    这个容器只跑备份脚本,脚本对 data/ 只读不写。
+      - ./data:/app/data
+      # 备份落在 data/ **外面**。放里面的话下一次备份会把上一次也装进去,
+      # 几轮之后每份都套着前面所有份,而没有任何东西会说话。
+      - ./backups:/backups
+
+    environment:
+      GYT_DATA_DIR: /app/data
+      TZ: ${TZ:-Asia/Shanghai}
+      # 同 artifacts 服务那条理由:这个进程会一直跑下去,块缓冲会让报错永远出不来。
+      PYTHONUNBUFFERED: "1"
+
+    restart: unless-stopped
+
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
   # 登录服务:登录页 + 会话 Cookie。替掉浏览器那个原生 basic_auth 弹框
   # ---------------------------------------------------------------------------
   # Caddy 用 forward_auth 把每个请求先甩给它验一下会话(见 Caddyfile 的 route 块)。
