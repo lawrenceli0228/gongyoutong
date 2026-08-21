@@ -406,11 +406,25 @@ check_retired_override() {
       修法:rm -rf \"${FRONTEND_DIR}\" 然后重跑 make frontend(整个目录是生成物,删了没损失)。"
 }
 
-# 2026-08-21 退休:耗时行改走直连接口 GET /timing 之后,这件覆盖件没有职责了。
-check_retired_override \
-  "src/providers/Stream.tsx" \
-  "recordTiming" \
-  "耗时行已改走直连接口,这份 Stream.tsx 还在 import 一个已经删掉的导出"
+# ⚠️ 这里曾经有一条针对 `src/providers/Stream.tsx` 的 check_retired_override,
+#    2026-08-21 当天加、当天删。留这段墓碑是因为**删它的理由本身值得记**:
+#
+#    上午:耗时行改走直连接口 `GET /timing`,stream-provider.tsx 这件覆盖件
+#          没职责了 → 删掉覆盖件 + 加这道退休闸(判据是内容里还有 `recordTiming`)。
+#    下午:发现上游那行 `fetchStateHistory: true` 被 SDK 读成 `limit=10`,
+#          一次拉 7.5 MB → **同一件覆盖件因为完全不相干的理由又装了回来**
+#          (现在注册在下面的 apply_override 里)。
+#
+#    于是这道闸变成了自伤:它在 `apply_override` 之前执行,老机器上那份带
+#    `recordTiming` 的 Stream.tsx 会先撞上 `die`、被要求 `rm -rf frontend` ——
+#    而下面那条 apply_override **本来就会把它原地覆盖成正确的新版本**。
+#    更糟的是 `rm -rf frontend` 正是 W7 手册 §2.17 标红的动作(会顺带把上游
+#    TypeScript 从 5.8 升到 6.0,那个坑刚花时间修完)。拦住了自己的修复,
+#    还把人推去走最危险的路 —— 顺带训练人「这个守卫报的是误报,下次注释掉」。
+#
+#    🔴 `check_retired_override` 这个机制本身是对的,留着给**真正退休**的覆盖件用。
+#       但下次挂之前先问一句:这件东西下面还有没有 apply_override / install_new_file?
+#       有就不该挂 —— 那不叫退休,那叫换了个理由继续活着。
 
 apply_override() {
   local src="${OVERRIDES_DIR}/$1"
