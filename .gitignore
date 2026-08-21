@@ -36,7 +36,7 @@ htmlcov/
 /data/*
 !/data/demo/
 
-# 备份落点(docker-compose.vps.yml 的 backup 服务,2026-08-21)。
+# 备份落点(docker-compose.vps.yml 的 housekeeping 服务,2026-08-21)。
 # 刻意放在 data/ **外面**:放里面的话下一次备份会把上一次也装进去,
 # 几轮之后每份都套着前面所有份,而没有任何东西会说话。
 # 里面是台账快照与对话历史 —— 一个字节都不许进 git。
