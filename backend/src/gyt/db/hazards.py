@@ -223,6 +223,24 @@ def _sources_for(target: str, *sources: str) -> tuple[str, ...]:
 # 建表 —— 与方案 §4.1 逐列一致,幂等,每次操作都执行
 # ---------------------------------------------------------------------------
 
+# 🔴 **`_DDL` 里一行 SQL 注释都不许写。** 说明写在这上面(Python 注释)。
+#
+# 理由是 2026-08-21 CI 上抓到的,而且只在 python 3.12 那个 job 红、3.11 绿:
+# sqlite 把建表语句**原样存进 `sqlite_master`,注释一起存**。而
+# `ALTER TABLE … DROP COLUMN` 的实现是「把那段列定义从存下来的 SQL 文本里剪掉、
+# 再重新解析一遍」—— 被删的列前面正好有一行 `--` 注释时,剪完剩下的文本里
+# 注释把后半句吞掉,于是报 `error in table hazard_docs after drop column:
+# incomplete input`。sqlite 版本不同,吞与不吞的边界也不同(本机 3.53 不复现)。
+#
+# 也就是说:一条**只是为了讲清楚**的注释,会让这张表在某些机器上再也 DROP 不了列。
+#
+# ── 下面这几列的位置约束(原本写在 SQL 里的那几句)──────────────────────
+# · `hazards.closed_reason` / `closed_by` 在**列定义的最末**(UNIQUE 是表级约束,
+#   不算列);`hazard_docs.issued_by` 同理。
+#   `ALTER TABLE ADD COLUMN` 只能往末尾追加,DDL 也写末尾,新建的库与迁移过来的
+#   旧库物理列序才完全一致(同 `db/tasks.py` 的 `hazard_no` 那条)。
+# · 语义:`closed_reason` / `closed_by` 只有 `dismiss()`(不出文书关掉)会写;
+#   `issued_by` 见 `DocDraft.issued_by` 的红字 —— 自报的名字,不是认证身份。
 _DDL: Final[str] = f"""
 CREATE TABLE IF NOT EXISTS hazards (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,11 +261,8 @@ CREATE TABLE IF NOT EXISTS hazards (
   closed_at       TEXT,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL,
-  -- 🔴 closed_reason 写在列定义的**最末**(UNIQUE 是表级约束,不算列):
-  --    ALTER TABLE ADD COLUMN 只能追加,两种库的物理列序才一致。
-  --    语义见 dismiss() 的头注 —— 只有「不出文书就关掉」那条路会写它。
   closed_reason   TEXT,
-  closed_by       TEXT,   -- 谁按的这一下(自报的名字,同 hazard_docs.issued_by)
+  closed_by       TEXT,
   UNIQUE (project_id, photo_sha256, item)
 );
 CREATE INDEX IF NOT EXISTS idx_hazards_proj_status ON hazards(project_id, status);
@@ -261,9 +276,6 @@ CREATE TABLE IF NOT EXISTS hazard_docs (
   photo_id    TEXT,
   result      TEXT CHECK (result IS NULL OR result IN ({in_clause(DOC_RESULTS)})),
   created_at  TEXT NOT NULL,
-  -- 🔴 issued_by 必须在**最末**:ALTER TABLE ADD COLUMN 只能往末尾追加,
-  --    DDL 也写末尾,新建的库与迁移过来的旧库物理列序才完全一致
-  --    (同 db/tasks.py 的 hazard_no 那条)。语义见 DocDraft.issued_by 的红字。
   issued_by   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_hazard_docs_no ON hazard_docs(hazard_no);

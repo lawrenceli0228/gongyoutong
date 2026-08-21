@@ -375,3 +375,43 @@ def test_insert_sql拼出来的语句真能执行() -> None:
     with open_db(_TOY_DDL) as conn:
         conn.execute(insert_sql("toy_parent", ("id",)), ("p1",))
         assert conn.execute("SELECT id FROM toy_parent").fetchone()[0] == "p1"
+
+
+# ---------------------------------------------------------------------------
+# 建表语句里不许有 SQL 注释(2026-08-21,CI 上抓到的)
+# ---------------------------------------------------------------------------
+
+
+def test_四个域的建表语句里一行SQL注释都没有() -> None:
+    """🔴 一条**只是为了讲清楚**的注释,会让那张表在某些机器上再也 DROP 不了列。
+
+    经过:2026-08-21 给 ``hazard_docs`` 加列时,顺手在 ``CREATE TABLE`` 里写了三行
+    ``--`` 注释解释「新列为什么必须在末尾」。本机(sqlite 3.53)全绿,
+    **CI 的 python 3.12 那个 job 红、3.11 绿**:
+
+        sqlite3.OperationalError: error in table hazard_docs after drop column:
+        incomplete input
+
+    根因:sqlite 把建表语句**原样存进 ``sqlite_master``,注释一起存**。而
+    ``ALTER TABLE … DROP COLUMN`` 的实现是「把那段列定义从存下来的 SQL 文本里剪掉、
+    再重新解析一遍」—— 被删的列前面正好有一行 ``--`` 时,剪完剩下的文本里注释
+    把后半句吞掉。sqlite 版本不同,吞与不吞的边界也不同。
+
+    所以规矩是:**说明写在 SQL 外面**(Python 注释),DDL 里只留纯 SQL。
+    四个域一起钉:今天只有 hazards 用得上 DROP COLUMN,但哪天别的域要做同样的
+    做旧/迁移,同一颗雷会原样再炸一次 —— 而它只在**某些机器上**炸。
+    """
+    import re
+
+    from gyt.db import attendance, hazards, projects, tasks
+
+    for module in (attendance, hazards, projects, tasks):
+        for name, value in vars(module).items():
+            if not name.endswith("_DDL") or not isinstance(value, str):
+                continue
+            offenders = [line for line in value.splitlines() if re.search(r"--", line)]
+            assert not offenders, (
+                f"{module.__name__}.{name} 的建表语句里有 SQL 注释:{offenders}\n"
+                "把说明搬到 SQL 外面 —— 注释会被存进 sqlite_master,"
+                "让 ALTER TABLE DROP COLUMN 在某些 sqlite 版本上报 incomplete input。"
+            )
