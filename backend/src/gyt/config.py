@@ -264,6 +264,24 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=3, ge=0)  # 0 = 不重试
     llm_retry_base_delay_s: float = Field(default=1.0, ge=0)  # 0 = 测试里免等待
 
+    # --- SQLite 并发 -----------------------------------------------------
+    # 撞锁时等多久才放弃(sqlite3.connect 的 timeout)。**python 默认是 5 秒**,
+    # 而我们一直没传过这个参数,也没开 WAL、没有任何锁重试
+    # (2026-08-21 查出来的:core/sqlite_util.py 是全仓唯一连接点,三样都没有)。
+    #
+    # 为什么 5 秒不够:HTTP 层有 22 处 run_in_threadpool 打同一个库文件
+    # (webapp 15 + supervision 3 + upload 2 + timing 2),starlette 默认线程池
+    # 40 并发。单人演示永远不出事;**两个人同时点界面就是 database is locked**,
+    # 而抛出来的是英文 sqlite3.OperationalError —— 正好落进 TODO-32 那个
+    # 「熔断之后用户什么都看不到」的呈现洞里。
+    #
+    # 30 秒的取舍:比任何一次正常写入长两个数量级(本仓的写都是单行 INSERT/UPDATE),
+    # 又短于前端那几处取数的容忍度。真等满 30 秒说明有别的问题,那时候该看日志
+    # 而不是调这个数。
+    # ⚠️ 它和 WAL 是**一套**:WAL 让读不再阻塞写,timeout 兜的是写与写相撞。
+    #    只开一样的话,读多写少的界面场景确实会好转,但两个人同时提交仍会撞。
+    sqlite_busy_timeout_s: float = Field(default=30.0, gt=0)
+
     # --- 慢调用告警阈值(纯观测,不改任何行为)---------------------------
     # 超过阈值的调用会从 info 抬到 warning,好在满屏日志里一眼捞出来。
     # 由来:2026-08-20 线上一次 213 秒的请求,日志里只有 httpx 那几行,

@@ -17,12 +17,15 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 
 from gyt.config import get_settings
+
+_log = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -57,14 +60,67 @@ def open_db(ddl: str, *, foreign_keys: bool = False) -> Iterator[sqlite3.Connect
 
     默认 ``False`` 是照搬现状:tasks / attendance 两个域没有外键、原本也不开这一项,
     重构不改行为。要给它们打开是另一件事,单独评估、单独测。
+
+    ===========================================================================
+    并发:``timeout`` 与 WAL 是一套,别只上一样
+    ---------------------------------------------------------------------------
+    2026-08-21 之前这里是裸的 ``sqlite3.connect(path)``:没传 timeout(python 默认
+    **5 秒**)、没开 WAL、全仓零处 ``OperationalError`` 处理。而 HTTP 层有 22 处
+    ``run_in_threadpool`` 打同一个库文件,starlette 默认线程池 40 并发 ——
+    单人演示永远不出事,**两个人同时点界面就是 ``database is locked``**,
+    抛出来还是英文异常。
+
+    - ``timeout`` 兜的是**写与写**相撞(值从 config 取,别在这儿写死数字);
+    - WAL 让**读不再阻塞写**,这才是界面那种「读多写少」场景的大头。
+
+    ⚠️ WAL 是**库级持久属性**,设一次就一直是。每次进场再设一遍是刻意的:
+    幂等、便宜,而且免去「谁负责初始化」的时序纠纷(和上面幂等建表同一个姿势)。
+
+    🔴 **``PRAGMA journal_mode`` 和 ``foreign_keys`` 受同一条位置约束** ——
+    事务里设它同样不生效,所以必须写在 ``with conn:`` **之前**。别挪。
+
+    🔴 **WAL 会多出 ``-wal`` / ``-shm`` 两个文件**,这条会咬到库外面:
+    备份不能再 ``cp`` 或 rsync 单个 ``gyt.sqlite3``(那样拿到的是不完整状态),
+    必须走 ``sqlite3 .backup``。``docker-compose.vps.yml`` 的备份服务就是这么写的,
+    ``docs/W7_上线实录与部署踩坑.md`` 里那条手动 rsync 命令同理 —— 它拷的是整个
+    ``data/`` 目录,三个文件一起走,所以仍然成立,但**别把它"优化"成只拷库文件**。
+
+    ⚠️ 开不成 WAL 会**记一条 warning 而不是抛异常**:退回 delete 模式只是慢和容易撞锁,
+    不是坏掉,为这个让整个后端起不来不划算。但它必须响 —— 静默退回的话,
+    「两个人同时用会撞锁」这个已经修过的毛病会悄悄复发。
     """
-    with closing(sqlite3.connect(get_settings().sqlite_path)) as conn:
-        # 🔴 这一行必须在 `with conn:` 之外 —— 挪进去就是 no-op,理由见上面那一节。
+    settings = get_settings()
+    with closing(
+        sqlite3.connect(settings.sqlite_path, timeout=settings.sqlite_busy_timeout_s)
+    ) as conn:
+        # 🔴 这两行必须在 `with conn:` 之外 —— 挪进去就是 no-op,理由见上面两节。
         if foreign_keys:
             conn.execute("PRAGMA foreign_keys = ON")
+        _enable_wal(conn)
         with conn:
             conn.executescript(ddl)
             yield conn
+
+
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    """开 WAL,并**回读确认**。开不成只记 warning,不抛。
+
+    回读是必须的:``PRAGMA journal_mode`` 设不成时**不报错**,它只是返回当前实际的
+    模式。真会设不成的场景是库文件落在不支持共享内存的文件系统上(某些网络挂载),
+    不回读的话我们会以为开了。
+    """
+    try:
+        row = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+    except sqlite3.Error as exc:  # pragma: no cover - 只有异常文件系统才走到
+        _log.warning("开 WAL 失败,退回默认日志模式(并发写会更容易撞锁):%s", exc)
+        return
+    mode = (row[0] if row else "") or ""
+    if mode.lower() != "wal":
+        _log.warning(
+            "WAL 没开成,当前日志模式是 %r(并发写会更容易撞锁)。"
+            "多半是库文件所在的文件系统不支持共享内存。",
+            mode,
+        )
 
 
 def now_iso() -> str:
