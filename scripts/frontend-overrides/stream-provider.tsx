@@ -171,7 +171,10 @@ function useLazyThreadHistory(
         return full;
       } catch (e) {
         // 只记不弹:见函数头注最后那条取舍。
-        console.error("补线程历史失败(分支功能会不可用):", e);
+        // ⚠️ 这句是**给开发者看的控制台消息,不是界面文案**,所以写英文 ——
+        //    与 image-compress.ts 里那几句同一个先例。写中文的话要么得转成繁體、
+        //    要么得进 hant-keep-hans.mjs 的例外登记表,而它根本不上屏,两样都不该占。
+        console.error("thread history backfill failed (branching unavailable):", e);
         setError(e);
         return undefined;
       }
@@ -210,7 +213,8 @@ function useLazyThreadHistory(
         if (cancelled) return;
         // 阶段一失败 = 这条会话**一个字都出不来**,这个要如实记下来给上层看
         // (`isThreadLoading` 与 `error` 都是 SDK 暴露给界面的)。
-        console.error("取线程 head 失败:", e);
+        // 英文同上:控制台消息不是界面文案。
+        console.error("thread head fetch failed:", e);
         setError(e);
       } finally {
         if (!cancelled) setIsLoading(false);
