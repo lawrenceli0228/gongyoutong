@@ -349,7 +349,16 @@ function PreviewModal() {
             ✕
           </button>
         </div>
-        <iframe src={preview.url} title={preview.title} className="h-full w-full flex-1 border-0" />
+        {/* PDF 的 URL 片段(#…)是给浏览器内嵌 PDF 阅读器看的开局参数,与 blob 内容无关:
+            · view=Fit  —— 开局整页显示(用户反馈「看不全」,先让整张图进屏);
+            · toolbar=1 —— 露出自带工具条,缩放 +/-、页宽、滚动/拖动都用它,矢量不糊;
+            · navpanes=0 —— 收起左侧缩略图栏,窄弹窗里省地方。
+            片段挂在 blob URL 后面,revoke 时照旧对 preview.url(不含片段)生效。 */}
+        <iframe
+          src={`${preview.url}#toolbar=1&navpanes=0&view=Fit`}
+          title={preview.title}
+          className="h-full w-full flex-1 border-0"
+        />
       </div>
     </div>,
     document.body,

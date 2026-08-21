@@ -48,6 +48,13 @@ _PDF_RENDER_SCALE = 2.0
 # 整图四周留白(mm)。SVGBackend 的 Page(0,0,...) 会按内容外接框自动定尺寸,margins 只加边距。
 _PAGE_MARGIN_MM = 5.0
 
+# 页面物理尺寸上限(mm),A1 横版。施工图基本按实物 1:1 用毫米画 —— Page(0,0) 自动定尺寸会
+# 让 PDF 页面等于真楼那么大(40 米的楼 → 40000mm 的"图纸"),浏览器内嵌阅读器只好放到接近
+# 实际尺寸、一屏只看得到一个角,还缩不小、拖不动。给个上限,ezdxf 会把超限的整图**等比缩放**
+# 进这张图幅(fit_page 默认开);没超限的小图/正常图幅原样不动(是封顶,不是拉伸到填满)。
+_PAGE_MAX_WIDTH_MM = 841.0
+_PAGE_MAX_HEIGHT_MM = 594.0
+
 # 白底 + 黑线:DXF 里图元多是 ACI 7(随背景取黑/白的自适应色)。显式钉死「白底 + 前景全黑」,
 # 细线在浅色看图器里也看得清;不设的话 7 号会画成白线、白底上一片空白。
 _LIGHT_CONFIG = Configuration(
@@ -125,7 +132,14 @@ def _render_pdf_bytes(doc: ezdxf.document.Drawing) -> bytes:
     Frontend(RenderContext(doc), backend, config=_LIGHT_CONFIG).draw_layout(
         doc.modelspace(), finalize=True
     )
-    page = layout.Page(0, 0, layout.Units.mm, margins=layout.Margins.all(_PAGE_MARGIN_MM))
+    page = layout.Page(
+        0,
+        0,
+        layout.Units.mm,
+        margins=layout.Margins.all(_PAGE_MARGIN_MM),
+        max_width=_PAGE_MAX_WIDTH_MM,
+        max_height=_PAGE_MAX_HEIGHT_MM,
+    )
     svg_str = backend.get_string(page)
 
     # svg2rlg 吃带 XML 声明的 unicode 会报错,喂 BytesIO(utf-8) 即可,免落临时文件。
