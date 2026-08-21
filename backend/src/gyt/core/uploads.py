@@ -56,7 +56,7 @@ import base64
 import binascii
 import logging
 import re
-from typing import Any, Final
+from typing import Any, Final, NamedTuple
 
 from langchain_core.messages import HumanMessage, RemoveMessage
 
@@ -95,6 +95,123 @@ _PDF_HINT: Final[str] = (
 _DRAWING_TOO_LARGE_HINT: Final[str] = "(你传的图纸太大了,先精简一下再传一次)"
 
 _PHOTO_TOO_LARGE_HINT: Final[str] = "(你传的照片太大了,压缩一下或者截个图再传一次)"
+
+
+# ---------------------------------------------------------------------------
+# 直传:附件先换成编号,再进消息(2026-08-21)
+# ---------------------------------------------------------------------------
+#
+# 🔴 **为什么要有这条路** —— 因为上面那条「base64 进消息、这一层再改写」有个**追不回来
+#    的时间差**:改写发生在 `pre_model_hook`(第 9 步),而那条带 base64 的 HumanMessage
+#    **第 8 步就已经提交进检查点了**。`RemoveMessage` 改得了以后的状态,改不掉已经落盘
+#    的那一份 —— 于是每张照片都在某个检查点里留一份**永久**的 base64 拷贝。
+#
+#    2026-08-21 线上量到的代价(2 核 / 1966 MB 的机器):
+#
+#        11 条会话        →  langgraph 内存库 1.1 GB(磁盘 pickle 234 MB)
+#        可用内存 91 MB,swap 已吞 1.3 GB
+#        而 langgraph 每 10 秒**无条件全量** pickle 一遍(没有脏标记,
+#        `langgraph_runtime_inmem/_persistence.py:17` + `:51-63`)
+#
+#    表现:一条**零载荷的 404** 也要 12.7 秒,而同进程里我们自己的 `/timing` 只要 0.25 秒。
+#    也就是说这不是「历史太大下得慢」,是**整个后端被它自己的内存库拖住**。
+#
+# 修法:附件不再以字节进消息。前端先把它 POST 到 `timing`/`checkin` 同款的直连接口
+# (`upload_api.py`),换回一个 32 位编号,消息里只带下面这种**编号块**:
+#
+#     {"type": "gyt_attachment", "outcome": "photo", "artifact_id": "<32位hex>"}
+#
+# ⚠️ **这一层仍然是拼人话的地方**,没有搬走:编号块进来之后,下面 `_rewrite` 照旧
+#    拼「(照片编号:…)」和那几句提示。这么分是刻意的 ——
+#    ① 提示文案只有一份真相(还在这儿),前端不用抄一遍;
+#    ② `lang-lib.ts` 的 `userTypedText()` 靠「在第一个编号块处截断」判语种,
+#       而它数的正是这儿拼出来的那几句(`_PDF_HINT` 一句就投 28 张简体票)——
+#       把拼装搬到前端,那条判据会**静默失效**。
+#
+# ⚠️ 旧的 image / file 块**照旧接住,一行都没删**:老客户端、别的调用方、
+#    以及直传接口挂掉时的兜底,都还走那条路。两条路殊途同归到同一批 `photo_ids`。
+
+ATTACHMENT_BLOCK_TYPE: Final[str] = "gyt_attachment"
+"""编号块的 `type`。**前端按这个名字发,改名等于改对外 API。**
+
+用一个自造的 type(而不是复用 `text`)是为了让它**不可能**和用户自己打的字混淆:
+用户可以打出「(照片编号:xxx)」这行字,但打不出一个 content 块。
+"""
+
+OUTCOME_PHOTO: Final[str] = "photo"
+OUTCOME_DRAWING: Final[str] = "drawing"
+OUTCOME_UNSUPPORTED: Final[str] = "unsupported"
+OUTCOME_PDF: Final[str] = "pdf"
+OUTCOME_PHOTO_TOO_LARGE: Final[str] = "photo_too_large"
+OUTCOME_DRAWING_TOO_LARGE: Final[str] = "drawing_too_large"
+
+ATTACHMENT_OUTCOMES: Final[tuple[str, ...]] = (
+    OUTCOME_PHOTO,
+    OUTCOME_DRAWING,
+    OUTCOME_UNSUPPORTED,
+    OUTCOME_PDF,
+    OUTCOME_PHOTO_TOO_LARGE,
+    OUTCOME_DRAWING_TOO_LARGE,
+)
+"""一次直传的**全部**可能结局。**唯一真相在这儿**,`upload_api.py` 与前端都镜像它。
+
+🔴 六个值与 `_rewrite` 里那六个计数桶**一一对应**。加一个值而不管那边,表现是
+   那种附件被静默归进「格式不支持」—— 用户传了张好照片,却被告知请转成 JPG。
+"""
+
+_ARTIFACT_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{32}$")
+"""编号的长相(`artifacts.register` 出的是 32 位小写 hex)。
+
+🔴 **必须校验,因为这个值是客户端发上来的。** 不校验的话,谁都能往消息里塞一段
+   任意文本冒充编号 —— 落地表现不是漏洞(`artifacts.resolve` 自己防路径穿越),
+   而是**脏数据进对话**:模型看见一个假编号,拿它去调工具,然后如实报「找不到那张照片」,
+   而工友明明刚传过。
+"""
+
+
+class Classified(NamedTuple):
+    """一次直传的判定结果。``register_name`` 只有 photo / drawing 才有。"""
+
+    outcome: str
+    register_name: str | None
+
+
+def classify_attachment(size: int, *, filename: str, mime: str) -> Classified:
+    """判定一个直传上来的附件该归到哪一档。**纯函数,不碰磁盘。**
+
+    🔴 **判据逐条对着 `_decode_dxf_part` / `_decode_image_part` / `_rewrite` 抄的**,
+       两条路必须给出同一个结论 —— 否则同一张图「点上传按钮」和「走旧路」结果不同,
+       而没有任何东西会说话。改这里记得回去看那三处。
+
+    顺序也是照抄的,而且**不能换**:
+      ① DXF 先判,且**只信文件名后缀 / mime 里带 dxf**(浏览器给 .dxf 的 MIME
+         极不稳定,常是空串或 application/octet-stream);
+      ② PDF 次之(它是按钮允许的格式,得给一句准确的话,不能说「请转成 JPG」);
+      ③ 再按 mime 认图片;
+      ④ 都不是 → 格式不支持。
+
+    ``size`` 收的是**字节数**而不是字节本身:判定用不到内容,而图纸上限是 100 MB,
+    多传一份进来纯属浪费。
+    """
+    settings = get_settings()
+    name = filename.strip()
+    lowered_mime = mime.strip().lower()
+
+    if name.lower().endswith(".dxf") or "dxf" in lowered_mime:
+        if size > int(settings.drawing_max_mb * _BYTES_PER_MB):
+            return Classified(OUTCOME_DRAWING_TOO_LARGE, None)
+        # 落盘名保留原名(带 .dxf),让 artifacts._safe_ext 取得到后缀;拿不到就兜底。
+        return Classified(OUTCOME_DRAWING, name if name.lower().endswith(".dxf") else "upload.dxf")
+
+    if lowered_mime == "application/pdf":
+        return Classified(OUTCOME_PDF, None)
+
+    ext = EXT_BY_MIME.get(lowered_mime)
+    if ext is None:
+        return Classified(OUTCOME_UNSUPPORTED, None)
+    if size > int(settings.photo_max_mb * _BYTES_PER_MB):
+        return Classified(OUTCOME_PHOTO_TOO_LARGE, None)
+    return Classified(OUTCOME_PHOTO, f"upload{ext}")
 
 
 def _decode_dxf_part(part: dict[str, Any]) -> tuple[bytes, str] | None:
@@ -208,6 +325,33 @@ def _rewrite(message: HumanMessage) -> HumanMessage | None:
         kind = part.get("type")
         if kind == "text":
             texts.append(str(part.get("text") or ""))
+        elif kind == ATTACHMENT_BLOCK_TYPE:
+            # 直传那条路:附件早就在 upload_api 那儿登记好了,这里只收编号。
+            # 六个结局一一落进下面那六个桶,与旧路殊途同归 —— 拼人话的活还在这层。
+            outcome = str(part.get("outcome") or "")
+            artifact_id = str(part.get("artifact_id") or "").strip().lower()
+            if outcome in (OUTCOME_PHOTO, OUTCOME_DRAWING):
+                if not _ARTIFACT_ID_RE.match(artifact_id):
+                    # 客户端发来的编号长得不对 —— 当成「这张没传上去」处理,
+                    # 而不是把一段来路不明的文本拼进对话(理由见 _ARTIFACT_ID_RE)。
+                    logger.warning("直传编号块的 artifact_id 不合法,已按格式不支持处理")
+                    rejected += 1
+                elif outcome == OUTCOME_PHOTO:
+                    photo_ids.append(artifact_id)
+                else:
+                    drawing_ids.append(artifact_id)
+            elif outcome == OUTCOME_PDF:
+                pdf_rejected += 1
+            elif outcome == OUTCOME_DRAWING_TOO_LARGE:
+                oversized += 1
+            elif outcome == OUTCOME_PHOTO_TOO_LARGE:
+                photo_oversized += 1
+            else:
+                # 认不出的 outcome 也走「格式不支持」——**不许静默丢掉**:
+                # 静默丢的表现是用户传了东西、对话里一个字都没提,他会以为传上去了。
+                if outcome not in ATTACHMENT_OUTCOMES:
+                    logger.warning("直传编号块的 outcome 认不出:%r", outcome)
+                rejected += 1
         elif kind == "file":
             # file 块可能是 DXF 图纸(方案 A),也可能是 PDF。先按文件名认 DXF ——
             # DXF 的 MIME 不可靠,只信 .dxf 后缀(见 _decode_dxf_part)。
@@ -342,4 +486,17 @@ if _MISSING:  # pragma: no cover —— 配置写错才会走到
         "上传的图片会落盘成无扩展名的文件,Safety 工具按后缀判格式,将永远看不了它。"
     )
 
-__all__ = ["EXT_BY_MIME", "ingest_uploads"]
+__all__ = [
+    "ATTACHMENT_BLOCK_TYPE",
+    "ATTACHMENT_OUTCOMES",
+    "EXT_BY_MIME",
+    "OUTCOME_DRAWING",
+    "OUTCOME_DRAWING_TOO_LARGE",
+    "OUTCOME_PDF",
+    "OUTCOME_PHOTO",
+    "OUTCOME_PHOTO_TOO_LARGE",
+    "OUTCOME_UNSUPPORTED",
+    "Classified",
+    "classify_attachment",
+    "ingest_uploads",
+]

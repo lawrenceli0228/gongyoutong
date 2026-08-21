@@ -37,6 +37,8 @@ import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { Label } from "../ui/label";
 import { Switch } from "../ui/switch";
 import { useFileUpload } from "@/hooks/use-file-upload";
+// 发送前把附件块换成编号块 —— 附件在取件时就直传过了,这里只搬编号(见 handleSubmit)。
+import { toWireBlocks } from "@/lib/multimodal-utils";
 import { CheckinEntry } from "./checkin";
 import { SupervisionEntry } from "./supervision-entry";
 import { ContentBlocksPreview } from "./ContentBlocksPreview";
@@ -243,13 +245,30 @@ function ThreadInner() {
       return;
     setFirstTokenReceived(false);
 
+    const textParts = input.trim().length > 0 ? [{ type: "text", text: input }] : [];
+
+    // 🔴 **界面上那份和送出去那份,内容不一样,这是刻意的。**
+    //
+    //   界面(下面的 optimisticValues)—— 用带 base64 的**原块**:工友点完发送要
+    //     立刻看见自己那张照片,而编号块渲染不出图。
+    //   送出去(newHumanMessage)—— 用 `toWireBlocks` 换成的**编号块**:附件在取件时
+    //     就已经直传过了(multimodal-utils.ts),这里只搬编号,**字节一个都不上网**。
+    //
+    // 为什么非分开不可:base64 一旦随消息发上去,它**第 8 步就进检查点**了,而后端
+    // 那道改写在第 9 步 —— 追不回来,每张照片永久留一份拷贝。线上量到 11 条会话
+    // 就把 langgraph 内存库顶到 1.1 GB(机器一共 1966 MB),一条零载荷的 404 要 12.7 秒。
+    // 完整推演在 backend/src/gyt/upload_api.py 的模块头注。
+    //
+    // ⚠️ 直传失败时 `toWireBlocks` **原样透传**老的 base64 块,后端那条老路一行没删 ——
+    //    所以这条优化只会更好、不会更坏,接口挂了顶多是慢病复发。
     const newHumanMessage: Message = {
       id: uuidv4(),
       type: "human",
-      content: [
-        ...(input.trim().length > 0 ? [{ type: "text", text: input }] : []),
-        ...contentBlocks,
-      ] as Message["content"],
+      content: [...textParts, ...toWireBlocks(contentBlocks)] as Message["content"],
+    };
+    const previewHumanMessage: Message = {
+      ...newHumanMessage,
+      content: [...textParts, ...contentBlocks] as Message["content"],
     };
 
     const toolMessages = ensureToolCallsHaveResponses(stream.messages);
@@ -296,7 +315,10 @@ function ThreadInner() {
           messages: [
             ...(prev.messages ?? []),
             ...toolMessages,
-            newHumanMessage,
+            // 界面上用带图那份(理由见上面 newHumanMessage 那段)。两份 id 相同,
+            // 真状态回来时会顶掉它 —— 那时后端已经把编号改写成 `(照片编号:…)`,
+            // human.tsx 再把它渲染回真图,与改动前的观感一模一样。
+            previewHumanMessage,
           ],
         }),
       },
