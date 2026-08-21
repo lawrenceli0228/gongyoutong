@@ -40,7 +40,14 @@ from datetime import datetime
 import pytest
 
 from gyt.config import get_settings
-from gyt.core.sqlite_util import in_clause, insert_sql, now_iso, open_db, placeholders
+from gyt.core.sqlite_util import (
+    _enable_wal,
+    in_clause,
+    insert_sql,
+    now_iso,
+    open_db,
+    placeholders,
+)
 
 # 玩具表:一张父表 + 一张外键指向它的子表,足够验"外键开没开";多条语句还顺带
 # 验了公共件走的是 executescript(单条 execute 会抛 "one statement at a time")。
@@ -198,6 +205,119 @@ def test_PRAGMA在真的开着的事务里是no_op() -> None:
 
         conn.execute("INSERT INTO toy_child (pid) VALUES ('孤儿行')")  # 没有 IntegrityError
         conn.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 并发:WAL 与 busy timeout(2026-08-21 补,在此之前三样全缺)
+# ---------------------------------------------------------------------------
+
+
+def test_WAL真的开了_而且是库级持久属性() -> None:
+    """开完一次之后,**另开一条连接**读到的也是 wal。
+
+    分两半断言是有意的:``open_db`` 内部回读只能证明"那一条连接上是 wal",
+    而 WAL 的价值在于**跨连接**(读不阻塞写)。第二半用上帝视角的裸连接
+    再读一次,才是真正要的那个性质。
+    """
+    with open_db(_TOY_DDL) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+
+    with closing(_raw_connect()) as raw:  # 另一条连接,没经过 open_db
+        assert raw.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+
+
+def test_有人在读的时候写得进去_这才是WAL要买的东西() -> None:
+    """🔴 **行为证据**,不是配置回读 —— 上一条测的是"设上了",这条测的是"有用"。
+
+    ⚠️ 方向很容易搞反,我第一版就写反了,而且变异测试当场抓到:
+    写「写者开着事务不提交,读者能不能读」是**测不出区别**的 —— 默认模式下
+    ``BEGIN IMMEDIATE`` 只拿 RESERVED 锁,读者照样读得到,要到 COMMIT 才升
+    EXCLUSIVE。那一版把 WAL 那行注掉照样绿,是一条只是看起来像证据的用例。
+
+    真正能分开两种模式的是**反方向**:
+      读者 B 开着事务读(拿 SHARED 锁),写者 A 这时候要 COMMIT ——
+      · 默认模式 → A 升不到 EXCLUSIVE,等到超时抛 ``database is locked``;
+      · WAL 下   → A 直接提交成功,B 继续读它的旧快照。
+
+    而这正是线上会撞的那一幕:一个人开着隐患清单,另一个人提交打卡。
+
+    A 故意用 **0.3 秒**超时:WAL 那行被删掉时这条在 0.3 秒内红掉,
+    而不是拿着生产配的 30 秒在 CI 里干挂半分钟。
+    """
+    with open_db(_TOY_DDL):  # 先建表 + 把库切成 WAL
+        pass
+
+    with (
+        closing(sqlite3.connect(get_settings().sqlite_path, timeout=0.3)) as writer,
+        closing(_raw_connect()) as reader,
+    ):
+        reader.execute("BEGIN")
+        reader.execute("SELECT COUNT(*) FROM toy_parent").fetchone()  # 拿住 SHARED
+
+        writer.execute("INSERT INTO toy_parent (id) VALUES ('有人在读的时候写的')")
+        writer.commit()  # ← 默认模式下这句会 database is locked
+
+        reader.rollback()
+
+    with closing(_raw_connect()) as check:
+        assert check.execute("SELECT COUNT(*) FROM toy_parent").fetchone()[0] == 1
+
+
+def test_撞锁等多久来自config_不许在代码里写死() -> None:
+    """守的是「超时这类常量只从 ``get_settings()`` 取」那条红线。
+
+    判据是 ``sqlite3.connect`` 实际收到的 ``timeout`` 关键字 —— 把参数删掉
+    (退回 python 默认 5 秒)或者写死一个数字,这条都会红。
+    """
+    captured: dict[str, object] = {}
+    real_connect = sqlite3.connect
+
+    def spy(*args: object, **kwargs: object) -> sqlite3.Connection:
+        captured.update(kwargs)
+        return real_connect(*args, **kwargs)  # type: ignore[arg-type]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(sqlite3, "connect", spy)
+        with open_db(_TOY_DDL):
+            pass
+
+    assert captured.get("timeout") == get_settings().sqlite_busy_timeout_s
+
+
+def test_WAL开不成时只记warning不抛_但必须响() -> None:
+    """退回默认日志模式只是"更容易撞锁",不是坏掉 —— 为它让整个后端起不来不划算。
+
+    但它**必须响**:静默退回的话,「两个人同时用会撞锁」这个已经修过的毛病
+    会悄悄复发,而现场没有任何线索。
+    """
+
+    class _拒绝换模式的连接:
+        """模仿不支持共享内存的文件系统:PRAGMA 不报错,只是返回原来的模式。"""
+
+        def execute(self, _sql: str) -> _拒绝换模式的连接:
+            return self
+
+        def fetchone(self) -> tuple[str]:
+            return ("delete",)
+
+    with pytest.MonkeyPatch.context():
+        import logging as _logging
+
+        records: list[_logging.LogRecord] = []
+
+        class _收集(_logging.Handler):
+            def emit(self, record: _logging.LogRecord) -> None:
+                records.append(record)
+
+        logger = _logging.getLogger("gyt.core.sqlite_util")
+        handler = _收集()
+        logger.addHandler(handler)
+        try:
+            _enable_wal(_拒绝换模式的连接())  # type: ignore[arg-type]
+        finally:
+            logger.removeHandler(handler)
+
+    assert [r for r in records if r.levelno == _logging.WARNING], "WAL 没开成却一声不吭"
 
 
 # ---------------------------------------------------------------------------
