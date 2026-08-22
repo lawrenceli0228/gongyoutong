@@ -18,6 +18,7 @@ import pytest
 from eval import runner as runner_mod
 from eval import scorers
 from eval.runner import (
+    DATASETS_DIR,
     EXIT_BELOW_THRESHOLD,
     EXIT_DATASET_ERROR,
     EXIT_OK,
@@ -1023,8 +1024,16 @@ async def test_run_suites_runs_each_registered_suite(tmp_path: Path) -> None:
     )
 
     # Assert
-    assert [r.suite for r in reports] == ["routing", "safety", "rag"]
-    assert [r.status for r in reports] == [Status.PASSED, Status.SKIPPED, Status.SKIPPED]
+    assert [r.suite for r in reports] == ["routing", "safety", "rag", "orchestration"]
+    assert [r.status for r in reports] == [
+        Status.PASSED,
+        Status.SKIPPED,
+        Status.SKIPPED,
+        # 第四条是 orchestration(2026-08-22 加)。这条用例刻意把
+        # 「跑了哪几套」和「各是什么状态」分成两句断言 —— 加套时两句都要跟,
+        # 只改一句的表现是另一句报「Left contains one more item」,而人会先去查 runner。
+        Status.SKIPPED,
+    ]
 
 
 async def test_safety_suite_runs_end_to_end_with_fake_vision(tmp_path: Path) -> None:
@@ -1284,7 +1293,12 @@ def test_main_verbose_flag_prints_passing_rows(
     assert "R01" in capsys.readouterr().out
 
 
-FILLED_DATASETS: Final[dict[str, int]] = {"safety": 30, "routing": 33, "rag": 20}
+FILLED_DATASETS: Final[dict[str, int]] = {
+    "safety": 30,
+    "routing": 33,
+    "rag": 20,
+    "orchestration": 25,
+}
 """已经填完真数据的套 → 应有的可判分行数。
 
 三套**都已填完**:safety 于 2026-08-07(27 张人工标注 + 3 张自备干扰项)、
@@ -1294,6 +1308,7 @@ routing 与 rag 于 2026-08-09(随 cad / knowledge 落地)。所以下面那条
 
 数字必须 ≥ config 里的 eval_min_rows_*(20 / 30 / 20),否则跑分脚本会直接判不通过。
 ⚠️ **safety 与 rag 卡死在下限上,一条不多**:safety 30=30、rag 20=20;
+orchestration 刻意不这样 —— 25 行 / 下限 15,富余 10 行,理由写在 config 里那个字段上;
 routing 33(下限 20:W7 加了 R23-R26 的 attendance 四行,W9 又加了 R27-R33 的
 supervision 五行 + 两行对抗行,现在富余 13 条)。
 删数据行、或让某行的备注里蹦出「待替换/请替换」被剔出分母,都会当场把整套打到硬闸以下。
@@ -1301,12 +1316,14 @@ supervision 五行 + 两行对抗行,现在富余 13 条)。
 
 
 def test_shipped_datasets_are_readable() -> None:
-    """仓库里现有的三份 CSV 必须能读、表头齐全。
+    """仓库里现有的四份 CSV 必须能读、表头齐全。
 
     这条用例同时是给「填数据的人」用的进度指示器:
       · 还没填的套 —— 必须仍能看出是占位状态(有「待替换」字样);
       · 填完的套 —— 登记进 FILLED_DATASETS,改为断言**真实可判分条数**。
-    三套现在都在 FILLED_DATASETS 里,所以走的全是第二条分支;第一条分支留给将来的第四套。
+    四套现在都在 FILLED_DATASETS 里,所以走的全是第二条分支;
+    第一条分支留给将来的第五套 —— 2026-08-22 加 orchestration 时它**一次都没走到**
+    (数据集是一次填满的,没经过占位状态),这说明那条分支从写下来到现在没被验证过。
     """
     for name, spec in SUITES.items():
         rows = load_rows(spec)
@@ -1402,3 +1419,138 @@ def test_diagnostics_surface_over_reporting() -> None:
     text = "\n".join(format_diagnostics(rows))
     assert "多报的类" in text
     assert "消防通道堵塞" in text
+
+
+def test_要选工地的行必须成对写_一行选一行不选() -> None:
+    """🔴 `requires_project=true` 的行要成对:一行填 `project_id`、一行留空。
+
+    ===========================================================================
+    为什么这条值得做成守卫
+    ---------------------------------------------------------------------------
+    两行测的是**两个不同的正确行为**:
+      · 填了 project_id 的 —— 「选了工地之后这条链走不走得通」;
+      · 留空的         —— 「没选工地时 supervisor 会不会先提醒去选」。
+        后者是 `AgentSpec.requires_project` 那句提示词的**唯一守卫**。
+
+    2026-08-22 当场撞到过:O09(cad>knowledge)只有「期望直接派活」这一行,
+    而干净基线里实际是 supervisor 去要工地了 —— **两件都对,是评测缺一维**
+    (数据集写在那句提示词之前)。补了 O26 之后才成对。
+
+    ⚠️ 只写一行不会有任何东西报错:分数照样算得出来,只是有一个行为永远没人守,
+    而它恰恰是最近才加的那个。所以这条不能只写在 README 里靠人记。
+    """
+    rows = load_rows(SUITES["orchestration"])
+    要工地 = [r for r in rows if str(r.get("requires_project", "")).strip().lower() == "true"]
+    assert 要工地, "一条 requires_project=true 的行都没有,那句提示词就完全没被测到"
+
+    选了 = [r for r in 要工地 if str(r.get("project_id", "")).strip()]
+    没选 = [r for r in 要工地 if not str(r.get("project_id", "")).strip()]
+
+    assert 选了, (
+        "requires_project=true 的行里没有一条填了 project_id —— "
+        "「选了工地之后这条链走不走得通」没人测。"
+    )
+    assert 没选, (
+        "requires_project=true 的行里没有一条留空 project_id —— "
+        "「没选工地时会不会先提醒」没人测,而那是 AgentSpec.requires_project 唯一的守卫。"
+    )
+
+
+# 🔴 这里**曾经**有一条 `test_至少有一行在守_没选工地时会不会先提醒`,
+#    要求 orchestration.csv 里必须有一行 requires_project=true 且不填 project_id、
+#    期望 clarify。2026-08-22 当天加上、当天拿掉,理由值得留着:
+#
+#    那条守卫和它要守的行(O26)**都建立在一个错误前提上** ——
+#    以为「没选工地时 supervisor 会先提醒」是个确定性行为。三轮实测:
+#        O04(cad,没选工地) →  真的派给了 cad
+#        O26(cad,没选工地) →  派给了 knowledge
+#    而 supervisor 的原话是「**我派给看图纸的同事了**。不过要提醒你一句:你还没选工地」
+#    —— 它是**边派边提醒**。
+#
+#    也就是说那句提示词的效果**在文字里,不在路径里**,而 orchestration 套只看路径。
+#    拿 pass/fail 的行去断言一个概率性行为,它必然周期性翻面 ——
+#    而周期性翻面的评测比没有评测更坏:它会一直消耗人的信任,直到没人再看它的红。
+#
+#    那句提示词现在守在两处,都不在这一层:
+#      · `test_graph.py` 的 render 用例 —— 断言**名单拼对了**(纯函数,零 LLM,确定性);
+#      · 运行期效果只能**人工抽查**(2026-08-22 抽查两问,两问都提醒了)。
+#    别再把它写回评测行。
+
+
+# ===========================================================================
+# 诊断套(diagnostic=True)—— 2026-08-22 给 orchestration 用
+# ===========================================================================
+
+
+def test_orchestration_是诊断套_命中率不参与红绿() -> None:
+    """🔴 判据不是「分数低」,是**「同样的数据集、同样的代码,跑两次得两个不同的数」**。
+
+    2026-08-22 四次实测:85.0% / 71.4% / 71.4% / 80.0%,而且**每次红的行都不一样**。
+    原因是它跑多跳链,每一跳的输出喂给下一跳、小差异逐跳放大;routing 只判第一跳,
+    一次调用定胜负,所以那套的数是稳的。
+
+    一把刻度不稳的尺子当门槛用比没有更坏 —— 第一次假红就会让人开始忽略它的红,
+    而它照出来的恰恰是最难发现的那类(第 4 跑照出 schedule 被连派四次撞熔断)。
+    """
+    assert SUITES["orchestration"].diagnostic is True
+    for name in ("routing", "safety", "rag"):
+        assert SUITES[name].diagnostic is False, f"{name} 不该是诊断套 —— 它们的数是稳的"
+
+
+@pytest.mark.asyncio
+async def test_诊断套跑完是DIAG而不是PASS或FAIL(tmp_path: Path) -> None:
+    """跑了、算了分、有逐条明细,但状态是 DIAG。
+
+    ⚠️ 不复用 SKIP:那个表示「压根没跑」,报告里读起来是「这套被跳过了」,
+    而人下一步会去查「为什么被跳过」—— 完全错的方向。
+    """
+    spec = SUITES["orchestration"]
+    report = await run_suite(
+        spec,
+        _runner_returning({"path": ["safety"], "status": "success", "handoffs": 1}),
+        datasets_dir=DATASETS_DIR,
+    )
+
+    assert report.status is Status.DIAGNOSTIC
+    assert report.results, "诊断套必须留下逐条明细 —— 它的价值全在明细,不在总分"
+    assert exit_code_of([report]) == EXIT_OK, "诊断套不许影响退出码"
+
+
+@pytest.mark.asyncio
+async def test_诊断套的样本量硬闸照样判FAIL(tmp_path: Path) -> None:
+    """🔴 **这一条不许「顺手统一」成 DIAG。**
+
+    两件事守的不是同一样东西:
+      · 命中率 —— 会抖,所以不拿它卡门;
+      · 样本量 —— **确定性的**,数据集被掏空就是被掏空,跟模型抖不抖没关系。
+
+    统一成 DIAG 的后果:有人把 orchestration.csv 删到只剩 3 行,报告上是一片
+    中性色的「诊断」,而那套其实已经什么都测不了了。
+    """
+    spec = SUITES["orchestration"]
+    thin = tmp_path / spec.dataset
+    src = (DATASETS_DIR / spec.dataset).read_text(encoding="utf-8").splitlines()
+    thin.write_text("\n".join(src[:3]) + "\n", encoding="utf-8")  # 表头 + 2 行
+
+    report = await run_suite(
+        spec,
+        _runner_returning({"path": ["safety"], "status": "success", "handoffs": 1}),
+        datasets_dir=tmp_path,
+    )
+
+    assert report.status is Status.FAILED, "样本量不足对诊断套也必须是 FAIL"
+    assert exit_code_of([report]) != EXIT_OK
+
+
+def test_诊断套的总览行不显示门槛() -> None:
+    """显示门槛会让人以为「差一点就过了」,而这个数本身是抖的、那条线也不卡它。"""
+    report = SuiteReport(
+        suite="orchestration",
+        status=Status.DIAGNOSTIC,
+        threshold=0.85,
+        results=(RowScore("O01", True, "x", "x", "ok"),),
+    )
+    line = format_summary([report])
+
+    assert "门槛" not in line, "诊断套不该显示门槛"
+    assert "不参与红绿" in line

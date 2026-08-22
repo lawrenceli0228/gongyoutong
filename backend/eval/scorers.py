@@ -1,4 +1,4 @@
-"""三套评测的判分函数(纯函数,不碰文件、不发网络请求)。
+"""四套评测的判分函数(纯函数,不碰文件、不发网络请求)。
 
 单独拆出来的理由:判分规则是**评测集的灵魂**,判错了比不判更糟 ——
 它会给出一个看起来很精确的错误数字,然后所有人照着这个数字调提示词。
@@ -664,6 +664,269 @@ def score_rag(row: Mapping[str, str], actual: Any) -> RowScore:
     return RowScore(row_id, False, expected_desc, actual_desc, reason)
 
 
+# ---------------------------------------------------------------------------
+# 四、orchestration —— 整条链的调度对不对
+#
+# 前三套各自只看一个点:routing 只看**第一跳**派给了谁,safety 只看一张图,
+# rag 只看一次检索。整链这套补的是它们之间的那段空白:一次复合提问
+# (「拍了张照,看看有没有隐患,顺便查下规范怎么规定的」)supervisor 要连着派两次活,
+# 顺序不能颠倒、也不能顺手多派一个人。前三套全绿而这一套红,是完全可能的。
+#
+# 这一段的常量刻意跟着判分函数走、没挪到文件顶部那堆常量里:它们都只服务这一套,
+# 而 ORCHESTRATION_AGENTS 还得**派生**自上面的 ROUTING_AGENTS(不许再抄一份名单)。
+# ---------------------------------------------------------------------------
+
+PATH_SEPARATOR: Final[str] = ">"
+"""``expected_path`` 列的跳与跳之间的分隔符。"""
+
+ORCH_STATUS_SUCCESS: Final[str] = "success"
+ORCH_STATUS_CLARIFY: Final[str] = "clarify"
+ORCH_STATUS_FAIL: Final[str] = "fail"
+
+ORCHESTRATION_STATUSES: Final[frozenset[str]] = frozenset(
+    {ORCH_STATUS_SUCCESS, ORCH_STATUS_CLARIFY, ORCH_STATUS_FAIL}
+)
+"""整链集 ``expected_status`` 的合法取值,与 eval/README.md 的 orchestration 小节同源。
+
+``clarify`` 不是"失败的一种"—— 信息不足时反问一句是**正确行为**,和路由集的
+``expected_agent=none`` 是同一件事。把它并进 fail 的话,一个从不追问、
+上来就瞎派活的 supervisor 反而拿分。
+"""
+
+ORCHESTRATION_AGENTS: Final[frozenset[str]] = ROUTING_AGENTS - {AGENT_NONE}
+"""路径里允许出现的 Agent 名 = 路由白名单**减掉** ``none``。
+
+派生而不是手抄:名单的唯一真相在 ``ROUTING_AGENTS``(它自己又钉死于
+``graph.AGENT_REGISTRY``),抄一份的话下次加 Agent 只会有一处跟着改。
+
+为什么偏偏要把 ``none`` 剔掉:「不该派给任何 Agent」在这套里的表达方式是
+**``expected_path`` 留空**,不是填一个叫 none 的跳。真让 ``safety>none`` 过了白名单,
+那一行就永远判不对 —— 被测对象报上来的路径是 ``["safety"]``,永远不会冒出一个
+名叫 none 的成员,而报告里写的却是「路径不匹配」,矛头指向模型。
+这正是 2026-08-11 把 ``report`` 从 ROUTING_AGENTS 里删掉时踩过的那个坑
+(见 ROUTING_AGENTS 的说明),同一个坑不该由下一套再踩一遍。
+"""
+
+
+def parse_path(raw: str) -> tuple[str, ...]:
+    """把 ``expected_path`` 拆成 Agent 名元组,**元组顺序就是期望的交接顺序**。
+
+        "safety>knowledge"      -> ("safety", "knowledge")
+        " Safety > Knowledge "  -> ("safety", "knowledge")   (trim + 转小写)
+        ""                      -> ()                        (= 不该派给任何 Agent)
+
+    **分隔符是 ``>`` 不是 ``;``。** 本仓其它多值列(safety 的 violations、rag 的答案要点)
+    一律用分号,所以在这一列写成 ``safety;knowledge`` 是可预料的手误。这里刻意**不认**分号:
+    认了就等于承认「并列」也是一种合法写法,而这套评测判的恰恰是先后。手误不会被静默吞掉,
+    它会变成一个叫「safety;knowledge」的 Agent 名,被 validate_orchestration_row 当场拦下。
+
+    空片段直接丢掉(``safety>>knowledge``、末尾多打一个 ``>``),口径与 split_items 一致:
+    空片段不是一跳,留着只会把路径长度算多一格、平白撞上 max_handoffs 的上限。
+
+    ⚠️ 形参标的是 ``str``,但内部走 ``_text`` 兜住了 None —— CSV 少了这一列时
+    ``row.get`` 给的就是 None,在这儿炸个 AttributeError 的话,报错位置离
+    「数据集少了一列」这个真因太远,人会去查判分逻辑。
+    """
+    return tuple(name for name in (_compact(p) for p in _text(raw).split(PATH_SEPARATOR)) if name)
+
+
+def _describe_path(path: Iterable[str]) -> str:
+    """把路径渲染成报告里好读的一行;空路径显示「无」。
+
+    **不许拿 _describe 凑合** —— 它会 sorted() 一遍,而这套评测判的就是先后顺序:
+    排完序 ``safety>knowledge`` 和 ``knowledge>safety`` 在报告里长得一模一样,
+    于是「顺序错了」那一行的期望与实际看着完全相同,看报告的人只会以为判分函数疯了。
+    """
+    return PATH_SEPARATOR.join(path) or "无"
+
+
+def _actual_path(value: Any) -> tuple[str, ...]:
+    """把被测对象给的 path 归一成元组:``["safety", "knowledge"]`` 与 ``"safety>knowledge"`` 都收。
+
+    两种形状都接的理由和 ``_field`` 一样:别逼每个 runner 的作者各写一套适配。
+    认不出来的(None、数字)一律当空路径 —— 一条 runner 的形状问题不该炸掉整套评测;
+    而"空路径"在判分里并不等于放行,该不该过由上面那几条规则说了算。
+    """
+    if isinstance(value, str):
+        return parse_path(value)
+    if isinstance(value, Iterable):
+        return tuple(name for name in (_compact(item) for item in value) if name)
+    return ()
+
+
+def _parse_int(value: Any) -> int | None:
+    """读成**非负整数**;读不出来(空 / 小数 / 汉字 / 负数)一律返回 None,由调用方决定怎么办。
+
+    刻意不在这里抛异常:同一个函数既服务 validate(要报中文原因)又服务 score
+    (一条坏数据不该炸掉整套),抛了的话两边都得再包一层 try。
+    """
+    try:
+        number = int(_text(value))
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def validate_orchestration_row(row: Mapping[str, str]) -> None:
+    """校验整链集的一行:Agent 名合法 + 状态合法 + 上限是非负整数 + 上限装得下期望路径。
+
+    四条查的全是**标注错误**,和「模型答错」是两回事。放行的后果与 ROUTING_AGENTS
+    那段说的一样:错标的那一行永远不可能被判对,而报告里写的是「路径不匹配」——
+    矛头指向模型,团队会去反复改 supervisor 的提示词,改到天亮也不会变绿。
+
+    最后那条(上限装不下期望路径)是**自相矛盾**检查,和 validate_safety_row 里
+    「标成 compliant 却填了违规项」同一类:标准答案自己就超了上限,这行判不对的
+    根因在标注,却会以「多派了活」的名义记到模型头上。
+    """
+    row_id = _text(row.get("id")) or "?"
+    expected_path = parse_path(_text(row.get("expected_path")))
+
+    unknown = [name for name in expected_path if name not in ORCHESTRATION_AGENTS]
+    if unknown:
+        raise DatasetError(
+            f"整链集 {row_id} 的 expected_path 里有不认识的 Agent:{'、'.join(unknown)}。"
+            f"只能填 {'/'.join(sorted(ORCHESTRATION_AGENTS))},多跳之间用「{PATH_SEPARATOR}」分隔。"
+            "不该派给任何 Agent 的行请把 expected_path 留空,别填 none。"
+        )
+
+    status = _compact(row.get("expected_status"))
+    if status not in ORCHESTRATION_STATUSES:
+        raise DatasetError(
+            f"整链集 {row_id} 的 expected_status 是「{_text(row.get('expected_status')) or '空'}」,"
+            f"只能填 {'/'.join(sorted(ORCHESTRATION_STATUSES))}。"
+        )
+
+    cap = _parse_int(row.get("max_handoffs"))
+    if cap is None:
+        raise DatasetError(
+            f"整链集 {row_id} 的 max_handoffs 是「{_text(row.get('max_handoffs')) or '空'}」,"
+            "只能填非负整数(0 表示这条一次活都不该派出去)。"
+        )
+    if len(expected_path) > cap:
+        raise DatasetError(
+            f"整链集 {row_id} 期望走 {len(expected_path)} 跳({_describe_path(expected_path)}),"
+            f"却把 max_handoffs 写成 {cap} —— 标准答案自己就超了上限,这行永远判不对。"
+        )
+
+
+def score_orchestration(row: Mapping[str, str], actual: Any) -> RowScore:
+    """整链判分:**期望路径是实际路径的前缀,且实际交接数 ≤ max_handoffs,且状态相符。**
+
+    三条缺一不可。而且报告里要各说各的话(顺序错 / 多派了活 / 状态不符 / 路径不匹配)——
+    只说一句「错了」,看报告的人没法判断该去调 supervisor 的派活顺序、还是去收紧它的收工条件,
+    这是 RowScore 的 docstring 里明写的要求。
+
+    ### 为什么是「前缀」而不是「完全相等」(这是复审定下来的取舍,别自己改)
+
+    留一点余量给「该走的都走对了,但 supervisor 在后面多问了一句 / 多绕了一步」这种情况:
+    工地上的真实提问经常是复合的,一票否决会把 supervisor 调得畏手畏脚 ——
+    而畏手畏脚的表现是该派的第二跳也不敢派,那是比多绕一步严重得多的病。
+
+    但余量不是白给的,**``max_handoffs`` 把它卡死**。两件东西必须一起看,少一件这套就废了:
+
+      · 只有前缀、没有上限 → 一个「把七个 Agent 全派一遍」的 supervisor **每行都能过**,
+        因为任何期望路径都是那条长路径的前缀。这是判分最危险的一类错误:
+        一个精确的、偏高的假分数(和 rag 那条页码区间的老毛病同一个方向)。
+      · 只有相等、没有前缀 → 见上一段。
+
+    所以「前缀」这条余量的宽度**完全由数据集里的 max_handoffs 说了算**:
+    要一步都不许多,就把它写成和期望路径一样长。
+    """
+    row_id = _text(row.get("id"))
+    expected_path = parse_path(_text(row.get("expected_path")))
+    expected_status = _compact(row.get("expected_status"))
+    # 取不到上限时退回「期望路径长度」= 一点余量都不给。validate_orchestration_row 已经
+    # 在跑模型之前把这种行拦下了,这里纯属防守;万一漏网,也只会错向**严格**的那一侧,
+    # 不会把一条多派活的链判成过 —— 假分数宁可偏低,绝不许偏高。
+    cap = _parse_int(row.get("max_handoffs"))
+    if cap is None:
+        cap = len(expected_path)
+
+    expected_desc = (
+        f"路径:{_describe_path(expected_path)};状态:{expected_status or '空'};交接上限:{cap}"
+    )
+
+    if not isinstance(actual, Mapping):
+        # 被测对象没给出可判分的调度记录。runner 的契约是「拿不到就 raise」
+        # (eval/README.md「怎么跑」那节),异常文本会原样落到这里当 actual。
+        # **一律判不过,而且理由要说清是「没拿到东西」而不是「路径走错了」**:
+        # 兜底成一条空路径的话,expected_path 为空的那几行(clarify)会因为
+        # 「空 == 空」而判**对** —— 模型崩了反倒拿分,整套分数当场作废。
+        reason = (
+            "没拿到可判分的调度记录(被测对象抛了异常,或只回了一段文本),这条按错计。"
+            "先去修被测对象,别改判分。"
+        )
+        return RowScore(row_id, False, expected_desc, _text(actual) or "空", reason)
+
+    actual_path = _actual_path(_field(actual, "path", bare_ok=False))
+    got_status = _compact(_field(actual, "status", bare_ok=False))
+    # 实际交接数取「报上来的次数」与「路径长度」里**大**的那个。
+    # 取小的等于给多派活开一个逃生口:被测对象只要少报一次 handoffs(或者干脆不报),
+    # 一条 safety>knowledge>schedule 就能在 max=2 底下蒙混过关,而这套评测的全部意义
+    # 就是抓多派活。路径本身是硬证据,报上来的次数只可能比它多(来回交接、重复派同一个人),
+    # 不该比它少。
+    reported_handoffs = _parse_int(_field(actual, "handoffs", bare_ok=False)) or 0
+    actual_handoffs = max(len(actual_path), reported_handoffs)
+
+    actual_desc = (
+        f"路径:{_describe_path(actual_path)};状态:{got_status or '空'};交接:{actual_handoffs}"
+    )
+
+    # 三条规则各自往 problems 里塞一句(照 score_rag 的做法),**互不抑制**:
+    # 一行同时犯两条错就报两句。抑制逻辑本身会变成下一个 bug 的藏身处,
+    # 而多一句冗余顶多是话说得啰嗦。
+    problems: list[str] = []
+    if not expected_path:
+        # 空 expected_path 天生是任何路径的前缀,不单独说一句的话,
+        # 报告里只会剩一句「超了上限」,读不出「这条压根就不该派活」。
+        # 措辞借 score_routing 的 none 分支,两套的同一件事读起来是同一句话。
+        if actual_path:
+            problems.append(f"这条本不该派给任何 Agent,却派给了「{_describe_path(actual_path)}」")
+    elif actual_path[: len(expected_path)] != expected_path:
+        # 「顺序错」和「路径不匹配」这个区分**只影响报告措辞,不影响过不过**(两种都是不过)。
+        # 判据取的是最常见的那种坏法:同一批 Agent、排列不同。多派了一个人的重排
+        # (期望 safety>knowledge,实际 knowledge>safety>schedule)会落进「路径不匹配」,
+        # 同时被下面的上限那条抓住 —— 分类不够精细只是话说得糙,判分不会因此错。
+        if sorted(actual_path) == sorted(expected_path):
+            problems.append(
+                f"交接顺序错了:该先走 {_describe_path(expected_path)},"
+                f"实际走的是 {_describe_path(actual_path)}"
+            )
+        else:
+            problems.append(
+                f"路径不匹配:期望以 {_describe_path(expected_path)} 开头,"
+                f"实际是 {_describe_path(actual_path)}"
+            )
+    if actual_handoffs > cap:
+        problems.append(f"多派了活:实际交接 {actual_handoffs} 次,上限 {cap} 次")
+    # ── 状态。**两档在「都没派活」时不作区分**,理由见下 ────────────────────
+    #
+    # 🔴 `clarify`(回头追问)与 `fail`(如实说做不了)这个区分,靠的是
+    # `hooks.classify_outcome` 里那条「末尾有没有问号」—— 而那是个很粗的判据。
+    # supervisor 说「这事我做不了,你是要我记一条任务吗?」既是拒绝也带问号,
+    # 判成 clarify;换个说法不带问号,同一个意思判成 fail。
+    #
+    # 2026-08-22 实测撞到:O20(帮我给搅拌站打电话订混凝土)期望 fail、实际 clarify,
+    # 而**两轮之间还翻过面** —— 它测的其实不是模型对不对,是我这条判据的边界在哪。
+    #
+    # 真要分开这两档,得像 safety 套那样上一个**外部 LLM 裁判**去读那句话的意图。
+    # 那是另一件事(且要花钱、且自己带噪声)。在那之前,这套能可靠回答的只有
+    # **「派没派活」**,所以:两边路径都空时,clarify 与 fail 视为同一档。
+    #
+    # ⚠️ 这是**明知的精度损失,不是漏了**。代价写在这儿:一条本该被清楚拒绝的请求,
+    # supervisor 改成反问一句也照样判过。数据集里 expected_status 仍然照实写
+    # (它对读数据集的人有价值),只是判分不拿它当硬判据。
+    _NOT_DISPATCHED = {ORCH_STATUS_CLARIFY, ORCH_STATUS_FAIL}
+    两边都没派活 = not expected_path and not actual_path
+    状态可互换 = 两边都没派活 and {expected_status, got_status} <= _NOT_DISPATCHED
+    if got_status != expected_status and not 状态可互换:
+        problems.append(f"状态不符:期望 {expected_status or '空'},实际 {got_status or '空'}")
+
+    if not problems:
+        return RowScore(row_id, True, expected_desc, actual_desc, "路径、交接次数、状态全部对上。")
+    return RowScore(row_id, False, expected_desc, actual_desc, ";".join(problems) + "。")
+
+
 __all__ = [
     "AGENT_NONE",
     "CITATION_SHAPES",
@@ -674,6 +937,12 @@ __all__ = [
     "MIN_ANSWER_POINT_LEN",
     "NO_ANSWER_LOOKAHEAD_CHARS",
     "NO_ANSWER_MARKERS",
+    "ORCHESTRATION_AGENTS",
+    "ORCHESTRATION_STATUSES",
+    "ORCH_STATUS_CLARIFY",
+    "ORCH_STATUS_FAIL",
+    "ORCH_STATUS_SUCCESS",
+    "PATH_SEPARATOR",
     "RAG_TYPES",
     "RAG_TYPE_NO_ANSWER",
     "ROUTING_AGENTS",
@@ -682,10 +951,13 @@ __all__ = [
     "DatasetError",
     "RowScore",
     "parse_pages",
+    "parse_path",
+    "score_orchestration",
     "score_rag",
     "score_routing",
     "score_safety",
     "split_items",
+    "validate_orchestration_row",
     "validate_rag_row",
     "validate_routing_row",
     "validate_safety_row",

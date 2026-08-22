@@ -31,6 +31,7 @@ safety 这一套测的是**识图准不准**(eval/README.md 原话),不是「Age
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -222,8 +223,174 @@ async def run_rag_row(row: Mapping[str, str]) -> Any:
     }
 
 
+RECURSION_LIMIT_ENV: Final[str] = "GYT_EVAL_RECURSION_LIMIT"
+"""临时改递归上限的环境变量,**只给 orchestration 套用**。
+
+为什么走环境变量而不是数据集的一列:递归上限是**跑法**不是**样本属性** ——
+同一份数据集要在 8 / 10 / 12 / 16 四档下各跑一遍,把它写进 csv 等于把同一批样本
+抄四份。而 CLAUDE.md 记着一条实测:**调用时 config 里的 recursion_limit 会盖掉
+编译时 `.with_config` 钉的那个**(2026-08-11 安全复核,传 60 就真跑 60 步)——
+所以这条路是通的。
+
+⚠️ 不设它就用图自己编译时钉的值(`config.supervisor_recursion_limit`,当前 8)。
+"""
+
+_CLARIFY_MARKS: Final[tuple[str, ...]] = ("?", "？")
+"""判「这是在追问」的记号。
+
+刻意只认问号,**不认「哪」「是要」这类词**:那些字在正常答话里也大量出现
+(「哪个工地」可以是追问,也可以是「这条隐患在哪个工地」的陈述),
+拿它们当判据会把正常回答误判成追问,而误判的方向是**放行**——
+一条本该派活却自己答了的样本会被判成「追问,正确」。
+判据宁可窄,漏判是红灯,误判是假绿灯。
+"""
+
+
+def classify_outcome(handoffs: int, final_text: str, error: str | None) -> str:
+    """把一次整链跑的结果归成 orchestration.csv 的三档之一。**纯函数,不碰模型。**
+
+    ===========================================================================
+    判据
+    ---------------------------------------------------------------------------
+        error 非空                       → fail   (熔断 / 超时 / 图自己抛的)
+        handoffs > 0                     → success(派了活并且跑完了)
+        handoffs == 0 且末尾有问号        → clarify(没派活,回头问了一句)
+        handoffs == 0 且末尾没问号        → fail   (没派活,自己编了个答案)
+
+    ===========================================================================
+    🔴 这套测的是**调度**,不是**答得对不对**
+    ---------------------------------------------------------------------------
+    所以 ``handoffs > 0`` 一律算 success,哪怕子 Agent 回的是「知识库里查不到依据」。
+    「查到 0 条」是合法答案 —— 调度做对了,内容对不对归 rag / safety 那两套管。
+    把内容判据混进来的下场是:一条路由完全正确的样本因为库里恰好没数据而判红,
+    而人会去查 supervisor 的提示词。
+
+    ⚠️ 最后那条(0 跳 + 没问号 = fail)是**刻意往严里判**:supervisor 在该派活时
+    自己编一个答案,正是这套要抓的东西。代价是它也会把「你好」这种正当的闲聊自答
+    判成 fail —— 所以 **orchestration.csv 里不许放闲聊行**,那类归 routing 套的
+    ``expected_agent=none``(两套的分工写在 eval/README.md 里)。
+    """
+    if error:
+        return "fail"
+    if handoffs > 0:
+        return "success"
+    tail = (final_text or "").strip()
+    return "clarify" if any(mark in tail for mark in _CLARIFY_MARKS) else "fail"
+
+
+async def run_orchestration_row(row: Mapping[str, str]) -> Any:
+    """跑整链集的一行:把 user_input 发进真实整图并**跑完**,交出这一轮的调度轨迹。
+
+        user_input ──► graph.astream(updates)   ← 与 routing 套相反:**不掐断**
+              │ 逐个更新扫 transfer_to_X 工具调用,按出现顺序记成 path
+              │ 记住最后一条有正文的消息 —— classify_outcome 用它分辨追问与自答
+              ▼ 跑到图自己结束(或熔断)
+
+        返回 {"path": [...], "status": ..., "handoffs": N}
+
+    ===========================================================================
+    与 ``run_routing_row`` 的分工(别把两套合并)
+    ---------------------------------------------------------------------------
+    routing 只判**第一跳派给谁**,并且在第一跳就停流 —— 它的头注写着理由:
+    「让子 Agent 继续跑既慢又烧钱」。那条判断今天依然成立,所以 routing 不动。
+
+    本套判的是**整件事有没有做完**,所以必须跑完。代价是每行贵 10-20 倍
+    (子 Agent 的整个工具循环都要跑,含识图的那几条每次 7-10 秒)。
+    ⚠️ 因此**别把 routing.csv 的 33 行搬进来** —— 那 33 行里绝大多数只需要验第一跳。
+
+    ===========================================================================
+    ⚠️ ``transfer_back_to_supervisor`` 不算一跳
+    ---------------------------------------------------------------------------
+    ``add_handoff_back_messages=True`` 生成的回程工具叫 ``transfer_back_to_…``,
+    它不以 ``transfer_to_`` 开头,所以现有的 ``HANDOFF_PREFIX`` 判据**天然把它排除**
+    (2026-08-22 实测确认过)。别为它加特判 —— 加了反而会在有人改前缀时静默算错。
+
+    ⚠️ **按工具调用 id 去重**:同一个交接可能出现在多个更新里(supervisor 那个节点
+    会把消息重放),不去重的话双 Agent 流程会被数成四跳,而 max_handoffs 当场误判。
+    """
+    text = str(row.get("user_input") or "").strip()
+    if not text:
+        raise EvalRunnerError("这一行没填 user_input,没法测调度。")
+
+    # 惰性导入,理由同 run_routing_row(import gyt.graph 即建图、即要 API Key)。
+    from langgraph.errors import GraphRecursionError
+
+    from gyt.core.run_context import PROJECT_CONFIG_KEY
+    from gyt.graph import graph
+
+    config: dict[str, Any] = {}
+
+    # 「当前工地」—— 界面顶栏选的那个,经 config.configurable 注入(契约在
+    # core/run_context.PROJECT_CONFIG_KEY;前端 thread-index.tsx 用的是同一个键)。
+    #
+    # 🔴 **这一路 2026-08-22 之前是缺的**,而它不是可有可无:
+    # `AgentSpec.requires_project=True` 的那几个(cad / supervision)在没选工地时,
+    # supervisor 按提示词会**先回头要工地而不是派活** —— 于是这类行永远只测得到未选状态,
+    # 「选了工地之后这条复合链走不走得通」压根表达不了。
+    #
+    # 那天 O09(cad>knowledge)就是这么红的:实际行为完全正确(它去要工地了),
+    # 而数据集写在那句提示词之前、期望的是直接派活。**两件都对,是评测缺一维。**
+    # 留空 = 不选工地,那也是一种要测的状态(该被提醒的那一档)。
+    project_id = str(row.get("project_id") or "").strip()
+    if project_id:
+        config["configurable"] = {PROJECT_CONFIG_KEY: project_id}
+
+    raw_limit = os.environ.get(RECURSION_LIMIT_ENV, "").strip()
+    if raw_limit:
+        try:
+            config["recursion_limit"] = int(raw_limit)
+        except ValueError as exc:
+            raise EvalRunnerError(
+                f"{RECURSION_LIMIT_ENV} 要填整数,现在是「{raw_limit}」。"
+            ) from exc
+
+    path: list[str] = []
+    seen_calls: set[str] = set()
+    final_text = ""
+    error: str | None = None
+
+    try:
+        async for update in graph.astream(
+            {"messages": [("user", text)]}, stream_mode="updates", config=config or None
+        ):
+            if not isinstance(update, dict):
+                continue
+            for payload in update.values():
+                if not isinstance(payload, dict):
+                    continue
+                for message in payload.get("messages") or []:
+                    for call in getattr(message, "tool_calls", None) or []:
+                        name = str(call.get("name") or "")
+                        call_id = str(call.get("id") or f"{name}@{len(seen_calls)}")
+                        if name.startswith(HANDOFF_PREFIX) and call_id not in seen_calls:
+                            seen_calls.add(call_id)
+                            path.append(name.removeprefix(HANDOFF_PREFIX))
+                    content = getattr(message, "content", "")
+                    if isinstance(content, str) and content.strip():
+                        final_text = content
+    except GraphRecursionError as exc:
+        # 熔断**不是异常,是一个观测结果** —— 这套评测存在的一半理由就是量它。
+        # 抛出去的话 runner 会把整行记成「跑挂了」,而我们要的是「这一档上限不够」。
+        error = f"熔断:{exc}"
+    except Exception as exc:  # noqa: BLE001 —— 见下
+        # 其余异常同样收敛成事实。评测的职责是**如实记录发生了什么**,
+        # 而不是替被测系统决定「这算不算一次失败」。异常类型进 error 文本,只进报告。
+        error = f"{type(exc).__name__}: {exc}"
+
+    return {
+        "path": path,
+        "status": classify_outcome(len(path), final_text, error),
+        "handoffs": len(path),
+    }
+
+
 RUNNERS: Final[Mapping[str, Any]] = MappingProxyType(
-    {"safety": run_safety_row, "routing": run_routing_row, "rag": run_rag_row}
+    {
+        "safety": run_safety_row,
+        "routing": run_routing_row,
+        "rag": run_rag_row,
+        "orchestration": run_orchestration_row,
+    }
 )
 """套名 → 被测函数。**这是加新 Agent 时唯一要改的地方。**
 
@@ -237,8 +404,10 @@ MappingProxyType 是只读的:runner.load_runners 会 dict(...) 复制一份再�
 
 __all__ = [
     "PHOTOS_DIR",
+    "RECURSION_LIMIT_ENV",
     "RUNNERS",
     "EvalRunnerError",
+    "classify_outcome",
     "run_rag_row",
     "run_routing_row",
     "run_safety_row",

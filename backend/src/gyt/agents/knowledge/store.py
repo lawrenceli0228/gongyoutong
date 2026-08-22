@@ -39,6 +39,48 @@ COLLECTION_NAME = "gyt_specs"
 """规范库的 collection 名。入库与查询必须一致,定了别改。"""
 
 
+class VectorStackUnavailableError(RuntimeError):
+    """向量库那条依赖链在这台机器上装不上 —— **这不是配置错误,是环境限制。**
+
+    为什么要有这个异常,而不是让原始的 ``ModuleNotFoundError`` 冒出去:
+    那条链是 ``langchain_chroma`` → ``langchain_huggingface`` → ``transformers``
+    → ``sentence-transformers`` → **torch**,而 torch 2.13 没有 macosx_x86_64 轮子
+    (CLAUDE.md 第一句就写着 `make setup` 在 Intel Mac 上必失败)。
+
+    🔴 裸报错会让人**照着包名一个一个去装**:装完 chroma 撞 huggingface、
+    装完 huggingface 撞 transformers,四轮之后才发现尽头是 torch 那堵墙。
+    2026-08-22 跑整链评测时就这么撞了一次 —— 日志里只有
+    ``ModuleNotFoundError: No module named 'langchain_chroma'`` 这一句,
+    完全看不出它背后是一整条装不上的链。
+
+    所以这里一次把话说完,并且**直接给出那条走得通的路**(容器)。
+    """
+
+
+_VECTOR_STACK_HINT = (
+    "这台机器上装不了向量库那条依赖链(langchain_chroma → langchain_huggingface "
+    "→ transformers → torch,而 torch 在 Intel Mac 上没有轮子)。\n"
+    "知识库相关的活儿要在容器里跑:\n"
+    "  建索引:docker compose run --rm --no-deps backend python -m gyt.agents.knowledge.ingest\n"
+    "  跑测试:make test-docker\n"
+    "  起服务:make dev-docker\n"
+    "⚠️ 别照着缺的包名一个一个装 —— 尽头是 torch,装不上。"
+)
+
+
+def _lazy_import(module: str, attr: str) -> object:
+    """惰性 import 一个向量库相关的名字;链断了就抛一句说得清的话。
+
+    ⚠️ 只接 ``ModuleNotFoundError``,不接 ``ImportError`` 全家:
+    后者会把「装是装上了但版本不兼容」也吞成这句提示,而那两件事的修法完全不同
+    (一个是换机器/进容器,一个是对版本)。
+    """
+    try:
+        return getattr(__import__(module, fromlist=[attr]), attr)
+    except ModuleNotFoundError as exc:
+        raise VectorStackUnavailableError(f"{_VECTOR_STACK_HINT}\n(缺的是 {exc.name})") from exc
+
+
 @lru_cache(maxsize=1)
 def get_embeddings() -> HuggingFaceEmbeddings:
     """本地 BGE-M3 embedding(进程内只加载一次)。
@@ -46,11 +88,12 @@ def get_embeddings() -> HuggingFaceEmbeddings:
     ⚠️ 首次调用会加载 ~2.2GB 权重(本地没缓存时还要先下载),慢是正常的。
     Dockerfile 已在构建期把权重烤进镜像(冷启动零下载);本地首跑会真下一次。
     """
-    from langchain_huggingface import HuggingFaceEmbeddings  # 惰性:见文件顶部说明
+    # 惰性 + 链断了说人话,见 _lazy_import / VectorStackUnavailableError
+    embeddings_cls = _lazy_import("langchain_huggingface", "HuggingFaceEmbeddings")
 
     settings = get_settings()
     logger.info("加载 embedding 模型 %s(首次约 2.2GB,慢属正常)", settings.embedding_model)
-    return HuggingFaceEmbeddings(
+    return embeddings_cls(  # type: ignore[operator]
         model_name=settings.embedding_model,
         model_kwargs={"device": "cpu"},
         encode_kwargs={"normalize_embeddings": True},
@@ -63,10 +106,10 @@ def get_vectorstore() -> Chroma:
     每次返回一个新句柄但共享同一个持久化目录与同一个(缓存的)embedding ——
     句柄本身很轻,真正贵的是 embedding 模型,那个只加载一次。
     """
-    from langchain_chroma import Chroma  # 惰性:见文件顶部说明
+    chroma_cls = _lazy_import("langchain_chroma", "Chroma")  # 同上
 
     settings = get_settings()
-    return Chroma(
+    return chroma_cls(  # type: ignore[operator]
         collection_name=COLLECTION_NAME,
         embedding_function=get_embeddings(),
         persist_directory=str(settings.chroma_dir),

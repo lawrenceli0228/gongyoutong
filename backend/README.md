@@ -535,7 +535,10 @@ else:
                                name=..., prompt=load_prompt(<目录>),
                                tools=list(<工具列表>), purpose="text"|"vision")
 5. 去 graph.py 往模块级常量 AGENT_REGISTRY 追加一条:
-       AgentSpec(name=..., summary=..., build=build_<名字>_agent)
+       AgentSpec(name=..., summary=..., build=build_<名字>_agent,
+                 requires_project=...)   # 2026-08-22 加的第四个字段,漏填当场 TypeError
+                                          # 判据:不选工地时**回给用户的那句话本身**
+                                          # 是不是错的(不是「有没有副作用」)
    summary 必填 —— 它是 Supervisor 判断"这活派给谁"的唯一依据,留空会直接报错。
    挂载点只有 AGENT_REGISTRY 这一处,别去改 build_graph() 的函数体。
 ```

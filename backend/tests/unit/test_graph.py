@@ -307,6 +307,98 @@ def test_render_roster_每个登记项一行(graph_module: GraphFixture) -> None
 
 
 # ===========================================================================
+# requires_project：「这活儿离不开当前工地」这条知识必须真的进提示词
+#
+# 修的是生产上那批「未归属」隐患：工友没在界面上选工地就拍了照，隐患照样进台账、
+# 只是 project_id 是空串。⚠️ 那**不是 bug 是 D6 这个有记录的决定**（db/hazards.py）——
+# 幂等键 (project_id, photo_sha256, item) 用 NULL 会失效，所以后端不许在写入侧硬拦。
+# 唯一能做的就是让 supervisor 提前提醒用户去选工地，这几条守的就是那句提醒。
+# ===========================================================================
+
+
+def test_每个登记项都填了_requires_project(graph_module: GraphFixture) -> None:
+    """字段在不在，问 NamedTuple 自己（_fields）—— 不手抄七个 Agent 名。
+
+    手抄的话，加第八个 Agent 时这条照绿，而那恰恰是漏填最可能发生的时刻。
+    """
+    field = "requires_project"
+    spec_cls = graph_module.module.AgentSpec
+
+    assert field in spec_cls._fields
+    # 没有默认值 = 必填，漏填会在 import 期当场 TypeError（响的）。
+    # 这条守的是「有人图省事给它补个默认值」那种改法 —— 补了之后漏填重新变成静默的：
+    # 新同事的活儿离不开工地，提示词里却悄悄没它的名字，而且不会有任何报错。
+    assert field not in spec_cls._field_defaults
+
+    for spec in graph_module.module.AGENT_REGISTRY:
+        value = getattr(spec, field)
+        assert isinstance(value, bool), (
+            f"「{spec.name}」的 {field} 填的是 {value!r}，不是 bool —— "
+            "None / 空串这类假值会被静默当成 False，提醒名单就少一位同事。"
+        )
+
+
+def test_supervisor_提示词点名了那些离不开工地的同事(graph_module: GraphFixture) -> None:
+    """期望值**从登记表现算**：写死七个名字的话，加第八个 Agent 时这条会假绿。"""
+    module = graph_module.module
+    prompt = module.build_supervisor_prompt()
+    notice = module.render_project_notice()
+
+    needs = [spec.name for spec in module.AGENT_REGISTRY if spec.requires_project]
+    assert needs, "登记表里一个 requires_project=True 都没有？先回去读那几行旁边的依据注释。"
+
+    # 这一节真的被拼进提示词了，不是拼了个寂寞
+    assert notice
+    assert notice in prompt
+
+    for name in needs:
+        assert name in notice, f"「{name}」的活儿离不开工地，提示词却没点它的名"
+
+    # 不需要工地的不许混进来 —— 混进去 = 每次记任务 / 查考勤都白挨一次提醒，
+    # 提醒喊多了就没人听了（这正是 schedule / attendance 标 False 的理由）。
+    for spec in module.AGENT_REGISTRY:
+        if not spec.requires_project:
+            assert spec.name not in notice, f"「{spec.name}」不需要选工地，却出现在提醒名单里"
+
+    # 是给模型看的**可执行指令**，不是一句形容：要说清让它干什么、去哪儿选
+    assert "顶栏" in notice
+    assert "别闷头派活" in notice
+
+
+def test_离不开工地的名单跟着登记表走而不是写死(graph_module: GraphFixture) -> None:
+    """造两个假登记项验证名单是现算的：一个要工地、一个不要，只许列前者。"""
+    module = graph_module.module
+    base = module.AGENT_REGISTRY[0]
+    needs = base._replace(name="tunnel", summary="隧道断面复核", requires_project=True)
+    free = base._replace(name="weather", summary="报天气", requires_project=False)
+
+    notice = module.render_project_notice((needs, free))
+
+    assert "tunnel" in notice
+    assert "weather" not in notice
+
+
+def test_没有同事需要选工地时那句提醒干脆不出现(graph_module: GraphFixture) -> None:
+    """防的是「拼了一句空话进提示词」。
+
+    一个 True 都没有时，那段话对模型**无从执行**：白占 token，还可能被读成
+    「工地这事不重要」。所以退化的正确形态是返回空串，不是「暂时没有同事需要选工地」。
+
+    顺带钉住排版：退化后必须与「压根没有这一节」逐字节相同 —— 模板里那个占位符
+    独占一行，少留或多留一个换行都会在名单和「# 派活规则」之间留下空档／挤在一起。
+    """
+    module = graph_module.module
+    all_false = tuple(spec._replace(requires_project=False) for spec in module.AGENT_REGISTRY)
+
+    assert module.render_project_notice(all_false) == ""
+
+    prompt = module.build_supervisor_prompt(all_false)
+    assert "要先选中工地才做得准" not in prompt
+    # 名单还在，且「# 派活规则」紧跟其后，中间不多不少正好一个空行
+    assert f"{module.render_roster(all_false)}\n\n# 派活规则" in prompt
+
+
+# ===========================================================================
 # 当前工地：supervisor 也要拿得到「用户此刻选中的工地」
 # 修的是「图纸同事说得出当前工地、supervisor 却说查不到」这个矛盾。
 # ===========================================================================

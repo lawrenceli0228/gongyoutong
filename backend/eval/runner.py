@@ -51,9 +51,11 @@ from typing import Any, Final
 from eval.scorers import (
     DatasetError,
     RowScore,
+    score_orchestration,
     score_rag,
     score_routing,
     score_safety,
+    validate_orchestration_row,
     validate_rag_row,
     validate_routing_row,
     validate_safety_row,
@@ -87,6 +89,13 @@ class Status(StrEnum):
     PASSED = "PASS"
     FAILED = "FAIL"
     SKIPPED = "SKIP"
+    DIAGNOSTIC = "DIAG"
+    """跑了、算了分,但**不参与红绿** —— 给命中率天然不稳的套用(见 SuiteSpec.diagnostic)。
+
+    为什么不复用 SKIPPED:那个表示「压根没跑」(没接 runner / 数据集是空的),
+    报告里读起来是「这套被跳过了」。而 DIAG 是真跑过、真有分数、只是那个分数
+    不该拿来卡门。两件事在排查时的下一步完全不同,混成一档会让人去查「为什么被跳过」。
+    """
 
 
 class RunnerSpecError(ValueError):
@@ -104,6 +113,24 @@ class SuiteSpec:
     required_columns: tuple[str, ...]
     validate: Callable[[Row], None]
     score: Callable[[Row, Any], RowScore]
+    diagnostic: bool = False
+    """这一套的命中率**不参与红绿**(仍然照跑、照算、照进报告)。
+
+    🔴 什么时候该开:命中率本身不稳到没法画线的时候。判据不是「分数低」,
+    而是**「同样的数据集、同样的代码,跑两次得两个不同的数」**。
+
+    orchestration 就是这样(2026-08-22 四次实测:85.0% / 71.4% / 71.4% / 80.0%,
+    而且每次红的行都不一样)。原因是它跑**多跳**链,每一跳的输出喂给下一跳,
+    小差异逐跳放大;routing 只判第一跳、一次调用定胜负,所以那套的数是稳的。
+
+    ⚠️ **一把刻度不稳的尺子当门槛用,比没有尺子更坏** —— 第一次假红就会让人
+    开始忽略它的红,而它照出来的恰恰是最难发现的那类问题
+    (第 4 跑照出 `schedule>schedule>schedule>schedule`,四次派同一个人撞熔断)。
+
+    要摘掉这个标记,得先拿出**真方差**的数据。⚠️ 量真方差必须跑**独立进程** ——
+    同一个进程里连跑 N 轮量到的是缓存回放:2026-08-22 那次三轮拿到完全相同的结果、
+    极差 0.0%,而三轮耗时是 226s / 35s / 33s,后两轮几乎全命中缓存。
+    """
 
 
 SUITES: Final[Mapping[str, SuiteSpec]] = MappingProxyType(
@@ -142,9 +169,32 @@ SUITES: Final[Mapping[str, SuiteSpec]] = MappingProxyType(
             validate=validate_rag_row,
             score=score_rag,
         ),
+        # orchestration(2026-08-22 加的第四套)—— 与 routing 的分工写在 eval/README.md:
+        # routing 只判**第一跳派给谁**并在第一跳停流;这一套**跑完整条链**,
+        # 判「整件事有没有做完、有没有多跳、该追问时有没有追问」。
+        # 🔴 别把 routing.csv 的行搬进来:那 33 行绝大多数只需要验第一跳,
+        #    而这一套每行贵 10-20 倍(子 Agent 的整个工具循环都要跑)。
+        "orchestration": SuiteSpec(
+            name="orchestration",
+            dataset="orchestration.csv",
+            threshold_field="eval_threshold_orchestration",
+            min_rows_field="eval_min_rows_orchestration",
+            required_columns=(
+                "id",
+                "type",
+                "user_input",
+                "expected_path",
+                "expected_status",
+                "max_handoffs",
+            ),
+            validate=validate_orchestration_row,
+            score=score_orchestration,
+            # 命中率不参与红绿,理由见 SuiteSpec.diagnostic 的红字(四次实测的数在那儿)。
+            diagnostic=True,
+        ),
     }
 )
-"""三套评测的注册表。门槛只写字段名,真值一律现从 get_settings() 取。"""
+"""四套评测的注册表。门槛只写字段名,真值一律现从 get_settings() 取。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,6 +352,13 @@ async def run_suite(
 
     # 样本量下限:在调模型**之前**判,别为一个不作数的百分比白烧额度。
     # 判 FAIL 而不是 SKIP —— SKIP 是绿的,而「只剩 3 条却报 100%」正是要拦的东西。
+    #
+    # 🔴 **这一条对 `diagnostic=True` 的套照样判 FAIL,不许「顺手统一」成 DIAG。**
+    # 两件事守的不是同一样东西:
+    #   · 命中率 —— 会抖(多跳链逐跳放大),所以诊断套不拿它卡门;
+    #   · 样本量 —— **确定性的**,数据集被掏空就是被掏空,跟模型抖不抖没关系。
+    # 把它也放成 DIAG 的后果:有人把 orchestration.csv 删到只剩 3 行,
+    # 报告上是一片「诊断」的中性色,而那套其实已经什么都测不了了。
     min_rows = _min_rows_of(spec)
     if len(scorable) < min_rows:
         return SuiteReport(
@@ -323,7 +380,11 @@ async def run_suite(
     hit_rate = sum(1 for item in results if item.passed) / len(results)
     return SuiteReport(
         suite=spec.name,
-        status=Status.PASSED if hit_rate >= threshold else Status.FAILED,
+        status=(
+            Status.DIAGNOSTIC
+            if spec.diagnostic
+            else (Status.PASSED if hit_rate >= threshold else Status.FAILED)
+        ),
         threshold=threshold,
         results=results,
         skipped_ids=placeholders,
@@ -437,6 +498,15 @@ def format_summary(reports: Sequence[SuiteReport]) -> str:
         if not report.results:  # SKIP,或样本量不足 —— 两种都没有分数可报,只报原因
             lines.append(f"  {report.suite:<8} {report.status.value:<6} {report.message}")
             continue
+        if report.status is Status.DIAGNOSTIC:
+            # 诊断套**不显示门槛** —— 它压根不卡那条线,显示出来会让人以为
+            # 「差一点就过了/已经过了」,而这个数本身是抖的。
+            # 直接把该看什么写在这一行上:这套的价值在**逐条明细**,不在总分。
+            lines.append(
+                f"  {report.suite:<8} {report.status.value:<6} "
+                f"{report.score:.1%} —— 仅供诊断,不参与红绿;看上面的逐条明细,别看这个数"
+            )
+            continue
         lines.append(
             f"  {report.suite:<8} {report.status.value:<6} "
             f"{report.score:.1%}(门槛 {report.threshold:.0%})"
@@ -445,7 +515,11 @@ def format_summary(reports: Sequence[SuiteReport]) -> str:
 
 
 def exit_code_of(reports: Sequence[SuiteReport]) -> int:
-    """有任何一套低于门槛就返回非 0,好让 CI 拦门。全 SKIP 时返回 0。"""
+    """有任何一套低于门槛就返回非 0,好让 CI 拦门。全 SKIP 时返回 0。
+
+    ⚠️ `Status.DIAGNOSTIC` 与 SKIP 一样**不影响退出码** —— 那正是它存在的意义
+    (见 SuiteSpec.diagnostic)。但它和 SKIP 有一处关键不同:诊断套是**真跑过**的,
+    所以报告里有逐条明细。CI 上它不拦门,人要看的是那些明细。"""
     return EXIT_BELOW_THRESHOLD if any(r.status is Status.FAILED for r in reports) else EXIT_OK
 
 
