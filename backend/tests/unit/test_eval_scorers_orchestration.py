@@ -400,3 +400,64 @@ def test_异常文本原样进报告的实际列() -> None:
 
     # Assert
     assert result.actual == "RuntimeError: 模型服务连不上"
+
+
+class Test没派活时两档状态不作区分:
+    """`clarify` 与 `fail` 在「两边路径都空」时视为同一档(2026-08-22 定)。
+
+    🔴 **这是明知的精度损失,不是漏了。** 下次看见它别当 bug 修掉。
+
+    区分这两档靠的是 `hooks.classify_outcome` 里那条「末尾有没有问号」——
+    很粗。supervisor 说「这事我做不了,你是要我记一条任务吗?」既是拒绝也带问号;
+    换个说法不带问号,同一个意思判成 fail。实测 O20 就在两轮之间翻过面 ——
+    它测的其实不是模型对不对,是这条判据的边界在哪。
+
+    真要分开得上外部 LLM 裁判读那句话的意图(像 safety 套那样),那是另一件事。
+    在那之前这套能可靠回答的只有**「派没派活」**。
+    """
+
+    def _row(self, expected_status: str) -> dict[str, str]:
+        return {
+            "id": "OX",
+            "expected_path": "",
+            "expected_status": expected_status,
+            "max_handoffs": "0",
+        }
+
+    def test_期望fail实际clarify_算过(self) -> None:
+        got = {"path": [], "status": "clarify", "handoffs": 0}
+        assert score_orchestration(self._row("fail"), got).passed
+
+    def test_期望clarify实际fail_也算过(self) -> None:
+        got = {"path": [], "status": "fail", "handoffs": 0}
+        assert score_orchestration(self._row("clarify"), got).passed
+
+    def test_但是派了活就不能再互换(self) -> None:
+        """🔴 互换**只在两边都没派活时**成立。
+
+        派了活还判 fail(或反之)是真的不一致 —— 那时候路径本身就是硬证据,
+        不该被这条宽容规则盖掉。
+
+        ⚠️ 这条用例的取值是被变异测试逼出来的。第一版写的是
+        `expected=success` vs `actual=clarify` —— 而 success 本来就不在互换集合里,
+        所以把「两边都没派活」这个限定**整个拿掉,那一版照样绿**:
+        它测的是「success 不参与互换」(另一条已经在测),不是「限定还在不在」。
+
+        要钉住限定,两个状态**都得在互换集合里**({clarify, fail}),而路径**非空**
+        —— 只有这个组合能让那个限定成为唯一的判据。
+        """
+        row = {
+            "id": "OY",
+            "expected_path": "safety",
+            "expected_status": "clarify",
+            "max_handoffs": "1",
+        }
+        got = {"path": ["safety"], "status": "fail", "handoffs": 1}
+        sc = score_orchestration(row, got)
+        assert not sc.passed
+        assert "状态不符" in sc.reason
+
+    def test_success不参与互换(self) -> None:
+        """success 表示「派了活并跑完」,它和「没派活」是两件事,任何时候都不许互换。"""
+        got = {"path": [], "status": "clarify", "handoffs": 0}
+        assert not score_orchestration(self._row("success"), got).passed

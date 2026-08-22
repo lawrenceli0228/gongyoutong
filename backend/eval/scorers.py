@@ -899,7 +899,27 @@ def score_orchestration(row: Mapping[str, str], actual: Any) -> RowScore:
             )
     if actual_handoffs > cap:
         problems.append(f"多派了活:实际交接 {actual_handoffs} 次,上限 {cap} 次")
-    if got_status != expected_status:
+    # ── 状态。**两档在「都没派活」时不作区分**,理由见下 ────────────────────
+    #
+    # 🔴 `clarify`(回头追问)与 `fail`(如实说做不了)这个区分,靠的是
+    # `hooks.classify_outcome` 里那条「末尾有没有问号」—— 而那是个很粗的判据。
+    # supervisor 说「这事我做不了,你是要我记一条任务吗?」既是拒绝也带问号,
+    # 判成 clarify;换个说法不带问号,同一个意思判成 fail。
+    #
+    # 2026-08-22 实测撞到:O20(帮我给搅拌站打电话订混凝土)期望 fail、实际 clarify,
+    # 而**两轮之间还翻过面** —— 它测的其实不是模型对不对,是我这条判据的边界在哪。
+    #
+    # 真要分开这两档,得像 safety 套那样上一个**外部 LLM 裁判**去读那句话的意图。
+    # 那是另一件事(且要花钱、且自己带噪声)。在那之前,这套能可靠回答的只有
+    # **「派没派活」**,所以:两边路径都空时,clarify 与 fail 视为同一档。
+    #
+    # ⚠️ 这是**明知的精度损失,不是漏了**。代价写在这儿:一条本该被清楚拒绝的请求,
+    # supervisor 改成反问一句也照样判过。数据集里 expected_status 仍然照实写
+    # (它对读数据集的人有价值),只是判分不拿它当硬判据。
+    _NOT_DISPATCHED = {ORCH_STATUS_CLARIFY, ORCH_STATUS_FAIL}
+    两边都没派活 = not expected_path and not actual_path
+    状态可互换 = 两边都没派活 and {expected_status, got_status} <= _NOT_DISPATCHED
+    if got_status != expected_status and not 状态可互换:
         problems.append(f"状态不符:期望 {expected_status or '空'},实际 {got_status or '空'}")
 
     if not problems:
