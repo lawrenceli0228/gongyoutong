@@ -31,13 +31,32 @@
  * 合并成一个数之后这里会红,那是**刻意的**。
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
 const SETUP_SH = fileURLToPath(new URL("../setup-frontend.sh", import.meta.url));
 const CLAUDE_MD = fileURLToPath(new URL("../../CLAUDE.md", import.meta.url));
+
+/**
+ * 🔴 **CLAUDE.md 不进 git**(`.gitignore` 第 100 行 `/CLAUDE.md`),所以 CI 里没有它。
+ *
+ * 这不是本文件的问题,是那条 .gitignore 的后果(五路复查合并单的架构 D 条:
+ * 「CLAUDE.md 现在有 55 行同源清单,而**队友一行都拿不到**」)。
+ * 在它进 git 之前,这道闸只有一半跑得动:
+ *
+ *   · **`setup-frontend.sh` 头注那半 —— CI 里照跑**(脚本在 git 里)。
+ *     改了注册却没改头数,CI 当场红;
+ *   · **CLAUDE.md 那半 —— 只在本机有效**。改了头数却没改 CLAUDE.md,
+ *     CI 绿、本机红。
+ *
+ * ⚠️ 做成 `skipIf` 而不是「文件不在就当通过」是刻意的:后者会让报告里
+ * 多一条**看起来验过了**的绿行,而它什么都没验。skip 至少在报告里是灰的。
+ * (本仓已知 skip 是个弱信号 —— 没有任何东西盯「这台机器跳过了几条」,
+ *  那是 P3 第 21 条。这里只能做到这一步:真正的修法是把 CLAUDE.md 放进 git。)
+ */
+const HAS_CLAUDE_MD = existsSync(CLAUDE_MD);
 
 /**
  * 阿拉伯数字 → 中文数字。只覆盖到 99 —— 覆盖件到不了那个量级,
@@ -97,20 +116,23 @@ describe("覆盖件件数:脚本 / CLAUDE.md 与真值对得上", () => {
     expect(头注![2]).toBe(toChinese(installCount));
   });
 
-  it("CLAUDE.md「前端覆盖件」那一节的两个数对得上", () => {
-    const md = readFileSync(CLAUDE_MD, "utf8");
-    // CLAUDE.md 的写法是 `- **`apply_override` 十三件** ——`:
-    // 星号包住的是**整段**(名字 + 数字),不是只包数字。
-    const apply = /\*\*`apply_override` ([^*]+?)件\*\*/.exec(md);
-    const install = /\*\*`install_new_file` ([^*]+?)件\*\*/.exec(md);
-    expect(
-      apply,
-      "CLAUDE.md 里没找到「**`apply_override` N件**」—— 那一节的措辞改了就要连这条测试一起改",
-    ).not.toBeNull();
-    expect(install, "CLAUDE.md 里没找到「**`install_new_file` N件**」").not.toBeNull();
-    expect(apply![1]).toBe(toChinese(applyCount));
-    expect(install![1]).toBe(toChinese(installCount));
-  });
+  it.skipIf(!HAS_CLAUDE_MD)(
+    "CLAUDE.md「前端覆盖件」那一节的两个数对得上(CLAUDE.md 不进 git,CI 里必跳)",
+    () => {
+      const md = readFileSync(CLAUDE_MD, "utf8");
+      // CLAUDE.md 的写法是 `- **`apply_override` 十三件** ——`:
+      // 星号包住的是**整段**(名字 + 数字),不是只包数字。
+      const apply = /\*\*`apply_override` ([^*]+?)件\*\*/.exec(md);
+      const install = /\*\*`install_new_file` ([^*]+?)件\*\*/.exec(md);
+      expect(
+        apply,
+        "CLAUDE.md 里没找到「**`apply_override` N件**」—— 那一节的措辞改了就要连这条测试一起改",
+      ).not.toBeNull();
+      expect(install, "CLAUDE.md 里没找到「**`install_new_file` N件**」").not.toBeNull();
+      expect(apply![1]).toBe(toChinese(applyCount));
+      expect(install![1]).toBe(toChinese(installCount));
+    },
+  );
 
   it("每一件覆盖件在 scripts/frontend-overrides/ 里都真的存在", () => {
     // 这一条与件数无关,但成因同源:注册了一个不存在的文件,
