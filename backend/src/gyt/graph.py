@@ -132,7 +132,7 @@ API 核实结论（2026-08-05 实测，逐个从 PyPI 下 wheel 解包读源码�
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any, NamedTuple
+from typing import Any, Final, NamedTuple
 
 from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -154,7 +154,7 @@ from gyt.config import get_settings
 from gyt.core import llm
 from gyt.core.run_context import project_from_config
 from gyt.core.uploads import ingest_uploads
-from gyt.db.projects import get_project
+from gyt.db.projects import get_project, list_projects
 from gyt.site_switch import switch_project
 
 # —— 模块级常量：禁止在函数体里散落字面量 ——
@@ -216,7 +216,9 @@ class AgentSpec(NamedTuple):
         requires_project:
                  这位同事的活儿**要不要先选中「当前工地」才做得准**。True 会让它的名字被
                  render_project_notice 拼进 supervisor 提示词,于是用户没选工地又要干这类活时,
-                 supervisor 会先提醒他去顶栏选,而不是闷头派活(理由见那个函数的说明)。
+                 supervisor 会**在对话里问他是哪个工地**并把清单摆出来(2026-08-22 改口径:
+    #                 原先是「提醒他去顶栏选」,而真机上模型把它执行成了「先别派活」——
+    #                 详见 _render_project_choices 的说明)。
                  ⚠️ 判据是**「没选工地时它的工具会不会给出落错地方 / 张冠李戴的结果」**,
                  不是「它的库表里有没有 project_id 这一列」—— tasks 与 attendance 两张表
                  都预留了这一列却「写入恒 NULL、不进任何函数签名」(定案 #11),
@@ -505,12 +507,21 @@ _SUPERVISOR_PROMPT_TEMPLATE = """\
 _PROJECT_NOTICE_TEMPLATE = """
 # 先看用户选没选工地
 
-下列同事的活儿**要先选中工地才做得准**:{names}。
-用户没选工地又要干这类活时,先用一句短话提醒他到界面顶栏把工地选上,别闷头派活。
-注意:派出去也**不会报错** —— 活照干、话照答、数字照样给,只是答的不是他要的那个工地
-(图纸可能拿的是别的项目那张;隐患条数数的是没归到任何工地的那一堆)。
+**只有下面这几位同事的活儿要先选中工地**:{names}。
+🔴 **这份名单以外的活,一律照常派,一个字都不用提工地。** 记任务、看照片、查考勤
+这些跟工地选没选没有关系 —— 提了就是白拦一道,而拦下来的那件事本来是办得成的。
+
+用户没选工地、又恰好要干**名单上这几类**活时,按这四步走:
+1. **就在对话里问他是哪个工地** —— 事情在聊天框里发生,就在聊天框里办完;
+2. 把「当前工地」那节列出来的清单摆给他挑,别让他凭空想一个名字;
+3. 他答了之后调 `switch_project` 落实(它认模糊说法,不用要求他报全名);
+4. 切换**从下一条消息起生效** —— 这句要**说给用户听**(「下一句起就按这个工地算了」),
+   让他知道刚问的那件事得再说一遍。
+
+为什么非问不可:派出去也**不会报错** —— 活照干、话照答、数字照样给,只是答的不是
+他要的那个工地(图纸可能拿的是别的项目那张;隐患条数数的是没归到任何工地的那一堆)。
 他自己看不出来,所以这一步得你替他把住。
-用户明说「不限项目 / 看全部工地」的,那是他自己的选择,照办就行,不用再提醒。
+用户明说「不限项目 / 看全部工地」的,那是他自己的选择,照办就行,不用再问。
 """
 """「哪些活儿离不开当前工地」这一节的模板。{names} 由 render_project_notice 现算填入。
 
@@ -575,6 +586,63 @@ def build_supervisor_prompt(specs: Sequence[AgentSpec] = AGENT_REGISTRY) -> str:
     )
 
 
+_MAX_LISTED_PROJECTS: Final[int] = 8
+"""摆给用户看的工地最多几个。与 ``site_switch`` 的 ``rows[:8]`` 同一个口径 ——
+那边「没找到 X,现在有这些:…」列几个,这边就列几个,两处报的清单长度不该不一样。
+超出时明说「还有几个」,**不许悄悄截断** —— 悄悄截的话,一个工地明明存在却不在清单里,
+用户会以为它没建。"""
+
+
+def _render_project_choices() -> str:
+    """「现在有哪几个工地可选」——**这一段是 2026-08-22 那次真机验收逼出来的**。
+
+    ===========================================================================
+    🔴 它替换掉的是什么:一句把人支走的话
+    ---------------------------------------------------------------------------
+    原文是「先提醒他到顶栏选一个工地,别替他猜是哪个」。真机上的后果有两层:
+
+    ① **supervisor 干脆不派活了。** 4/4 确定性复现:「给我建个任务:明天上午复检三层钢筋」
+       在没选工地时,它答「麻烦你先到界面顶栏把工地选上,我再帮你把任务记进去」,
+       交接记录是**(没派活)**。真机验收 A 组十条挂了九条,全挂在这一条上。
+    ② **它连不该管的活也一起卡住了。** 原文举例里写着「(图纸、规范、任务)」,
+       而 ``schedule``(任务)的 ``requires_project`` 是 **False** —— 任务台账是
+       全工地共用一本,``db/tasks.py`` 定案 #11:project_id 建表即预留、写入恒 NULL。
+       也就是说选不选工地记出来的任务**逐字节相同**,卡住它纯属白卡。
+
+    ===========================================================================
+    现在的做法:**问,并且把选项摆出来**
+    ---------------------------------------------------------------------------
+    人在聊天框里,就在聊天框里把事办完 —— 别让他跳到界面另一头去点一个按钮再回来。
+    清单从库里现查(与 ``switch_project`` 同一份真相),用户怎么答都行:
+    ``resolve_target`` 认 id、认全名、认编号,还认**双向子串**
+    (「切到阳光花园工地」能命中「阳光花园」),所以提示词里不必要求他报全名。
+
+    ⚠️ 一个都没建时**不许编一个空清单让他选** —— 那时唯一的出路是先去建工地,
+    照 ``switch_project`` 的 "none" 分支说同一句话(两处措辞刻意对齐:
+    同一件事在对话里和在工具回执里得是同一个说法)。
+    """
+    rows = list_projects()
+    if not rows:
+        # 与 switch_project 的 "none" 分支同句。改一处两处一起改。
+        return (
+            "而且系统里**一个工地都还没建** —— 这时候别问他选哪个(没得选)。"
+            "如实说:先在「资料归档」面板新建工地,再回来干这类活。"
+        )
+    listed = "、".join(f"「{r.name}」" for r in rows[:_MAX_LISTED_PROJECTS])
+    more = (
+        f",另外还有 {len(rows) - _MAX_LISTED_PROJECTS} 个"
+        if len(rows) > _MAX_LISTED_PROJECTS
+        else ""
+    )
+    return (
+        f"现在系统里有这几个工地:{listed}{more}。\n"
+        "需要选工地的活儿(见上面那节)遇到没选时,**就在对话里问他是哪个工地**,"
+        "把这份清单摆给他挑。\n"
+        "他答了之后调 `switch_project` 落实(**它认模糊说法**:全名、编号、"
+        "「阳光花园那个」都行,不用要求他一字不差)。"
+    )
+
+
 def render_current_project(config: RunnableConfig | None) -> str:
     """把「用户此刻在顶栏选中的工地」渲染成一段提示词，逐轮拼到静态提示后面。
 
@@ -591,17 +659,13 @@ def render_current_project(config: RunnableConfig | None) -> str:
     """
     project_id = project_from_config(config)
     if not project_id:
-        return (
-            "# 当前工地\n\n"
-            "用户还没在顶栏选中「当前工地」。凡是要落到某个工地的具体数据"
-            "(图纸、规范、任务)时,先提醒他到顶栏选一个工地,别替他猜是哪个。"
-        )
+        return f"# 当前工地\n\n用户还没选「当前工地」。{_render_project_choices()}"
     row = get_project(project_id)
     if row is None:
         # 选中的工地在库里查无 —— 多半刚被删。不要报编号里的乱码给师傅,给可操作的话。
         return (
             "# 当前工地\n\n"
-            "用户顶栏选中的工地在库里查不到了(可能刚被删)。请提醒他重新到顶栏选一个工地。"
+            f"用户之前选中的工地在库里查不到了(可能刚被删)。{_render_project_choices()}"
         )
     return (
         "# 当前工地\n\n"
