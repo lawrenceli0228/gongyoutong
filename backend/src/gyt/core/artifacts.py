@@ -93,6 +93,15 @@ class ArtifactKind(str, Enum):
     PHOTO = "PHOTO"
     DRAWING = "DRAWING"
     DOCUMENT = "DOCUMENT"
+    # 🔴 **REPORT 装两种东西,别把它读成「巡检记录」**(2026-08-22 踩过):
+    #   · agents/report/tools.py     出的巡检记录(`巡检记录_GYT-日期-时刻.docx`)
+    #   · supervision_api._sign      签发的五种监理文书(通知单 / 暂停令 / …)
+    # 于是「列出所有 REPORT 产物」**不等于**「列出所有巡检记录」——
+    # reports_api 第一版就是这么写的,本机真数据上 39 份 REPORT 里 28 份是监理文书,
+    # 全部混进了工友的「巡檢記錄」抽屉,而且没有任何报错。
+    # 要分开只能再看一维:**监理编号都带类型段(GYT-ZT- / GYT-TZ- / …),巡检记录号不带**
+    # (reports_api._REPORT_NO_RE 那段有完整实测)。给监理文书新开一档才是正解,
+    # 但历史产物仍是 REPORT —— 取舍与代价记在 TODO-56。
     REPORT = "REPORT"
     # 打卡凭证图(W7)。单列一类而不并进 PHOTO,是清理器的前提:
     # 留存策略只对考勤图生效(到期删图、行置 NULL),PHOTO 是巡检链的工地照片,

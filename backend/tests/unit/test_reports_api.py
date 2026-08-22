@@ -134,15 +134,49 @@ class Test列表:
 
         assert [r["artifact_id"] for r in reports] == [artifact_id]
 
-    def test_抠不出编号时给None而不是编一个(self, client: TestClient) -> None:
-        """🔴 一个长得像编号、却对不上任何文档的串,比一格空白坏得多 ——
-        它会被人报给别人、写进留档,而事后谁也查不到那份文件。"""
+    def test_抠不出编号的整条跳过_不是列出来让编号那格空着(self, client: TestClient) -> None:
+        """🔴 **这一条是 2026-08-22 真机照出来的 bug 的钉子。**
+
+        原来的行为是「列出来,编号那格给 None」。而 ``ArtifactKind.REPORT``
+        那一档**监理文书也在用**,于是《工程暂停令》一类全部混进了工友的
+        「巡檢記錄」抽屉 —— 本机真数据实测 39 份 REPORT 里 **28 份是监理文书**。
+
+        现在判据是两道:kind 对 **且** 文件名里解得出巡检记录号。
+        """
         _make_report(name="不知道谁生成的.docx")
+        真记录 = _make_report()
 
-        (行,) = _get(client)["data"]["reports"]
+        reports = _get(client)["data"]["reports"]
 
-        assert 行["report_no"] is None
-        assert 行["filename"] == "不知道谁生成的.docx", "文件名照给,只有编号那格空着"
+        assert [r["artifact_id"] for r in reports] == [真记录]
+        assert all(r["report_no"] for r in reports), "列出来的每一份都必须有编号"
+
+    def test_监理五种文书一份都不许混进巡检记录抽屉(self, client: TestClient) -> None:
+        """🔴 判别信号是**编号带不带类型段** —— 本仓早就有并且守着这条:
+        六种监理编号都带 ``-ZT-`` / ``-TZ-`` / ``-JS-`` 这样的类型段,
+        巡检记录号不带(``REPORT_RECEIPT_PATTERN`` 与 ``SUPERVISION_RECEIPT_PATTERN``
+        故意互不匹配就是它)。
+
+        ⚠️ 下面这些文件名是**从本机真实产物里抄出来的**,不是编的 ——
+        编的名字证明不了这条判据在真数据上成立(那正是第一版漏掉这个 bug 的原因:
+        测试只造过 ``巡检记录_…`` 这一种名字)。
+        """
+        监理文书 = [
+            "监理通知单_GYT-TZ-20260819-134037-70ed.docx",
+            "工程暂停令_GYT-ZT-20260819-134037-f539.docx",
+            "致建设单位报告_GYT-JS-20260819-134037-27cb.docx",
+            "工程复工令_GYT-FG-20260819-140000-1a2b.docx",
+            "监理报告_GYT-BG-20260819-140000-3c4d.docx",
+        ]
+        for name in 监理文书:
+            _make_report(name=name)  # 真走 register,kind 与监理那条链一模一样
+        真记录 = _make_report()
+
+        reports = _get(client)["data"]["reports"]
+
+        assert [r["artifact_id"] for r in reports] == [真记录], (
+            f"监理文书混进来了:{[r['filename'] for r in reports]}"
+        )
 
     def test_最近的排最前面(self, client: TestClient) -> None:
         """日期目录名靠 ``YYYYMMDD`` 的**字典序当时间序**。
