@@ -1296,7 +1296,7 @@ FILLED_DATASETS: Final[dict[str, int]] = {
     "safety": 30,
     "routing": 33,
     "rag": 20,
-    "orchestration": 25,
+    "orchestration": 26,
 }
 """已经填完真数据的套 → 应有的可判分行数。
 
@@ -1307,7 +1307,7 @@ routing 与 rag 于 2026-08-09(随 cad / knowledge 落地)。所以下面那条
 
 数字必须 ≥ config 里的 eval_min_rows_*(20 / 30 / 20),否则跑分脚本会直接判不通过。
 ⚠️ **safety 与 rag 卡死在下限上,一条不多**:safety 30=30、rag 20=20;
-orchestration 刻意不这样 —— 25 行 / 下限 15,富余 10 行,理由写在 config 里那个字段上;
+orchestration 刻意不这样 —— 26 行 / 下限 15,富余 11 行,理由写在 config 里那个字段上;
 routing 33(下限 20:W7 加了 R23-R26 的 attendance 四行,W9 又加了 R27-R33 的
 supervision 五行 + 两行对抗行,现在富余 13 条)。
 删数据行、或让某行的备注里蹦出「待替换/请替换」被剔出分母,都会当场把整套打到硬闸以下。
@@ -1418,3 +1418,77 @@ def test_diagnostics_surface_over_reporting() -> None:
     text = "\n".join(format_diagnostics(rows))
     assert "多报的类" in text
     assert "消防通道堵塞" in text
+
+
+def test_要选工地的行必须成对写_一行选一行不选() -> None:
+    """🔴 `requires_project=true` 的行要成对:一行填 `project_id`、一行留空。
+
+    ===========================================================================
+    为什么这条值得做成守卫
+    ---------------------------------------------------------------------------
+    两行测的是**两个不同的正确行为**:
+      · 填了 project_id 的 —— 「选了工地之后这条链走不走得通」;
+      · 留空的         —— 「没选工地时 supervisor 会不会先提醒去选」。
+        后者是 `AgentSpec.requires_project` 那句提示词的**唯一守卫**。
+
+    2026-08-22 当场撞到过:O09(cad>knowledge)只有「期望直接派活」这一行,
+    而干净基线里实际是 supervisor 去要工地了 —— **两件都对,是评测缺一维**
+    (数据集写在那句提示词之前)。补了 O26 之后才成对。
+
+    ⚠️ 只写一行不会有任何东西报错:分数照样算得出来,只是有一个行为永远没人守,
+    而它恰恰是最近才加的那个。所以这条不能只写在 README 里靠人记。
+    """
+    rows = load_rows(SUITES["orchestration"])
+    要工地 = [r for r in rows if str(r.get("requires_project", "")).strip().lower() == "true"]
+    assert 要工地, "一条 requires_project=true 的行都没有,那句提示词就完全没被测到"
+
+    选了 = [r for r in 要工地 if str(r.get("project_id", "")).strip()]
+    没选 = [r for r in 要工地 if not str(r.get("project_id", "")).strip()]
+
+    assert 选了, (
+        "requires_project=true 的行里没有一条填了 project_id —— "
+        "「选了工地之后这条链走不走得通」没人测。"
+    )
+    assert 没选, (
+        "requires_project=true 的行里没有一条留空 project_id —— "
+        "「没选工地时会不会先提醒」没人测,而那是 AgentSpec.requires_project 唯一的守卫。"
+    )
+
+
+def test_至少有一行在守_没选工地时会不会先提醒() -> None:
+    """`AgentSpec.requires_project` 那句提示词,必须**有人在守**。
+
+    ===========================================================================
+    ⚠️ 判据只能这么弱,不能更强 —— 这是 2026-08-22 当场纠正过的一次
+    ---------------------------------------------------------------------------
+    我先写的是「requires_project=true 且没填 project_id 的行,**一律**不许期望
+    success」,理由是「supervisor 按提示词会先要工地」。守卫当场抓出一批行,
+    **而抓错了**:同一个干净基线里 ——
+
+        O04(cad,没选工地)   →  真的派给了 cad,success
+        O09(cad,没选工地)   →  没派活,回头要工地
+
+    同样的 Agent、同样没选工地,**行为不一样**。再看 supervisor 的原话:
+    「查柱子间距这事**我派给看图纸的同事了**。不过有两件事得先办:1. 先选工地……」
+    —— 它是**边派边提醒**,不是只提醒不派。
+
+    也就是说那句提示词是**概率性生效**的(CLAUDE.md 反复写的那条:
+    「提示词只是概率性生效,结构件才兜得住」)。拿一条断言它确定性生效的守卫去卡,
+    只会让数据集被迫写成一个并不成立的样子。
+
+    所以这里只守一件**真的**事:**至少有一行在测「会不会提醒」这个行为**。
+    一行都没有的话,那句提示词就完全没人守 —— 而它是这个分支里唯一一处
+    改了模型行为的地方。
+    """
+    rows = load_rows(SUITES["orchestration"])
+    候选 = [
+        r
+        for r in rows
+        if str(r.get("requires_project", "")).strip().lower() == "true"
+        and not str(r.get("project_id", "")).strip()
+        and r["expected_status"] == "clarify"
+    ]
+    assert 候选, (
+        "没有任何一行在测「requires_project=true 且没选工地时会不会先提醒」。"
+        "那句提示词是这个分支里唯一改了模型行为的地方,不能一行守卫都没有。"
+    )

@@ -315,9 +315,26 @@ async def run_orchestration_row(row: Mapping[str, str]) -> Any:
     # 惰性导入,理由同 run_routing_row(import gyt.graph 即建图、即要 API Key)。
     from langgraph.errors import GraphRecursionError
 
+    from gyt.core.run_context import PROJECT_CONFIG_KEY
     from gyt.graph import graph
 
     config: dict[str, Any] = {}
+
+    # 「当前工地」—— 界面顶栏选的那个,经 config.configurable 注入(契约在
+    # core/run_context.PROJECT_CONFIG_KEY;前端 thread-index.tsx 用的是同一个键)。
+    #
+    # 🔴 **这一路 2026-08-22 之前是缺的**,而它不是可有可无:
+    # `AgentSpec.requires_project=True` 的那几个(cad / supervision)在没选工地时,
+    # supervisor 按提示词会**先回头要工地而不是派活** —— 于是这类行永远只测得到未选状态,
+    # 「选了工地之后这条复合链走不走得通」压根表达不了。
+    #
+    # 那天 O09(cad>knowledge)就是这么红的:实际行为完全正确(它去要工地了),
+    # 而数据集写在那句提示词之前、期望的是直接派活。**两件都对,是评测缺一维。**
+    # 留空 = 不选工地,那也是一种要测的状态(该被提醒的那一档)。
+    project_id = str(row.get("project_id") or "").strip()
+    if project_id:
+        config["configurable"] = {PROJECT_CONFIG_KEY: project_id}
+
     raw_limit = os.environ.get(RECURSION_LIMIT_ENV, "").strip()
     if raw_limit:
         try:

@@ -204,7 +204,8 @@
 | `type` | 恒 `orchestration` |
 | `user_input` | **工地师傅或监理真会打出来的话**。⚠️ 里面不许有逗号(csv 会裂) |
 | `expected_path` | `>` 分隔的 Agent 名序列,如 `safety>knowledge`。**空 = 不该派给任何人** |
-| `requires_project` | `true` / `false` —— 这条是不是必须先选工地 |
+| `requires_project` | `true` / `false` —— 这条是不是必须先选工地。**眼下只是备注,没有任何东西校验它** |
+| `project_id` | 填了就**真的替用户选上这个工地**(经 `config.configurable` 注入,与前端同一个键)。留空 = 没选 |
 | `expected_status` | `success` 做完 / `clarify` 该追问 / `fail` 该如实说做不了 |
 | `max_handoffs` | 整数。实际交接数不许超过它 |
 | `note` | 这条在守什么 |
@@ -235,6 +236,15 @@
 > ⚠️ 最后那条(0 跳 + 没问号 = fail)刻意往严里判 —— supervisor 在该派活时自己编答案
 > 正是这套要抓的。代价是它会把「你好」这种正当闲聊自答也判 fail,
 > **所以这份数据集里不许放闲聊行**,那类归 routing 套的 `expected_agent=none`。
+
+> 🔴 **`requires_project=true` 的行必须成对写**,一行填 `project_id`、一行留空:
+> - 填了的那行测「选了工地之后这条链走不走得通」;
+> - 留空的那行测「没选工地时 supervisor 会不会先提醒」——那是
+>   `AgentSpec.requires_project` 那句提示词的**唯一守卫**。
+>
+> 只写一行的下场 2026-08-22 当场撞到过:O09(cad>knowledge)期望直接派活,
+> 而实际 supervisor 去要工地了 —— **两件都对,是评测缺一维**,数据集写在提示词之前。
+> 现在 O09(选了工地)与 O26(没选)是一对镜像,少一行就有一个行为没人守。
 
 > **想量递归上限就设 `GYT_EVAL_RECURSION_LIMIT`**(`hooks.RECURSION_LIMIT_ENV`):
 > 同一份数据集在 8 / 10 / 12 / 16 四档下各跑一遍,熔断会被收敛成 `status=fail` 而不是

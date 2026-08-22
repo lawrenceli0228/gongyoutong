@@ -1,26 +1,27 @@
-id,type,user_input,expected_path,requires_project,expected_status,max_handoffs,note
-O01,orchestration,照片上那堆钢管码得乱七八糟的 会不会出事,safety,false,success,1,单 Agent 基线:只看照片、不要文档 → safety。不出现「安全」「隐患」二字也要认得出(safety summary 的八类里有「材料堆放混乱」)。requires_project=false:识图结论跟选哪个工地无关 —— 隐患登记落到「未归属」是副作用 不是答错
-O02,orchestration,刚拍的这张给我出份巡检记录 检查组下午要看,inspection,false,success,1,单 Agent 基线:「出记录」「留档」是 inspection 的信号词。它是 START→safety→report 那条写死的图边编译成的一个 Agent —— **算一跳**
-O03,orchestration,后天要浇筑三层顶板 给我在任务台账上记一条,schedule,false,success,1,单 Agent 基线:记任务。requires_project=false 是实情不是偷懒:tasks 表的 project_id 建表即预留、写入恒 NULL、不进任何函数签名(db/tasks.py 定案 #11)
-O04,orchestration,A区首层平面图上集水坑标的多深,cad,true,success,1,单 Agent 基线:查图纸上标注的尺寸。requires_project=true:按**图名**找上传的项目图时 选了工地才只在本工地找、没选就跨项目找 同名多张还会先要用户挑(cad/tools.py 的 _locate_drawing_sync)
-O05,orchestration,消防车道最窄能到多少米,knowledge,false,success,1,单 Agent 基线:规范条文/数值。「消防车道要多宽」就写在 knowledge 的 summary 里。requires_project=false:没选工地就只查全局规范 这类通用条文照样答得出(只有项目专项那份资料才需要先选工地)
-O06,orchestration,王师傅上礼拜到了几天,attendance,false,success,1,单 Agent 基线:出勤天数。requires_project=false:attendance 表的 project_id 照搬 tasks 的处理 —— 写入恒 NULL、不进函数签名(db/attendance.py)
-O07,orchestration,超期的隐患现在有几条 给我列一下,supervision,true,success,1,单 Agent 基线:隐患台账只读查询(「超期」是 scoping.SCOPES 四个受控词之一)。requires_project=true 是全表最硬的一条:没选工地时 list_hazards 列的**就是**未归属那一堆 报出来的条数直接是错的 而且不会有任何报错
-O08,orchestration,这张照片里临边防护做得对不对 顺带说下规范要求栏杆得多高,safety>knowledge,false,success,2,复合基线:先看照片(safety)再查条文(knowledge)。两条 summary 各带一句互斥的免责句 —— 只派 safety 会漏掉「多高才合规」这一半 而那一半才是师傅真正要的判据
-O09,orchestration,A区首层平面图上消防车道标的是4米 规范要求多宽,cad>knowledge,true,success,2,复合基线:图上标注(cad)+ 规范要求(knowledge)= 一次合规比对 这是监理最常干的活。cad 的 summary 明写「柱距多少才合规」这类问规范内容的不归它 —— 所以第二跳非有不可
-O10,orchestration,那条临边隐患该怎么处置 顺便在任务台账上记一条明天整改,supervision>schedule,true,success,2,复合基线:处置建议(supervision)+ 记任务(schedule)。同时钉住分界 ——「怎么处置」归 supervision、「记到任务台账」归 schedule;一句话里两件事要拆开按顺序派(supervisor 提示词派活规则 2)
-O11,orchestration,张三这礼拜来了几天 把他那条模板验收往后挪到下周一,attendance>schedule,false,success,2,复合基线:查出勤(attendance)+ 改期(schedule)。「来了几天」是 D16 点名的危险词(routing R26 原话) 这里它后面还跟着一个真的改期动作 —— 两跳都不许省 省了哪一跳用户都看不出来少了什么
-O12,orchestration,明天钢筋验收那条任务销了没 再看看张三今天到没到,schedule>attendance,false,success,2,复合基线 与上一行**方向相反**:先任务台账(schedule)后打卡台账(attendance)。守的是顺序敏感 —— 两个 Agent 都能接住这句话的一半 顺序反了第一跳就答非所问
-O13,orchestration,动火作业要办哪些手续 办证这事儿给我记条任务 后天前办完,knowledge>schedule,false,success,2,复合基线:程序类条文(knowledge summary 原话「要办什么手续」)+ 记任务(schedule)。⚠️「动火作业无监护」是 safety 那八类违规词之一 别被钓去看照片 —— 这里压根没有照片、问的是手续怎么办
-O14,orchestration,这张照片查一下 有问题的话出份记录存档,inspection,false,success,1,英雄链:「查照片 + 要文档」是**一件事不是两件**。inspection 编译后整体挂在 AGENT_REGISTRY 里 所以 max_handoffs=1;拆成先派 safety 再派 report 是错的 —— transfer_to_report 这条路根本不存在
-O15,orchestration,刚才那张照片整理成巡检记录 明天交监理,inspection,false,success,1,英雄链:只说「整理成巡检记录」、没说「查一下」 也照样走 inspection(safety 那一跳重跑命中缓存 无额外成本)。⚠️ 别因为出现「监理」二字派给 supervision —— 它出的是通知单/暂停令那五种法律文书 不出巡检记录
-O16,orchestration,三号那个有问题 你给瞅瞅,,false,clarify,0,意图不清:「三号」是楼号、柱号 还是三号那天 都说得通 而且没说要查什么 → 该反问。⚠️ 别被「瞅瞅」钓给 safety:这句话里压根没提照片 和「要查照片但照片还没发」不是一回事(后者按 supervisor 派活规则 4 **不算模糊** 照派 safety)
-O17,orchestration,昨天那事儿后来咋样了,,false,clarify,0,意图不清且**跨泳道**:可能指隐患(supervision)、任务(schedule)、打卡(attendance) —— 三个 Agent 都能接住一半。这行专治「总得派个人」那种失败:随手挑一位塞过去 界面上会出现一个像模像样但完全答非所问的回执
-O18,orchestration,你先帮我弄一下 急着要,,false,clarify,0,意图不清:一个宾语都没有。这行守的是 supervisor 提示词那条红线 —— 决定反问就把问题本身写出来然后**停** 严禁再调交接工具;嘴上说着反问手上却发了交接 系统只认手 结果就是派错人
-O19,orchestration,这个月我的工钱能领多少 帮我算算,,false,fail,0,系统根本没有的能力(工资结算)→ 该如实说做不了、并讲清现在能做什么 不许硬塞给谁。⚠️ 最容易被钓给 attendance —— 工钱看着像按出勤天数算 而它的 summary 里只有打卡记录 一个计薪口径都没有
-O20,orchestration,帮我给搅拌站打个电话 订点混凝土过来,,false,fail,0,系统根本没有的能力(对外联络/采购下单)。刻意不带日期词、也不带「记一条」 —— 带了这句就变成 schedule 的合法记任务请求 那样测的就不是能力边界了
-O21,orchestration,把模板那处整改记到任务台账上 后天前弄完,schedule,false,success,1,⚠️对抗行①:含「整改」但要的是**记任务**。最容易被 supervision 钓走 —— 它的正域是隐患(GYT-H- 号) schedule 的正域是任务(T 号) 两边宾语不同。被钓走 = 真机验收 C3 翻车的预演(routing R32 同款)
-O22,orchestration,上周记的那条复检任务 往后挪到下周一,schedule,false,success,1,⚠️对抗行②:「复检」听着像监理复查(supervision 管「登记复查结论」) 但宾语是**任务**、动作是**改期**。判据就是 supervision summary 那句免责话 ——「只排个期限、不出文书的 派 schedule」。routing R33 同款
-O23,orchestration,B区二层平面图上电梯井那道墙 规范尺寸标的多厚,cad,true,success,1,⚠️对抗行③:含「规范」但问的是**图纸上标注的**尺寸 不是规范里要求多少。最容易被 knowledge 钓走(它的正域就是「XX 规范上怎么规定」) —— 分界点是「图纸上标的」这个出处词。cad 的免责句只挡了反方向 这一头没人守
-O24,orchestration,昨天那条临边隐患是谁报上来的,supervision,true,fail,1,⚠️对抗行④:句子里有「谁」 最容易被 attendance 钓走(它的正域正是「今天谁到了」) —— 但宾语是**隐患不是人** 该派 supervision。status=fail 是刻意的:hazards 表没有报送人这一列(只有 closed_by/issued_by 且 Agent 那三个工具都不外露) 正确行为是 supervision 如实说台账里没记谁报的、**别编一个名字**;也不该由 supervisor 在路由层直接答「做不了」 —— 它不可能知道台账缺这一列
-O25,orchestration,临边那条隐患我们整改完了 给我销掉,supervision,true,success,1,⚠️对抗行⑤(自选 —— 它是 R32/R33 的**反方向** 现有数据集一条都没有):「销掉」「干完了」是 schedule summary 里的原话 但宾语是**隐患**。派给 schedule 等于绕开「挂复查照片 + 人点确认」造一个没有证据的合格 —— 那句「隐患已消除」会白纸黑字进留档文书 而现场原样没动(W9/S7 红线)。正确是 supervision 它答「要到界面上点确认」 同 attendance 答「请点界面上的打卡按钮」
+id,type,user_input,expected_path,requires_project,project_id,expected_status,max_handoffs,note
+O01,orchestration,照片上那堆钢管码得乱七八糟的 会不会出事,safety,false,,success,1,单 Agent 基线:只看照片、不要文档 → safety。不出现「安全」「隐患」二字也要认得出(safety summary 的八类里有「材料堆放混乱」)。requires_project=false:识图结论跟选哪个工地无关 —— 隐患登记落到「未归属」是副作用 不是答错
+O02,orchestration,刚拍的这张给我出份巡检记录 检查组下午要看,inspection,false,,success,1,单 Agent 基线:「出记录」「留档」是 inspection 的信号词。它是 START→safety→report 那条写死的图边编译成的一个 Agent —— **算一跳**
+O03,orchestration,后天要浇筑三层顶板 给我在任务台账上记一条,schedule,false,,success,1,单 Agent 基线:记任务。requires_project=false 是实情不是偷懒:tasks 表的 project_id 建表即预留、写入恒 NULL、不进任何函数签名(db/tasks.py 定案 #11)
+O04,orchestration,A区首层平面图上集水坑标的多深,cad,true,,success,1,单 Agent 基线:查图纸上标注的尺寸。requires_project=true:按**图名**找上传的项目图时 选了工地才只在本工地找、没选就跨项目找 同名多张还会先要用户挑(cad/tools.py 的 _locate_drawing_sync)
+O05,orchestration,消防车道最窄能到多少米,knowledge,false,,success,1,单 Agent 基线:规范条文/数值。「消防车道要多宽」就写在 knowledge 的 summary 里。requires_project=false:没选工地就只查全局规范 这类通用条文照样答得出(只有项目专项那份资料才需要先选工地)
+O06,orchestration,王师傅上礼拜到了几天,attendance,false,,success,1,单 Agent 基线:出勤天数。requires_project=false:attendance 表的 project_id 照搬 tasks 的处理 —— 写入恒 NULL、不进函数签名(db/attendance.py)
+O07,orchestration,超期的隐患现在有几条 给我列一下,supervision,true,,success,1,单 Agent 基线:隐患台账只读查询(「超期」是 scoping.SCOPES 四个受控词之一)。requires_project=true 是全表最硬的一条:没选工地时 list_hazards 列的**就是**未归属那一堆 报出来的条数直接是错的 而且不会有任何报错
+O08,orchestration,这张照片里临边防护做得对不对 顺带说下规范要求栏杆得多高,safety>knowledge,false,,success,2,复合基线:先看照片(safety)再查条文(knowledge)。两条 summary 各带一句互斥的免责句 —— 只派 safety 会漏掉「多高才合规」这一半 而那一半才是师傅真正要的判据
+O09,orchestration,A区首层平面图上消防车道标的是4米 规范要求多宽,cad>knowledge,true,p-eval,success,2,复合基线:图上标注(cad)+ 规范要求(knowledge)= 一次合规比对 这是监理最常干的活。⚠️ project_id 必须填 —— cad 的 requires_project=True 没选工地时 supervisor 会先回头要工地(2026-08-22 实测:这一行因此红过一次 而实际行为完全正确)。编号用稳定的假值:这一维测的是「选没选」不是「选了哪个」 填真编号会把评测绑死在生产数据上
+O10,orchestration,那条临边隐患该怎么处置 顺便在任务台账上记一条明天整改,supervision>schedule,true,,success,2,复合基线:处置建议(supervision)+ 记任务(schedule)。同时钉住分界 ——「怎么处置」归 supervision、「记到任务台账」归 schedule;一句话里两件事要拆开按顺序派(supervisor 提示词派活规则 2)
+O11,orchestration,张三这礼拜来了几天 把他那条模板验收往后挪到下周一,attendance>schedule,false,,success,2,复合基线:查出勤(attendance)+ 改期(schedule)。「来了几天」是 D16 点名的危险词(routing R26 原话) 这里它后面还跟着一个真的改期动作 —— 两跳都不许省 省了哪一跳用户都看不出来少了什么
+O12,orchestration,明天钢筋验收那条任务销了没 再看看张三今天到没到,schedule>attendance,false,,success,2,复合基线 与上一行**方向相反**:先任务台账(schedule)后打卡台账(attendance)。守的是顺序敏感 —— 两个 Agent 都能接住这句话的一半 顺序反了第一跳就答非所问
+O13,orchestration,动火作业要办哪些手续 办证这事儿给我记条任务 后天前办完,knowledge>schedule,false,,success,2,复合基线:程序类条文(knowledge summary 原话「要办什么手续」)+ 记任务(schedule)。⚠️「动火作业无监护」是 safety 那八类违规词之一 别被钓去看照片 —— 这里压根没有照片、问的是手续怎么办
+O14,orchestration,这张照片查一下 有问题的话出份记录存档,inspection,false,,success,1,英雄链:「查照片 + 要文档」是**一件事不是两件**。inspection 编译后整体挂在 AGENT_REGISTRY 里 所以 max_handoffs=1;拆成先派 safety 再派 report 是错的 —— transfer_to_report 这条路根本不存在
+O15,orchestration,刚才那张照片整理成巡检记录 明天交监理,inspection,false,,success,1,英雄链:只说「整理成巡检记录」、没说「查一下」 也照样走 inspection(safety 那一跳重跑命中缓存 无额外成本)。⚠️ 别因为出现「监理」二字派给 supervision —— 它出的是通知单/暂停令那五种法律文书 不出巡检记录
+O16,orchestration,三号那个有问题 你给瞅瞅,,false,,clarify,0,意图不清:「三号」是楼号、柱号 还是三号那天 都说得通 而且没说要查什么 → 该反问。⚠️ 别被「瞅瞅」钓给 safety:这句话里压根没提照片 和「要查照片但照片还没发」不是一回事(后者按 supervisor 派活规则 4 **不算模糊** 照派 safety)
+O17,orchestration,昨天那事儿后来咋样了,,false,,clarify,0,意图不清且**跨泳道**:可能指隐患(supervision)、任务(schedule)、打卡(attendance) —— 三个 Agent 都能接住一半。这行专治「总得派个人」那种失败:随手挑一位塞过去 界面上会出现一个像模像样但完全答非所问的回执
+O18,orchestration,你先帮我弄一下 急着要,,false,,clarify,0,意图不清:一个宾语都没有。这行守的是 supervisor 提示词那条红线 —— 决定反问就把问题本身写出来然后**停** 严禁再调交接工具;嘴上说着反问手上却发了交接 系统只认手 结果就是派错人
+O19,orchestration,这个月我的工钱能领多少 帮我算算,,false,,fail,0,系统根本没有的能力(工资结算)→ 该如实说做不了、并讲清现在能做什么 不许硬塞给谁。⚠️ 最容易被钓给 attendance —— 工钱看着像按出勤天数算 而它的 summary 里只有打卡记录 一个计薪口径都没有
+O20,orchestration,帮我给搅拌站打个电话 订点混凝土过来,,false,,fail,0,系统根本没有的能力(对外联络/采购下单)。刻意不带日期词、也不带「记一条」 —— 带了这句就变成 schedule 的合法记任务请求 那样测的就不是能力边界了
+O21,orchestration,把模板那处整改记到任务台账上 后天前弄完,schedule,false,,success,1,⚠️对抗行①:含「整改」但要的是**记任务**。最容易被 supervision 钓走 —— 它的正域是隐患(GYT-H- 号) schedule 的正域是任务(T 号) 两边宾语不同。被钓走 = 真机验收 C3 翻车的预演(routing R32 同款)
+O22,orchestration,上周记的那条复检任务 往后挪到下周一,schedule,false,,success,1,⚠️对抗行②:「复检」听着像监理复查(supervision 管「登记复查结论」) 但宾语是**任务**、动作是**改期**。判据就是 supervision summary 那句免责话 ——「只排个期限、不出文书的 派 schedule」。routing R33 同款
+O23,orchestration,B区二层平面图上电梯井那道墙 规范尺寸标的多厚,cad,true,,success,1,⚠️对抗行③:含「规范」但问的是**图纸上标注的**尺寸 不是规范里要求多少。最容易被 knowledge 钓走(它的正域就是「XX 规范上怎么规定」) —— 分界点是「图纸上标的」这个出处词。cad 的免责句只挡了反方向 这一头没人守
+O24,orchestration,昨天那条临边隐患是谁报上来的,supervision,true,,fail,1,⚠️对抗行④:句子里有「谁」 最容易被 attendance 钓走(它的正域正是「今天谁到了」) —— 但宾语是**隐患不是人** 该派 supervision。status=fail 是刻意的:hazards 表没有报送人这一列(只有 closed_by/issued_by 且 Agent 那三个工具都不外露) 正确行为是 supervision 如实说台账里没记谁报的、**别编一个名字**;也不该由 supervisor 在路由层直接答「做不了」 —— 它不可能知道台账缺这一列
+O25,orchestration,临边那条隐患我们整改完了 给我销掉,supervision,true,,success,1,⚠️对抗行⑤(自选 —— 它是 R32/R33 的**反方向** 现有数据集一条都没有):「销掉」「干完了」是 schedule summary 里的原话 但宾语是**隐患**。派给 schedule 等于绕开「挂复查照片 + 人点确认」造一个没有证据的合格 —— 那句「隐患已消除」会白纸黑字进留档文书 而现场原样没动(W9/S7 红线)。正确是 supervision 它答「要到界面上点确认」 同 attendance 答「请点界面上的打卡按钮」
+O26,orchestration,A区首层平面图上消防车道标的是4米 规范要求多宽,,true,,clarify,0,O09 的镜像行:一模一样的问题 但**不选工地**。cad 的 requires_project=True 所以 supervisor 该先提醒去顶栏选工地 而不是闷头派活。两行必须成对存在 —— 只留 O09 的话「提醒」这个行为没人守;只留这一行的话「选了工地之后复合链走不走得通」没人守
