@@ -360,9 +360,21 @@ def test_supervisor_提示词点名了那些离不开工地的同事(graph_modul
         if not spec.requires_project:
             assert spec.name not in notice, f"「{spec.name}」不需要选工地，却出现在提醒名单里"
 
-    # 是给模型看的**可执行指令**，不是一句形容：要说清让它干什么、去哪儿选
-    assert "顶栏" in notice
-    assert "别闷头派活" in notice
+    # 是给模型看的**可执行指令**,不是一句形容:要说清让它干什么。
+    # 🔴 2026-08-22 换过一次口径,别改回去 ——
+    #    原来这两条断言是 `"顶栏" in notice` + `"别闷头派活" in notice`,
+    #    而真机上模型正是把「别闷头派活」执行成了「**别派活**」:
+    #    「给我建个任务」在没选工地时交接记录是(没派活),4/4 确定性复现,
+    #    真机验收 A 组十条挂了九条。
+    #    现在的口径是「**问 + 摆清单 + 用 switch_project 落实**」。
+    assert "问他是哪个工地" in notice
+    assert "switch_project" in notice
+    assert "清单" in notice
+    # ⚠️ **一个「顶栏」都不许有,连否定式的也不行**(「别把他支去点顶栏」也不行):
+    #    否定式提及照样是把那个概念植入,而模型对显著名词会照抓不误 ——
+    #    这段提示词已经误触过一次。做法是**只说该做什么**,让「顶栏」这个词
+    #    在 supervisor 的世界里根本不存在。
+    assert "顶栏" not in notice
 
 
 def test_离不开工地的名单跟着登记表走而不是写死(graph_module: GraphFixture) -> None:
@@ -422,23 +434,67 @@ def test_当前工地_选中且库里有_supervisor直接报得出工地名(
     assert "派给对应同事" in section
 
 
-def test_当前工地_没选_提示去顶栏选而不是瞎猜(graph_module: GraphFixture) -> None:
+def test_当前工地_没选_把工地清单摆出来让用户选_而不是支他去点顶栏(
+    graph_module: GraphFixture,
+) -> None:
+    """🔴 **2026-08-22 真机验收逼出来的改动,别改回去。**
+
+    原来这一段说的是「先提醒他到顶栏选一个工地」,而真机上 supervisor 把它执行成了
+    「**先别派活**」—— 4/4 确定性复现:「给我建个任务」在没选工地时交接记录是
+    (没派活),真机验收 A 组十条挂了九条。
+
+    现在的做法是**问 + 摆清单**:人在聊天框里,就在聊天框里把事办完。
+    """
+    from gyt.db import projects as db
+
+    db.create_project("gyt-sc", "遂川垃圾处理中心", "SC")
+    db.create_project("gyt-yg", "阳光花园", "YG")
+
     for config in ({}, {"configurable": {}}, {"configurable": {"gyt_project_id": ""}}, None):
         section = graph_module.module.render_current_project(config)
-        assert "顶栏" in section
-        # 没选工地时绝不能编一个工地名
-        assert "遂川" not in section
+
+        # ① 清单真的摆出来了(从库里现查,与 switch_project 同一份真相)
+        assert "遂川垃圾处理中心" in section
+        assert "阳光花园" in section
+        # ② 指的是「问他 + 用 switch_project 落实」,不是「让他去点界面」
+        assert "switch_project" in section
+        assert "顶栏" not in section, "别再把人支去点顶栏 —— 那正是被真机否掉的做法"
+        # ③ 明说认模糊说法 —— resolve_target 本来就认 id/全名/双向子串,
+        #    不写这句的话模型会要求用户报全名,而那对工地师傅是多余的门槛
+        assert "模糊" in section
+
+
+def test_当前工地_没选且一个工地都没建_不许问他选哪个(graph_module: GraphFixture) -> None:
+    """没得选的时候问「你要哪个工地」是句废话,只会让人卡住。
+
+    措辞与 ``site_switch.switch_project`` 的 "none" 分支刻意对齐 ——
+    同一件事在对话里和在工具回执里得是同一个说法。
+    """
+    section = graph_module.module.render_current_project(None)
+
+    assert "一个工地都还没建" in section
+    assert "资料归档" in section
+    assert "遂川" not in section, "没选工地时绝不能编一个工地名"
 
 
 def test_当前工地_选了但库里查无_给可操作的话不报乱码编号(
     graph_module: GraphFixture,
 ) -> None:
     # 选中的工地已被删:库里查不到。不能把内部编号甩给师傅,要给「重新选」的话。
+    from gyt.db import projects as db
+
+    db.create_project("gyt-sc", "遂川垃圾处理中心", "SC")
+
     section = graph_module.module.render_current_project(
         {"configurable": {"gyt_project_id": "gyt-deleted"}}
     )
 
-    assert "顶栏" in section
+    # 与「没选」那一支走同一条路:**摆清单让他挑**,而不是支他去点界面
+    # (2026-08-22 改口径,理由见 _render_project_choices)。
+    assert "遂川垃圾处理中心" in section
+    assert "switch_project" in section
+    assert "顶栏" not in section
+    # 🔴 内部编号一个字都不许甩给师傅 —— 他既看不懂也没法拿它做任何事
     assert "gyt-deleted" not in section
 
 

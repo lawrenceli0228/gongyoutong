@@ -558,11 +558,20 @@ def test_假令牌的横幅要说清是哪一种(
     assert "openssl rand -hex 32" in 文本  # 给出可直接执行的修法
 
 
-@pytest.mark.parametrize("要的步数", [17, 100, 999, 10**6])
+# 🔴 **上限 +1 是现算的,别再写死一个数**(2026-08-22)。
+#    原来这里的第一档写的是字面量 **17** —— 它假定 max_client_recursion_limit 恒等于 16。
+#    那天把 supervisor_recursion_limit 从 8 提到 12、上限跟着 16 → 24 之后,
+#    17 变成了**合法值**,于是这条用例红了。红得对,但它红的方式误导人:
+#    报的是「DID NOT RAISE」,看起来像鉴权失守,而真相只是那个数过期了。
+#    现算之后,以后再动上限,这条自己就跟上了。
+_超限一步 = get_settings().max_client_recursion_limit + 1
+
+
+@pytest.mark.parametrize("要的步数", [_超限一步, 100, 999, 10**6])
 async def test_客户端自带超限的_recursion_limit_要被拒(
     monkeypatch: pytest.MonkeyPatch, 要的步数: int
 ) -> None:
-    """客户端可以在请求体里传 config.recursion_limit,**它会盖掉编译时钉的 8**。
+    """客户端可以在请求体里传 config.recursion_limit,**它会盖掉编译时钉的那个数**。
 
     2026-08-11 实测(容器内 langgraph 1.2.10):不传 → "Recursion limit of 8 reached";
     传 60 → "of 60 reached"。于是令牌桶那句「狂刷也有上限」不成立 ——
@@ -578,11 +587,18 @@ async def test_客户端自带超限的_recursion_limit_要被拒(
     assert 抓到.value.detail == auth_module.TOO_MANY_STEPS_MESSAGE
 
 
-@pytest.mark.parametrize("要的步数", [None, 1, 8, 16])
+@pytest.mark.parametrize(
+    "要的步数",
+    [None, 1, get_settings().supervisor_recursion_limit, get_settings().max_client_recursion_limit],
+)
 async def test_不超限的_recursion_limit_正常放行(
     monkeypatch: pytest.MonkeyPatch, 要的步数: int | None
 ) -> None:
-    """反向护栏:别把正常请求也拦了。None = 聊天界面的真实形态(压根不传)。"""
+    """反向护栏:别把正常请求也拦了。None = 聊天界面的真实形态(压根不传)。
+
+    ⚠️ 三个数同样**现算**(1 / 编译时钉的那个 / 客户端上限本身)——
+    写死 8 和 16 的话,调了配置这条会静默变成「测了两个跟真值无关的数」。
+    """
     _开启鉴权(monkeypatch)
     ctx = _上下文("threads", "create_run", auth_module.IDENTITY_TESTER)
     值: dict[str, Any] = (

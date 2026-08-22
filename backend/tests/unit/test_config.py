@@ -90,7 +90,11 @@ def test_default_runtime_knobs(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _pristine_settings(monkeypatch)
 
     # Assert
-    assert settings.supervisor_recursion_limit == 8
+    # 🔴 2026-08-22 从 8 提到 12。依据是实测(六句不同问法):新提示词多了
+    #    「没选工地就问一句」这个 supervisor 回合,8 步不够 —— 熔断 2/6;
+    #    12 步之后 0/6,而整链评测早就量过 8 档与 12 档在 20 行上逐行结果相同。
+    #    完整推演在 config.py 那个字段的注释里。
+    assert settings.supervisor_recursion_limit == 12
     # 150 而非契约 v1 的 60:2026-08-07 实测一张 4000×2430 的工地照片要 59.7 秒,
     # 距 60 秒只剩 0.26 秒。理由与实测数据写在 config.py 该字段上方。
     assert settings.llm_timeout_s == 150.0

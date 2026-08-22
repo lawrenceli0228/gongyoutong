@@ -58,7 +58,9 @@
                          它会在日期分目录里 glob —— 前端猜不出日期段,
                          也不能按本地当天日期去猜:晚上 UTC 已经是"明天")
             report_no    ``GYT-八位日期-六位时刻``,从 ``original_name`` 里解出来。
-                         解不出就是 **None**(不编一个)—— 见 ``_report_no_of``
+                         🔴 **它同时是过滤判据**:解不出编号的产物根本不会出现在这个
+                         清单里 —— ``ArtifactKind.REPORT`` 那一档**监理文书也在用**,
+                         只按 kind 过滤会把《工程暂停令》一类混进来(见 ``_REPORT_NO_RE``)
             filename     原始文件名(``巡检记录_GYT-….docx``),下载时显示的名字
             size_bytes   文件大小
             created_at   登记时刻(UTC ISO,产物 sidecar 里那个)
@@ -125,12 +127,38 @@ _MAX_SIDECARS_SCANNED: Final[int] = 2000
 """
 
 _REPORT_NO_RE: Final[re.Pattern[str]] = re.compile(r"(GYT-\d{8}-\d{6})")
-"""从文件名里抠巡检记录编号。
+"""从文件名里抠巡检记录编号。**它同时是这条端点的过滤判据**,见下面那段红字。
 
 ⚠️ **与 ``agents/report/tools.py`` 的 ``strftime("GYT-%Y%m%d-%H%M%S")`` 同源** ——
-那边改了编号长相,这里解不出来的表现是**列表照常出、编号那一格空着**(不报错)。
+那边改了编号长相,这里就一份都列不出来(而不是「编号那格空着」)。
 CLAUDE.md 的同源清单里「巡检记录编号长相」那一行已经登记了它的另外两个同源点
 (生成器 + ``REPORT_RECEIPT_PATTERN``),这是第三处。
+
+===========================================================================
+🔴 为什么过滤判据不能只是 ``kind == REPORT``(2026-08-22 真机照出来的)
+---------------------------------------------------------------------------
+``ArtifactKind.REPORT`` 这一档**不只装巡检记录** —— ``supervision_api`` 签发
+五种监理文书时用的是**同一个 kind**(那一行在 ``_sign`` 里)。于是只按 kind 过滤的话,
+《工程暂停令》《监理通知单》《致建设单位报告》《工程复工令》会全部出现在
+工友的「巡檢記錄」抽屉里。
+
+本机实测(2026-08-22,真跑起来的容器 + 真历史数据):
+    kind=REPORT 共 39 份
+      · 巡检记录        11 份  ← 该列的
+      · 监理通知单       11 份  ┐
+      · 致建设单位报告     6 份  ├ 全是监理文书,**共 28 份,占 72%**
+      · 工程暂停令       6 份  │
+      · 工程复工令       5 份  ┘
+而它们在界面上还都显示「(无编号)」—— 因为解不出巡检记录号。
+
+**判据换成「文件名里有没有一个巡检记录号」**,而这个判别信号本仓早就有并且守着:
+六种监理编号**都带类型段**(``GYT-ZT-`` / ``GYT-TZ-`` / ``GYT-JS-`` …),
+巡检记录号**不带** —— ``REPORT_RECEIPT_PATTERN`` 与 ``SUPERVISION_RECEIPT_PATTERN``
+故意互不匹配就是这条(CLAUDE.md 同源清单里有专门一行)。
+上面那 39 份实测:11 份解得出、28 份解不出,**100% 干净分离**,历史数据也一样。
+
+⚠️ **根因没修,只是绕开了**:``kind=REPORT`` 被两条链共用这件事还在。
+哪天有人写第三个「列 REPORT 产物」的地方,会原样再踩一次。已记 TODO-56。
 """
 
 _EMPTY_MSG: Final[str] = "还没有巡检记录。工地上拍张照发给我,我看完就给你出一份。"
@@ -190,10 +218,13 @@ def _parse_limit(raw: str | None) -> int | None:
 def _report_no_of(original_name: str) -> str | None:
     """从 ``巡检记录_GYT-20260822-153012.docx`` 里抠出编号。抠不出返回 **None**。
 
+    **返回 None = 这份产物不是巡检记录**,调用方据此把它整个跳过(见 ``_scan_reports``)。
+    在 2026-08-22 之前它只是个显示字段(抠不出就让那一格空着),而那正是
+    28 份监理文书混进「巡檢記錄」抽屉的原因 —— 完整实测在 ``_REPORT_NO_RE`` 上面。
+
     🔴 **不许在这儿编一个编号**(比如拿 artifact_id 前八位凑一个)。
     编号是要被人报给别人、写进留档的东西 —— 一个长得像编号但对不上任何文档的串,
-    比一格空白坏得多。抠不出来只有两种可能:文件名格式变了(那是同源清单的事),
-    或者这份产物压根不是 ``render_inspection_report`` 出的(那更不该给它编号)。
+    比一格空白坏得多;而**比空白更坏的是它会让一份根本不是巡检记录的东西看起来像**。
     """
     found = _REPORT_NO_RE.search(original_name or "")
     return found.group(1) if found else None
@@ -232,7 +263,12 @@ def _scan_reports(limit: int) -> tuple[list[dict[str, Any]], bool]:
             meta = _read_meta(sidecar)
             if meta is None or meta.get("kind") != report_kind:
                 continue
-            collected.append(_report_payload(sidecar.stem, meta))
+            # 🔴 第二道判据:必须解得出**巡检记录号**。只看 kind 的话,监理那五种文书
+            #    会全部混进来(它们用的是同一个 kind)—— 整段推演在 _REPORT_NO_RE 上面。
+            report_no = _report_no_of(str(meta.get("original_name", "")))
+            if report_no is None:
+                continue
+            collected.append(_report_payload(sidecar.stem, meta, report_no))
             if len(collected) >= limit:
                 return collected, False
 
@@ -248,8 +284,12 @@ def _read_meta(sidecar: Path) -> dict[str, Any] | None:
     return meta if isinstance(meta, dict) else None
 
 
-def _report_payload(artifact_id: str, meta: dict[str, Any]) -> dict[str, Any]:
+def _report_payload(artifact_id: str, meta: dict[str, Any], report_no: str) -> dict[str, Any]:
     """一份巡检记录的对外形状(五个键,契约见模块头注)。
+
+    ``report_no`` **由调用方传进来**,不在这儿重算一遍:它是 ``_scan_reports`` 的
+    过滤判据,算两遍就有两份判据 —— 而那种漂移的表现是「过滤时认作巡检记录、
+    显示时又说没有编号」。
 
     ⚠️ ``artifact_id`` 取的是 **sidecar 的文件名**,不是 ``meta["id"]``:
        文件名是路径上真实存在的那个(``resolve`` 与 ``/by-id/`` 都按它找正文),
@@ -258,7 +298,7 @@ def _report_payload(artifact_id: str, meta: dict[str, Any]) -> dict[str, Any]:
     """
     return {
         "artifact_id": artifact_id,
-        "report_no": _report_no_of(str(meta.get("original_name", ""))),
+        "report_no": report_no,
         "filename": str(meta.get("original_name", "")),
         "size_bytes": meta.get("size_bytes"),
         "created_at": meta.get("created_at"),
