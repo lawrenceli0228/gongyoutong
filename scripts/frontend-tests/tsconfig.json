@@ -61,6 +61,7 @@
     "../frontend-overrides/lang-lib.ts",
     "../frontend-overrides/hant-convert.tsx",
     "../frontend-overrides/image-compress.ts",
-    "../frontend-overrides/timing-lib.ts"
+    "../frontend-overrides/timing-lib.ts",
+    "../frontend-overrides/reports-lib.ts"
   ]
 }
