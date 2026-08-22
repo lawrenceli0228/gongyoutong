@@ -16,6 +16,7 @@ from pathlib import Path
 
 from langgraph.graph.state import CompiledStateGraph
 
+from gyt.agents.safety.guard import RequireVisionTool
 from gyt.agents.safety.tools import SAFETY_TOOLS
 from gyt.core.base_agent import create_gyt_agent, load_prompt
 
@@ -47,4 +48,12 @@ def build_safety_agent() -> CompiledStateGraph:
         tools=list(SAFETY_TOOLS),
         # 本体只做对话与派工具,走便宜的 DeepSeek。视觉在工具里。
         purpose="text",
+        # 🔴 防假账守卫(2026-08-22 补)。在它之前,safety 是四个动作型 Agent 里
+        # **唯一裸奔**的那个 —— 而它是头号动作。
+        # 线上实测抓到的病状:连传四张照片,后两张 analyze_site_photo **一次都没被调**,
+        # 而模型把 prompt.md 里那段示范句原样背了出来(两张不同的照片、逐字相同的措辞),
+        # 还补了一句「这张我登记成待确认隐患了」—— 而台账里没有、失败清单里也没有。
+        # 判据与两处「跟别家不一样」的选择(为什么用首答判据、为什么 on_give_up=pass)
+        # 全在 guard.py 的模块 docstring 里,改之前先读那一段。
+        extra_middleware=(RequireVisionTool(),),
     )
