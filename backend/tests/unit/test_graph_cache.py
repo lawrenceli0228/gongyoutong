@@ -79,13 +79,23 @@ class HandoffAwareFakeModel(BaseChatModel):
             spec.get("function", {}).get("name", "") if isinstance(spec, dict) else ""
             for spec in self.bound_tools
         ]
-        # ping 已从登记表摘除(2026-08-08,见 graph.py 的摘除说明),优先项自然落空,
-        # 走下面的「第一个交接工具」兜底 —— 登记表首位是 safety(假模型不真调工具,
-        # 路径仍是 supervisor→子 Agent→supervisor 三次调用,FULL_GRAPH_CALLS 不变)。
-        # 逐级优先:ping(已摘除,留着以防回归)→ safety(单模型,路径最短)→ 第一个。
-        # 不能依赖"第一个":create_supervisor 呈现工具的顺序与登记表顺序无关,
-        # 实测抓到过 inspection(复合 Agent,内部两个模型),3 次调用变 4 次。
-        for preferred_suffix in ("ping", "safety"):
+        # ping 已从登记表摘除(2026-08-08,见 graph.py 的摘除说明),优先项自然落空。
+        #
+        # 🔴 **被钉的那位必须同时满足两条,少一条 FULL_GRAPH_CALLS 就对不上:**
+        #   ① **单模型**(不是复合 Agent)—— inspection 那种内部两个模型的,3 次变 4 次;
+        #   ② **没挂首答判据**(``RequireToolCall`` 那一族)—— 假模型的子 Agent 一律
+        #      出纯文本、不调工具,而首答判据看到纯文本就会打回重试一次,同样 3 次变 4 次。
+        #
+        # ⚠️ **2026-08-22 把 safety 从这张优先表里换掉了**,原因正是第 ② 条:
+        #    那天给 safety 补了 ``RequireVisionTool``(线上实测抓到它连传四张照片时
+        #    后两张压根没调识图工具、把提示词里的示范句背了出来)。
+        #    在那之前这里的注释还写着「safety…假模型不真调工具,路径仍是三次调用」——
+        #    那句话从守卫落地那一刻起就不成立了。
+        #
+        # 现在钉 cad:单模型、且四个动作型泳道里只有它和 knowledge 没有首答判据。
+        # 逐级优先:ping(已摘除,留着以防回归)→ cad → 第一个。
+        # 不能依赖"第一个":create_supervisor 呈现工具的顺序与登记表顺序无关。
+        for preferred_suffix in ("ping", "cad"):
             preferred = f"{HANDOFF_TOOL_PREFIX}{preferred_suffix}"
             if preferred in names:
                 return preferred
