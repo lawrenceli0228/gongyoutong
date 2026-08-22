@@ -21,6 +21,7 @@ import {
   SquarePen,
   XIcon,
   Plus,
+  Camera,
 } from "lucide-react";
 import { useQueryState, parseAsBoolean } from "nuqs";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
@@ -41,6 +42,7 @@ import { useFileUpload } from "@/hooks/use-file-upload";
 import { toWireBlocks } from "@/lib/multimodal-utils";
 import { CheckinEntry } from "./checkin";
 import { SupervisionEntry } from "./supervision-entry";
+import { ReportsEntry } from "./reports-entry";
 import { ContentBlocksPreview } from "./ContentBlocksPreview";
 import {
   useArtifactOpen,
@@ -660,6 +662,40 @@ function ThreadInner() {
                             </Label>
                           </div>
                         </div>
+                        {/* 🔴 **拍照入口(2026-08-22)。整个产品的头号动作,而它在此之前
+                            没有入口** —— 动作条上唯一的上传口写着「上傳圖紙·資料」
+                            (工友要拍的是隐患照片,那句话在劝退),而且**没有 capture**:
+                            手机上点它弹的是文件选择器,人得自己找到「相机」那一项。
+                            对比很扎眼:打卡(checkin.tsx)与复查照片(supervision.tsx)
+                            两处都有 capture,而且两处的注释都写着「不能省」。
+
+                            ⚠️ **为什么是第二个 input,而不是给上面那个加 capture**:
+                            `capture` 一加,手机浏览器会**直接开相机、不再给文件选择器**
+                            (规范说它是"优先用采集设备"的提示,Android Chrome 是直接开)。
+                            也就是说加在那个多用途 input 上 = 图纸(.dxf)和 PDF 资料
+                            从手机上**再也传不了**。两个口各管一件事是唯一不互相伤害的做法。
+
+                            两个 input 共用同一个 handleFileUpload —— 去重、格式判断、
+                            压缩(image-compress.ts)全在那条链上,这里不许分叉。
+                            accept 收窄到 image/jpeg:客户端压缩那条链只收 JPEG
+                            (image-compress.ts 头注:canvas 只画得出第一帧,
+                            动图经过它会变成单帧而服务端那道闸再也不触发)。
+                            相机拍出来的本来就是 JPEG,所以这条收窄对用户零影响。 */}
+                        <Label
+                          htmlFor="camera-input"
+                          className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-[12px] border border-[#0E9F6E] bg-[#0E9F6E] px-3 py-2 text-sm font-bold whitespace-nowrap text-white transition hover:bg-[#0B8A5E] sm:min-h-0"
+                        >
+                          <Camera className="size-4" />
+                          <span>拍照</span>
+                        </Label>
+                        <input
+                          id="camera-input"
+                          type="file"
+                          onChange={handleFileUpload}
+                          accept="image/jpeg"
+                          capture="environment"
+                          className="hidden"
+                        />
                         {/* min-h-11 = 44px,触摸目标的通用下限;≥640px 退回原来的高度(sm:min-h-0)。 */}
                         <Label
                           htmlFor="file-input"
@@ -689,6 +725,16 @@ function ThreadInner() {
                             结果是面板一次都没打开过,而且不报错(方案 docs/W10_界面取不到工具返回_方案.md)。
                             按钮自带 type="button" 与待确认计数徽章,不会误触本 form 的提交。 */}
                         <SupervisionEntry />
+                        {/* 巡检记录抽屉(2026-08-22):第三个同类的直连操作台。
+                            🔴 它补的是「拍照 → 自动出 Word」这条链的**终点** ——
+                            文档真的生成了、真的落盘了,而那份 Envelope 被
+                            output_mode="last_message" 丢掉,于是 tool-calls.tsx 里
+                            那张巡检记录卡一次都没渲染出来过;而 report/prompt.md
+                            教模型说「跟管理员说编号就行」,**那个管理员不存在**(TODO-34)。
+                            结果是:文件就在服务器上,而谁都拿不到。
+                            按钮自带 type="button",刻意**没有徽章**(理由在组件头注:
+                            存档不等人干活,红点只会让人去点掉一个不用处理的提醒)。 */}
+                        <ReportsEntry />
                         {stream.isLoading ? (
                           <Button
                             key="stop"

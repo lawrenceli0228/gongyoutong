@@ -26,6 +26,52 @@ export function isSupportedFile(file: File): boolean {
   return SUPPORTED_FILE_TYPES.includes(file.type) || isDxfFile(file);
 }
 
+/**
+ * 相机拍出来的那一张 → 换一个当场唯一的文件名(2026-08-22,随「拍照」入口一起加)。
+ *
+ * ── 🔴 不改名会怎样 ─────────────────────────────────────────────────
+ * 下面 `isDuplicate` 的图片分支**只比文件名**(那儿有整段推演,别去改它 ——
+ * 比 mime 会因为客户端压缩而必然判不出重复)。而 **iOS Safari 的
+ * `<input capture>` 给每一张现场拍的照片的名字都是 `image.jpg`**,
+ * 一个字都不带变。
+ *
+ * 于是工友在同一条消息里拍两处隐患:第一张进去了,第二张被判成重复、
+ * 弹一句「这几个文件刚才已经加过了」—— 而他明明刚拍了一张全新的照片。
+ * 他会以为系统坏了,或者以为第一张没拍上,然后重来一遍。
+ *
+ * ── 为什么改名是对的解法 ────────────────────────────────────────────
+ * 判据不是"绕过查重",而是一条**真的成立的事实**:相机不会把同一张照片递第二次。
+ * 每按一次快门就是一张新照片,哪怕它和上一张长得一模一样(拍虚了重拍),
+ * 那也是工友**有意**要再传一张。查重防的是"同一个文件被选了两遍",
+ * 而相机这条路上根本不存在"再选一遍同一个文件"这个动作。
+ *
+ * 时间戳 + 随机尾:同一秒里连按两下也不会撞(手机上真做得到)。
+ * 保留原扩展名 —— `image-compress.ts` 与后端的类型判断都不看它,但工友手机里
+ * 那份下载下来的文件要带 `.jpg` 才点得开。
+ */
+function renameCameraCapture(file: File): File {
+  const dot = file.name.lastIndexOf(".");
+  const ext = dot > 0 ? file.name.slice(dot) : ".jpg";
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return new File([file], `現場照片-${stamp}${ext}`, {
+    type: file.type,
+    lastModified: file.lastModified,
+  });
+}
+
+/**
+ * 这一发是不是从**相机**来的。
+ *
+ * 判据是 input 上有没有 `capture` 属性 —— 不是 id、不是 name。
+ * 用 id 的话,哪天有人改了 `camera-input` 这个 id(或者再加一个相机入口),
+ * 这里会**静默失效**:改名不再发生,而 iOS 上第二张照片重新开始被判重复,
+ * 没有任何东西会说话。`capture` 是那个入口之所以是相机的**原因本身**,
+ * 跟着它走的话,只要那个属性还在,这条就还成立。
+ */
+function isCameraInput(input: HTMLInputElement): boolean {
+  return input.hasAttribute("capture");
+}
+
 interface UseFileUploadOptions {
   initialBlocks?: ContentBlock.Multimodal.Data[];
 }
@@ -91,7 +137,12 @@ export function useFileUpload({
   const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
-    const fileArray = Array.from(files);
+    // 相机那一路先改名再进查重 —— 理由整段在 `renameCameraCapture` 上面。
+    // ⚠️ 顺序不能反:改名必须发生在 `isDuplicate` 之前,而不是转块之后。
+    const fromCamera = isCameraInput(e.target);
+    const fileArray = Array.from(files).map((file) =>
+      fromCamera ? renameCameraCapture(file) : file,
+    );
     const validFiles = fileArray.filter((file) =>
       isSupportedFile(file),
     );

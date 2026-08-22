@@ -69,6 +69,18 @@ export const SUPERVISION_ENDPOINTS = [
   // 与 reject 的分工:reject 删的是 pending(还没人确认、没有留档价值),
   // dismiss 关的是 open(行还在、编号还在、照片还在,只是写明了为什么关)。
   "dismiss",
+  // 2026-08-22 新增的**两处订正**。它们与上面那批不同类:不签发任何文书、
+  // 不改 status,回答的是「当初记错了」而不是「这件事进展到哪一步了」。
+  //
+  // extend —— 改整改期限(宽限几天)。它补的是一条**断掉的路**:
+  //   agents/schedule/tools.py 明写「要宽限几天,得让监理去改这条隐患的整改期限」,
+  //   而在这条端点之前监理这边没有这个按钮 —— 工友照着做、监理找不到,
+  //   两边都以为是自己没找到。
+  "extend",
+  // reassign —— 改归属(挪工地)。隐患的 project_id 在登记那一刻由顶栏那个选择器决定,
+  //   忘了选就是空串(未归属)。在这条之前**没有任何动作能改它**,于是那条隐患
+  //   永远待在未归属那堆里:按工地筛的清单里没有它,而它在库里还是「在办」。
+  "reassign",
 ] as const;
 export type SupervisionEndpoint = (typeof SUPERVISION_ENDPOINTS)[number];
 
@@ -133,6 +145,29 @@ export function hazardListUrl(
 export function hazardDetailUrl(apiBase: string, hazardNo: string): string {
   const encoded = encodeURIComponent(hazardNo.trim());
   return `${stripTrailingSlash(apiBase)}/supervision/hazards/${encoded}`;
+}
+
+/**
+ * `GET /supervision/ingest-failures` 的地址 —— 「有哪几条隐患**没能**写进台账」(2026-08-22)。
+ *
+ * `projectId` 三态与 `hazardListUrl` **完全同一套**,所以下面那一行判据也必须是
+ * `!= null` 而不是真值判断(理由整段在 `hazardListUrl` 头注上,别在这儿重讲一遍,
+ * 但也**别以为这条端点无关紧要就可以省掉三态** —— 塌成两态的表现同样是
+ * 「全部工地」悄悄变成「只有未归属」)。
+ *
+ * ⚠️ 路径是 `/supervision/ingest-failures`,**不在 `/supervision/hazards/` 下面**。
+ * 写成 `/supervision/hazards/ingest-failures` 会被详情那条带路径段的路由吞掉,
+ * 表现是 404 带一句「台账里没有『ingest-failures』这条隐患」。
+ */
+export function ingestFailuresUrl(
+  apiBase: string,
+  opts: { projectId?: string | null } = {},
+): string {
+  const params = new URLSearchParams();
+  if (opts.projectId != null) params.set("project_id", opts.projectId);
+  const query = params.toString();
+  const base = `${stripTrailingSlash(apiBase)}/supervision/ingest-failures`;
+  return query ? `${base}?${query}` : base;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +352,14 @@ export const SUPERVISION_MESSAGES = Object.freeze({
   // 2026-08-21:不出文书关掉时要写的原因。措辞给两个真实例子 ——
   // 只说「要写原因」的话人会写「不用了」,而那句话事后什么都回答不了。
   missingReason: "關掉之前要寫清為什麼(比如「白色安全帽,現場核過」「已當場整改」)。這句話會留在台賬裏。",
+  // 2026-08-22:改期限时要写的原因。**同样带真实例子**,理由与上面那句一字不差。
+  // 这一句还多一层:改期是可以被反复用的动作,一屏「順延」什麼都回答不了,
+  // 而「這條被展了幾次期」正是事后最该问的那个问题。
+  missingExtendReason:
+    "改期限之前要寫清為什麼(比如「連續下雨停工三天」「材料到不了」)。這句話會留在台賬裏。",
+  // 2026-08-22:改归属时没选工地。⚠️ 它说的是「**沒選**」而不是「不能為空」——
+  // 空(未歸屬)是一档合法选择,措辞里不许暗示它非法。
+  missingProject: "先選一個工地(要挪回「未歸屬」就選那一檔)。",
 });
 
 export interface NormalizedError {
@@ -653,6 +696,13 @@ export const DISPOSAL_ACTIONS = [
   "escalate",
   "reject",
   "dismiss",
+  // 2026-08-22 的两处**订正**。放进同一张表是因为它们在界面上就是并排的按钮
+  // (同一条隐患行上点开的同一个抽屉),走同一套「填参数 → POST → 解信封」的流程。
+  // 但它们与上面那批的**性质不同**,别混着读:
+  //   上面那批答的是「这件事进展到哪一步了」,会签发法律文书;
+  //   这两颗答的是「当初记错了」,一份文书都不出。
+  "extend",
+  "reassign",
 ] as const;
 export type DisposalAction = (typeof DISPOSAL_ACTIONS)[number];
 
@@ -667,6 +717,8 @@ export const ACTION_ENDPOINT: Readonly<Record<DisposalAction, SupervisionEndpoin
     escalate: "escalate",
     reject: "reject",
     dismiss: "dismiss",
+    extend: "extend",
+    reassign: "reassign",
   });
 
 /**
@@ -687,6 +739,10 @@ export const ACTION_LABEL: Readonly<Record<DisposalAction, string>> = Object.fre
   // 与 reject 只差一个字都不行:那两颗会并排出现在不同状态的隐患上,
   // 而后果完全不同(一个整行删掉、一个留行留理由)。
   dismiss: "關掉(不出文書,要寫原因)",
+  // 这两颗都把「不出文书」写在按钮上。写它的理由与 dismiss 那颗一样:
+  // 监理点这几颗之前,心里的问题是「这一下会不会又发一张纸出去」。
+  extend: "改整改期限(不出文書,要寫原因)",
+  reassign: "改工地(不出文書)",
 });
 
 /**
@@ -743,25 +799,36 @@ export function availableActions(hazard: HazardBrief): DisposalAction[] {
     //    服务端 `delete_pending` 只看 `status='pending'`,压根不关心 needs_grading;
     //    所以这里给出来仍然**比服务端窄**(非 pending 的 needs_grading 一律不给),
     //    没有破坏本函数头注那条「只许更窄、不许更宽」的红线。
-    return hazard.status === "pending" ? ["grade", "reject"] : ["grade"];
+    //
+    // 🔴 `reassign`(2026-08-22)在这一档**也要给**,理由与上面那条同构:
+    //    「归错了工地」和「定没定级」是两件互不相干的事,而未归属的隐患
+    //    恰恰最常落在 pending(工友拍照时没在顶栏选工地)。
+    //    逼人先定级才准挪工地,等于让一条本该归到 A 工地的隐患在未归属那堆里再待一轮。
+    return hazard.status === "pending" ? ["grade", "reject", "reassign"] : ["grade"];
   }
   switch (hazard.status) {
     case "pending":
       // 确认(pending → open)走批量勾选那条路,不在单条动作里 —— 它是个批量端点。
       // 「否决」跟它是同一个岔路口的另一条:确认 = 这确实是隐患,否决 = 识错了,删掉。
-      return ["grade", "reject"];
+      // `reassign` 排最后:它是订正,不是处置。**pending 这一档尤其要有它** ——
+      // 「拍的时候忘了选工地」这件事,发现的时机就在监理翻待确认清单的这一刻。
+      return ["grade", "reject", "reassign"];
     case "open":
       // 第三颗 `dismiss`(2026-08-21)是**纠错出口**,排在最后:主要动作在前。
       // 🔴 它非有不可:在它之前 open 只有两条出口而两条都要签发法律文书,
       //    于是一条识别错了的隐患关不掉 —— 唯一的出路是为一个不存在的隐患
       //    真的签一份《监理通知单》,再拍照登记「复查合格」。
       //    而「确认」这一下是单向门(否决只删 pending),确认之后连否决都没了。
+      // 第四颗 `reassign`(2026-08-22)排在最末:它是订正,不是处置。
       return hazard.grade === GRADE_SEVERE
-        ? ["suspend", "grade", "dismiss"]
-        : ["notice", "grade", "dismiss"];
+        ? ["suspend", "grade", "dismiss", "reassign"]
+        : ["notice", "grade", "dismiss", "reassign"];
     case "notified":
     case "suspended":
-      return ["reinspect"];
+      // `extend`(2026-08-22)只在这两档 —— 只有它们有一个在跑的期限
+      // (镜像后端 `DUE_CHANGEABLE_STATUSES`)。排在复查之后:主要动作在前,
+      // 「宽限几天」是例外情况。
+      return ["reinspect", "extend"];
     case "reinspect_failed":
       // 再复查一次,或者升级上报 —— 举证链要求「通知过 + 期限到了 + 复查过 + 没改」,
       // 所以 escalate 只从这一档进(_ESCALATE_FROM)。
@@ -774,9 +841,45 @@ export function availableActions(hazard: HazardBrief): DisposalAction[] {
   }
 }
 
-/** 要不要填整改期限(`due_phrase` 收用户原话,换算全在后端 dates.py)。 */
+/**
+ * 要不要填整改期限(`due_phrase` 收用户原话,换算全在后端 dates.py)。
+ *
+ * `extend`(2026-08-22)当然也要 —— 它整个动作就是「换一个期限」。
+ * 三处共用同一件后端换算(`_resolve_due`),所以界面上能写的说法**完全一样**,
+ * 监理不用记两套(`DUE_PHRASE_EXAMPLES` 那张例句表因此也不用分叉)。
+ */
 export function actionNeedsDuePhrase(action: DisposalAction): boolean {
-  return action === "notice" || action === "suspend";
+  return action === "notice" || action === "suspend" || action === "extend";
+}
+
+/**
+ * 要不要写原因。两颗:`dismiss`(把隐患关掉)与 `extend`(改期限)。
+ *
+ * 判据不是「会不会写库」,是**「这一下事后能不能被问责」**:
+ *   · 关掉  —— 事后唯一能回答「这条为什么关的」的地方;
+ *   · 改期  —— 它是**可以被反复使用**的动作,每一次单看都合理
+ *     (下雨了、材料没到、人手不够),只有把历次理由并排看才看得出问题。
+ *     没有理由的留痕等于没有留痕。
+ *
+ * ⚠️ 两颗的长度下限是**两个常量**(`DISMISS_REASON_MIN_LEN` / `EXTEND_REASON_MIN_LEN`),
+ * 眼下取值相同 —— **别合并**。理由见那两个常量各自的注释。
+ */
+export function actionNeedsReason(action: DisposalAction): boolean {
+  return action === "dismiss" || action === "extend";
+}
+
+/**
+ * 要不要选一个工地。只有 `reassign` 一颗 —— 它整个动作就是「换一个工地」。
+ *
+ * 🔴 界面上这一格必须是**选择器**(只列真实存在的工地)加一档「未歸屬」,
+ * 不能是自由输入框。后端刻意**不校验目标工地是否存在**:`projects` 与
+ * `hazards.project_id` 之间本来就没有外键(D6 的取舍),在那儿补一道半套的
+ * 完整性校验没有意义。所以**这道闸的正确位置就在界面上**。
+ * 做成输入框的话,打错一个字 = 那条隐患挪进一个不存在的工地,
+ * 从此两边都筛不到它,而且没有任何报错。
+ */
+export function actionNeedsProject(action: DisposalAction): boolean {
+  return action === "reassign";
 }
 
 /** 要不要挂复查照片(方案 §5.2 红线:拿不到照片就没有任何路径能改成 closed)。 */
@@ -836,10 +939,24 @@ export function confirmPrompt(action: DisposalAction, hazard: HazardBrief): stri
       "暫停令是法律文書,簽字蓋章後據以停工。系統裏不能撤銷,簽錯只能另走複查/升級流程。"
     );
   }
-  return (
-    `要為隱患「${hazard.item}」(${hazard.hazard_no})出具《監理報告》報建設主管部門嗎?\n\n` +
-    "這是對施工單位的正式指控,舉證鏈是「通知過 + 期限到了 + 複查過 + 仍未整改」。\n" +
-    "系統裏不能撤銷。"
+  if (action === "escalate") {
+    return (
+      `要為隱患「${hazard.item}」(${hazard.hazard_no})出具《監理報告》報建設主管部門嗎?\n\n` +
+      "這是對施工單位的正式指控,舉證鏈是「通知過 + 期限到了 + 複查過 + 仍未整改」。\n" +
+      "系統裏不能撤銷。"
+    );
+  }
+  // ⚠️ **这个兜底 2026-08-22 从「默认返回上报那段话」改成了显式抛。**
+  //    原来那份是 `return 上报那段` —— 也就是说任何一个没在上面列出来的动作,
+  //    弹出来的都是「要出具《监理报告》报建设主管部门吗?」。
+  //    今天它碰巧不触发(`actionNeedsConfirm` 只对四颗返回 true,四颗都在上面),
+  //    但那是**两个函数之间的巧合**:哪天有人把 `extend` 加进 actionNeedsConfirm
+  //    (它是可以被反复用的动作,有人会想加),监理点「改期限」会看到一句
+  //    「要报主管部门吗」—— 而他多半会点确定。
+  //    改期与改归属**刻意不需要确认**:判据仍是那句「这一下能不能反悔」,
+  //    两者都能再改回来,而且都留痕。
+  throw new SupervisionContractError(
+    `「${ACTION_LABEL[action]}」還沒寫確認話術 —— 別讓它落到別的動作那句上。`,
   );
 }
 
@@ -893,6 +1010,18 @@ export const SIGNER_NAME_STORAGE_KEY = "gyt:supervision:signer-name";
  * 漂了的表现不算静默(后端会回 400,那句人话原样上屏),但会让人以为是自己按错了。 */
 export const DISMISS_REASON_MIN_LEN = 4;
 
+/**
+ * 改期理由的最短字数,**镜像后端 `supervision_api._DUE_REASON_MIN_LEN`**(2026-08-22)。
+ *
+ * ⚠️ **今天它与 `DISMISS_REASON_MIN_LEN` 取值相同,而这是两个常量,不许合并。**
+ * 两者挡的是同一种敷衍(「。」「1」),但量的是两件事:那个是「为什么把一条隐患关掉」,
+ * 这个是「为什么把期限往后挪」。改期是**可以被反复使用**的动作(一条隐患能一路展到
+ * 下个月),哪天有人觉得它该写得更详细,动的是这一个 —— 合并的话会连带把
+ * 「关掉」的门槛也抬高,而那条后端注释里明写着「不设更高」。
+ * 本仓在「眼下相等就合并」上已经吃过亏(CLAUDE.md 前端覆盖件那两个数)。
+ */
+export const EXTEND_REASON_MIN_LEN = 4;
+
 /** 一次批量确认的条数上限,镜像 supervision_api._MAX_CONFIRM_BATCH。 */
 export const MAX_CONFIRM_BATCH = 200;
 
@@ -918,8 +1047,22 @@ export interface ActionInput {
   result?: "pass" | "fail";
   /** reinspect 必填:整改后那张现场照片的 32 位编号。 */
   afterPhotoId?: string;
-  /** dismiss 必填:为什么不出文书就关掉。原样进台账,是事后唯一能回答这个问题的地方。 */
+  /**
+   * dismiss / extend 必填:为什么。原样进台账,是事后唯一能回答这个问题的地方。
+   *
+   * 两个动作共用这一个字段,而**长度下限是两个常量**
+   * (`DISMISS_REASON_MIN_LEN` / `EXTEND_REASON_MIN_LEN`)—— 见那两个常量的注释。
+   */
   reason?: string;
+  /**
+   * reassign 必填:挪到哪个工地。
+   *
+   * 🔴 **空串是合法值(挪回「未歸屬」),所以这里的判据只能是「这个键在不在」。**
+   * 写成「值非空才算填了」的话,「挪回未归属」这个动作在结构上就不存在 ——
+   * 而它恰恰是最常用的反向操作(拍的时候选错了工地)。
+   * 后端 `_work_reassign` 用的是同一条判据(`"project_id" not in body`),两边同源。
+   */
+  projectId?: string;
   /**
    * 签发人**自己报的名字**(2026-08-21)。所有动作都可以带,后端记进
    * `hazard_docs.issued_by`。
@@ -974,6 +1117,36 @@ export function actionBody(action: DisposalAction, input: ActionInput): Record<s
       throw new SupervisionContractError(SUPERVISION_MESSAGES.missingReason);
     }
     body.reason = reason;
+    return body;
+  }
+
+  if (action === "extend") {
+    // 🔴 **这个分支必须排在下面那个 `actionNeedsDuePhrase` 前面。**
+    //    那个分支只塞 due_phrase 就 return,而 extend 是**两样都要**的唯一一个动作
+    //    (notice / suspend 只要期限)。排在后面的表现极其阴险:监理认真写的原因
+    //    被静默丢掉,后端回一句「改期限要写清为什么」,而那句话就在他刚填过的
+    //    输入框旁边 —— 他会以为是自己写得太短,再写一遍,再被拒。
+    const duePhrase = (input.duePhrase ?? "").trim();
+    if (!duePhrase) {
+      throw new SupervisionContractError(SUPERVISION_MESSAGES.missingDue);
+    }
+    const reason = (input.reason ?? "").trim();
+    if (reason.length < EXTEND_REASON_MIN_LEN) {
+      throw new SupervisionContractError(SUPERVISION_MESSAGES.missingExtendReason);
+    }
+    body.due_phrase = duePhrase;
+    body.reason = reason;
+    return body;
+  }
+
+  if (action === "reassign") {
+    // 🔴 判据是 `undefined` 而不是真值 —— 空串是合法值(挪回「未歸屬」)。
+    //    写成 `if (!projectId) throw` 的话,「挪回未归属」永远发不出去,
+    //    而那正是这个动作最常见的反向用法。
+    if (input.projectId === undefined) {
+      throw new SupervisionContractError(SUPERVISION_MESSAGES.missingProject);
+    }
+    body.project_id = input.projectId.trim();
     return body;
   }
 
@@ -1335,10 +1508,47 @@ export function parseHazardListEnvelope(bodyText: string): HazardListResult {
   };
 }
 
+/** 一次改期留痕(2026-08-22)。镜像后端 `supervision_api._due_change_payload`。 */
+export interface DueChange {
+  /** 从哪天挪走。理论上非空(只有 notified/suspended 能改期,那两档期限必填)。 */
+  oldDue: string | null;
+  /** 挪到哪天。 */
+  newDue: string;
+  /** 为什么。**必填**(后端拦),原样进台账。 */
+  reason: string;
+  /** 谁改的。**自报的名字,不是认证身份** —— 同 `issuedBy`,别拿它做权限判断。 */
+  changedBy: string | null;
+  /** 什么时候改的。 */
+  createdAt: string;
+}
+
+function toDueChange(entry: unknown): DueChange | null {
+  const rec = asRecord(entry);
+  if (!rec) return null;
+  const newDue = textOf(rec, "new_due");
+  // 没有新期限的留痕是没有意义的一行 —— 跳过而不是渲染成一行空白。
+  if (!newDue) return null;
+  return {
+    oldDue: nullableTextOf(rec, "old_due"),
+    newDue,
+    reason: textOf(rec, "reason"),
+    changedBy: nullableTextOf(rec, "changed_by"),
+    createdAt: textOf(rec, "created_at"),
+  };
+}
+
 /** 一条隐患的详情 = 清单里那一行 + 证据链。 */
 export interface HazardDetail extends HazardBrief {
   /** 证据链:五种文书 + 复查记录行,后端按时间排好。空数组 = 还没签过任何东西。 */
   documents: SupervisionDoc[];
+  /**
+   * 历次改期留痕(2026-08-22)。**与 `documents` 平级,不是它的一部分。**
+   *
+   * 🔴 别把它并进 `documents` 去省一个字段:那个数组里每一项都有编号、都能下载,
+   * 而这几行两样都没有。并进去的表现是证据链表里多出几行点不开的东西,
+   * 而「一共签了几份文书」这个数会跟着错 —— 那个数是要拿去举证的。
+   */
+  dueChanges: DueChange[];
   /** 复查过没有(哪怕不合格也算复查过)—— 升级上报的举证链要这一条。 */
   reinspected: boolean;
   /** 首次发现的时刻(带时区的 ISO 串,香港时间)。 */
@@ -1379,9 +1589,98 @@ export function parseHazardDetailEnvelope(bodyText: string): HazardDetailResult 
       // 复用宽松版:证据链里认不出的行跳过,不因为一行坏数据丢掉整条隐患。
       documents: documentsFromToolData(data),
       reinspected: data.reinspected === true,
+      // 同 documents 的规矩:认不出的行跳过,不因为一行坏数据丢掉整条隐患。
+      // 键不在(老后端)时是空数组 —— 界面上那一段整块不渲染,不报错。
+      dueChanges: Array.isArray(data.due_changes)
+        ? data.due_changes.flatMap((entry) => {
+            const change = toDueChange(entry);
+            return change ? [change] : [];
+          })
+        : [],
       foundAt: textOf(data, "found_at"),
       closedAt: nullableTextOf(data, "closed_at"),
     },
+    userMsg,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 登记失败清单(2026-08-22)—— D10 那条一直没通的出口
+// ---------------------------------------------------------------------------
+
+/**
+ * 一条「没能写进台账」的记录。镜像 `GET /supervision/ingest-failures` 的一行。
+ *
+ * ⚠️ **它没有 `reason`,那是刻意的。** 后端那一列存的是异常类型与约束名
+ * (`IngestFailureRow` 头注:「给排查的人看的内部细节,**不进人话**」),
+ * 端点根本不发它。哪天有人觉得"多给一个字段没坏处"而在后端补上,
+ * 界面上就会出现「UNIQUE constraint failed: hazards.project_id」这种东西。
+ *
+ * ⚠️ 它也**没有隐患编号**——那条隐患压根没登记成功,不存在编号。
+ * 所以这几行**点不开、没有任何动作**:监理能做的只有一件事,让人回去重拍。
+ */
+export interface IngestFailure {
+  /** 那张照片的 32 位产物编号。拼 `<ARTIFACT_BASE>/by-id/<photoId>` 能看到原图。 */
+  photoId: string;
+  /** 哪个违规项没进去。 */
+  item: string;
+  /** 哪个工地。空串 = 未归属(D6)。 */
+  projectId: string;
+  /** 什么时候失败的。 */
+  createdAt: string;
+}
+
+export interface IngestFailureResult {
+  ok: boolean;
+  failures: IngestFailure[];
+  /** 本次列出来几条(不是磁盘上一共几条)。 */
+  total: number;
+  truncated: boolean;
+  userMsg: string;
+}
+
+function toIngestFailure(entry: unknown): IngestFailure | null {
+  const rec = asRecord(entry);
+  if (!rec) return null;
+  const photoId = textOf(rec, "photo_id");
+  const item = textOf(rec, "item");
+  // 两样缺一样这行就没意义了:没照片编号看不到原图,没违规项不知道要重拍什么。
+  if (!photoId || !item) return null;
+  return {
+    photoId,
+    item,
+    // 🔴 空串是「未归属」这个**值**,不是"没读到" —— 所以用 textOf 而不是
+    //    nullableTextOf。压成 null 的话界面会显示成「不知道哪个工地」,
+    //    而真相是「这条明确不属于任何工地」,两句话给人的下一步完全不同。
+    projectId: textOf(rec, "project_id"),
+    createdAt: textOf(rec, "created_at"),
+  };
+}
+
+/**
+ * 解析 `GET /supervision/ingest-failures` 的响应体。**一个错都不抛**(同清单那条)。
+ *
+ * 🔴 读不出时回 `ok:false` 而不是「ok:true + 空清单」,理由与 `parseHazardListEnvelope`
+ * 那段红字一字不差:「没有登记失败」和「这一屏读不出来」在界面上长得一模一样,
+ * 而前一句会让监理放心收工 —— 可这条清单存在的全部意义就是告诉他有东西漏了。
+ */
+export function parseIngestFailureEnvelope(bodyText: string): IngestFailureResult {
+  const parsed = tryParseJsonObject(bodyText);
+  const userMsg = textOf(parsed ?? {}, "user_msg");
+  const data = parsed && parsed.ok === true ? asRecord(parsed.data) : null;
+  if (!data || !Array.isArray(data.failures)) {
+    return { ok: false, failures: [], total: 0, truncated: false, userMsg };
+  }
+  const failures = data.failures.flatMap((entry) => {
+    const row = toIngestFailure(entry);
+    return row ? [row] : [];
+  });
+  return {
+    ok: true,
+    failures,
+    // 兜底是手上真有的行数,不是 0 —— 列着 3 行而表头写「共 0 条」是自相矛盾。
+    total: countOf(data, "total", failures.length),
+    truncated: data.truncated === true,
     userMsg,
   };
 }

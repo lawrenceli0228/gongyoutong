@@ -23,6 +23,8 @@ import {
   actionNeedsConfirm,
   actionNeedsDuePhrase,
   actionNeedsPhoto,
+  actionNeedsProject,
+  actionNeedsReason,
   availableActions,
   confirmBatchPrompt,
   DISMISS_REASON_MIN_LEN,
@@ -85,6 +87,8 @@ import {
   removeHazard,
   SharedPhotoState,
   SHARED_PHOTO_MESSAGES,
+  ingestFailuresUrl,
+  parseIngestFailureEnvelope,
   SUPERVISION_ENDPOINTS,
   SUPERVISION_MESSAGES,
   SupervisionContractError,
@@ -140,7 +144,7 @@ const SUSPEND_ENVELOPE = JSON.stringify({
 // ---------------------------------------------------------------------------
 
 describe("端点地址(路径写错的表现是 404,而 404 会被说成「接口还没开通」—— 方向全错)", () => {
-  it("九条 POST 端点齐全,与 supervision_api.SUPERVISION_ROUTES 一一对应", () => {
+  it("十一条 POST 端点齐全,与 supervision_api.SUPERVISION_ROUTES 一一对应", () => {
     expect([...SUPERVISION_ENDPOINTS]).toEqual([
       "confirm",
       "grade",
@@ -154,13 +158,39 @@ describe("端点地址(路径写错的表现是 404,而 404 会被说成「接�
       // 与 reject 的分工:reject 删 pending(没人确认过、没有留档价值),
       // dismiss 关 open(行还在、编号还在,只是写明了为什么关)。
       "dismiss",
+      // 2026-08-22 的**两处订正**。与上面九条不同类:不签发任何文书、不改 status,
+      // 回答的是「当初记错了」。两条都源自同一个发现:**用户被指向一条不存在的路**。
+      "extend",
+      "reassign",
     ]);
   });
 
-  it("两个 GET 查询端点**不在**这张表里 —— 它们有各自的构造函数(三态与转义在那儿)", () => {
+  it("三个 GET 查询端点**不在**这张表里 —— 它们有各自的构造函数(三态与转义在那儿)", () => {
     // 混进来的话,`supervisionUrl` 那种裸拼接会把 project_id 三态和编号转义一起吃掉。
     expect(SUPERVISION_ENDPOINTS).not.toContain("hazards");
+    expect(SUPERVISION_ENDPOINTS).not.toContain("ingest-failures");
     expect(hazardListUrl("http://x")).toContain("/supervision/hazards");
+    expect(ingestFailuresUrl("http://x")).toContain("/supervision/ingest-failures");
+  });
+
+  it("登记失败那条**不在 /hazards/ 下面** —— 在下面会被详情那条路径段吞掉", () => {
+    // 写成 /supervision/hazards/ingest-failures 的表现是 404 带一句
+    // 「台账里没有『ingest-failures』这条隐患」—— 一句莫名其妙的人话。
+    expect(ingestFailuresUrl("http://x")).toBe("http://x/supervision/ingest-failures");
+  });
+
+  it("登记失败清单的 project_id 是**三态**,与隐患清单同一套", () => {
+    // 🔴 塌成两态的表现同样是「全部工地」悄悄变成「只有未归属」,零报错。
+    expect(ingestFailuresUrl("http://x")).toBe("http://x/supervision/ingest-failures");
+    expect(ingestFailuresUrl("http://x", { projectId: "" })).toBe(
+      "http://x/supervision/ingest-failures?project_id=",
+    );
+    expect(ingestFailuresUrl("http://x", { projectId: "gyt-a3" })).toBe(
+      "http://x/supervision/ingest-failures?project_id=gyt-a3",
+    );
+    expect(ingestFailuresUrl("http://x", { projectId: null })).toBe(
+      "http://x/supervision/ingest-failures",
+    );
   });
 
   it("复查那条是**连字符** reinspect-result,不是下划线", () => {
@@ -339,11 +369,25 @@ describe("availableActions —— 服务端四道闸在界面上的投影(只许
     }
   });
 
-  it("notified / suspended → 只能登记复查结论", () => {
-    expect(availableActions(hazard({ status: "notified" }))).toEqual(["reinspect"]);
+  it("notified / suspended → 登记复查结论 + 改期限", () => {
+    // `extend`(2026-08-22)**只在这两档** —— 只有它们有一个在跑的期限
+    // (镜像后端 `DUE_CHANGEABLE_STATUSES`)。排在复查之后:主要动作在前,
+    // 「宽限几天」是例外情况。
+    expect(availableActions(hazard({ status: "notified" }))).toEqual(["reinspect", "extend"]);
     expect(availableActions(hazard({ status: "suspended", grade: GRADE_SEVERE }))).toEqual([
       "reinspect",
+      "extend",
     ]);
+  });
+
+  it("🔴 改期限**只在有期限的那两档** —— 其余六档给出来就是必被 409 拒的按钮", () => {
+    // 判据镜像后端 `hazards.DUE_CHANGEABLE_STATUSES`。其余六档要么还没有期限
+    // (pending / open),要么期限已经不作数了(复查/复工/销项/上报那几档
+    // 往下走靠的是复查结论和文书,不是日历)。
+    for (const status of HAZARD_STATUSES) {
+      if (status === "notified" || status === "suspended") continue;
+      expect(availableActions(hazard({ status }))).not.toContain("extend");
+    }
   });
 
   it("reinspect_failed → 再复查一次,或者上报主管部门", () => {
@@ -385,8 +429,24 @@ describe("availableActions —— 服务端四道闸在界面上的投影(只许
     expect(actions).not.toContain("suspend");
   });
 
-  it("pending → 定级 + 否决两颗(W10:确认与否决是同一个岔路口的两条)", () => {
-    expect(availableActions(hazard({ status: "pending" }))).toEqual(["grade", "reject"]);
+  it("pending → 定级 + 否决 + 改归属(W10:确认与否决是同一个岔路口的两条)", () => {
+    // 第三颗 `reassign`(2026-08-22)排最后:它是订正,不是处置。
+    // **pending 这一档尤其要有它** —— 「拍的时候忘了选工地」这件事,
+    // 发现的时机就在监理翻待确认清单的这一刻。
+    expect(availableActions(hazard({ status: "pending" }))).toEqual([
+      "grade",
+      "reject",
+      "reassign",
+    ]);
+  });
+
+  it("🔴 改归属**只在没签过文书的那两档** —— 纸上写着工地名,改台账不会改纸", () => {
+    // 判据镜像后端 `hazards.REASSIGNABLE_STATUSES`(pending / open)。
+    // 多给一档 = 一颗点下去必被 409 拒的按钮,而工友会以为是系统坏了。
+    for (const status of HAZARD_STATUSES) {
+      if (status === "pending" || status === "open") continue;
+      expect(availableActions(hazard({ status }))).not.toContain("reassign");
+    }
   });
 
   it("🔴 否决**只在 pending** —— 服务端硬拦「确认过的不许删」,别处给出来必挨骂", () => {
@@ -405,9 +465,14 @@ describe("availableActions —— 服务端四道闸在界面上的投影(只许
     // 逼人先给一个「根本不是隐患」的东西定级才准删 = 往台账里留一条判过级的假隐患,
     // 而定级是要进法律文书的动作。服务端 delete_pending 只看 status='pending',
     // 压根不关心 needs_grading —— 所以给出来仍然比服务端窄。
+    // `reassign`(2026-08-22)在这一档**也要给**,理由与否决同构:
+    // 「归错了工地」和「定没定级」是两件互不相干的事,而未归属的隐患恰恰最常
+    // 落在 pending(工友拍照时没在顶栏选工地)。逼人先定级才准挪工地,
+    // 等于让一条本该归到 A 工地的隐患在未归属那堆里再待一轮。
     expect(availableActions(hazard({ status: "pending", needs_grading: true }))).toEqual([
       "grade",
       "reject",
+      "reassign",
     ]);
   });
 
@@ -457,11 +522,79 @@ describe("二次确认(判据是「这一下是不是法律行为」,不是「�
     expect(prompt).not.toContain("**");
   });
 
-  it("只有通知单/暂停令要期限,只有复查要照片", () => {
+  it("要期限的三颗、要照片的一颗、要原因的两颗、要选工地的一颗", () => {
     const needsDue = DISPOSAL_ACTIONS.filter(actionNeedsDuePhrase);
     const needsPhoto = DISPOSAL_ACTIONS.filter(actionNeedsPhoto);
-    expect(needsDue).toEqual(["notice", "suspend"]);
+    const needsReason = DISPOSAL_ACTIONS.filter(actionNeedsReason);
+    const needsProject = DISPOSAL_ACTIONS.filter(actionNeedsProject);
+    // `extend`(2026-08-22)当然也要期限 —— 它整个动作就是「换一个期限」。
+    // 三处共用同一件后端换算(`_resolve_due`),所以界面上能写的说法完全一样。
+    expect(needsDue).toEqual(["notice", "suspend", "extend"]);
     expect(needsPhoto).toEqual(["reinspect"]);
+    // 判据不是「会不会写库」,是「这一下事后能不能被问责」:
+    // 关掉是唯一能回答「这条为什么关的」的地方;改期是**可以反复用**的动作,
+    // 每次单看都合理,只有把历次理由并排看才看得出问题。
+    expect(needsReason).toEqual(["dismiss", "extend"]);
+    expect(needsProject).toEqual(["reassign"]);
+  });
+
+  it("🔴 `extend` 是唯一**期限和原因都要**的动作 —— 拼请求体时两样都得在", () => {
+    // 这一条钉的是 `actionBody` 里那个分支顺序:`extend` 必须排在通用的
+    // `actionNeedsDuePhrase` 分支**前面**(那个分支只塞 due_phrase 就 return)。
+    // 排错了的表现极其阴险:监理认真写的原因被静默丢掉,后端回一句
+    // 「改期限要写清为什么」,而那句话就在他刚填过的输入框旁边 ——
+    // 他会以为是自己写得太短,再写一遍,再被拒。
+    const body = actionBody("extend", {
+      hazardNo: "GYT-H-1",
+      duePhrase: "下周五",
+      reason: "連續下雨停工三天",
+    });
+    expect(body).toEqual({
+      hazard_no: "GYT-H-1",
+      due_phrase: "下周五",
+      reason: "連續下雨停工三天",
+    });
+  });
+
+  it("`extend` 缺原因时拦下,而且那句话带真实例子", () => {
+    // 只说「要写原因」的结果是一屏「順延」,而那些字事后什么都回答不了。
+    expect(() =>
+      actionBody("extend", { hazardNo: "GYT-H-1", duePhrase: "下周五", reason: "。" }),
+    ).toThrow(SupervisionContractError);
+    expect(SUPERVISION_MESSAGES.missingExtendReason).toContain("連續下雨");
+  });
+
+  it("🔴 `reassign` 的判据是「这个键在不在」,不是「值空不空」", () => {
+    // 空串是合法值(挪回「未歸屬」)。写成真值判断的话,「挪回未归属」这个动作
+    // 在结构上就不存在 —— 而它恰恰是最常用的反向操作(拍的时候选错了工地)。
+    expect(actionBody("reassign", { hazardNo: "GYT-H-1", projectId: "" })).toEqual({
+      hazard_no: "GYT-H-1",
+      project_id: "",
+    });
+    expect(actionBody("reassign", { hazardNo: "GYT-H-1", projectId: "gyt-b7" })).toEqual({
+      hazard_no: "GYT-H-1",
+      project_id: "gyt-b7",
+    });
+    expect(() => actionBody("reassign", { hazardNo: "GYT-H-1" })).toThrow(
+      SupervisionContractError,
+    );
+  });
+
+  it("两处订正都**不需要二次确认** —— 判据仍是「这一下能不能反悔」", () => {
+    // 两者都能再改回来,而且都留痕。给它们加确认框的下场是人闭着眼点「确定」,
+    // 那时真正该拦的四颗也就废了。
+    expect(actionNeedsConfirm("extend")).toBe(false);
+    expect(actionNeedsConfirm("reassign")).toBe(false);
+  });
+
+  it("🔴 没写确认话术的动作**抛**,不许落到别的动作那句上", () => {
+    // 原来那个兜底是 `return 上报那段话` —— 也就是说任何一个没列出来的动作,
+    // 弹出来的都是「要出具《监理报告》报建设主管部门吗?」。
+    // 今天它碰巧不触发(actionNeedsConfirm 只对四颗返回 true,四颗都写了话术),
+    // 但那是**两个函数之间的巧合**:哪天有人把 extend 加进 actionNeedsConfirm,
+    // 监理点「改期限」会看到一句「要报主管部门吗」—— 而他多半会点确定。
+    expect(() => confirmPrompt("extend", hazard())).toThrow(SupervisionContractError);
+    expect(() => confirmPrompt("reassign", hazard())).toThrow(SupervisionContractError);
   });
 });
 
@@ -2150,8 +2283,9 @@ describe("不出文书关掉 dismiss(2026-08-21)", () => {
     const normal = availableActions(hazard({ status: "open", grade: GRADE_NORMAL }));
     const severe = availableActions(hazard({ status: "open", grade: GRADE_SEVERE }));
 
-    expect(normal).toEqual(["notice", "grade", "dismiss"]);
-    expect(severe).toEqual(["suspend", "grade", "dismiss"]);
+    // 第四颗 `reassign`(2026-08-22)排在最末:它是**订正**,不是处置。
+    expect(normal).toEqual(["notice", "grade", "dismiss", "reassign"]);
+    expect(severe).toEqual(["suspend", "grade", "dismiss", "reassign"]);
   });
 
   it("🔴 签过文书之后不许再出现 —— 纸已经发出去了", () => {

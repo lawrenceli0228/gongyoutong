@@ -86,7 +86,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { getApiKey } from "@/lib/api-key";
-import { useCurrentProjectId } from "./ProjectUploadPanel";
+import { useCurrentProjectId, useProjectOptions } from "./ProjectUploadPanel";
 import {
   ACTION_LABEL,
   ACTION_ENDPOINT,
@@ -94,6 +94,8 @@ import {
   actionNeedsConfirm,
   actionNeedsDuePhrase,
   actionNeedsPhoto,
+  actionNeedsProject,
+  actionNeedsReason,
   availableActions,
   currentGrade,
   confirmBatchPrompt,
@@ -117,6 +119,8 @@ import {
   HAZARD_SCOPE_PENDING,
   HAZARD_SCOPES,
   HazardBrief,
+  IngestFailure,
+  ingestFailuresUrl,
   HazardDetail,
   HazardListResult,
   HazardScope,
@@ -130,6 +134,7 @@ import {
   parseConfirmEnvelope,
   parseHazardDetailEnvelope,
   parseHazardListEnvelope,
+  parseIngestFailureEnvelope,
   parsePhotoEnvelope,
   patchHazard,
   pendingHazards,
@@ -734,7 +739,21 @@ function IssueConfirmBar({
   );
 }
 
-type FormState = { due: string; photo: string; reason: string };
+/**
+ * 一行上那几个输入格。
+ *
+ * ⚠️ `projectId`(2026-08-22,改归属用)的类型是 `string | undefined`,**不是 string** ——
+ * 空串是合法值(挪回「未歸屬」),所以「还没选」这一档只能用 `undefined` 表达。
+ * 写成 `string` + 空串当"没选"的话,监理永远选不了「未歸屬」那一档:
+ * 他选了,而界面判成"还没选",按钮一直是灰的,而屏幕上没有任何解释。
+ * 后端 `_work_reassign` 用的也是「这个键在不在」这条判据,两边同源。
+ */
+type FormState = {
+  due: string;
+  photo: string;
+  reason: string;
+  projectId?: string;
+};
 
 const EMPTY_FORM: FormState = { due: "", photo: "", reason: "" };
 
@@ -1116,6 +1135,173 @@ function SharedReinspectPhotoField({
 }
 
 /**
+ * 一行的「挪到哪个工地」(2026-08-22,改归属用)。
+ *
+ * ── 🔴 为什么是 select 而不是输入框 ──────────────────────────────────
+ * 后端**刻意不校验目标工地是否存在**:`projects` 与 `hazards.project_id` 之间
+ * 本来就没有外键(D6 的取舍),补一道半套的完整性校验没有意义。
+ * 所以**那道闸的正确位置就在这里**。做成输入框的话,打错一个字 =
+ * 那条隐患挪进一个不存在的工地,从此按工地筛也筛不到、在未归属那堆里也找不到
+ * (它的 project_id 非空),而且**没有任何报错**。
+ * `detach_project` 的头注早就把这种局面写下来了:「彻底找不到」。
+ *
+ * ── 🔴 「未歸屬」是一档合法选项,不是空状态 ──────────────────────────
+ * D6 定的:未归属就是空串,是设计里的一档,不是错误态。所以它在下拉里要有
+ * 一行自己的位置,而不是靠"什么都不选"来表达 —— 那样监理根本没有把一条
+ * 归错了的隐患**摘回去**的办法。
+ *
+ * ── 「还没选」用 undefined ──────────────────────────────────────────
+ * 因为空串已经被「未歸屬」占了。`value=""` 在 select 上会与「未歸屬」那一项撞,
+ * 所以「还没选」这一档用一个**不可能是工地编号的哨兵串**做 option 的 value,
+ * 再在 onChange 里翻译回 undefined。判据集中在这一个组件里,外面只见 undefined。
+ */
+/**
+ * 「有几条隐患**没能**写进台账」那一条提示(2026-08-22)。
+ *
+ * ── 为什么是自己拉一次,而不是并进隐患清单那个请求 ──────────────────
+ * 它答的是完全不同的一个问题。隐患清单答「台账里有什么」,这条答「有什么**没进**台账」;
+ * 两者的数据源是两张表(`hazards` / `hazard_ingest_failures`),而且后者是诊断数据 ——
+ * 并进那个响应会让那份 Envelope 多背一个跟它无关的数组,而清单那条路是
+ * 常驻操作台每次开机都打的。多一条 GET 换来两件事各自能坏、各自能读。
+ *
+ * ── 读不出来时**什么都不显示** ──────────────────────────────────────
+ * 与巡检记录抽屉刻意相反,这里不区分「读不出来」和「真的没有」:
+ * 这是一条**附加的提醒**,不是人来这一屏要办的事。读不出来时摆一句
+ * 「登记失败清单读不出来」只会在监理的主任务上盖一层噪音,而他真正该做的事
+ * (确认、签发、复查)一件都没受影响。
+ * 🔴 但**有数据时必须显示**,而且必须说清该做什么 —— 监理能做的只有一件事:
+ * 让人回去重拍。不说清的话他会去点每一条找按钮,而这几行压根不是隐患行
+ * (它们没有编号、没有状态、点不开)。
+ */
+function IngestFailureNotice({
+  apiBase,
+  projectFilter,
+}: {
+  apiBase: string;
+  /** 与隐患清单同一个三态口径(`useProjectFilter` 转过的那份)。 */
+  projectFilter: string | null;
+}) {
+  const [failures, setFailures] = useState<IngestFailure[]>([]);
+  const [total, setTotal] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const apiKey = getApiKey();
+        const res = await fetch(ingestFailuresUrl(apiBase, { projectId: projectFilter }), {
+          headers: apiKey ? { "x-api-key": apiKey } : undefined,
+          signal: controller.signal,
+        });
+        if (!res.ok) return; // 见组件头注:读不出来就什么都不说
+        const result = parseIngestFailureEnvelope(await res.text());
+        if (!cancelled && result.ok) {
+          setFailures(result.failures);
+          setTotal(result.total);
+        }
+      } catch {
+        // 网络异常 / 切工地时的 abort —— 静默。这是附加提醒,不是主任务。
+      }
+    })();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [apiBase, projectFilter]);
+
+  if (total === 0) return null;
+
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2">
+      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-rose-600" />
+      <div className="text-[12px] leading-snug text-rose-900">
+        <p className="font-bold">有 {total} 條隱患沒能寫進台賬。</p>
+        <p className="mt-1">
+          照片是拍到了、系統也看出來了,但那一條沒存下來 ——
+          所以台賬上沒有它,也不會有人去催。請讓人到現場**重新拍一張**這幾處的照片重新登記。
+        </p>
+        {/* 列出来是为了让人知道**要重拍什么**。这几行刻意没有任何按钮:
+            那几条隐患压根没登记成功,没有编号、没有状态,系统里没有它们可操作的东西。 */}
+        <ul className="mt-1.5 list-disc pl-4">
+          {failures.map((row) => (
+            <li key={`${row.photoId}-${row.item}`}>
+              {row.item}
+              {row.projectId ? `(工地 ${row.projectId})` : "(未歸屬)"}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 「还没选」那一档的 option value。
+ *
+ * 空串已经被「未歸屬」占了(D6 那一档),所以哨兵只能是另一个串。
+ * 选了个**带空格的中文串**:工地编号来自 `projects.id`(后端生成的编号),
+ * 不可能长成这样。万一真撞上,表现是那一个工地在下拉里选不动 ——
+ * 不好,但看得见;而反过来(拿空串当哨兵)的表现是「未歸屬」**永远选不了**,
+ * 那才是真正要防的那件事。
+ */
+const UNPICKED = " 未選 ";
+
+function ProjectChoice({
+  hazardNo,
+  currentProjectId,
+  value,
+  busy,
+  onChange,
+}: {
+  hazardNo: string;
+  /** 这条隐患现在归在哪个工地。空串 = 未归属。`undefined` = 这条取数路径不带这个字段。 */
+  currentProjectId?: string;
+  /** `undefined` = 还没选。空串 = 选了「未歸屬」。 */
+  value: string | undefined;
+  busy: boolean;
+  onChange: (value: string) => void;
+}) {
+  const projects = useProjectOptions();
+  const currentLabel =
+    currentProjectId === undefined
+      ? ""
+      : currentProjectId
+        ? (projects.find((p) => p.id === currentProjectId)?.name ?? currentProjectId)
+        : "未歸屬";
+
+  return (
+    <div className="flex flex-col gap-1">
+      <Label htmlFor={`gyt-project-${hazardNo}`} className="text-[12px]">
+        挪到哪個工地{currentLabel ? `(現在:${currentLabel})` : ""}
+      </Label>
+      <select
+        id={`gyt-project-${hazardNo}`}
+        value={value === undefined ? UNPICKED : value}
+        onChange={(e) => onChange(e.target.value === UNPICKED ? "" : e.target.value)}
+        disabled={busy}
+        className="h-9 rounded-md border border-gray-300 bg-white px-2 text-[13px] disabled:opacity-50"
+      >
+        <option value={UNPICKED} disabled>
+          選一個工地…
+        </option>
+        {/* 「未歸屬」排在最前面:把一条归错了的隐患摘回去,是这个动作最常见的反向用法。 */}
+        <option value="">未歸屬(先摘回去)</option>
+        {projects.map((project) => (
+          <option key={project.id} value={project.id}>
+            {project.name}
+            {project.code ? `(${project.code})` : ""}
+          </option>
+        ))}
+      </select>
+      <span className="text-[12px] text-gray-600">
+        挪工地不出文書。已經簽過文書的隱患挪不了 —— 那幾份紙上寫着工地名,改台賬不會改紙。
+      </span>
+    </div>
+  );
+}
+
+/**
  * 一行的「这一条用哪张照片」—— 标注 + 折叠着的手填编号逃生口。
  *
  * ── 为什么行里只剩这么点东西 ──────────────────────────────────────────
@@ -1301,7 +1487,26 @@ function HazardRow({
   const isPending = hazard.status === "pending";
   const needsDue = actions.some(actionNeedsDuePhrase);
   const needsPhoto = actions.some(actionNeedsPhoto);
-  const needsReason = actions.includes("dismiss");
+  const needsReason = actions.some(actionNeedsReason);
+  const needsProject = actions.some(actionNeedsProject);
+  /**
+   * 这一行的「原因」格是给哪个动作用的。
+   *
+   * `dismiss` 只长在 `open`、`extend` 只长在 `notified`/`suspended` —— 两者**永不同时出现**
+   * (`availableActions` 是按 status 分档给的)。所以一格输入框够用,
+   * 只是那句提示要跟着换:两件事的例子完全不一样(「白色安全帽,现场核过」
+   * vs「连续下雨停工三天」),而**给错例子等于没给** —— 提示的全部作用就是
+   * 让人别写「不用了」那种事后什么都回答不了的字。
+   *
+   * ⚠️ 哪天它们真的同时出现了(状态机变了),这里会**静默取到其中一个**的文案。
+   * 下面那个 `console` 级别的断言不值当,但这句话得留着:发现文案对不上时,
+   * 先回去看 `availableActions` 是不是把两颗放进了同一档。
+   */
+  const reasonAction: DisposalAction | null = actions.includes("dismiss")
+    ? "dismiss"
+    : actions.includes("extend")
+      ? "extend"
+      : null;
   /**
    * 期限那一行只在**源里真给了这个键**时出现(`due_date !== undefined`)。
    * 老路(聊天里的工具返回)没有这几个字段,渲成「期限:—」看着像后端没下期限,
@@ -1510,26 +1715,43 @@ function HazardRow({
         </div>
       )}
 
-      {needsReason && (
+      {needsReason && reasonAction !== null && (
         <div className="flex flex-col gap-1">
           <Label htmlFor={`gyt-reason-${hazard.hazard_no}`} className="text-[12px]">
-            關掉的原因(不出文書時要寫)
+            {reasonAction === "dismiss" ? "關掉的原因(不出文書時要寫)" : "改期限的原因(要寫)"}
           </Label>
-          {/* 🔴 这句话会**原样留在台账里**,是事后唯一能回答「这条为什么关的」的地方。
-              placeholder 给的是两个真实例子而不是「請輸入原因」—— 后者的结果是
-              一屏「不用了」「已处理」,而那些字事后什么都回答不了。 */}
+          {/* 🔴 这句话会**原样留在台账里**,是事后唯一能回答「这条为什么关的 /
+              为什么展期」的地方。placeholder 给的是**真实例子**而不是「請輸入原因」——
+              后者的结果是一屏「不用了」「已处理」「順延」,而那些字事后什么都回答不了。
+              两个动作的例子刻意不一样:给错例子等于没给。 */}
           <Input
             id={`gyt-reason-${hazard.hazard_no}`}
             value={form.reason}
             onChange={(e) => onFormChange({ reason: e.target.value })}
-            placeholder="如:白色安全帽,現場核過"
+            placeholder={
+              reasonAction === "dismiss" ? "如:白色安全帽,現場核過" : "如:連續下雨停工三天"
+            }
             maxLength={200}
             disabled={busy}
           />
           <span className="text-[12px] text-gray-600">
-            關掉之後這條就是終點,系統裏開不回來。這句話會留在台賬裏。
+            {reasonAction === "dismiss"
+              ? "關掉之後這條就是終點,系統裏開不回來。這句話會留在台賬裏。"
+              : // 改期是**可以反复用**的动作,所以这句提示说的不是「不可撤销」,
+                // 而是「会被一起看」—— 那才是它真正的约束力所在。
+                "改期不出新文書,但每一次都會留在台賬裏 —— 展了幾次、每次什麼理由,事後都看得到。"}
           </span>
         </div>
+      )}
+
+      {needsProject && (
+        <ProjectChoice
+          hazardNo={hazard.hazard_no}
+          currentProjectId={hazard.project_id}
+          value={form.projectId}
+          busy={busy}
+          onChange={(value) => onFormChange({ projectId: value })}
+        />
       )}
 
       {needsPhoto && (
@@ -2516,6 +2738,10 @@ export function SupervisionPanel({
           hazardNo: hazard.hazard_no,
           duePhrase: form.due,
           reason: form.reason,
+          // ⚠️ 直接透传 form.projectId(可能是 undefined)—— **不许 `?? ""`**:
+          // 空串是「未歸屬」这个值,undefined 才是「还没选」。压平之后
+          // 「没选工地」会被当成「选了未归属」发出去,而那是一次真实的改动。
+          projectId: form.projectId,
           // 与 `runAction` 走同一个 `effectivePhotoId` —— 两处各写一份的话,
           // 举手时验的是 A 张、真发出去的是 B 张,而中间隔着一句「不能撤销」。
           afterPhotoId: effectivePhotoId(form.photo, sharedPhotoState),
@@ -2549,6 +2775,8 @@ export function SupervisionPanel({
           hazardNo: hazard.hazard_no,
           duePhrase: form.due,
           reason: form.reason,
+          // 同 armAction:透传 undefined,不许压成空串(理由在那边)。
+          projectId: form.projectId,
           afterPhotoId: photoId,
           grade,
           result,
@@ -2928,6 +3156,22 @@ export function SupervisionPanel({
               : `另外還有 ${snapshot?.unassigned} 條隱患沒歸到任何工地,這一屏裏看不到 —— 把頂欄的工地切回「全部」才看得見。`}
           </div>
         )}
+
+        {/* 🔴 **登记失败那一批(2026-08-22)—— D10 那条三层全断的出口。**
+
+            D10 定的是「写库失败不堵死主路径」:识别结果照常返回,写不进去的那几项
+            进 Envelope 的 failed_items,同时往 hazard_ingest_failures 记一行,
+            好让这件事**事后统计得出来**。实际发生的是三层**一层都没通**:
+              ① failed_items 挂在 safety 的工具返回里,而 supervisor 的
+                 output_mode="last_message" 把子 Agent 的工具返回整个丢掉;
+              ② 挂它的那张卡(HazardIntakeCard)因此从来没渲染出来过;
+              ③ db.list_ingest_failures() 在 2026-08-22 之前**全仓零生产调用方**。
+            合起来:工友传了照片、系统答「看到 3 处隐患」,其中 1 处没进台账,
+            而没有任何人、任何界面知道这件事。
+
+            它排在未归属那句之后、复查照片之前:两句都是「有东西你看不见」,
+            该挨着;而它比未归属更急(未归属的隐患还在台账里,这些压根不在)。 */}
+        <IngestFailureNotice apiBase={apiBase} projectFilter={projectFilter} />
 
         {/* ── 这次复查的照片:整屏一格,排在清单**之前** ──────────────────────
             🔴 **只在这一屏至少有一条能复查时才出现。** 一条都没有的时候摆一个上传框

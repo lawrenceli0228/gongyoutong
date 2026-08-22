@@ -471,6 +471,24 @@ export function useCurrentProjectId(): string {
   return useArchive().projectId;
 }
 
+/**
+ * 读工地清单(2026-08-22,给监理面板的「改归属」用)。
+ *
+ * ⚠️ **只读,不许拿它去改当前工地** —— 那是顶栏 `ProjectSwitcher` 的事。
+ * 这个 hook 存在的唯一理由是:改归属那一格必须是**选择器**(只列真实存在的工地),
+ * 不能是自由输入框。后端刻意不校验目标工地是否存在(`projects` 与
+ * `hazards.project_id` 之间没有外键,D6 的取舍),所以**那道闸的正确位置就在界面上**。
+ * 做成输入框的话,打错一个字 = 那条隐患挪进一个不存在的工地,
+ * 从此两边都筛不到它,而且没有任何报错。
+ *
+ * 复用 `ArchiveProvider` 已经拉好的那份,不另发请求:两份清单会漂
+ * (新建一个工地之后,一处有、一处没有),而漂了的表现只是"选择器里少一个",
+ * 没人看得出是漂了还是本来就没建。
+ */
+export function useProjectOptions(): { id: string; name: string; code: string | null }[] {
+  return useArchive().projects;
+}
+
 /** 顶栏醒目的「当前工地」切换条:一眼看清现在针对哪个项目,点开可切换 / 选「全部」/ 去新建。
  *  这是「你在项目2、它却按项目1答」的正解 —— 把默默默认的小 chip 换成显眼、可切、不偷偷默认。 */
 function ProjectSwitcher() {
