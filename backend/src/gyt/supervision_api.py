@@ -26,7 +26,7 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
 ===========================================================================
 端点一览(路径不含 ``/api``:那一段由 Caddy 剥掉,与打卡链同规矩)
 ===========================================================================
-**查询两条**(W10),``GET``,没有请求体 —— 参数走查询串与路径::
+**查询三条**(W10 两条 + 2026-08-22 一条),``GET``,没有请求体 —— 参数走查询串与路径::
 
     GET /supervision/hazards?scope=…&project_id=…
         隐患清单。它是界面上那块**常驻操作台**的数据源:面板不再从聊天流里取数
@@ -53,8 +53,19 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
     GET /supervision/hazards/{hazard_no}
         单条详情 + **证据链**:每份文书的下载信息(``artifact_id`` / ``filename``)、
         每次复查的照片编号与结论。查不到编号回 404。
+        ⚠️ 2026-08-22 起另有 ``due_changes[]``(历次改期留痕)。它**不进 ``documents``**
+        —— 那个数组里每一项都有编号、都能下载,而这几行两样都没有。
 
-**写入八条**,全部 ``POST``、``Content-Type: application/json``、请求体是一个 JSON 对象::
+    GET /supervision/ingest-failures?project_id=…
+        「有哪几条隐患**没能**写进台账」。``project_id`` 同上三态。
+        它补的是 D10 那条**三层全断**的出口:Envelope 的 ``failed_items`` 被
+        ``output_mode="last_message"`` 丢掉 → 挂它的那张卡不可达 →
+        ``db.list_ingest_failures()`` 在此之前**全仓零生产调用方**。
+        效果是工友传了照片、系统答「看到 3 处隐患」,其中 1 处没进台账,而没有任何人知道。
+        🔴 ``reason`` **不进响应**(内部细节,见 ``IngestFailureRow`` 头注)——
+        监理能做的动作只有一个:让人回去重拍那张照片。
+
+**写入十一条**,全部 ``POST``、``Content-Type: application/json``、请求体是一个 JSON 对象::
 
     POST /supervision/confirm            {"hazard_nos": ["GYT-H-…", …]}   ← 也收单条 hazard_no
         pending → open(D17 的人工确认闸)。**支持批量,每条一个事务、互不牵连。**
@@ -108,10 +119,34 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
     POST /supervision/escalate           {"hazard_no": …}
         《监理报告》报主管部门,正文附 hazard_docs 完整证据链。只从 reinspect_failed 进。
 
+    ——— 下面两条是 2026-08-22 加的**订正**,与上面九条不同类:不签文书、不改 status,
+        回答的是「当初记错了」而不是「这件事进展到哪一步了」。两条都源自同一个发现:
+        **用户被指向一条不存在的路**。
+
+    POST /supervision/extend             {"hazard_no": …, "due_phrase": "下周三",
+                                          "reason": "连续下雨停工三天", "issued_by": "陈大文"}
+        改整改期限(宽限几天),**不出文书**。只对 ``notified`` / ``suspended`` ——
+        其余六档没有在跑的期限。``due_phrase`` 收用户原话,与签发那两条共用
+        ``_resolve_due``(所以监理能写的说法两处完全一样,不用记两套)。
+        🔴 ``reason`` 必填(至少 4 个字),连同「从哪天挪到哪天」「谁改的」一起进
+        ``hazard_due_changes``。**留痕不发纸**的取舍写在 ``_work_extend`` 里。
+        它补的断路:``agents/schedule/tools.py`` 明写「要宽限几天,得让监理去改这条
+        隐患的整改期限」,而在这条端点之前监理那边**没有这个动作**。
+
+    POST /supervision/reassign           {"hazard_no": …, "project_id": "gyt-a3"}
+        改归属(挪工地),**不出文书**。``project_id`` 传空串 = 挪回「未归属」,
+        所以**判据是"这个键在不在"而不是"值空不空"**(缺键才是漏参)。
+        只对 ``pending`` / ``open`` —— 签过文书的拒:每份文书正文里都写着工地名,
+        改台账不会改那张已经发出去的纸。
+        目标工地下已经有同一条(幂等键 ``project_id+photo_sha256+item`` 撞车)也拒,
+        且**与"状态不对"是两句不同的人话** —— db 层刻意不吞那个 IntegrityError。
+        它补的断路:全仓唯一写 ``project_id`` 的地方是删项目时的整批置空,
+        于是一条拍照时忘了选工地的隐患,永远待在"未归属"那堆里,按工地筛永远筛不到。
+
 **上传一条**,``POST``,请求体是**原始图片字节** —— 不是 multipart、不是 JSON::
 
     POST /supervision/photo
-      X-Api-Key:    <与其余十条同一把锁>
+      X-Api-Key:    <与其余每一条同一把锁>
       Content-Type: 随便填(``image/jpeg`` 之类)—— **服务端一个字都不信它**
       body:         图片原始字节
 
@@ -144,7 +179,8 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
         ⚠️ 它**不是动作端点、不出文书**,所以 ``data`` 里**没有** ``documents`` 键 ——
         那不是漏了,见下面「Envelope 的 data 形状是冻结的」一节的说明。
 
-响应码(十一条端点同一套,**GET 与上传也一样**):
+响应码(**每一条端点同一套**,GET 与上传也一样。这里刻意不写条数 ——
+条数的唯一真相是 ``SUPERVISION_ROUTES``,写在正文里的数已经过期过一次):
 
     200  ok=True
     400  INVALID_INPUT   缺字段 / 级别或结论不在词表 / **筛子不在四个词里** /
@@ -1569,8 +1605,24 @@ def _work_get_hazard(params: dict[str, Any]) -> _Result:
         # 还能再复查,而 closed 也可能是复工令签出来的 —— 状态答不了这个问题。
         "reinspected": bool(reinspections),
         "documents": documents,
+        # 改期留痕(2026-08-22)。**它不是文书,所以不进 ``documents``** —— 那个数组
+        # 里每一项都有编号、都能下载,而这几行两样都没有。混进去的话前端那张
+        # 证据链表会多出几行点不开的东西,而「一共签了几份文书」也会跟着数错。
+        "due_changes": [_due_change_payload(c) for c in hazards.due_changes_of([row.hazard_no])],
     }
     return _Result(200, ok(data, _detail_user_msg(row, issued=issued, reinspections=reinspections)))
+
+
+def _due_change_payload(change: hazards.DueChangeRow) -> dict[str, Any]:
+    """一次改期留痕的对外形状。``changed_by`` 空就是 None —— 同 ``issued_by``,
+    编一个名字比留 NULL 坏得多(查的人一眼看得出「这条没记到人」)。"""
+    return {
+        "old_due": change.old_due,
+        "new_due": change.new_due,
+        "reason": change.reason,
+        "changed_by": change.changed_by,
+        "created_at": change.created_at,
+    }
 
 
 def _detail_user_msg(
@@ -1596,6 +1648,77 @@ def _detail_user_msg(
         verdict = last["result_display"] or "没记结论"
         parts.append(f",复查过 {len(reinspections)} 次,最近一次{verdict}。")
     return "".join(parts)
+
+
+def _work_ingest_failures(params: dict[str, Any]) -> _Result:
+    """GET /supervision/ingest-failures —— 「有哪几条隐患**没能**写进台账」。
+
+    ===========================================================================
+    为什么非有这条不可(它补的是三层全断的一条出口)
+    ---------------------------------------------------------------------------
+    D10 定的是「写库失败不堵死主路径」:识别结果照常 ``ok`` 返回,写不进去的那几项
+    进 Envelope 的 ``failed_items``,同时往 ``hazard_ingest_failures`` 记一行,
+    好让这件事**事后统计得出来**。
+
+    实际发生的是:三层出口**一层都没通**——
+      ① Envelope 的 ``failed_items`` 挂在 safety 的工具返回里,而 supervisor 的
+         ``output_mode="last_message"`` 把子 Agent 的工具返回整个丢掉(W10 的老根因);
+      ② 那张卡(``HazardIntakeCard``)因此从来没渲染出来过,已在前端标注不可达;
+      ③ ``db.list_ingest_failures()`` 在 2026-08-22 之前**全仓零生产调用方** ——
+         「事后统计」这个设计意图从写下那天起就没兑现过。
+    合起来的效果:工友传了照片、系统答「看到 3 处隐患」,其中 1 处**没进台账**,
+    而没有任何人、任何界面、任何日志之外的地方知道这件事。
+
+    🔴 **``reason`` 不进响应。** 它是异常类型与约束名(``IngestFailureRow`` 的头注原话:
+    「给排查的人看的内部细节,**不进人话**」),照抄给监理就是把
+    「UNIQUE constraint failed: hazards.project_id」摆到工地负责人面前。
+    要排查的人去看日志与库 —— 那儿有全文。这里只回答「哪张照片的哪一项没进去」,
+    因为监理能做的动作只有一个:**让人回去重拍那张照片**。
+    """
+    project_id = _optional_project_id(params)
+    rows = hazards.list_ingest_failures(project_id=project_id)
+    # 与隐患清单共用同一个旋钮 —— 两处在不同的条数上截断而都显示"就这么多",
+    # 是本模块已经写过一遍的坑(见 ``_work_list_hazards``)。
+    limit = get_settings().supervision_list_max_rows
+    # 最近的排前面(库层是 ``ORDER BY id`` 升序,这里倒过来再截):截断时该留下的是
+    # **最近失败的那批**,而不是最早那批 —— 早的那些多半早就被重拍覆盖过了。
+    recent = list(reversed(rows))
+    shown = [
+        {
+            "photo_id": r.photo_id,
+            "item": r.item,
+            "project_id": r.project_id,
+            "created_at": r.created_at,
+        }
+        for r in recent[:limit]
+    ]
+    return _Result(
+        200,
+        ok(
+            {
+                "project_id": project_id,
+                "failures": shown,
+                "total": len(rows),
+                "truncated": len(rows) > limit,
+            },
+            _ingest_failures_user_msg(len(rows)),
+        ),
+    )
+
+
+def _ingest_failures_user_msg(total: int) -> str:
+    """这句话要能让人立刻知道**该做什么**,而不只是"出了点问题"。
+
+    唯一能做的动作就是回去重拍 —— 说不清这一点的话,监理会去点每一条找按钮,
+    而这几条压根不是隐患行(它们没有编号、没有状态、点不开)。
+    """
+    if not total:
+        return "没有登记失败的隐患,拍到的都进台账了。"
+    return (
+        f"有 {total} 条隐患**没能**写进台账 —— 照片是拍到了、系统也看出来了,"
+        "但那一条没存下来,所以台账上没有它、也不会有人去催。"
+        "请让人到现场重新拍一张这几处的照片重新登记。"
+    )
 
 
 _DISMISS_REASON_MIN_LEN: Final[int] = 4
@@ -1674,6 +1797,204 @@ def _work_dismiss(body: dict[str, Any]) -> _Result:
         (),
         f"隐患「{hazard_no}」已关掉,没有出文书。理由留在台账里了:{reason}",
     )
+
+
+# ---------------------------------------------------------------------------
+# 两处订正(2026-08-22)—— 「登记的时候搞错了,现在怎么改回来」
+# ---------------------------------------------------------------------------
+#
+# 这两条与上面那批**不同类**:它们不签发任何文书、不改 status,回答的是
+# 「当初记错了」而不是「这件事进展到哪一步了」。放在一起是因为两条都源自同一个
+# 发现 —— **用户被指向一条不存在的路**:
+#   · 改归属:拍照时没在顶栏选工地 → 隐患落进未归属那堆 → 按工地筛永远筛不到它,
+#     而系统里没有任何地方能把它挪回去(唯一写 project_id 的是删项目时置空);
+#   · 改期限:``agents/schedule/tools.py`` 明写「要宽限几天,得让监理去改这条隐患的
+#     整改期限」,而监理那边**没有这个按钮**。工友照着做,监理找不到,两边都以为是
+#     自己没找到。
+#
+# 🔴 **两条都不出文书,这是刻意的,别顺手补上。** 出文书是法律行为(模块头注那条红线),
+#    而这两件事是**订正台账**。给订正也配一份文书,等于把「我们记错了」也变成一份
+#    对施工方的正式文件 —— 而收到那份文件的人根本不知道该做什么。
+#    留痕靠 ``hazard_due_changes`` 那张表与日志,不靠纸。
+
+_DUE_REASON_MIN_LEN: Final[int] = 4
+"""改期理由的最短长度。**与 ``_DISMISS_REASON_MIN_LEN`` 逐字相同,但故意是两个常量。**
+
+两者挡的是同一种敷衍(「.」「1」),但量的是两件事:那个是「为什么把一条隐患关掉」,
+这个是「为什么把期限往后挪」。哪天有人觉得改期该写得更详细(它是可以被反复使用的动作,
+一条隐患能一路展到下个月),动的是这一个 —— 合并成一个常量的话,改它会连带把
+「关掉」的门槛也抬高,而那条的取舍在 ``_DISMISS_REASON_MIN_LEN`` 里写着「不设更高」。
+本仓在「眼下相等就合并」上吃过亏(CLAUDE.md 前端覆盖件那两个数)。
+"""
+
+_DUE_REASON_MAX_LEN: Final[int] = 200
+
+
+def _work_extend(body: dict[str, Any]) -> _Result:
+    """POST /supervision/extend —— 改整改期限(宽限几天),**不出文书**。
+
+    ===========================================================================
+    它补的是哪条断掉的路
+    ---------------------------------------------------------------------------
+    ``agents/schedule/tools.py`` 的 ``reschedule_task`` 对隐患整改任务是硬拒的,
+    给的出路原话是「要宽限几天,得让监理去改这条隐患的整改期限」—— 那句话是对的
+    (期限的权威确实在隐患台账这边),但在 2026-08-22 之前**监理那边没有这个动作**。
+    于是工友照着做、监理找不到按钮,两边都以为是自己没找到。这条端点让那句话变成真的。
+
+    ===========================================================================
+    为什么不出文书
+    ---------------------------------------------------------------------------
+    《监理通知单》上写着期限,改期之后那份纸就不准了 —— 直觉是"该补一份"。不补的理由:
+    补的话只有两种做法,都更坏。① 重签一份通知单 → 同一条隐患有两份编号不同、
+    内容几乎一样的通知单,证据链里出现"哪份算数"的歧义;② 造一个新文书类型「期限变更单」
+    → 那是 ``core/doc_no.PATTERNS`` 与五种文书那张受控表的事,不是一次改期该顺手加的。
+    眼下的做法是**留痕不发纸**:``hazard_due_changes`` 记下从哪天挪到哪天、为什么、谁改的,
+    要举证时那张表比一份补发的纸更有用(它答得出「这条被展了几次期」)。
+
+    ⚠️ **理由必填**,与 ``dismiss`` 同一条理由:改期是可以被反复使用的动作,
+    每次单看都合理,只有把历次理由并排看才看得出问题。没有理由的留痕等于没有留痕。
+    """
+    hazard_no = _text(body, "hazard_no")
+    row = _require_hazard(hazard_no)
+    reason = _text(body, "reason")[:_DUE_REASON_MAX_LEN]
+
+    # 状态闸排在理由闸前面 —— 顺序与 ``_work_dismiss`` 逐字同款,理由也一样:
+    # 「这条路你根本走不通」比「你的理由太短」更根本,反过来会让人白写一遍。
+    if row.status not in hazards.DUE_CHANGEABLE_STATUSES:
+        raise _refuse(
+            409,
+            ErrorCode.CONFLICT,
+            f"隐患「{hazard_no}」现在是「{_zh(row.status)}」,没有在跑的整改期限,改不了。"
+            "期限是签发《监理通知单》或《工程暂停令》的时候定下来的 —— "
+            "还没签发的先签发,已经复查完的按复查结论走。",
+        )
+    if len(reason) < _DUE_REASON_MIN_LEN:
+        raise _refuse(
+            400,
+            ErrorCode.INVALID_INPUT,
+            "改期限要写清为什么(比如「连续下雨停工三天」「材料到不了」)。"
+            "这句话会留在台账里 —— 一条隐患被展了几次期、每次什么理由,"
+            "事后只有这儿答得出来。",
+        )
+
+    # 期限换算与签发那两条端点共用同一件(``_resolve_due`` → agents/schedule/dates.py),
+    # 所以监理在这儿能写的说法和签发时能写的**完全一样**,不用记两套。
+    snap = make_snapshot()
+    due_date, due_display = _resolve_due(_text(body, "due_phrase"), snap.stamp.date())
+
+    changed = hazards.extend_due_date(
+        hazard_no, due_date, reason=reason, changed_by=_issued_by(body)
+    )
+    if not changed:
+        # 先读的快照与这一步之间有窗口(另一个人可能刚把复查结论登了)。
+        # 真正说了算的是 db 那条 UPDATE 的 rowcount —— 同 ``_work_grade`` 那条规矩。
+        raise _refuse(409, ErrorCode.CONFLICT, _MSG_RACED)
+
+    logger.info("隐患 %s 整改期限改到 %s(原 %s),理由:%s", hazard_no, due_date, row.due_date, reason)
+    return _Result(
+        200,
+        ok(
+            {
+                "hazard_no": hazard_no,
+                "status": row.status,
+                "due_date": due_date,
+                "due_display": due_display,
+                "previous_due_date": row.due_date,
+                "documents": [],  # 改期不出文书;形状与签发那批保持一致,前端不用分叉
+            },
+            f"隐患「{hazard_no}」的整改期限已改到 {due_display}。"
+            f"这次没有出新文书,原因记在台账里了:{reason}",
+        ),
+    )
+
+
+def _work_reassign(body: dict[str, Any]) -> _Result:
+    """POST /supervision/reassign —— 改归属(把一条隐患挪到另一个工地),**不出文书**。
+
+    ===========================================================================
+    它补的是哪条断掉的路
+    ---------------------------------------------------------------------------
+    隐患的 ``project_id`` 在登记那一刻由运行上下文决定(工友在顶栏选的那个工地)。
+    忘了选就是空串 = 未归属(D6)。在 2026-08-22 之前,**没有任何动作能改它** ——
+    全仓唯一写 ``project_id`` 的地方是删项目时的 ``detach_project``(整批置空)。
+    于是一条拍的时候忘了选工地的隐患,永远待在"未归属"那堆里:按工地筛的清单里没有它,
+    工地负责人看不到,而它在库里还是「在办」。
+
+    ===========================================================================
+    两道闸
+    ---------------------------------------------------------------------------
+    ① **签过文书的一律拒**(``REASSIGNABLE_STATUSES``)。每一份文书的正文里都写着工地名,
+       改台账不会改那张已经发出去的纸 —— 纸说 A、台账说 B,追责时两份都拿得出来,
+       而谁也说不清哪份算数。这与 ``dismiss`` 只从 ``open`` 出发是同一条底线。
+    ② **目标工地下已经有同一条时拒**。幂等键是 ``(project_id, photo_sha256, item)``,
+       撞车时 db 层抛 ``IntegrityError``(它刻意不吞:吞成 False 会和"状态不对"混成
+       同一个信号)。这里把它翻译成那句真正的人话。
+
+    ⚠️ **目标工地不校验是否存在。** 空串是合法取值(挪回未归属),而项目表那边
+    ``projects`` 与 ``hazards.project_id`` **本来就没有外键**(D6 的取舍)——
+    在这儿补一道"项目必须存在"的校验,等于在一个没有外键的关系上做半套完整性,
+    而删项目那条路照样能把它变成孤儿。界面上给的是**选择器**(只列真实存在的工地),
+    这是那道闸的正确位置。
+    """
+    hazard_no = _text(body, "hazard_no")
+    row = _require_hazard(hazard_no)
+    # 目标工地允许是空串(挪回未归属),所以这里不能用"非空"当校验 ——
+    # 得区分「没传这个键」和「传了空串」。前者是漏参,后者是明确的一档。
+    if "project_id" not in body:
+        raise _refuse(
+            400,
+            ErrorCode.INVALID_INPUT,
+            "得说明挪到哪个工地。要挪回「未归属」就把工地留空。",
+        )
+    target = _text(body, "project_id")
+
+    if row.status not in hazards.REASSIGNABLE_STATUSES:
+        raise _refuse(
+            409,
+            ErrorCode.CONFLICT,
+            f"隐患「{hazard_no}」现在是「{_zh(row.status)}」,已经签过文书了,不能改工地 —— "
+            "改了的话,已经发出去的那几份文书上写的工地就和台账对不上了。"
+            "确实归错了工地的,请在这个工地把它关掉并写明原因,再到正确的工地重新拍照登记。",
+        )
+    if target == row.project_id:
+        raise _refuse(
+            409,
+            ErrorCode.CONFLICT,
+            f"隐患「{hazard_no}」本来就在这个工地下,不用挪。",
+        )
+
+    try:
+        moved = hazards.reassign_project(hazard_no, target)
+    except sqlite3.IntegrityError as exc:
+        raise _refuse(
+            409,
+            ErrorCode.CONFLICT,
+            f"要挪过去的那个工地下面已经有这条隐患了(同一张照片、同一个违规项),"
+            f"不用再挪一份过去。「{hazard_no}」这条可以直接关掉并写明是重复登记。",
+            detail=f"reassign_project({hazard_no!r}, {target!r}) 撞幂等键:{exc}",
+        ) from exc
+    if not moved:
+        raise _refuse(409, ErrorCode.CONFLICT, _MSG_RACED)
+
+    logger.info("隐患 %s 从工地 %s 挪到 %s", hazard_no, row.project_id or "-", target or "-")
+    return _Result(
+        200,
+        ok(
+            {
+                "hazard_no": hazard_no,
+                "status": row.status,
+                "project_id": target,
+                "previous_project_id": row.project_id,
+                "documents": [],  # 改归属不出文书;形状与签发那批保持一致
+            },
+            f"隐患「{hazard_no}」已经挪到{_project_label(target)}。这次没有出文书。",
+        ),
+    )
+
+
+def _project_label(project_id: str) -> str:
+    """工地编号 → 回给人看的说法。空串是**未归属**那一档(D6),不是"没填"。"""
+    return f"工地「{project_id}」" if project_id else "「未归属」"
 
 
 def _work_reject(body: dict[str, Any]) -> _Result:
@@ -2039,6 +2360,11 @@ async def get_hazard_detail(request: Request) -> JSONResponse:
     return await _handle_get(request, _work_get_hazard)
 
 
+async def get_ingest_failures(request: Request) -> JSONResponse:
+    """GET /supervision/ingest-failures —— 有哪几条隐患没能写进台账(D10 那条一直没通的出口)。"""
+    return await _handle_get(request, _work_ingest_failures)
+
+
 async def post_confirm(request: Request) -> JSONResponse:
     """POST /supervision/confirm —— 监理确认(pending → open),支持批量。"""
     return await _handle(request, _work_confirm)
@@ -2047,6 +2373,16 @@ async def post_confirm(request: Request) -> JSONResponse:
 async def post_dismiss(request: Request) -> JSONResponse:
     """POST /supervision/dismiss —— 不出文书关掉一条 open 的隐患(必须写理由)。"""
     return await _handle(request, _work_dismiss)
+
+
+async def post_extend(request: Request) -> JSONResponse:
+    """POST /supervision/extend —— 改整改期限(必须写理由),不出文书。"""
+    return await _handle(request, _work_extend)
+
+
+async def post_reassign(request: Request) -> JSONResponse:
+    """POST /supervision/reassign —— 改归属(挪工地),仅限还没签过文书的那两档。"""
+    return await _handle(request, _work_reassign)
 
 
 async def post_reject(request: Request) -> JSONResponse:
@@ -2098,11 +2434,17 @@ async def post_photo(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 SUPERVISION_ROUTES: Final[list[Route]] = [
-    # 查询两条(W10)。两条路径长相不同(``/hazards`` 与 ``/hazards/{…}``),
-    # starlette 不会拿一条去遮另一条,这里的先后只为好读:先清单、后详情。
+    # 查询三条(W10 两条 + 2026-08-22 的 ingest-failures)。三条路径长相不同,
+    # starlette 不会拿一条去遮另一条,这里的先后只为好读:先清单、后详情、最后诊断。
     Route("/supervision/hazards", get_hazards, methods=["GET"]),
     Route("/supervision/hazards/{hazard_no}", get_hazard_detail, methods=["GET"]),
-    # 写入九条(W9 七条 + W10 的 reject + 2026-08-21 的 dismiss)。
+    # 🔴 这条**必须排在 ``/hazards/{hazard_no}`` 之外的路径上**,而它确实是
+    #    (``/supervision/ingest-failures``,不在 ``/hazards/`` 下面)。写成
+    #    ``/hazards/ingest-failures`` 的话会被上面那条路径段吞掉,表现是
+    #    「台账里没有『ingest-failures』这条隐患」—— 404 带一句莫名其妙的人话。
+    Route("/supervision/ingest-failures", get_ingest_failures, methods=["GET"]),
+    # 写入十一条(W9 七条 + W10 的 reject + 2026-08-21 的 dismiss
+    # + 2026-08-22 的 extend / reassign 这两处**订正**)。
     Route("/supervision/confirm", post_confirm, methods=["POST"]),
     Route("/supervision/reject", post_reject, methods=["POST"]),
     Route("/supervision/dismiss", post_dismiss, methods=["POST"]),
@@ -2112,12 +2454,14 @@ SUPERVISION_ROUTES: Final[list[Route]] = [
     Route("/supervision/reinspect-result", post_reinspect_result, methods=["POST"]),
     Route("/supervision/resume", post_resume, methods=["POST"]),
     Route("/supervision/escalate", post_escalate, methods=["POST"]),
+    Route("/supervision/extend", post_extend, methods=["POST"]),
+    Route("/supervision/reassign", post_reassign, methods=["POST"]),
     # 上传一条。单列一组是因为它**既不是查询也不是动作**:不认识任何一条隐患,
     # 只把字节存下来换一个编号(所以回执里没有 hazard_no / status / documents)。
     # 路径是静态的,与上面 ``/hazards/{hazard_no}`` 那条带路径段的不会互相遮挡。
     Route("/supervision/photo", post_photo, methods=["POST"]),
 ]
-"""监理这十一条路由(查询 2 + 写入 8 + 上传 1)。**必须被 ``backend/webapp.py`` 铺进它的 routes**。
+"""监理这十五条路由(查询 3 + 写入 11 + 上传 1)。**必须被 ``backend/webapp.py`` 铺进它的 routes**。
 
 ``langgraph.json`` 的 ``http.app`` 只能有一个(现在指 webapp.py),所以本项目所有
 自定义路由都在那里汇合:项目/图纸/资料管理是它自己的,打卡链是 ``CHECKIN_ROUTES``,

@@ -562,8 +562,17 @@ apply_override "stream-provider.tsx" "src/providers/Stream.tsx"
 #   qrcode.tsx     —— 电脑端二维码面板(依赖下面步骤 2.6 装的 qrcode.react)
 #   checkin.tsx    —— 自拍打卡组件,thread-index.tsx 的动作条里是它的入口
 # ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override **十三件** + install_new_file
-#    **十三件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
+#    **十五件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
 #    合并之后数出来永远对不上。
+#
+# 🔴 **2026-08-22 起这两个数有机器盯着了**,别再靠手改:
+#    `scripts/frontend-tests/override-count.test.ts` 拿两条 grep 的真值去比
+#    本段这两个中文数字 + CLAUDE.md「前端覆盖件」那一节的两个数。
+#    `make test-frontend` 会跑它。补这道闸的理由写在那个文件里 ——
+#    简单说:这段注释自己记着这条教训**复发了四次**(2026-08-11 之前写「八件」
+#    而实际十一;W7 合流后写「十一 + 三」而实际 12 + 5;08-19 头数在「八」上
+#    停了两批;08-21 同一次编辑里头数改对了而结论段没跟上)。四次之后还靠纪律,
+#    就是明知故犯。
 #    (2026-08-15 校过:上一版这里写的是「十一件 + 三件」,而 apply_override 那时
 #     确实是十一件、install_new_file 却已经是五件 —— 队友那两件
 #     ProjectUploadPanel/GytStatusCards 合流时没回来改这个数。
@@ -603,6 +612,12 @@ apply_override "stream-provider.tsx" "src/providers/Stream.tsx"
 #     install_new_file 仍是**十三**。
 #     ⚠️ 一天之内同一件覆盖件删了又加,而两次的理由**毫不相干**。
 #        下次看见它别顺手按「上次为什么删」去推理。)
+#    (2026-08-22 P2·巡检记录抽屉:install_new_file 十三 → **十五**,加了
+#     reports-lib.ts(零依赖纯 TS)与 reports-entry.tsx(动作条上那颗「記錄」按钮)。
+#     apply_override 仍是**十三** —— 这批动的 thread-index.tsx / use-file-upload.tsx /
+#     supervision.tsx 里,前两件本来就在十三件里,supervision.tsx 走的是 install_new_file。
+#     ⚠️ **两个数从这一批起又不相等了(13 + 15)**,而上一批它们碰巧都是十三。
+#        那句「相等是巧合」第二次应验。)
 #    数法:grep -cE '^\s*apply_override ' scripts/setup-frontend.sh
 #          grep -cE '^\s*install_new_file ' scripts/setup-frontend.sh
 install_new_file "checkin-lib.ts" "src/lib/checkin-lib.ts"
@@ -663,6 +678,27 @@ install_new_file "supervision-entry.tsx" "src/components/thread/supervision-entr
 #         而前端对非 2xx 是**故意安静走开**的(观测件绝不许打扰工友)。
 install_new_file "timing-lib.ts" "src/lib/timing-lib.ts"
 install_new_file "GytTimingRows.tsx" "src/components/thread/GytTimingRows.tsx"
+
+# 巡检记录抽屉两件(2026-08-22)。
+#
+# 🔴 它们补的是「拍照 → 自动出 Word」这条链的**终点** —— 那条链一直是断的:
+#    文档真的生成了、真的落盘了,而那份 Envelope 被 supervisor 的
+#    output_mode="last_message" 整个丢掉,于是 tool-calls.tsx 里那张巡检记录卡
+#    (W3 就写好了)**一次都没渲染出来过**;而 agents/report/prompt.md 教模型说
+#    「要打印或转发跟管理员说编号就行」——**那个管理员不存在**(TODO-34 的真机原话)。
+#    结果是:文件就在服务器上,而谁都拿不到。
+#
+#   reports-lib.ts    —— 零依赖纯 TS:拼地址 + 解信封 + 排版。
+#                        scripts/frontend-tests/ 的 vitest 直接测它,必须保持零依赖。
+#                        ⚠️ 加进 scripts/frontend-tests/tsconfig.json 的 include 了 ——
+#                           漏了不报错,只是 import 进来全成 any(CLAUDE.md 明写)。
+#   reports-entry.tsx —— 动作条上那颗「記錄」按钮 + 抽屉本体。
+#                        形状照 W7 打卡、W10 监理操作台:**操作台不是聊天产物**。
+# ⚠️ 漏装任一件 = 前端构建 Module not found(thread-index.tsx import 它们),
+#    这个坏法是响的。安静的坏法是**后端 webapp.py 少铺 `*REPORTS_ROUTES`** ——
+#    那时 GET /reports 是 404,而抽屉里永远是空的(前端对非 2xx 安静走开)。
+install_new_file "reports-lib.ts" "src/lib/reports-lib.ts"
+install_new_file "reports-entry.tsx" "src/components/thread/reports-entry.tsx"
 
 # -----------------------------------------------------------------------------
 # 步骤 2.6:装二维码库(checkin 三件里唯一的新依赖)
