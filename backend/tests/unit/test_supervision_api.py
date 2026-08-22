@@ -142,16 +142,41 @@ _ALL_ENDPOINTS: list[tuple[str, dict[str, Any]]] = [
     ),
     ("/supervision/resume", {"hazard_no": "GYT-H-20260816-090000-0001"}),
     ("/supervision/escalate", {"hazard_no": "GYT-H-20260816-090000-0001"}),
+    # 2026-08-22 的两处订正。两条都是**写入**,漏进这张表 = 它们就是全项目
+    # 唯一没验过鉴权的写入路径,而没有任何东西会说话。
+    (
+        "/supervision/extend",
+        {
+            "hazard_no": "GYT-H-20260816-090000-0001",
+            "due_phrase": DUE_PHRASE,
+            "reason": "連續下雨停工三天",
+        },
+    ),
+    ("/supervision/reassign", {"hazard_no": "GYT-H-20260816-090000-0001", "project_id": "gyt-b7"}),
 ]
-"""八个 POST 端点各配一份格式合法的请求体。鉴权用例拿它逐个打 —— 鉴权必须在业务之前生效,
-所以这些编号根本不存在也没关系(过了鉴权会是 404,被拦下则是 401)。"""
+"""每个 POST 端点各配一份格式合法的请求体。鉴权用例拿它逐个打 —— 鉴权必须在业务之前生效,
+所以这些编号根本不存在也没关系(过了鉴权会是 404,被拦下则是 401)。
 
-_GET_ENDPOINTS: list[str] = [
-    "/supervision/hazards",
-    "/supervision/hazards/GYT-H-20260816-090000-0001",
+⚠️ **这里刻意不写条数。** 原先写着「八个」而表里躺着九条(2026-08-21 加 dismiss 时
+只加了行、没改那个数),于是这句话从那天起就是错的 —— 而条数写在这儿也没有任何用处:
+真正要保证的是"每一条写入端点都在表里",那件事由下面那条对账用例盯着,不是靠数数。"""
+
+_GET_ENDPOINTS: list[tuple[str, str]] = [
+    ("/supervision/hazards", "/supervision/hazards"),
+    ("/supervision/hazards/{hazard_no}", "/supervision/hazards/GYT-H-20260816-090000-0001"),
+    # 2026-08-22:登记失败清单。它回的是照片编号 + 违规项 + 工地,
+    # 与隐患清单同一个敏感度,同样要过令牌闸。
+    ("/supervision/ingest-failures", "/supervision/ingest-failures"),
 ]
-"""两条 GET 端点(W10)。**它们同样得过令牌闸** —— 隐患清单里有工地、有违规项、
-有照片编号,是要登录才看得到的东西,不是公开数据;而 GET 最容易被当成"只是查一下"漏掉。"""
+"""GET 端点,``(路由模板, 真打的地址)``。**它们同样得过令牌闸** —— 隐患清单里有工地、
+有违规项、有照片编号,是要登录才看得到的东西,不是公开数据;而 GET 最容易被当成
+"只是查一下"漏掉。
+
+⚠️ **为什么是一对而不是一个字符串**:下面那条对账用例要拿这张表去比 ``SUPERVISION_ROUTES``,
+而路由表里存的是模板(``/hazards/{hazard_no}``)、这里要用的是能真打的地址
+(``/hazards/GYT-H-…``)。两者写在同一行是唯一不会漂的做法 ——
+第一版写成"从地址反推模板"的启发式(数破折号、认前缀),那正是本仓反复吃亏的
+那类聪明写法:它在今天这三条上碰巧对,而加第四条时会静默判错。"""
 
 _ISSUING_PATHS: list[str] = [
     "/supervision/notice",
@@ -286,7 +311,7 @@ def _产物文件() -> set[Path]:
 # ---------------------------------------------------------------------------
 
 
-def test_十二条路由都挂进了webapp() -> None:
+def test_十五条路由都挂进了webapp() -> None:
     """webapp.py 是自定义路由唯一的挂载点,漏铺 = 全部 404 且**没有任何启动报错**。
 
     ⚠️ 2026-08-16(W10·S4)实测到这条用例守不住的那一半,别把它当成全部保障:
@@ -301,9 +326,10 @@ def test_十二条路由都挂进了webapp() -> None:
     declared = {route.path for route in supervision_api.SUPERVISION_ROUTES}
 
     assert declared <= mounted, f"这些路由没挂进 webapp.py:{sorted(declared - mounted)}"
-    # 九条 POST(W9 七条 + W10 的 reject + 2026-08-21 的 dismiss)
-    # + 两条 GET(W10)+ 一条上传(照片直传)
-    assert len(declared) == 12, "加了路由要连同这个数一起改 —— 它是「有没有漏铺」的对账锚"
+    # 十一条 POST(W9 七条 + W10 的 reject + 2026-08-21 的 dismiss
+    # + 2026-08-22 的 extend / reassign)
+    # + 三条 GET(W10 两条 + 2026-08-22 的 ingest-failures)+ 一条上传(照片直传)
+    assert len(declared) == 15, "加了路由要连同这个数一起改 —— 它是「有没有漏铺」的对账锚"
     # 逐条点名 W10 那三条与上传那条:只对总数会在「删一条旧的、加一条新的」时对上而失效。
     for 新路径 in (
         "/supervision/hazards",
@@ -313,6 +339,13 @@ def test_十二条路由都挂进了webapp() -> None:
         # 2026-08-21:不出文书关掉。逐条点名是因为只对总数会在
         # 「删一条旧的、加一条新的」时对上而失效。
         "/supervision/dismiss",
+        # 2026-08-22:两处订正 + 登记失败的出口。
+        # ⚠️ ``/supervision/ingest-failures`` 单独点名还有第二个理由:它**不能**写成
+        # ``/supervision/hazards/ingest-failures`` —— 那样会被上面那条带路径段的
+        # 路由吞掉,表现是 404 带一句「台账里没有『ingest-failures』这条隐患」。
+        "/supervision/extend",
+        "/supervision/reassign",
+        "/supervision/ingest-failures",
     ):
         assert 新路径 in declared and 新路径 in mounted, f"{新路径} 没挂上"
 
@@ -361,7 +394,7 @@ class Test鉴权:
     def test_设了令牌但没带钥匙一律拒(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch, path: str, body: dict[str, Any]
     ) -> None:
-        """八个 POST 端点全测:漏一个就是一条能绕过令牌的写入路径。"""
+        """每个 POST 端点全测:漏一个就是一条能绕过令牌的写入路径。"""
         monkeypatch.setenv("GYT_ACCESS_TOKEN", REAL_TOKEN)
         get_settings.cache_clear()
 
@@ -370,11 +403,48 @@ class Test鉴权:
         assert resp.status_code == 401
         assert resp.json()["error_code"] == "UNAUTHORIZED"
 
-    @pytest.mark.parametrize("path", _GET_ENDPOINTS)
-    def test_两条GET也得过令牌闸(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch, path: str
+    def test_鉴权巡检表覆盖了每一条路由_一条都不许漏(self) -> None:
+        """🔴 **把「加了端点记得加进巡检表」从纪律变成机器检查。**
+
+        在这条用例之前,那件事只写在 ``_ALL_ENDPOINTS`` 的 docstring 和 CLAUDE.md 的
+        同源清单里 —— 而漏登记的表现是:新端点成为**全项目唯一一条没验过鉴权的写入路径**,
+        上面那两条参数化用例照跑照绿(它们只跑表里有的),没有任何东西会说话。
+        本仓在「靠纪律维护一张清单」上已经复发过四次(CLAUDE.md 前端覆盖件那两个数),
+        结论也早就写下了:该交给机器。这就是那台机器。
+
+        判据是**路由表**这一份真相:``SUPERVISION_ROUTES`` 里的每一条路径,
+        要么在 POST 巡检表里,要么在 GET 巡检表里,要么在下面那张豁免表里。
+        三张表都按**路由模板**比,所以不需要任何字符串推断。
+
+        ⚠️ 豁免表**只有一条**,而且它不是"没测",是"用另一条用例单独测了"
+        (``/supervision/photo`` 收原始字节,``client.post(json=…)`` 套不上它)。
+        往这张豁免表里加东西之前,先问:那条端点的鉴权到底谁在测?
+        """
+        exempt = {
+            # 原始字节请求体,由 ``test_上传照片也得过令牌闸`` 单独覆盖。
+            "/supervision/photo",
+        }
+        covered = (
+            {path for path, _ in _ALL_ENDPOINTS}
+            | {template for template, _ in _GET_ENDPOINTS}
+            | exempt
+        )
+
+        missing = {route.path for route in supervision_api.SUPERVISION_ROUTES} - covered
+        assert not missing, (
+            f"这些端点没进鉴权巡检表:{sorted(missing)} —— "
+            "加进 _ALL_ENDPOINTS(POST)或 _GET_ENDPOINTS(GET)"
+        )
+        # 反方向也钉住:巡检表里躺着一条**已经不存在**的端点时,它会一直"绿"着,
+        # 而人以为那条路径还被守着。
+        stale = covered - {route.path for route in supervision_api.SUPERVISION_ROUTES}
+        assert not stale, f"巡检表里这些端点已经不在路由表里了:{sorted(stale)}"
+
+    @pytest.mark.parametrize(("template", "path"), _GET_ENDPOINTS)
+    def test_每条GET也得过令牌闸(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch, template: str, path: str
     ) -> None:
-        """W10 的两条查询端点同样要拦。
+        """W10 的两条查询端点 + 2026-08-22 的登记失败清单,同样要拦。
 
         单列一条而不是并进上面那条,是因为**它们没有请求体**,``client.post(json=...)``
         套不上;而合并成一个「路径 + 方法」的大表会让上面那条读起来像是 GET 也在测。
@@ -1656,7 +1726,7 @@ class Test隐患详情:
         return hazard_no, resp.json()["data"]
 
     def test_详情字段齐全且清单那一行原样在里面(self, client: TestClient) -> None:
-        """详情 = 清单那一行 + 四个键。少一个前端就少渲一块,而且不会报错。"""
+        """详情 = 清单那一行 + 五个键。少一个前端就少渲一块,而且不会报错。"""
         hazard_no, _ = self._签发一份通知单(client)
 
         信封 = _详情(client, hazard_no)
@@ -1667,6 +1737,9 @@ class Test隐患详情:
             "closed_at",
             "reinspected",
             "documents",
+            # 2026-08-22:历次改期留痕。**刻意与 documents 平级而不是并进去** ——
+            # documents 里每一项都有编号、都能下载,而这几行两样都没有。
+            "due_changes",
         }
         assert data["hazard_no"] == hazard_no
         assert data["status"] == hazards.STATUS_NOTIFIED

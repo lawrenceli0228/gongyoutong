@@ -197,6 +197,38 @@ GRADABLE_STATUSES: Final[tuple[str, ...]] = (STATUS_PENDING, STATUS_OPEN)
 证据链当场自相矛盾,而那份纸还贴在工地上;本批不做重签,所以只在签发前可改。
 """
 
+REASSIGNABLE_STATUSES: Final[tuple[str, ...]] = (STATUS_PENDING, STATUS_OPEN)
+"""允许改归属(换工地)的状态 = **还没签过任何文书的那两档**。这里是唯一真相。
+
+为什么只有这两档:``notified`` 之后纸已经发出去了,而每一份文书的正文里都写着工地名
+(``documents.py`` 的 ``DocContext``)。改台账不会改那张纸,于是「文书说 A 工地、
+台账说 B 工地」—— 追责时两份都拿得出来,谁也说不清哪份算数。这跟 ``dismiss()``
+只从 ``open`` 出发是同一条底线。
+
+⚠️ **今天它与 ``GRADABLE_STATUSES`` 逐字相同,那是巧合,不许合并成一个常量。**
+两者量的是两件事:那个问的是「改级会不会让已出的纸自相矛盾」,这个问的是
+「改工地会不会让已出的纸自相矛盾」。哪天签发流程变了(比如加一档「已拟稿未签发」),
+两者会分头动 —— 合并之后改一个必然误伤另一个,而且不会有任何东西报错。
+本仓在覆盖件那两个数上已经吃过一模一样的亏(CLAUDE.md「前端覆盖件」一节),
+那次也是「眼下相等」。
+
+**它是 status 这一维的守卫,不是"有没有文书"这一维的。** 两者今天等价是状态机的结果:
+``hazard_docs`` 只在 notified / suspended / resuming / escalated 那几步写入,
+{pending, open} 走不到任何一步。``test_db_hazards.py`` 有一条钉着这条等价 ——
+哪天状态机让 open 也能挂文书,那条会红,而不是这里静默放行。
+"""
+
+DUE_CHANGEABLE_STATUSES: Final[tuple[str, ...]] = (STATUS_NOTIFIED, STATUS_SUSPENDED)
+"""允许改整改期限的状态 = **有期限的那两档**。这里是唯一真相。
+
+其余六档要么还没有期限(pending / open),要么期限已经不作数了
+(reinspect_failed / resuming / closed / escalated —— 那几档往下走靠的是复查结论
+和文书,不是日历)。给它们改期限不会报错,只会往库里写一个谁都不看的日期。
+
+⚠️ 与上面两个集合一样:三个集合的取值互不相同**不代表**它们是同一维度的三种取法。
+这个问的是「这条隐患现在有没有一个在跑的期限」。
+"""
+
 
 def _sources_for(target: str, *sources: str) -> tuple[str, ...]:
     """声明"某个迁移函数允许的起始状态",并当场校验它是 ALLOWED_TRANSITIONS 的子集。
@@ -288,6 +320,17 @@ CREATE TABLE IF NOT EXISTS hazard_ingest_failures (
   reason      TEXT NOT NULL,
   created_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS hazard_due_changes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  hazard_no   TEXT NOT NULL REFERENCES hazards(hazard_no),
+  old_due     TEXT,
+  new_due     TEXT NOT NULL,
+  reason      TEXT NOT NULL,
+  changed_by  TEXT,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hazard_due_changes_no ON hazard_due_changes(hazard_no);
 """
 """建表语句。**改这里就是改方案 §4.1,两边要一起改。**
 
@@ -301,6 +344,10 @@ CREATE TABLE IF NOT EXISTS hazard_ingest_failures (
   (那是提示词失守的诊断信号,见 severity.py)。真正卡人的是 ``grade``,它有 CHECK。
 - ``hazard_docs.result`` 写成 ``IS NULL OR IN (...)``:文书行没有结论,只有 reinspect 行有(Codex#19)。
 - ``hazard_ingest_failures``(Codex#10):写库失败要能**事后统计**,只打日志的话进程一重启就失忆。
+- ``hazard_due_changes``(2026-08-22):改整改期限的留痕。**为什么是一张表而不是 hazards 上的三列**
+  —— 列只留得住最后一次,而这件事真正要回答的问题是「这条被展了几次期」。一条隐患从
+  「下周三」一路展到下个月,每次都有个说得通的理由,只有把每一次并排看才看得出来;
+  三列版本给出的是「最后一次的理由」,那句话单看永远是合理的。
 """
 
 
@@ -346,6 +393,27 @@ class HazardDocRow(NamedTuple):
     result: str | None  # 仅 reinspect 行:DOC_RESULTS 之一
     created_at: str
     issued_by: str | None  # 见下方那段红字。**自报的名字,不是认证过的身份**
+
+
+class DueChangeRow(NamedTuple):
+    """hazard_due_changes 表的一行 —— 一次「把整改期限往后挪」的留痕。
+
+    ``reason`` 与 ``changed_by`` 跟 ``hazards.closed_reason`` / ``closed_by`` 是同一套东西:
+    **自报的名字,不是认证身份**(这套系统只有一把共享口令,没有角色)。别拿它做权限判断。
+
+    ``old_due`` 可空只为兼容「本来就没期限」这种理论情况;实际上 ``extend_due_date`` 的
+    ``WHERE status IN (notified, suspended)`` 已经保证了写这行时 ``due_date`` 非空
+    (那两档的期限在 ``mark_notified`` / ``mark_suspended`` 里是必填)。留空是老实,
+    不是留个后门 —— 真出现空的那天,它说明的是上面那条不变式破了。
+    """
+
+    id: int
+    hazard_no: str
+    old_due: str | None
+    new_due: str
+    reason: str
+    changed_by: str | None
+    created_at: str
 
 
 class IngestFailureRow(NamedTuple):
@@ -457,6 +525,24 @@ _DELETE_PENDING_SQL: Final[str] = "DELETE FROM hazards WHERE hazard_no = ? AND s
 _DETACH_PROJECT_SQL: Final[str] = (
     "UPDATE hazards SET project_id = '', updated_at = ? WHERE project_id = ?"
 )
+# 改归属(2026-08-22)。``AND status IN (…)`` 与 _SET_GRADE_SQL 同一条理由:端点那侧
+# 「先读再判」中间有并发窗口,真正说了算的是这条 WHERE。合法档从 REASSIGNABLE_STATUSES
+# 一处派生,别手抄。**幂等键撞车不在这里处理** —— 那会抛 IntegrityError,归调用方,
+# 理由与 detach_project 那段红字逐字相同。
+_REASSIGN_PROJECT_SQL: Final[str] = (
+    "UPDATE hazards SET project_id = ?, updated_at = ? "
+    f"WHERE hazard_no = ? AND status IN ({placeholders(len(REASSIGNABLE_STATUSES))})"
+)
+# 改整改期限(2026-08-22)。**不动 status** —— 它不是状态迁移,是同一档里换个日期。
+_EXTEND_DUE_SQL: Final[str] = (
+    "UPDATE hazards SET due_date = ?, updated_at = ? "
+    f"WHERE hazard_no = ? AND status IN ({placeholders(len(DUE_CHANGEABLE_STATUSES))})"
+)
+_INSERT_DUE_CHANGE_SQL: Final[str] = insert_sql("hazard_due_changes", DueChangeRow._fields[1:])
+_DUE_CHANGES_BASE_SQL: Final[str] = (
+    f"SELECT {', '.join(DueChangeRow._fields)} FROM hazard_due_changes"
+)
+_DUE_CHANGES_ORDER_BY: Final[str] = "ORDER BY hazard_no, id"
 
 
 def _transition_sql(
@@ -567,8 +653,8 @@ def _hazard_db() -> AbstractContextManager[sqlite3.Connection]:
     """本次操作专用连接:开外键 → 进场幂等建表 → 离场提交并关闭(中途异常回滚后关闭)。
 
     连接 / 事务 / 库路径 / 幂等建表全在 ``core/sqlite_util.open_db``,四个 db 模块同一份;
-    ``_DDL`` 五条语句(三表 + 两索引)由它一次 ``executescript`` 跑完,顺序 hazards 在前 ——
-    hazard_docs 的外键引用它。
+    ``_DDL`` 七条语句(四表 + 三索引)由它一次 ``executescript`` 跑完,顺序 hazards 在前 ——
+    hazard_docs 与 hazard_due_changes 的外键都引用它。
 
     ⚠️ 外键靠 ``foreign_keys=True`` 开:``PRAGMA foreign_keys`` **必须在事务外执行**
     (事务内是 no-op、且一声不吭),所以它只能是公共件的参数 —— 这里拿到的连接已经在事务里,
@@ -997,6 +1083,94 @@ def dismiss(hazard_no: str, *, reason: str, issued_by: str | None = None) -> boo
     )
 
 
+# --- 不改状态的两处订正(2026-08-22) ------------------------------------------
+#
+# 两个都**不是状态迁移**:status 一个字节都不动,所以走不了 _run_transition,
+# 也不在 ALLOWED_TRANSITIONS 里(同 set_grade —— 那儿有整段推演)。
+# 它们共同回答的是:「登记的时候搞错了,现在怎么改回来」。
+# 在它们之前,答案是「改不了」——
+#   · 拍照时忘了在顶栏选工地 → 隐患落进未归属那堆,按工地筛永远筛不到它;
+#   · 整改期限要宽限几天  → schedule 那边明写「得让监理去改」,而监理那边没有这个按钮。
+# 两条都是**用户被指向一条不存在的路**,而不是「功能还没做」——
+# 区别在于前者会让人反复去找那个按钮。
+
+
+def reassign_project(hazard_no: str, project_id: str) -> bool:
+    """改归属:把一条隐患挪到另一个工地(空串 = 挪回「未归属」)。返回是不是真的改了。
+
+    返回 False = **这次没改成**:编号不存在,或者它已经签过文书(状态不在
+    ``REASSIGNABLE_STATUSES``)。判成败一律看返回值,别信自己先读的那份快照 ——
+    理由与 ``set_grade`` 那段逐字相同(先读与写之间有并发窗口)。
+
+    ⚠️ **不吞 ``sqlite3.IntegrityError``。** 幂等键是 ``(project_id, photo_sha256, item)``,
+    所以目标工地下已经有「同一张照片的同一个违规项」时,这条 UPDATE 会撞 UNIQUE。
+    那不是错误处理的事,是业务上的真事实:**那条隐患在目标工地已经登记过了**,
+    该由端点说人话(「A 工地下已经有这条,不用再挪一份过去」)。吞掉的话
+    调用方会拿到 False,而 False 的含义是「状态不对」—— 两件事混成一个信号,
+    监理会去查状态,方向全错。同 ``detach_project`` 那段红字。
+
+    **和 ``detach_project`` 的分工**:那个是「项目被删,名下整批摘成未归属」(按 project_id 批量,
+    不挑状态,因为留档那批更不能变成找不到的行);这个是「这一条当初归错了」(按 hazard_no 单条,
+    挑状态)。两者都写 ``project_id`` 这一列,但一个是善后、一个是订正,别互相借用。
+    """
+    with _hazard_db() as conn:
+        touched = conn.execute(
+            _REASSIGN_PROJECT_SQL, (project_id, _now_iso(), hazard_no, *REASSIGNABLE_STATUSES)
+        ).rowcount
+    return touched > 0
+
+
+def extend_due_date(
+    hazard_no: str, due_date: str, *, reason: str, changed_by: str | None = None
+) -> bool:
+    """改整改期限,并往 ``hazard_due_changes`` 记一行留痕。返回是不是真的改了。
+
+    返回 False = 编号不存在,或状态不在 ``DUE_CHANGEABLE_STATUSES``(那六档没有在跑的期限)。
+
+    **改期与留痕在同一个事务里**,顺序是「先改、命中了才记」——
+    改被拒还记一行的话,台账里会出现一次「期限改到了 X」而 ``due_date`` 还是原来那个,
+    事后看留痕的人会以为是后来又被改回去了。同 ``_run_transition`` 那条
+    「迁移被拒就不写文书」的规矩。
+
+    ``old_due`` 在同一个事务里先读一次再写:这一读**不是**"先读再判"那种并发窗口
+    (判成败的仍然是下面那个 rowcount),它只是把「从哪天挪到哪天」记全 ——
+    只记新期限的话,留痕回答不了「这次挪了几天」,而那正是要看的东西。
+
+    ⚠️ 理由的非空校验归**上层**(端点),同 ``dismiss()``:这层只保证存取保真与状态守卫。
+    """
+    now = _now_iso()
+    with _hazard_db() as conn:
+        old_row = conn.execute(
+            "SELECT due_date FROM hazards WHERE hazard_no = ?", (hazard_no,)
+        ).fetchone()
+        touched = conn.execute(
+            _EXTEND_DUE_SQL, (due_date, now, hazard_no, *DUE_CHANGEABLE_STATUSES)
+        ).rowcount
+        if touched <= 0:
+            return False
+        conn.execute(
+            _INSERT_DUE_CHANGE_SQL,
+            (hazard_no, old_row[0] if old_row else None, due_date, reason, changed_by, now),
+        )
+    return True
+
+
+def due_changes_of(hazard_nos: Sequence[str]) -> list[DueChangeRow]:
+    """一次取回若干条隐患的全部改期留痕。姿势与 ``docs_of`` 逐字相同(含空入参那条)。
+
+    按 ``hazard_no, id`` 排 —— 同一条隐患的历次改期按先后排好,「展了几次期」直接数得出来。
+    """
+    if not hazard_nos:
+        return []
+    query = (
+        f"{_DUE_CHANGES_BASE_SQL} WHERE hazard_no IN ({placeholders(len(hazard_nos))}) "
+        f"{_DUE_CHANGES_ORDER_BY}"
+    )
+    with _hazard_db() as conn:
+        raw_rows = conn.execute(query, tuple(hazard_nos)).fetchall()
+    return [DueChangeRow(*raw) for raw in raw_rows]
+
+
 # --- 文书 / 证据链 ------------------------------------------------------------
 
 
@@ -1047,10 +1221,12 @@ __all__ = [
     "ALLOWED_TRANSITIONS",
     "DOC_RESULTS",
     "DOC_TYPES",
+    "DUE_CHANGEABLE_STATUSES",
     "GRADABLE_STATUSES",
     "GRADES",
     "GRADE_NORMAL",
     "GRADE_SEVERE",
+    "REASSIGNABLE_STATUSES",
     "STATUSES",
     "STATUS_CLOSED",
     "STATUS_ESCALATED",
@@ -1061,6 +1237,7 @@ __all__ = [
     "STATUS_RESUMING",
     "STATUS_SUSPENDED",
     "DocDraft",
+    "DueChangeRow",
     "HazardDocRow",
     "HazardRow",
     "IngestFailureRow",
@@ -1071,7 +1248,13 @@ __all__ = [
     "create",
     "delete_pending",
     "detach_project",
+    # 2026-08-22 补登记:dismiss 是 2026-08-21 加的,当时漏了这一行。
+    # 漏了不影响 `hazards.dismiss(...)` 这种点分调用(__all__ 只管 `import *`),
+    # 所以零报错 —— 与本仓那几个「件数漂了」的老毛病同一种坏法。
+    "dismiss",
     "docs_of",
+    "due_changes_of",
+    "extend_due_date",
     "fetch",
     "list_ingest_failures",
     "list_rows",
@@ -1081,6 +1264,7 @@ __all__ = [
     "mark_resumed",
     "mark_suspended",
     "pass_reinspection",
+    "reassign_project",
     "record_ingest_failure",
     "set_grade",
     "start_resumption",

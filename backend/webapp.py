@@ -46,6 +46,7 @@ from gyt.core import artifacts, project_fs
 from gyt.core.artifacts import ArtifactKind, ArtifactNotFound
 from gyt.db import hazards
 from gyt.db import projects as db
+from gyt.reports_api import REPORTS_ROUTES
 from gyt.supervision_api import SUPERVISION_ROUTES
 from gyt.timing_api import TIMING_ROUTES
 from gyt.upload_api import UPLOAD_ROUTES
@@ -829,7 +830,10 @@ app = Starlette(
         # 且要能被 docker-compose.dev.yml 的 src 挂载热重载覆盖到)。
         # ⚠️ 删掉这一行 = 打卡端点整个消失,而现象是 404、**不是启动报错**。
         *CHECKIN_ROUTES,
-        # 监理这一摊(gyt/supervision_api.py 的 SUPERVISION_ROUTES)—— 合计十一条。
+        # 监理这一摊(gyt/supervision_api.py 的 SUPERVISION_ROUTES)。
+        # ⚠️ **这一行以前写着「合计十一条」,而下面第 16 行就明令「别在这儿数条数」** ——
+        #    同一段注释自己打自己,而且那个数在 2026-08-22 加 extend / reassign /
+        #    ingest-failures 时已经是错的。数字已删,以那个列表为准。
         # W9 七条**写入**:确认 / 定级 / 通知单 / 暂停令三文书 / 复查结论 / 复工令 /
         # 上报主管部门;W10 又加三条,因为界面上那块处置面板改成了**常驻操作台**、
         # 数据不再从聊天流里取(根因见 docs/W10_界面取不到工具返回_方案.md):
@@ -873,6 +877,17 @@ app = Starlette(
         # ⚠️ 删掉这一行 = 前端传附件时拿到 404,而它**会退回老路**(base64 进消息)——
         #    也就是说功能不坏、只是慢病复发,而且没有任何东西会说话。
         *UPLOAD_ROUTES,
+        # 巡检记录抽屉(gyt/reports_api.py 的 REPORTS_ROUTES)—— 一条,**只读**:
+        #   GET /reports?limit=…   最近几份巡检记录(编号 / 文件名 / 产物编号)
+        #
+        # 🔴 为什么要它:「拍照 → 自动出 Word」这条链的**终点一直是断的**。
+        # 文档真的生成了、真的落盘了,而那份 Envelope 被 supervisor 的
+        # output_mode="last_message" 整个丢掉(W10 的老根因),于是 tool-calls.tsx
+        # 里那张巡检记录卡一次都没渲染出来过;而 agents/report/prompt.md 教模型说
+        # 「要打印或转发跟管理员说编号就行」—— **那个管理员不存在**(TODO-34 的原话)。
+        # 结果是:文件就在服务器上,而谁都拿不到。
+        # ⚠️ 删掉这一行 = 抽屉里永远空着,而现象是 404 —— 前端对非 2xx 是安静走开的。
+        *REPORTS_ROUTES,
     ]
 )
 
