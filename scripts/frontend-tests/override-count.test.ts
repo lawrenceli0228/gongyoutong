@@ -31,7 +31,7 @@
  * 合并成一个数之后这里会红,那是**刻意的**。
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -146,5 +146,44 @@ describe("覆盖件件数:脚本 / CLAUDE.md 与真值对得上", () => {
       const path = fileURLToPath(new URL(`../frontend-overrides/${name}`, import.meta.url));
       expect(() => readFileSync(path, "utf8"), `注册了但文件不在:${name}`).not.toThrow();
     }
+  });
+
+  it("反过来也钉:frontend-overrides/ 里的每个文件都被注册了", () => {
+    // 🔴 **2026-08-24 补的,补它的理由是真出过事。**
+    //
+    // 上面那条查的是「注册了 → 文件在不在」。**反方向一直没人查** ——
+    // 于是 2026-08-23 加进 scripts/frontend-overrides/ 的 cad-preview-lib.ts
+    // 与 interrupt-lib.ts **没有对应的 install_new_file**,而四道关卡一道都没响:
+    //
+    //   · 上面那条只看注册方向,看不见「多出来的文件」;
+    //   · 同目录的 *.test.ts 走相对路径 import,不经过 setup 脚本,照样绿;
+    //   · tsc --noEmit 的 include 里没有 ai.tsx,看不到那条 `@/lib/interrupt-lib`;
+    //   · CI 不构建前端镜像,所以 Module not found 也没机会响。
+    //
+    // 后果分两段:线上一直看得到 `Human Interrupt` 内部调试卡(那段过滤代码
+    // 压根没被装进去过),而**下一次 `pnpm build` 会直接失败** —— ai.tsx /
+    // thread-index.tsx / tool-calls.tsx 三件已注册的覆盖件都 import 了它们。
+    //
+    // ⚠️ 想加一个「放在这个目录但故意不注册」的文件时,把它加进下面的豁免表,
+    //    并写清楚**为什么** —— 空着的豁免表比长长的豁免表安全。
+    const 豁免: readonly string[] = [];
+
+    const registered = new Set(
+      [...setup.matchAll(/^\s*(?:apply_override|install_new_file) "([^"]+)"/gm)].map((m) => m[1]),
+    );
+    const dir = fileURLToPath(new URL("../frontend-overrides/", import.meta.url));
+    const 漏登记 = readdirSync(dir)
+      .filter((f) => !f.startsWith("."))
+      .filter((f) => !豁免.includes(f))
+      .filter((f) => !registered.has(f));
+
+    expect(
+      漏登记,
+      "这些文件在 scripts/frontend-overrides/ 里,但 setup-frontend.sh 没有注册它们。\n" +
+        "后果:它们永远不会被装进 frontend/。如果有已注册的覆盖件 import 了它们,\n" +
+        "下一次 pnpm build 会报 Module not found;如果没有,那就是一段死代码。\n" +
+        "→ 补一行 install_new_file(或 apply_override),并同步头注那两个数;\n" +
+        "  确实不该注册的,加进本用例的『豁免』表并写明理由。",
+    ).toEqual([]);
   });
 });
