@@ -40,6 +40,7 @@ import { useMemo } from "react";
 // W12:繁體答话。判定归 lang-lib(纯函数、可单测),拉字典归 hant-convert(懒加载)。
 import { resolveLang } from "@/lib/lang-lib";
 import { useHantText } from "@/lib/hant-convert";
+import { isSyntheticBreakpointInterrupt } from "@/lib/interrupt-lib";
 
 function CustomComponent({
   message,
@@ -144,6 +145,7 @@ function Interrupt({
         )}
       {interrupt &&
       !isAgentInboxInterruptSchema(interrupt) &&
+      !isSyntheticBreakpointInterrupt(interrupt) &&
       (isLastMessage || hasNoAIOrToolMessages) ? (
         <GenericInterruptView interrupt={fallbackValue} />
       ) : null}
