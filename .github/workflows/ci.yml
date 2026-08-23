@@ -432,10 +432,9 @@ jobs:
       # ⚠️ GHCR 的路径必须全小写。owner 目前是 lawrenceli0228(本来就是小写),
       #    哪天换成带大写的账号名,这里要加一步 tr '[:upper:]' '[:lower:]'。
       IMAGE: ghcr.io/${{ github.repository_owner }}/gyt-backend
-      # 冒烟用的假 Key —— 只为让进程起得来。没有它们,图在加载期就抛
-      # MissingAPIKeyError,容器起不来,而那不是镜像的问题。
-      GYT_DEEPSEEK_API_KEY: ci-fake-deepseek-key
-      GYT_MOONSHOT_API_KEY: ci-fake-moonshot-key
+      # ⚠️ **这里刻意不放假 Key。** 第一版放过,没用 —— 容器的环境变量来自基础档的
+      #    `env_file: .env`,不是 runner 的 shell 环境。假 Key 要写进 .env,
+      #    见下面「冒烟」那一步。删掉是为了不让下一个人以为这儿设了就生效。
 
     steps:
       - name: 检出代码
@@ -460,10 +459,19 @@ jobs:
         # 抄一份到这儿就是第二份真相。数据目录要先 chown 到 10001 ——
         # 镜像里是非 root 用户跑的(Dockerfile 的 `USER gyt`,uid 10001),
         # runner 上新建的目录属主是 runner,容器写不进去。
+        #
+        # 🔴 **两把假 Key 必须写进 `.env`,写在 job 的 env 里没用。**
+        #    基础档给 backend 挂的是 `env_file: .env`,容器的环境变量来自那个文件,
+        #    不是 runner 的 shell 环境。而那条 env_file 是 **required: false** ——
+        #    文件不存在时 compose **一声不吭**,容器照起,然后在加载图时抛
+        #    MissingAPIKeyError 退出。2026-08-23 第一版就栽在这儿:job env 设了假 Key、
+        #    看起来该生效,实际一个字节都没进容器,而 compose 没有任何提示。
         run: |
           set -euo pipefail
           mkdir -p data
           sudo chown -R 10001:10001 data
+          printf 'GYT_DEEPSEEK_API_KEY=%s\nGYT_MOONSHOT_API_KEY=%s\n' \
+            'ci-fake-deepseek-key' 'ci-fake-moonshot-key' > .env
           docker compose -f docker-compose.yml up -d backend
           for i in $(seq 1 40); do
             status="$(docker inspect gyt-backend --format '{{.State.Health.Status}}' 2>/dev/null || echo none)"
