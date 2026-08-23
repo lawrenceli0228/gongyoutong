@@ -100,6 +100,10 @@ construction-safety-monitor*/
 /CLAUDE.md
 /AGENTS.md
 .gstack/
+/.claude/
+
+# pnpm 本地依赖缓存（可重新生成，不进 git）
+/.pnpm-store/
 
 # 个人工作区:规划草稿 / 设计文档 / 私人笔记,不进 git。
 /.personal/
