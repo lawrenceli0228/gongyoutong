@@ -1,4 +1,4 @@
-"""文件内容端点单测:/files/drawing/{id} 与 /files/doc 的预览/下载响应头 + 归属校验。
+"""文件内容端点单测:图纸、CAD 预览与资料文件的响应头 + 归属校验。
 
 用 Starlette TestClient 直打 ASGI app(同 test_webapp_uploads);**不测鉴权**(那层由
 langgraph 的 auth_middleware 在服务层套上,裸 app 上测是测错对象)。全落 tmp_path。
@@ -136,6 +136,45 @@ def test_删图后再取_404(client: TestClient, tmp_path) -> None:
 
     resp = client.get(f"/files/drawing/{d['artifact_id']}")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# CAD 工具生成的 PNG 预览:复用 2024，不要求另起 8788
+# ---------------------------------------------------------------------------
+
+
+def test_CAD预览从后端文件端点返回PNG(client: TestClient) -> None:
+    png = b"\x89PNG\r\n\x1a\nmock"
+    preview_id = artifacts.register(png, kind=ArtifactKind.OTHER, original_name="preview.png")
+
+    resp = client.get(f"/files/cad-preview/{preview_id}")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.headers["content-disposition"].startswith("inline")
+    assert resp.content == png
+
+
+@pytest.mark.parametrize(
+    ("kind", "name"),
+    [
+        (ArtifactKind.PHOTO, "preview.png"),
+        (ArtifactKind.OTHER, "not-preview.png"),
+        (ArtifactKind.OTHER, "preview.jpg"),
+    ],
+)
+def test_CAD预览端点不读取其他产物(client: TestClient, kind: ArtifactKind, name: str) -> None:
+    artifact_id = artifacts.register(b"payload", kind=kind, original_name=name)
+
+    resp = client.get(f"/files/cad-preview/{artifact_id}")
+
+    assert resp.status_code == 404
+    assert resp.json()["error_code"] == "NOT_FOUND"
+
+
+def test_CAD预览编号非法或不存在都返回404(client: TestClient) -> None:
+    assert client.get("/files/cad-preview/not-an-id").status_code == 404
+    assert client.get(f"/files/cad-preview/{'f' * 32}").status_code == 404
 
 
 # ---------------------------------------------------------------------------
