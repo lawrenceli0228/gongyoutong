@@ -562,8 +562,10 @@ apply_override "stream-provider.tsx" "src/providers/Stream.tsx"
 #   qrcode.tsx     —— 电脑端二维码面板(依赖下面步骤 2.6 装的 qrcode.react)
 #   checkin.tsx    —— 自拍打卡组件,thread-index.tsx 的动作条里是它的入口
 # ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override **十三件** + install_new_file
-#    **十五件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
+#    **十七件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
 #    合并之后数出来永远对不上。
+#    (2026-08-24:install_new_file 从十五涨到十七 —— 补登记了 08-23 漏掉的
+#     cad-preview-lib.ts 与 interrupt-lib.ts,见步骤 2.5.4 的说明。)
 #
 # 🔴 **2026-08-22 起这两个数有机器盯着了**,别再靠手改:
 #    `scripts/frontend-tests/override-count.test.ts` 拿两条 grep 的真值去比
@@ -699,6 +701,35 @@ install_new_file "GytTimingRows.tsx" "src/components/thread/GytTimingRows.tsx"
 #    那时 GET /reports 是 404,而抽屉里永远是空的(前端对非 2xx 安静走开)。
 install_new_file "reports-lib.ts" "src/lib/reports-lib.ts"
 install_new_file "reports-entry.tsx" "src/components/thread/reports-entry.tsx"
+
+# -----------------------------------------------------------------------------
+# 步骤 2.5.4:cad 预览 与 中断卡过滤(2026-08-23 队友那两件,**当时漏了注册**)
+#
+# 🔴 这两件是 2026-08-24 补登记的。文件从 2026-08-23 就躺在
+#    scripts/frontend-overrides/ 里了,而**这里没有对应的 install_new_file** ——
+#    于是它们从来没被装进 frontend/,自然也没进过镜像。
+#
+#    症状分两段,而且顺序很坑:
+#      ① 线上一直看得到 `Human Interrupt / when | breakpoint` 这张内部调试卡
+#         (2026-08-24 复验报告 §4.1 记的)。当时的两个猜测是「过滤逻辑没命中
+#         当前数据形状」和「部署产物没应用覆盖」—— **都不是**,是这段代码
+#         压根没被装进去过。
+#      ② 而下一次 `pnpm build` 会**直接失败**:ai.tsx / thread-index.tsx /
+#         tool-calls.tsx 三件已注册的覆盖件都 import 了它们
+#         (`@/lib/interrupt-lib`、`@/lib/cad-preview-lib`)。
+#         ①之所以先于②暴露,只因为线上镜像建于 08-22、那时这两个文件还不存在。
+#
+#    ⚠️ **为什么四道关卡一道都没抓到:**
+#      · override-count.test.ts 那条「每一件覆盖件都真的存在」查的是
+#        「注册了→文件在不在」,**反方向(文件在→注册没注册)没查**。
+#        这次已经补上反向,见该文件。
+#      · frontend-tests 里那两个 .test.ts 走的是相对路径
+#        (`../frontend-overrides/interrupt-lib`),不经过 setup 脚本,照样绿。
+#      · tsc --noEmit 的 include 里没有 ai.tsx,看不到那条 import。
+#      · CI 不构建前端镜像,所以 Module not found 也没机会响。
+# -----------------------------------------------------------------------------
+install_new_file "cad-preview-lib.ts" "src/lib/cad-preview-lib.ts"
+install_new_file "interrupt-lib.ts" "src/lib/interrupt-lib.ts"
 
 # -----------------------------------------------------------------------------
 # 步骤 2.6:装二维码库(checkin 三件里唯一的新依赖)
