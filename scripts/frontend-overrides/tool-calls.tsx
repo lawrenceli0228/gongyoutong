@@ -14,15 +14,16 @@
  * 细节没有删掉 —— 讲技术架构时展开来看,恰恰是多智能体协作的证据。
  *
  * 除了折叠,本文件还负责**把「有东西可下、可确认」这件事从灰行里捞出来**,
- * 现在一共三张卡(判据各不相同,详见 ToolResult 里那段「三条分支」):
+ * 现在一共四类卡(判据各不相同,详见 ToolResult 里那段「四条分支」):
  *   · 巡检记录卡(W3)—— 按工具名认 render_inspection_report;
  *   · 监理文书下载卡(W9)—— 按返回值里的 `documents` 数组渲染 N 张;
  *   · 隐患台账卡(W9)—— 按返回值里的 `hazards` 数组,同时是监理处置面板的入口。
+ *   · CAD 预览卡—— 按 render_preview 成功信封里的 32 位 `png_id` 直接显示图片。
  * 没有这些卡,产物就只是折叠 JSON 里的一个字符串:点不开、下不到,而且不报错。
  */
 
 import { AIMessage, ToolMessage } from "@langchain/langgraph-sdk";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronRight,
@@ -30,6 +31,7 @@ import {
   Check,
   Wrench,
   FileText,
+  ImageIcon,
   ExternalLink,
   Copy,
 } from "lucide-react";
@@ -46,6 +48,8 @@ import {
   SEVERITY_WORDS_HANT,
   withHantKeys,
 } from "@/lib/lang-lib";
+import { cadPreviewFileUrl, type CadPreviewData } from "@/lib/cad-preview-lib";
+import { getApiKey } from "@/lib/api-key";
 
 /** 子 Agent 的中文名。加新 Agent 时往这里补一行,不补也不会坏(会退回显示英文名)。
  *  导出给 ai.tsx 覆盖件用(子 Agent 正文折叠行也要念中文名)。
@@ -159,6 +163,9 @@ const REPORT_TOOL_NAME = "render_inspection_report";
  */
 const ARTIFACT_BASE =
   process.env.NEXT_PUBLIC_ARTIFACT_BASE || "http://127.0.0.1:8788";
+
+/** CAD 预览复用现有 LangGraph HTTP 服务；本地只需原来的 2024，不再强制启动 8788。 */
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:2024";
 
 /** 把信封里的绝对路径换成静态服务的 URL。
  *
@@ -454,6 +461,90 @@ function ReportCard({ data }: { data: ReportData }) {
   );
 }
 
+/** CAD 预览卡:工具只在信封里传 32 位产物编号,界面按编号取 PNG。 */
+export function PreviewCard({ data }: { data: CadPreviewData }) {
+  const [failed, setFailed] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const id = String(data.png_id ?? "");
+  const fileUrl = cadPreviewFileUrl(API_URL, id);
+
+  useEffect(() => {
+    if (!fileUrl) return;
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    setFailed(false);
+    setPreviewUrl(null);
+
+    const apiKey = getApiKey();
+    const headers = apiKey ? { "X-Api-Key": apiKey } : undefined;
+    void fetch(fileUrl, { headers, signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.blob();
+      })
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        setPreviewUrl(objectUrl);
+      })
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) setFailed(true);
+      });
+
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [fileUrl, reloadKey]);
+
+  if (!fileUrl) return null;
+
+  return (
+    <div className="mx-auto w-full max-w-3xl">
+      <div className="my-2 overflow-hidden rounded-xl border border-sky-200 bg-sky-50/30">
+        <div className="flex items-center justify-between gap-3 border-b border-sky-100 px-4 py-2.5">
+          <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-gray-900">
+            <ImageIcon className="h-4 w-4 shrink-0 text-sky-600" />
+            <span>圖紙預覽{data.format === "pdf" ? "（首頁）" : ""}</span>
+          </div>
+          {previewUrl ? (
+            <a
+              href={previewUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex shrink-0 items-center gap-1 text-[13px] font-medium text-sky-700 hover:text-sky-900"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              打開大圖
+            </a>
+          ) : null}
+        </div>
+        {previewUrl ? (
+          // 原生 img 与上传图片预览保持一致,避免 next/image 的远端主机白名单。
+          <img
+            src={previewUrl}
+            alt="CAD 圖紙預覽"
+            className="max-h-[560px] w-full bg-white object-contain"
+          />
+        ) : failed ? (
+          <div className="px-4 py-5 text-sm text-gray-600">
+            <p>預覽圖片暫時載入不了。請確認後端服務仍在 2024 端口運行。</p>
+            <button
+              type="button"
+              onClick={() => setReloadKey((value) => value + 1)}
+              className="mt-2 font-medium text-sky-700 hover:text-sky-900"
+            >
+              重試
+            </button>
+          </div>
+        ) : (
+          <div className="px-4 py-5 text-sm text-gray-500">正在載入圖紙預覽…</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ToolResult({ message }: { message: ToolMessage }) {
   let parsed: any;
   let isJson = false;
@@ -471,7 +562,7 @@ export function ToolResult({ message }: { message: ToolMessage }) {
   const done = /^transfer(_back)?_to_/.test(name) ? "已接手" : "已返回結果";
 
   /**
-   * ── 三条互不影响的卡片分支 ────────────────────────────────────────────
+   * ── 四条互不影响的卡片分支 ────────────────────────────────────────────
    *
    * ① 巡检记录:判据是**工具名** === render_inspection_report(W3 就有的那条,
    *    一个字节都没动 —— 它是已上线的演示主链);
@@ -486,7 +577,8 @@ export function ToolResult({ message }: { message: ToolMessage }) {
    *    只有 report_no / filename / path / violations / max_severity / label
    *    (见 agents/report/tools.py),**没有 `documents` 这个键** —— 分支 ② 对它
    *    结构上就不可能命中。③ 同理:它还额外要求工具名在白名单里。
-   *    三条各判各的、各渲各的卡,谁都不吃掉谁,灰行也照旧保留(展开原始信封
+   * ④ CAD 预览:判据是工具名 === render_preview 且成功信封带合法 `png_id`。
+   *    四条各判各的、各渲各的卡,谁都不吃掉谁,灰行也照旧保留(展开原始信封
    *    正是多智能体协作的证据)。
    *
    * 🔴 这里用的两个解析函数**都不抛异常**(supervision-lib 里那条注释:渲染路径上
@@ -499,6 +591,10 @@ export function ToolResult({ message }: { message: ToolMessage }) {
     isJson && name === REPORT_TOOL_NAME && parsed?.ok === true && parsed?.data
       ? (parsed.data as ReportData)
       : null;
+  const preview: CadPreviewData | null =
+    isJson && name === "render_preview" && parsed?.ok === true && parsed?.data
+      ? (parsed.data as CadPreviewData)
+      : null;
 
   const documents = documentsFromToolData(envelopeData);
   const hazards = (HAZARD_SOURCE_TOOLS as readonly string[]).includes(name)
@@ -510,6 +606,7 @@ export function ToolResult({ message }: { message: ToolMessage }) {
 
   return (
     <>
+      {preview && <PreviewCard data={preview} />}
       {report && <ReportCard data={report} />}
       {documents.length > 0 && (
         <div className="mx-auto w-full max-w-3xl">

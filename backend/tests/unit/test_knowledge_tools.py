@@ -9,6 +9,7 @@ from __future__ import annotations
 from langchain_core.documents import Document
 
 from gyt.agents.knowledge import tools
+from gyt.core.require_tool import RequireEvidenceCitation, RequireToolCall
 
 
 def _hit(
@@ -198,6 +199,33 @@ async def test_config无当前工地时仍只查全局(monkeypatch):
     )
 
     assert captured["where"] == {"scope": "global"}
+
+
+def test_knowledge_agent首答强制调用规范检索工具(monkeypatch):
+    """红线不能只写在 prompt 里:首答没调工具时必须由中间件拦住。"""
+    import gyt.agents.knowledge as knowledge
+
+    captured: dict = {}
+
+    def fake_create_gyt_agent(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(knowledge, "create_gyt_agent", fake_create_gyt_agent)
+    knowledge.build_knowledge_agent()
+
+    guards = captured["extra_middleware"]
+    assert len(guards) == 2
+    guard = guards[0]
+    assert isinstance(guard, RequireToolCall)
+    assert guard.agent_name == "knowledge"
+    assert guard.on_give_up == "fail"
+    assert "search_regulation" in guard.nudge
+    assert "检索" in guard.give_up_message
+    citation_guard = guards[1]
+    assert isinstance(citation_guard, RequireEvidenceCitation)
+    assert citation_guard.tool_name == "search_regulation"
+    assert "出处" in citation_guard.give_up_message
 
 
 # ---------------------------------------------------------------------------

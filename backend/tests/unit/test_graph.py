@@ -270,6 +270,20 @@ def test_supervisor_提示词要求如实转述失败且禁止编造(
     assert "编造" in prompt
 
 
+def test_supervisor_规范审图必须串联图纸事实与规范依据(
+    graph_module: GraphFixture,
+) -> None:
+    prompt = graph_module.module.build_supervisor_prompt()
+
+    assert "规范审图" in prompt
+    assert "先派 cad" in prompt
+    assert "再派 knowledge" in prompt
+    assert "能够确认符合" in prompt
+    assert "图纸事实" in prompt
+    assert "规范依据" in prompt
+    assert "目前无法判断" in prompt
+
+
 def test_supervisor_提示词交代了切换工地要走switch_project工具(
     graph_module: GraphFixture,
 ) -> None:

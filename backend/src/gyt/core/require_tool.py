@@ -79,6 +79,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -377,4 +378,140 @@ class RequireToolCall(AgentMiddleware):
         return response
 
 
-__all__ = ["GiveUpAction", "RequireReceiptSource", "RequireToolCall"]
+class RequireEvidenceCitation(AgentMiddleware):
+    """工具给过出处后，最终回答必须引用真实出处，或明确说资料里没有依据。
+
+    ``RequireToolCall`` 只能保证「确实查过」，拦不住模型查完后丢掉结果、只说一句
+    「规范对此有明确要求」。这种话看似稳妥，实际上既不能复核，也可能是模型凭记忆
+    补的。本件把最终文本与本回合工具结果里的 ``source/page`` 对上：
+
+    - 带任一条精确 ``《source》第 page 页`` → 放行；
+    - 检索命中但内容答不上问题，开头明确说「知识库里查不到…依据」 → 放行；
+    - 两者都没有 → 重试一次，仍失败就用安全说明顶替。
+
+    它只在请求上下文里已经出现指定工具结果时生效，不干扰首答继续调工具。
+    """
+
+    _NO_ANSWER_SUBJECTS: Final[tuple[str, ...]] = ("知识库", "资料", "文档", "规范")
+    _NO_ANSWER_WORDS: Final[tuple[str, ...]] = (
+        "无依据",
+        "没有",
+        "没收录",
+        "未收录",
+        "未提及",
+        "查不到",
+        "找不到",
+        "未找到",
+        "无相关",
+        "没有相关",
+    )
+
+    def __init__(
+        self,
+        *,
+        agent_name: str,
+        tool_name: str,
+        nudge: str,
+        give_up_message: str,
+    ) -> None:
+        super().__init__()
+        if not tool_name.strip():
+            raise ValueError("tool_name 不能为空:要知道从哪种工具结果里核对出处")
+        if not give_up_message.strip():
+            raise ValueError("give_up_message 不能为空:缺出处时得有一句安全说明顶上去")
+        self.agent_name = agent_name
+        self.tool_name = tool_name
+        self.nudge = nudge
+        self.give_up_message = give_up_message
+
+    @staticmethod
+    def _payload(message: ToolMessage) -> dict[str, Any] | None:
+        raw = _message_text(message).strip()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _citations(self, messages: list[BaseMessage]) -> set[str]:
+        found: set[str] = set()
+        for message in messages:
+            if not isinstance(message, ToolMessage) or message.name != self.tool_name:
+                continue
+            payload = self._payload(message)
+            data = payload.get("data") if payload else None
+            passages = data.get("passages") if isinstance(data, dict) else None
+            if not isinstance(passages, list):
+                continue
+            for passage in passages:
+                if not isinstance(passage, dict):
+                    continue
+                source = passage.get("source")
+                page = passage.get("page")
+                if source not in (None, "") and page not in (None, ""):
+                    found.add(f"《{source}》第 {page} 页")
+        return found
+
+    @classmethod
+    def _admits_no_answer(cls, text: str) -> bool:
+        opening = text.strip()[:80]
+        return any(subject in opening for subject in cls._NO_ANSWER_SUBJECTS) and any(
+            word in opening for word in cls._NO_ANSWER_WORDS
+        )
+
+    @staticmethod
+    def _answer_text(response: Any) -> str:
+        result = getattr(response, "result", None) or []
+        return " ".join(
+            _message_text(message) for message in result if isinstance(message, AIMessage)
+        )
+
+    def _needs_retry(self, response: Any, messages: list[BaseMessage]) -> bool:
+        result = getattr(response, "result", None) or []
+        if any(isinstance(message, AIMessage) and message.tool_calls for message in result):
+            return False
+        citations = self._citations(messages)
+        has_tool_result = any(
+            isinstance(message, ToolMessage) and message.name == self.tool_name
+            for message in messages
+        )
+        if not has_tool_result:
+            return False
+        answer = self._answer_text(response)
+        return not self._admits_no_answer(answer) and not any(
+            citation in answer for citation in citations
+        )
+
+    def wrap_model_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
+        response = handler(request)
+        messages = list(request.messages or [])
+        if not self._needs_retry(response, messages):
+            return response
+        logger.warning("%s 查过资料但回答没有可核对出处,已打回重试", self.agent_name)
+        retried = handler(_with_nudge(request, self.nudge))
+        if not self._needs_retry(retried, messages):
+            return retried
+        logger.error("%s 重试后仍未给真实出处,已用安全说明顶替", self.agent_name)
+        return _override_ai_text(retried, self.give_up_message)
+
+    async def awrap_model_call(self, request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:
+        response = await handler(request)
+        messages = list(request.messages or [])
+        if not self._needs_retry(response, messages):
+            return response
+        logger.warning("%s 查过资料但回答没有可核对出处,已打回重试", self.agent_name)
+        retried = await handler(_with_nudge(request, self.nudge))
+        if not self._needs_retry(retried, messages):
+            return retried
+        logger.error("%s 重试后仍未给真实出处,已用安全说明顶替", self.agent_name)
+        return _override_ai_text(retried, self.give_up_message)
+
+
+__all__ = [
+    "GiveUpAction",
+    "RequireEvidenceCitation",
+    "RequireReceiptSource",
+    "RequireToolCall",
+]
