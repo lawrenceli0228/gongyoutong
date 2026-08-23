@@ -72,6 +72,34 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+# ---------------------------------------------------------------------------
+# 后端镜像 —— **2026-08-23 起从 GHCR 拉,VPS 不再自己构建。**
+#
+# 为什么(TODO-40 的根治):这台机器 2 核 / 1966MB / 30GB,而镜像 6.3GB。
+# TODO-40 实测过一次全量重建的峰值约 13.2GB,结论是「**这台机器上全量重建
+# 从来就不成立**」——以前能成全靠增量缓存,缓存一断就是那条事故链:撞盘 →
+# tag 已经打到半截镜像 → containerd 把失去引用的旧镜像记录 GC 掉 → 容器还活着
+# 但既不能打 tag 也不能重启,而 docker ps 和站点一切正常,外面看不出来。
+# 现在构建在 CI(.github/workflows/ci.yml 的 build-push job),这里只 pull。
+#
+# 🔴 **tag 必须是 commit SHA,写在 /opt/gyt/.env 的 GYT_IMAGE_TAG 里。**
+#    `:?` 让「忘了设」在 `up` 那一刻硬失败,而不是悄悄起一个别的版本 ——
+#    与同文件 GYT_ACCESS_TOKEN 那条同一个写法、同一个理由。
+#
+# 这一行替换掉了原来的 `image: gyt-backend:vps`。**原来那行守着一个安全性质**:
+# 换 tag = 本地没有这个镜像 = 强制构建一次,堵住「机器上存着一个 auth 之前构建的
+# gyt-backend:dev,`up -d` 直接拿它起来、鉴权静默消失」这条路。
+# 换成 GHCR + SHA 之后这个性质**更强了**:镜像名整个换了域(ghcr.io/…),
+# 本地任何陈旧的 gyt-backend:* 都不可能被误用;而 SHA 是一次性的,
+# 想跑旧版本必须显式把那串写进 .env,不存在「以为部署了其实没有」。
+#
+# ⚠️ 用锚点是因为 housekeeping 复用同一个镜像。写两遍就是两份真相,
+#    而漂开的表现是:删掉旧镜像之后 housekeeping 找不到镜像起不来,
+#    且它是定时任务、当时不会有人发现。
+# ---------------------------------------------------------------------------
+x-backend-image: &backend-image
+  ghcr.io/lawrenceli0228/gyt-backend:${GYT_IMAGE_TAG:?没设 GYT_IMAGE_TAG。它是要部署的那个 commit SHA,CI 跑完会在 Actions 的运行摘要里给出完整命令。不设就等于让 compose 猜要跑哪个版本,而它猜不出来}
+
 services:
   # ---------------------------------------------------------------------------
   # 后端:继承基础档的 build / healthcheck / volumes,只改公网相关的几处
@@ -90,12 +118,10 @@ services:
     # 它不直接对公网,但它对**这台机器上的一切**开放,纵深防御的第一层就没了。
     ports: !reset []
 
-    # 换个镜像 tag(基础档是 gyt-backend:dev)。
-    # 不是洁癖:公网档要求 backend/langgraph.json 里声明了 auth,而那个文件**没有挂卷**,
-    # 是烘在镜像里的。沿用 :dev 这个 tag 的话,机器上万一存着一个 auth 之前构建的
-    # gyt-backend:dev,`up -d`(不带 --build)会直接拿它起来 —— 鉴权静默消失,
-    # 而一切看起来都正常。换 tag = 镜像不存在 = 强制构建一次,把这条路堵死。
-    image: gyt-backend:vps
+    # 镜像从 GHCR 拉,tag 是 commit SHA。完整推演见文件上方 x-backend-image。
+    # (原来这里是 `image: gyt-backend:vps` + 一段「换 tag 强制构建」的理由,
+    #  那个安全性质现在由「换域名 + 一次性 SHA」以更强的形式保住了。)
+    image: *backend-image
     container_name: gyt-backend-vps
 
     environment:
@@ -287,7 +313,11 @@ services:
   # 一句话:台账(88 KB)和对话历史备;artifacts(122 MB)**不备** ——
   # 同一块盘上多放几份不叫备份,盘坏了一起没,它要的是机器外面的同步。
   housekeeping:
-    image: gyt-backend:vps   # 复用后端镜像:它有 python 和 gyt 包,不用再引一个镜像进来
+    # 复用后端镜像:它有 python 和 gyt 包,不用再引一个镜像进来。
+    # ⚠️ 走同一个锚点而不是再写一遍字符串 —— 写两遍的话,升级时只改了 backend
+    # 那处,这里仍指着旧镜像;等旧镜像被删,这个容器就找不到镜像起不来,
+    # **而它是定时清理任务,当时不会有人发现**。
+    image: *backend-image
     container_name: gyt-housekeeping
 
     # ⚠️ 一个 ports 都不许有 —— 和 backend / frontend / artifacts 同一条红线。
