@@ -31,6 +31,72 @@ _needs_cjk = pytest.mark.skipif(
 )
 
 
+def _make_legacy_nested_room_dxf(path) -> None:
+    """造一张贴近真图的 R12/GBK 图:无 codepage、房间与尺寸都藏在块里。"""
+    doc = ezdxf.new("R12")
+    doc.encoding = "gbk"
+    doc.header["$INSUNITS"] = 4
+    doc.layers.add("WZ")
+    doc.layers.add("PUB_DIM")
+    doc.layers.add("AXIS")
+    doc.layers.add("AXIS_TEXT")
+
+    plan = doc.blocks.new("FLOOR_PLAN")
+    room = plan.add_text("衣帽间", dxfattribs={"layer": "WZ", "height": 350})
+    room.set_placement((1750, 1000))
+    correct = plan.add_linear_dim(
+        base=(0, 3000),
+        p1=(0, 0),
+        p2=(3500, 0),
+        dxfattribs={"layer": "PUB_DIM"},
+    )
+    correct.render()
+    distractor = plan.add_linear_dim(
+        base=(10000, 3000),
+        p1=(10000, 0),
+        p2=(14200, 0),
+        dxfattribs={"layer": "PUB_DIM"},
+    )
+    distractor.render()
+    kitchen = plan.add_text("厨房", dxfattribs={"layer": "WZ", "height": 350})
+    kitchen.set_placement((21000, 2400))
+    depth = plan.add_linear_dim(
+        base=(23000, 0),
+        p1=(20000, 0),
+        p2=(20000, 4800),
+        angle=90,
+        dxfattribs={"layer": "PUB_DIM"},
+    )
+    depth.render()
+
+    axis_1 = plan.add_text("1", dxfattribs={"layer": "AXIS_TEXT", "height": 350})
+    axis_1.set_placement((-200, -5000))
+    axis_2 = plan.add_text("2", dxfattribs={"layer": "AXIS_TEXT", "height": 350})
+    axis_2.set_placement((5800, -5000))
+    horizontal_grid = plan.add_linear_dim(
+        base=(0, -2500),
+        p1=(0, 0),
+        p2=(6000, 0),
+        dxfattribs={"layer": "AXIS"},
+    )
+    horizontal_grid.render()
+
+    axis_a = plan.add_text("A", dxfattribs={"layer": "AXIS_TEXT", "height": 350})
+    axis_a.set_placement((-5000, -200))
+    axis_b = plan.add_text("B", dxfattribs={"layer": "AXIS_TEXT", "height": 350})
+    axis_b.set_placement((-5000, 4800))
+    vertical_grid = plan.add_aligned_dim(
+        p1=(0, 0),
+        p2=(0, 5000),
+        distance=2500,
+        dxfattribs={"layer": "AXIS"},
+    )
+    vertical_grid.render()
+    vertical_grid.dimension.dxf.dimtype = 1
+    doc.modelspace().add_blockref("FLOOR_PLAN", (20000, 30000))
+    doc.saveas(path)
+
+
 @pytest.fixture
 def cad_env(tmp_path, monkeypatch):
     """造 GBK 图并预注册成「首层平面图」,把工具的 get_demo_drawings 指向本次映射。"""
@@ -365,6 +431,142 @@ async def test_query_dimension读出标注读数(cad_env):
     assert any(d["text"] == "6000" and d["units_label"] == "mm" for d in dims)
 
 
+async def test_query_dimension按嵌套房间名和方向关联开间(tmp_path, monkeypatch):
+    """回归真图:不能把衣帽间旁的 3500 漏掉或误选成外围尺寸链的 4200。"""
+    path = tmp_path / "legacy-room.dxf"
+    _make_legacy_nested_room_dxf(path)
+    drawing_id = artifacts.register(path, kind=ArtifactKind.DRAWING, original_name=path.name)
+    monkeypatch.setattr(tools, "get_demo_drawings", lambda: {"幼儿园平面方案": drawing_id})
+
+    result = await tools.query_dimension.ainvoke(
+        {"drawing": "幼儿园平面方案", "target": "衣帽间开间"}
+    )
+
+    assert result["ok"] is True
+    assert [d["text"] for d in result["data"]["dimensions"]] == ["3500"]
+    assert result["data"]["matched_annotation"] == "衣帽间"
+    assert result["data"]["match_method"] == "spatial"
+
+    from gyt.agents.cad import index
+
+    parsed = index.read(drawing_id)
+    assert parsed is not None
+    assert parsed["encoding"] == "gbk"
+    room = next(a for a in parsed["annotations"] if a["text"] == "衣帽间")
+    assert len(room["position"]) == 2
+    opening = next(d for d in parsed["dimensions"] if d["text"] == "3500")
+    assert opening["orientation"] == "horizontal"
+    assert len(opening["start"]) == len(opening["end"]) == 2
+
+    # 同一套逻辑必须认任意空间名与纵向进深,不是衣帽间/3500 特判。
+    depth_result = await tools.query_dimension.ainvoke(
+        {"drawing": "幼儿园平面方案", "target": "厨房进深"}
+    )
+    assert depth_result["ok"] is True
+    assert [d["measurement"] for d in depth_result["data"]["dimensions"]] == [4800.0]
+    assert depth_result["data"]["matched_annotation"] == "厨房"
+    assert depth_result["data"]["dimensions"][0]["orientation"] == "vertical"
+
+
+async def test_query_dimension按轴网语义和轴号配对尺寸(tmp_path, monkeypatch):
+    path = tmp_path / "nested-grid.dxf"
+    _make_legacy_nested_room_dxf(path)
+    drawing_id = artifacts.register(path, kind=ArtifactKind.DRAWING, original_name=path.name)
+    monkeypatch.setattr(tools, "get_demo_drawings", lambda: {"综合平面图": drawing_id})
+
+    all_grid = await tools.query_dimension.ainvoke({"drawing": "综合平面图", "target": "轴网间距"})
+    assert all_grid["ok"] is True
+    assert all_grid["data"]["match_method"] == "semantic_axis"
+    assert {(d["text"], tuple(d["axis_pair"])) for d in all_grid["data"]["dimensions"]} == {
+        ("6000", ("1", "2")),
+        ("5000", ("A", "B")),
+    }
+
+    from gyt.agents.cad import index
+
+    parsed = index.read(drawing_id)
+    assert parsed is not None
+    aligned = next(
+        d for d in parsed["dimensions"] if d["layer"] == "AXIS" and d["kind"] == "aligned"
+    )
+    assert aligned["measurement"] == 5000.0
+
+    numbered = await tools.query_dimension.ainvoke({"drawing": "综合平面图", "target": "1-2轴间距"})
+    assert [(d["text"], d["axis_pair"]) for d in numbered["data"]["dimensions"]] == [
+        ("6000", ["1", "2"])
+    ]
+
+    # 模型在真实对话里经常把用户的「1-2 轴」简化成裸 target="1-2"。
+    # 这仍是明确的轴号对,不能掉进房间空间匹配、误抓附近门窗/总尺寸。
+    bare_numbered = await tools.query_dimension.ainvoke({"drawing": "综合平面图", "target": "1-2"})
+    assert bare_numbered["ok"] is True
+    assert bare_numbered["data"]["match_method"] == "semantic_axis"
+    assert [(d["text"], d["axis_pair"]) for d in bare_numbered["data"]["dimensions"]] == [
+        ("6000", ["1", "2"])
+    ]
+
+    lettered = await tools.query_dimension.ainvoke(
+        {"drawing": "综合平面图", "target": "A轴到B轴间距"}
+    )
+    assert [(d["text"], d["axis_pair"]) for d in lettered["data"]["dimensions"]] == [
+        ("5000", ["A", "B"])
+    ]
+
+    bare_lettered = await tools.query_dimension.ainvoke({"drawing": "综合平面图", "target": "A-B"})
+    assert bare_lettered["ok"] is True
+    assert bare_lettered["data"]["match_method"] == "semantic_axis"
+    assert [(d["text"], d["axis_pair"]) for d in bare_lettered["data"]["dimensions"]] == [
+        ("5000", ["A", "B"])
+    ]
+
+
+def test_嵌套对齐标注库返回零时按DIMENSION定义点恢复():
+    from gyt.agents.cad import parse
+
+    class FakeDxf:
+        layer = "AXIS"
+        values = {
+            "layer": "AXIS",
+            "text": None,
+            "defpoint2": ezdxf.math.Vec3(0, 0),
+            "defpoint3": ezdxf.math.Vec3(0, 3100),
+        }
+
+        def get(self, name, default=None):
+            return self.values.get(name, default)
+
+        def hasattr(self, name):
+            return name in self.values
+
+    class FakeAlignedDimension:
+        dimtype = 1
+        dxf = FakeDxf()
+
+        @staticmethod
+        def get_measurement():
+            return 0.0
+
+    dimension = parse._dimension(FakeAlignedDimension())
+    assert dimension["kind"] == "aligned"
+    assert dimension["text"] == "3100"
+    assert dimension["measurement"] == 3100.0
+    assert dimension["measurement_source"] == "definition_points"
+
+
+def test_旧CAD索引缺空间字段会自动判旧():
+    from gyt.agents.cad import index
+
+    legacy = {
+        "entities_by_kind": {"DIMENSION": 1},
+        "extents_outlier": False,
+        "dimensions": [
+            {"text": "3500", "measurement": 3500.0, "layer": "PUB_DIM", "kind": "linear"}
+        ],
+        "annotations": [{"text": "衣帽间", "layer": "WZ"}],
+    }
+    assert index._stale(legacy) is True
+
+
 async def test_query_dimension没标注的尺寸如实说做不了(cad_env):
     # 关键断言:图上没有和「柱距」对得上的标注 → EMPTY_RESULT,不硬编一个数。
     result = await tools.query_dimension.ainvoke({"drawing": "首层平面图", "target": "柱距"})
@@ -437,6 +639,8 @@ async def test_render_preview出PNG并落盘(cad_env):
     # 真落盘成产物:能 resolve 出文件,且内容是 PNG 魔数开头。
     path = artifacts.resolve(png_id)
     assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert png_id not in result["user_msg"]
+    assert "下方" in result["user_msg"]
 
 
 async def test_render_preview图元过多时如实拒绝(cad_env, monkeypatch):

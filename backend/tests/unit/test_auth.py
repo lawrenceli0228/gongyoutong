@@ -571,9 +571,9 @@ _超限一步 = get_settings().max_client_recursion_limit + 1
 async def test_客户端自带超限的_recursion_limit_要被拒(
     monkeypatch: pytest.MonkeyPatch, 要的步数: int
 ) -> None:
-    """客户端可以在请求体里传 config.recursion_limit,**它会盖掉编译时钉的那个数**。
+    """客户端可以在请求体里传 config.recursion_limit,**它会盖掉编译时默认值**。
 
-    2026-08-11 实测(容器内 langgraph 1.2.10):不传 → "Recursion limit of 8 reached";
+    2026-08-11 实测(容器内 langgraph 1.2.10):不传会采用编译时限制;
     传 60 → "of 60 reached"。于是令牌桶那句「狂刷也有上限」不成立 ——
     次数有上限,单次成本却由客户端说了算,两者相乘就没边了。
     """

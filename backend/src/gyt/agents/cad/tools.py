@@ -22,6 +22,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import re
+import statistics
+import unicodedata
 from typing import Any, Final
 
 import ezdxf
@@ -548,17 +552,302 @@ async def parse_drawing(drawing: str, *, config: RunnableConfig) -> Envelope:
 
 
 _DIM_DESCRIPTION = (
-    "读图纸上**已经标注**的尺寸读数。target 填要找的尺寸关键词(如「柱距」「标注」"
-    "或某个图层名),留空则把图上所有标注都列出来。"
+    "读图纸上**已经标注**的尺寸读数。target 可填空间名+方向(如「衣帽间开间」"
+    "「厨房进深」)、轴网间距或具体轴号(如「1-2轴间距」),也可填尺寸关键词、"
+    "标注文字或图层名;留空则列出全部标注。"
     "注意:它只报图纸上画出来的标注,图上没标的尺寸它答不了,会如实说做不了 ——"
     "不要用它去「估」一个没标注的尺寸。drawing 填图纸名字或编号。"
 )
+
+_DIMENSION_INTENT_WORDS: Final[tuple[str, ...]] = (
+    "开间尺寸",
+    "进深尺寸",
+    "净开间",
+    "净进深",
+    "开间",
+    "进深",
+    "净宽",
+    "宽度",
+    "长度",
+    "尺寸",
+    "多少",
+    "多大",
+)
+
+
+def _normalized_label(text: str) -> str:
+    """房间名匹配忽略空白与常见标点,保留中文语义本身。"""
+    return re.sub(r"[\s,，。:：;；()（）\[\]【】《》]+", "", text).casefold()
+
+
+def _dimension_subject(target: str) -> str:
+    """从「厨房的开间尺寸」提取可在图中文字里定位的「厨房」。"""
+    subject = target
+    for word in _DIMENSION_INTENT_WORDS:
+        subject = subject.replace(word, "")
+    return _normalized_label(subject.replace("的", ""))
+
+
+def _wanted_orientation(target: str) -> str | None:
+    normalized = _normalized_label(target)
+    if any(word in normalized for word in ("开间", "净宽", "宽度", "横向")):
+        return "horizontal"
+    if any(word in normalized for word in ("进深", "纵向")):
+        return "vertical"
+    return None
+
+
+_AXIS_LAYER_TOKENS: Final[tuple[str, ...]] = ("axis", "grid", "轴", "柱网")
+_AXIS_LABEL_PATTERN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9]+(?:[./-][A-Za-z0-9]+)?")
+_AXIS_LABEL_TOKEN: Final[str] = r"[A-Za-z0-9]+(?:[./][A-Za-z0-9]+)?"
+_AXIS_PAIR_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(
+        rf"(?P<first>{_AXIS_LABEL_TOKEN})\s*轴?\s*(?:-|—|~|～|至|到)\s*"
+        rf"(?P<second>{_AXIS_LABEL_TOKEN})\s*轴?(?=\s*(?:间距|轴距|柱距)?(?:$|[,，。?？]))",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _normalized_axis_text(text: str) -> str:
+    return unicodedata.normalize("NFKC", text).strip()
+
+
+def _normalized_layer(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    return re.sub(r"[^0-9a-z\u3400-\u9fff]+", "", normalized)
+
+
+def _is_axis_layer(layer: str) -> bool:
+    normalized = _normalized_layer(layer)
+    return any(token in normalized for token in _AXIS_LAYER_TOKENS)
+
+
+def _is_axis_query(target: str) -> bool:
+    normalized = _normalized_label(unicodedata.normalize("NFKC", target))
+    return (
+        _requested_axis_pair(target) is not None
+        or "柱距" in normalized
+        or "轴距" in normalized
+        or "轴网" in normalized
+        or ("轴" in normalized and "间距" in normalized)
+    )
+
+
+def _requested_axis_pair(target: str) -> tuple[str, str] | None:
+    normalized = unicodedata.normalize("NFKC", target)
+    for pattern in _AXIS_PAIR_PATTERNS:
+        if match := pattern.search(normalized):
+            return match.group("first").casefold(), match.group("second").casefold()
+    return None
+
+
+def _axis_pair(first: str, second: str) -> list[str]:
+    """轴号按自然顺序展示;字母/数字混排时保留图元端点顺序。"""
+    if first.isdigit() and second.isdigit():
+        return sorted((first, second), key=int)
+    if first.isalpha() and second.isalpha():
+        return sorted((first, second), key=str.casefold)
+    return [first, second]
+
+
+def _semantic_axis_matches(
+    dims: list[dict[str, Any]], annotations: list[dict[str, Any]], target: str
+) -> list[dict[str, Any]]:
+    """用轴网语义找到显式标注,并把尺寸两端关联到轴号。
+
+    国内图层常叫 ``AXIS``/``GRID`` 而用户会问「轴网间距」,字面匹配永远对不上。
+    这里仍只读 DIMENSION,不拿两条轴线坐标反算:先筛轴网尺寸图层,再用尺寸端点与
+    ``AXIS_TEXT`` 一类轴号文字的同向坐标配对。配对门槛随尺寸长度缩放,不依赖图纸单位。
+    """
+    if not _is_axis_query(target):
+        return []
+    axis_dims = [
+        dim
+        for dim in dims
+        if dim.get("kind") in {"linear", "aligned"}
+        and _is_axis_layer(str(dim.get("layer", "")))
+        and (geometry := _dimension_geometry(dim)) is not None
+        and geometry[4] > 0
+    ]
+    if not axis_dims:
+        return []
+
+    labels: list[tuple[str, float, float]] = []
+    for annotation in annotations:
+        if not _is_axis_layer(str(annotation.get("layer", ""))):
+            continue
+        label = _normalized_axis_text(str(annotation.get("text", "")))
+        position = annotation.get("position")
+        if not _AXIS_LABEL_PATTERN.fullmatch(label) or len(label) > 8:
+            continue
+        if not isinstance(position, list) or len(position) < 2:
+            continue
+        try:
+            labels.append((label, float(position[0]), float(position[1])))
+        except (TypeError, ValueError):
+            continue
+
+    requested = _requested_axis_pair(target)
+    lengths = [
+        geometry[4] for dim in axis_dims if (geometry := _dimension_geometry(dim)) is not None
+    ]
+    typical_length = statistics.median(lengths)
+    paired: list[dict[str, Any]] = []
+    seen: set[tuple[frozenset[str], str, str]] = set()
+    for dim in axis_dims:
+        geometry = _dimension_geometry(dim)
+        if geometry is None:
+            continue
+        x1, y1, x2, y2, length = geometry
+        horizontal = dim.get("orientation") == "horizontal"
+        tolerance = min(length * 0.15, typical_length * 0.35)
+
+        def nearest_label(
+            x: float,
+            y: float,
+            *,
+            horizontal: bool = horizontal,
+            tolerance: float = tolerance,
+        ) -> str | None:
+            candidates: list[tuple[float, float, str]] = []
+            for label, label_x, label_y in labels:
+                along = abs((label_x if horizontal else label_y) - (x if horizontal else y))
+                if along > tolerance:
+                    continue
+                perpendicular = abs((label_y if horizontal else label_x) - (y if horizontal else x))
+                candidates.append((perpendicular, along, label))
+            return min(candidates)[2] if candidates else None
+
+        first, second = nearest_label(x1, y1), nearest_label(x2, y2)
+        if first is None or second is None or first.casefold() == second.casefold():
+            continue
+        pair = _axis_pair(first, second)
+        pair_key = frozenset(value.casefold() for value in pair)
+        if requested is not None and pair_key != frozenset(requested):
+            continue
+        measurement = dim.get("measurement")
+        if not isinstance(measurement, (int, float)) or measurement <= 0:
+            continue
+        key = (pair_key, f"{measurement:.4f}", str(dim.get("orientation", "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        paired.append({**dim, "axis_pair": pair})
+
+    if paired or requested is not None:
+        return paired
+
+    # 少数图只有轴网尺寸图层,轴号做成不可解析代理块。仍可如实返回显式标注,
+    # 但不伪造轴号配对;调用方会明确提示「轴号未可靠配对」。
+    return [
+        dim
+        for dim in axis_dims
+        if dim.get("text") not in {"", "0"}
+        and isinstance(dim.get("measurement"), (int, float))
+        and dim["measurement"] > 0
+    ]
+
+
+def _dimension_geometry(dim: dict[str, Any]) -> tuple[float, float, float, float, float] | None:
+    start, end = dim.get("start"), dim.get("end")
+    if not isinstance(start, list) or not isinstance(end, list) or len(start) < 2 or len(end) < 2:
+        return None
+    try:
+        x1, y1, x2, y2 = float(start[0]), float(start[1]), float(end[0]), float(end[1])
+    except (TypeError, ValueError):
+        return None
+    length = math.hypot(x2 - x1, y2 - y1)
+    if length <= 0:
+        return None
+    return x1, y1, x2, y2, length
+
+
+def _spatial_dimension_matches(
+    dims: list[dict[str, Any]], annotations: list[dict[str, Any]], target: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """把任意空间名称锚到附近尺寸线,并按开间/进深方向筛选。
+
+    规则只依赖图内相对几何,不写死房间名或数值:文字投影要落在尺寸跨度内(允许少量越界),
+    尺寸线要处于图内典型标注尺度附近;同一尺寸链上优先覆盖空间的最长一段,避免把门窗
+    分尺寸当成房间开间。没有达到门槛就返回空,宁可说没找到也不报远处总尺寸。
+    """
+    subject = _dimension_subject(target)
+    if not subject:
+        return [], []
+    anchors: list[tuple[float, float, str]] = []
+    for annotation in annotations:
+        label = str(annotation.get("text", "")).strip()
+        normalized = _normalized_label(label)
+        position = annotation.get("position")
+        if not normalized or not (subject in normalized or normalized in subject):
+            continue
+        if not isinstance(position, list) or len(position) < 2:
+            continue
+        try:
+            anchors.append((float(position[0]), float(position[1]), label))
+        except (TypeError, ValueError):
+            continue
+    if not anchors:
+        return [], []
+
+    wanted = _wanted_orientation(target)
+    prepared: list[tuple[dict[str, Any], tuple[float, float, float, float, float]]] = []
+    lengths: list[float] = []
+    for dim in dims:
+        if dim.get("kind") not in {"linear", "aligned"}:
+            continue
+        # 轴网尺寸与房间尺寸的定义点可能落在同一轴线上。房间开间/进深查询若把
+        # AXIS/GRID 图层混进来,「同链取最长」会把跨多轴总尺寸错当成房间尺寸。
+        if _is_axis_layer(str(dim.get("layer", ""))):
+            continue
+        if wanted is not None and dim.get("orientation") != wanted:
+            continue
+        geometry = _dimension_geometry(dim)
+        if geometry is None:
+            continue
+        prepared.append((dim, geometry))
+        lengths.append(geometry[4])
+    if not prepared:
+        return [], []
+
+    typical_length = statistics.median(lengths)
+    settings = get_settings()
+    best_by_reading: dict[tuple[str, str], tuple[tuple[float, float, float], dict[str, Any]]] = {}
+    matched_labels: set[str] = set()
+    for anchor_x, anchor_y, label in anchors:
+        candidates: list[tuple[tuple[float, float, float], dict[str, Any]]] = []
+        for dim, (x1, y1, x2, y2, length) in prepared:
+            ux, uy = (x2 - x1) / length, (y2 - y1) / length
+            rel_x, rel_y = anchor_x - x1, anchor_y - y1
+            projection = rel_x * ux + rel_y * uy
+            overrun = max(-projection, 0.0, projection - length)
+            perpendicular = abs(rel_x * uy - rel_y * ux)
+            local_scale = min(length, typical_length * 2)
+            if perpendicular > settings.cad_dimension_max_perpendicular_ratio * local_scale:
+                continue
+            if overrun > settings.cad_dimension_max_overrun_ratio * length:
+                continue
+            # 同一条尺寸链的垂距会相同:先取最近链,再取不越界者,最后取覆盖空间的最长段。
+            rank = (round(perpendicular, 1), round(overrun, 1), -length)
+            candidates.append((rank, dim))
+        if not candidates:
+            continue
+        rank, chosen = min(candidates, key=lambda item: item[0])
+        matched_labels.add(label)
+        key = (str(chosen.get("text", "")), str(chosen.get("orientation", "")))
+        previous = best_by_reading.get(key)
+        if previous is None or rank < previous[0]:
+            best_by_reading[key] = (rank, chosen)
+
+    ordered = sorted(best_by_reading.values(), key=lambda item: item[0])
+    return [dim for _, dim in ordered], sorted(matched_labels)
 
 
 @tool("query_dimension", description=_DIM_DESCRIPTION)
 @tool_guard
 async def query_dimension(drawing: str, target: str = "", *, config: RunnableConfig) -> Envelope:
-    """读图纸已有的 DIMENSION 标注(落地文档 6.2:只读标注,不算轴网间距)。"""
+    """读图纸已有的 DIMENSION 标注;轴网只读尺寸链,不靠轴线坐标反算。"""
     idx, drawing_id, error = await _load_index(drawing, project_from_config(config))
     if error is not None:
         return error
@@ -577,10 +866,25 @@ async def query_dimension(drawing: str, target: str = "", *, config: RunnableCon
 
     dims: list[dict[str, Any]] = idx["dimensions"]
     key = (target or "").strip()
+    match_method = "all" if not key else "direct"
+    matched_labels: list[str] = []
     if key:
-        matched = [
-            d for d in dims if key in str(d.get("layer", "")) or key in str(d.get("text", ""))
-        ]
+        annotations = idx.get("annotations", [])
+        if _is_axis_query(key):
+            # 明确轴网问题必须优先走轴号+尺寸链语义匹配。模型常把「1-2轴间距」
+            # 简写成 target="1-2";若先做字面/房间空间匹配,会把门窗或跨区总尺寸
+            # 错当轴距。轴号配不可靠时宁可返回空,不退回空间猜测。
+            matched = _semantic_axis_matches(dims, annotations, key)
+            if matched:
+                match_method = "semantic_axis"
+        else:
+            matched = [
+                d for d in dims if key in str(d.get("layer", "")) or key in str(d.get("text", ""))
+            ]
+            if not matched:
+                matched, matched_labels = _spatial_dimension_matches(dims, annotations, key)
+                if matched:
+                    match_method = "spatial"
     else:
         matched = list(dims)
 
@@ -610,14 +914,41 @@ async def query_dimension(drawing: str, target: str = "", *, config: RunnableCon
             "measurement": d["measurement"],
             "layer": d["layer"],
             "kind": d["kind"],
+            "orientation": d.get("orientation", "unknown"),
+            "axis_pair": d.get("axis_pair"),
             "units_label": units,
         }
         for d in matched
     ]
     shown = "、".join(f"{r['text']}{units}" for r in readings)
+    if match_method == "spatial":
+        matched_annotation = "、".join(matched_labels)
+        message = f"{name}上与「{matched_annotation}」位置关联的标注尺寸:{shown}。"
+    elif match_method == "semantic_axis":
+        matched_annotation = None
+        paired = [reading for reading in readings if reading["axis_pair"]]
+        if paired:
+            shown = "、".join(
+                f"{reading['axis_pair'][0]}-{reading['axis_pair'][1]}轴 {reading['text']}{units}"
+                for reading in paired
+            )
+            message = f"{name}上按轴号与轴网尺寸图层找到 {len(paired)} 道标注:{shown}。"
+        else:
+            message = (
+                f"{name}的轴网尺寸图层找到 {len(readings)} 道标注:{shown}。"
+                "轴号文字无法可靠配对,未擅自补轴号。"
+            )
+    else:
+        matched_annotation = None
+        message = f"{name}上标注的尺寸(读数以标注为准):{shown}。"
     return ok(
-        data={"dimensions": readings, "units_label": units},
-        user_msg=f"{name}上标注的尺寸(读数以标注为准):{shown}。",
+        data={
+            "dimensions": readings,
+            "units_label": units,
+            "match_method": match_method,
+            "matched_annotation": matched_annotation,
+        },
+        user_msg=message,
     )
 
 
@@ -788,10 +1119,7 @@ async def render_preview(drawing: str, *, config: RunnableConfig) -> Envelope:
         )
         return ok(
             data={"png_id": png_id, "format": "pdf", "page_count": int(idx.get("page_count", 0))},
-            user_msg=(
-                f"{name}的预览图渲染好了(首页,编号 {png_id})。"
-                "注:预览图暂时不在聊天里直接显示,这个编号先留着备用。"
-            ),
+            user_msg=f"{name}的首页预览图渲染好了,在下方可以直接查看或打开大图。",
         )
 
     # 渲染前先按图元数拦一道:图元数越大 SVG→PDF 越慢(见 config.drawing_render_max_entities
@@ -830,10 +1158,7 @@ async def render_preview(drawing: str, *, config: RunnableConfig) -> Envelope:
     )
     return ok(
         data={"png_id": png_id, "layers_count": len(idx["layers"])},
-        user_msg=(
-            f"{name}的预览图渲染好了(编号 {png_id})。"
-            "注:预览图暂时不在聊天里直接显示,这个编号先留着备用。"
-        ),
+        user_msg=f"{name}的预览图渲染好了,在下方可以直接查看或打开大图。",
     )
 
 

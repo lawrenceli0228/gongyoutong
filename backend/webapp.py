@@ -59,6 +59,7 @@ _DXF_EXT = ".dxf"
 
 # 文件内容端点用的媒体类型与展示方式常量(禁止散落魔法值)。
 _MEDIA_PDF = "application/pdf"
+_MEDIA_PNG = "image/png"
 # DXF 不是浏览器能预览的格式,原文下载一律当二进制推给用户(触发「另存为」)。
 _MEDIA_DXF = "application/octet-stream"
 _DISPOSITIONS = frozenset({"inline", "attachment"})
@@ -717,6 +718,42 @@ async def serve_drawing_file(request: Request) -> Any:
     return await run_in_threadpool(_build)
 
 
+async def serve_cad_preview(request: Request) -> Any:
+    """GET /files/cad-preview/{artifact_id} —— 取 CAD 工具生成的 PNG 预览。
+
+    本地聊天界面已经连着 2024，预览继续复用这条 HTTP 链即可；不再要求用户为了
+    CAD 单独启动 8788。编号先过 32 位 hex 校验，再由产物注册表解析，外部路径永远
+    不参与拼接。只认 ``OTHER + .png + preview.png``，避免拿这个端点读取照片或文书。
+
+    公网仍走隔离的只读 artifacts 容器；本端点会被 LangGraph 的自定义路由鉴权保护。
+    前端因此带 X-Api-Key fetch 成 Blob，不能直接把裸 URL 塞进 ``img.src``。
+    """
+    artifact_id = request.path_params["artifact_id"]
+    if not artifacts.ARTIFACT_ID_RE.fullmatch(artifact_id):
+        return _fail(404, "没找到这张预览图(编号不对)。", "NOT_FOUND")
+
+    def _build() -> Any:
+        try:
+            meta = artifacts.read_meta(artifact_id)
+            path = artifacts.resolve(artifact_id)
+        except ArtifactNotFound:
+            return _fail(404, "这张预览图已经不存在,请重新生成。", "NOT_FOUND")
+        if (
+            meta.get("kind") != ArtifactKind.OTHER.value
+            or meta.get("ext") != ".png"
+            or meta.get("original_name") != "preview.png"
+        ):
+            return _fail(404, "这个编号不是 CAD 预览图。", "NOT_FOUND")
+        return _serve_file(
+            path,
+            media_type=_MEDIA_PNG,
+            disposition="inline",
+            filename="preview.png",
+        )
+
+    return await run_in_threadpool(_build)
+
+
 async def _serve_dxf_as_pdf(artifact_id: str, title: str, disposition: str) -> Any:
     """把一张 DXF 转成矢量 PDF 后返回(带图元数保护 + 缓存复用)。异步:分步下线程池。"""
     try:
@@ -806,6 +843,7 @@ app = Starlette(
         Route("/projects", create_project, methods=["POST"]),
         Route("/library", library, methods=["GET"]),
         Route("/files/drawing/{artifact_id}", serve_drawing_file, methods=["GET"]),
+        Route("/files/cad-preview/{artifact_id}", serve_cad_preview, methods=["GET"]),
         Route("/files/doc", serve_doc_file, methods=["GET"]),
         Route("/projects/{project_id}/drawings", upload_drawing, methods=["POST"]),
         Route("/docs", upload_global_doc, methods=["POST"]),

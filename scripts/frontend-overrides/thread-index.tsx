@@ -7,6 +7,7 @@ import { useState, FormEvent } from "react";
 import { Button } from "../ui/button";
 import { Checkpoint, Message } from "@langchain/langgraph-sdk";
 import { AssistantMessage, AssistantMessageLoading } from "./messages/ai";
+import { PreviewCard } from "./messages/tool-calls";
 import { HumanMessage } from "./messages/human";
 import {
   DO_NOT_RENDER_ID_PREFIX,
@@ -33,6 +34,10 @@ import {
 } from "./ProjectUploadPanel";
 import { GytStatusCards } from "./GytStatusCards";
 import { GytTimingRows } from "./GytTimingRows";
+import {
+  captureCadPreview,
+  type CapturedCadPreview,
+} from "@/lib/cad-preview-lib";
 import { toast } from "sonner";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { Label } from "../ui/label";
@@ -64,10 +69,7 @@ function StickyToBottomContent(props: {
       style={{ width: "100%", height: "100%" }}
       className={props.className}
     >
-      <div
-        ref={context.contentRef}
-        className={props.contentClassName}
-      >
+      <div ref={context.contentRef} className={props.contentClassName}>
         {props.content}
       </div>
 
@@ -181,6 +183,31 @@ function ThreadInner() {
   const stream = useStreamContext();
   const messages = stream.messages;
   const isLoading = stream.isLoading;
+  // CAD 子图以 last_message 交回:内部 ToolMessage 在流式期间可见,收工后会从根状态消失。
+  // 以本线程第一条用户消息为键立刻缓存成功预览,保证图片不会在最终答复出现时闪退。
+  const previewConversationKey =
+    messages.find((message) => message.type === "human")?.id ??
+    "new-conversation";
+  const [capturedCadPreviews, setCapturedCadPreviews] = useState<
+    Record<string, CapturedCadPreview[]>
+  >({});
+  useEffect(() => {
+    const incoming = messages
+      .map(captureCadPreview)
+      .filter((item) => item !== null);
+    if (incoming.length === 0) return;
+    setCapturedCadPreviews((previous) => {
+      const current = previous[previewConversationKey] ?? [];
+      const known = new Set(current.map((item) => item.messageId));
+      const additions = incoming.filter((item) => !known.has(item.messageId));
+      if (additions.length === 0) return previous;
+      return {
+        ...previous,
+        [previewConversationKey]: [...current, ...additions].slice(-5),
+      };
+    });
+  }, [messages, previewConversationKey]);
+  const visibleCadPreviews = capturedCadPreviews[previewConversationKey] ?? [];
 
   const lastError = useRef<string | undefined>(undefined);
 
@@ -247,7 +274,8 @@ function ThreadInner() {
       return;
     setFirstTokenReceived(false);
 
-    const textParts = input.trim().length > 0 ? [{ type: "text", text: input }] : [];
+    const textParts =
+      input.trim().length > 0 ? [{ type: "text", text: input }] : [];
 
     // 🔴 **界面上那份和送出去那份,内容不一样,这是刻意的。**
     //
@@ -266,7 +294,10 @@ function ThreadInner() {
     const newHumanMessage: Message = {
       id: uuidv4(),
       type: "human",
-      content: [...textParts, ...toWireBlocks(contentBlocks)] as Message["content"],
+      content: [
+        ...textParts,
+        ...toWireBlocks(contentBlocks),
+      ] as Message["content"],
     };
     const previewHumanMessage: Message = {
       ...newHumanMessage,
@@ -375,10 +406,7 @@ function ThreadInner() {
               : { duration: 0 }
           }
         >
-          <div
-            className="relative h-full"
-            style={{ width: 300 }}
-          >
+          <div className="relative h-full" style={{ width: 300 }}>
             <ThreadHistory />
           </div>
         </motion.div>
@@ -555,6 +583,9 @@ function ThreadInner() {
                         />
                       ),
                     )}
+                  {visibleCadPreviews.map((preview) => (
+                    <PreviewCard key={preview.messageId} data={preview.data} />
+                  ))}
                   {/* Special rendering case where there are no AI/tool messages, but there is an interrupt.
                     We need to render it outside of the messages list, since there are no messages to render */}
                   {hasNoAIOrToolMessages && !!stream.interrupt && (
@@ -768,10 +799,7 @@ function ThreadInner() {
           <div className="absolute inset-0 flex min-w-[30vw] flex-col">
             <div className="grid grid-cols-[1fr_auto] border-b p-4">
               <ArtifactTitle className="truncate overflow-hidden" />
-              <button
-                onClick={closeArtifact}
-                className="cursor-pointer"
-              >
+              <button onClick={closeArtifact} className="cursor-pointer">
                 <XIcon className="size-5" />
               </button>
             </div>

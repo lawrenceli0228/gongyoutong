@@ -27,12 +27,18 @@
 
 from __future__ import annotations
 
+import codecs
+import logging
+import math
 from collections import Counter
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
 import ezdxf
 from ezdxf import bbox
+
+logger = logging.getLogger(__name__)
 
 # $INSUNITS 码 → 人话单位标签(落地文档风险 #6:尺寸没单位 = 没意义)。
 # 只列常见的;认不出的落到 f"单位码{code}",不假装知道。
@@ -76,6 +82,57 @@ _AUTO_DIM_TEXT = frozenset({"<>", "", None})
 
 # 认不出所在图层时的默认层名(AutoCAD 的 0 层),不硬编成别的。
 _DEFAULT_LAYER = "0"
+DXF_INDEX_SCHEMA_VERSION = 3
+
+
+def _contains_cjk(text: str, minimum: int = 2) -> bool:
+    """至少含 ``minimum`` 个中日韩统一表意文字,用于旧 DXF 编码探测。"""
+    count = 0
+    for char in text:
+        if "\u3400" <= char <= "\u9fff":
+            count += 1
+            if count >= minimum:
+                return True
+    return False
+
+
+def _decodes_to_cjk(path: Path, encoding: str) -> bool:
+    """流式严格解码;整份文件编码合法且出现中文才算候选。"""
+    decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
+    found = False
+    try:
+        with path.open("rb") as fh:
+            while chunk := fh.read(64 * 1024):
+                decoded = decoder.decode(chunk)
+                if not found:
+                    found = _contains_cjk(decoded)
+            tail = decoder.decode(b"", final=True)
+            if not found:
+                found = _contains_cjk(tail)
+    except UnicodeDecodeError:
+        return False
+    return found
+
+
+def _legacy_encoding_override(path: Path) -> str | None:
+    """识别没有 ``$DWGCODEPAGE`` 的旧 ASCII DXF 中文编码。
+
+    R12 真图常直接以 GBK 写中文,却不声明 codepage。ezdxf 会按 cp1252 打开,
+    文件不报错但所有中文房间名都会变成乱码。已声明 codepage 的图完全交给 ezdxf;
+    只有未声明且能被某候选编码严格解出中文时才覆盖,避免误伤西文图。
+    """
+    header = bytearray()
+    with path.open("rb") as fh:
+        for line in fh:
+            header.extend(line)
+            if line.strip() == b"ENDSEC":
+                break
+    if b"$DWGCODEPAGE" in header:
+        return None
+    for encoding in ("utf-8", "gbk", "gb18030"):
+        if _decodes_to_cjk(path, encoding):
+            return encoding
+    return None
 
 
 def _layer_of(entity: Any) -> str:
@@ -169,53 +226,120 @@ def _blocks(doc: Any, insert_by_block: Counter) -> list[dict[str, Any]]:
     return out
 
 
-def _dimensions(msp: Any) -> list[dict[str, Any]]:
+def _expanded_entities(
+    entities: Iterable[Any], block_chain: frozenset[str] = frozenset()
+) -> Iterator[Any]:
+    """递归展开 INSERT,同时保留 DIMENSION 本体及其变换后坐标。
+
+    ``msp.query`` 只看顶层,国内施工图却常把整层平面做成块引用。使用
+    ``recursive_decompose`` 会把 DIMENSION 炸成线和文字,丢掉实测值;这里仅展开
+    INSERT,所以房间文字和尺寸对象两边都保得住。块名链用于挡住非法循环引用。
+    """
+    for entity in entities:
+        if entity.dxftype() != "INSERT":
+            yield entity
+            continue
+        name = str(entity.dxf.get("name", ""))
+        if name in block_chain:
+            logger.warning("CAD 块出现循环引用,已跳过:%s", name)
+            continue
+        refs = entity.multi_insert() if getattr(entity, "mcount", 1) > 1 else (entity,)
+        for ref in refs:
+            # ATTRIB 不属于块定义,virtual_entities() 不会自动带出来;它的位置已是 WCS。
+            yield from getattr(ref, "attribs", ())
+            try:
+                children = ref.virtual_entities()
+                yield from _expanded_entities(children, block_chain | {name})
+            except (AttributeError, ezdxf.DXFError) as exc:
+                logger.warning("CAD 块 %s 无法展开,已跳过:%s", name or "(未命名)", exc)
+
+
+def _point(entity: Any, name: str) -> list[float] | None:
+    value = entity.dxf.get(name)
+    if value is None:
+        return None
+    try:
+        return [round(float(value.x), 3), round(float(value.y), 3)]
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _dimension(entity: Any) -> dict[str, Any]:
+    kind = _DIM_KIND.get(int(getattr(entity, "dimtype", 0)) & 7, "other")
+    start = _point(entity, "defpoint2")
+    end = _point(entity, "defpoint3")
+    try:
+        measurement: float | None = float(entity.get_measurement())
+    except (TypeError, ValueError):
+        measurement = None
+    measurement_source = "entity"
+    # ezdxf 对嵌套 INSERT 展开后的 ALIGNED DIMENSION 偶尔返回 0,但该实体自己的
+    # 两个定义点仍完整。对齐标注按 DXF 定义就是两点直线距离,可安全恢复读数;
+    # 这仍是在读已有 DIMENSION,不是拿普通轴线坐标估一个未标尺寸。
+    if kind == "aligned" and (measurement is None or math.isclose(measurement, 0.0)):
+        if start is not None and end is not None:
+            defined_length = math.hypot(end[0] - start[0], end[1] - start[1])
+            if defined_length > 0:
+                measurement = defined_length
+                measurement_source = "definition_points"
+    raw_text = entity.dxf.get("text", "<>")
+    if raw_text in _AUTO_DIM_TEXT:
+        text = _fmt_measurement(measurement) if measurement is not None else ""
+    else:
+        text = str(raw_text)
+    if start is not None and end is not None:
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        orientation = "horizontal" if abs(dx) >= abs(dy) else "vertical"
+        position = [round((start[0] + end[0]) / 2, 3), round((start[1] + end[1]) / 2, 3)]
+    else:
+        orientation = "unknown"
+        position = _point(entity, "text_midpoint")
+    return {
+        "text": text,
+        "measurement": round(measurement, 4) if measurement is not None else None,
+        "layer": _layer_of(entity),
+        "kind": kind,
+        "position": position,
+        "text_position": _point(entity, "text_midpoint"),
+        "start": start,
+        "end": end,
+        "orientation": orientation,
+        "measurement_source": measurement_source,
+    }
+
+
+def _dimensions(entities: Iterable[Any]) -> list[dict[str, Any]]:
     """图纸上已有的 DIMENSION 标注读数(query_dimension 的唯一数据源)。
 
     text 是标注上写的字、measurement 是几何实测值 —— 两者可能不同(标注可手改),
     所以两个都留下。text 是 "<>"/"" 表示没手改,此时用格式化后的实测值当展示文字。
     """
     out: list[dict[str, Any]] = []
-    for dim in msp.query("DIMENSION"):
-        try:
-            measurement: float | None = float(dim.get_measurement())
-        except (TypeError, ValueError):
-            # 角度/坐标标注的 get_measurement 可能不是单个 float,认不了就留空。
-            measurement = None
-        raw_text = dim.dxf.get("text", "<>")
-        if raw_text in _AUTO_DIM_TEXT:
-            text = _fmt_measurement(measurement) if measurement is not None else ""
-        else:
-            text = str(raw_text)
-        kind = _DIM_KIND.get(int(getattr(dim, "dimtype", 0)) & 7, "other")
-        out.append(
-            {
-                "text": text,
-                "measurement": round(measurement, 4) if measurement is not None else None,
-                "layer": _layer_of(dim),
-                "kind": kind,
-            }
-        )
+    for entity in entities:
+        if entity.dxftype() == "DIMENSION":
+            out.append(_dimension(entity))
     return out
 
 
-def _texts(msp: Any, limit: int = 200) -> list[dict[str, Any]]:
+def _texts(entities: Iterable[Any]) -> list[dict[str, Any]]:
     """图上的 TEXT / MTEXT 文字(read_view_params 的数据源之一)。
 
     标高「±0.000」「3.600」、层高说明、房间名这些**常是文字而非 DIMENSION**,单靠 _dimensions
     读不到。这里只如实抽图上写着的字,不解释、不换算 —— 与标注一个性质(read 侧照抄,不自算)。
-    限量(默认 200 条)防真实工程图上千条文字把索引与提示词压垮。
+    索引保留全部文字供按房间名定位;工具输出仍会截短展示,不能在解析层先把后面的房间名丢掉。
     """
     out: list[dict[str, Any]] = []
-    for entity in msp.query("TEXT MTEXT"):
+    for entity in entities:
+        if entity.dxftype() not in {"TEXT", "MTEXT", "ATTRIB"}:
+            continue
         if entity.dxftype() == "MTEXT":
             text = entity.plain_text().strip()  # 去掉 MTEXT 的排版控制码,留纯文字
         else:
-            text = str(entity.dxf.text).strip()
+            text = str(entity.dxf.get("text", "")).strip()
         if text:
-            out.append({"text": text, "layer": _layer_of(entity)})
-        if len(out) >= limit:
-            break
+            out.append(
+                {"text": text, "layer": _layer_of(entity), "position": _point(entity, "insert")}
+            )
     return out
 
 
@@ -343,14 +467,18 @@ def parse_dxf(path: Path) -> dict[str, Any]:
     阻塞函数:调用方负责 ``asyncio.to_thread`` 包。
     文件损坏/打不开时**不吞异常**,让 ezdxf 的异常向上抛给工具层翻成 FILE_CORRUPT。
     """
-    doc = ezdxf.readfile(str(path))
+    encoding = _legacy_encoding_override(path)
+    doc = ezdxf.readfile(str(path), encoding=encoding)
     msp = doc.modelspace()
 
     by_kind, per_layer, insert_by_block = _scan_modelspace(msp)
+    # 一次递归展开后同时抽尺寸与文字。两个函数各自拿 list 迭代,不重复展开大块。
+    expanded = list(_expanded_entities(msp))
     insunits = int(doc.header.get("$INSUNITS", 0))
 
     return {
         "format": "dxf",  # 索引格式判别:工具层按它在 dxf/pdf 两条线间分流
+        "index_schema_version": DXF_INDEX_SCHEMA_VERSION,
         "encoding": str(doc.output_encoding),
         "dxf_version": str(doc.dxfversion),
         "insunits": insunits,
@@ -358,8 +486,8 @@ def parse_dxf(path: Path) -> dict[str, Any]:
         "layers": _layers(doc, per_layer),
         "entities_by_kind": {k: int(v) for k, v in sorted(by_kind.items())},
         "blocks": _blocks(doc, insert_by_block),
-        "dimensions": _dimensions(msp),
-        "annotations": _texts(msp),
+        "dimensions": _dimensions(expanded),
+        "annotations": _texts(expanded),
         "bounds": _bounds(msp),
         "extents_outlier": _extents_outlier(msp),
         "tianzheng": _detect_tianzheng(doc, by_kind, per_layer),

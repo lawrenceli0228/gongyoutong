@@ -30,7 +30,11 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from gyt.agents.schedule.guard import RequireLedgerTool
-from gyt.core.require_tool import RequireReceiptSource, RequireToolCall
+from gyt.core.require_tool import (
+    RequireEvidenceCitation,
+    RequireReceiptSource,
+    RequireToolCall,
+)
 
 # 两条泳道的配置。report 那档在这里手写死,**不 import agents.report** ——
 # 这是 core 层的测试,不该反向依赖某个 Agent 包;话术改不改跟本文件无关。
@@ -382,3 +386,73 @@ def test_守卫没配顶替文案_建图期就炸() -> None:
         RequireReceiptSource(
             agent_name="supervision", pattern=_HAZARD_PATTERN, nudge="先调工具", give_up_message=" "
         )
+
+
+# ===========================================================================
+# RequireEvidenceCitation（规范答案必须能追到检索结果）
+# ===========================================================================
+
+_CITATION_KWARGS: dict[str, Any] = {
+    "agent_name": "knowledge",
+    "tool_name": "search_regulation",
+    "nudge": "请引用检索结果里的真实出处。",
+    "give_up_message": "这次没有形成可核对的规范出处。",
+}
+
+
+def _regulation_result() -> ToolMessage:
+    return ToolMessage(
+        content=(
+            '{"ok":true,"data":{"passages":['
+            '{"text":"儿童活动用房要求","source":"幼儿园规范.pdf","page":9}'
+            ']},"user_msg":"查到了","error_code":null}'
+        ),
+        tool_call_id="search-1",
+        name="search_regulation",
+    )
+
+
+async def test_规范回答引用工具中的真实出处_直接放行() -> None:
+    handler = _ScriptedHandler([_plain("要求如下。—— 依据《幼儿园规范.pdf》第 9 页")])
+    request = _FakeRequest(messages=[HumanMessage(content="查规范"), _regulation_result()])
+
+    response = await RequireEvidenceCitation(**_CITATION_KWARGS).awrap_model_call(request, handler)
+
+    assert len(handler.seen) == 1
+    assert "《幼儿园规范.pdf》第 9 页" in str(response.result[0].content)
+
+
+async def test_规范回答只说有明确要求_打回后采用带出处回答() -> None:
+    handler = _ScriptedHandler(
+        [
+            _plain("规范对此有明确要求。"),
+            _plain("要求如下。—— 依据《幼儿园规范.pdf》第 9 页"),
+        ]
+    )
+    request = _FakeRequest(messages=[HumanMessage(content="查规范"), _regulation_result()])
+
+    response = await RequireEvidenceCitation(**_CITATION_KWARGS).awrap_model_call(request, handler)
+
+    assert len(handler.seen) == 2
+    assert any(_CITATION_KWARGS["nudge"] in str(m.content) for m in handler.seen[1])
+    assert "第 9 页" in str(response.result[0].content)
+
+
+async def test_规范回答重试仍无出处_用安全说明顶替() -> None:
+    handler = _ScriptedHandler([_plain("规范有要求。"), _plain("确实有明确要求。")])
+    request = _FakeRequest(messages=[HumanMessage(content="查规范"), _regulation_result()])
+
+    response = await RequireEvidenceCitation(**_CITATION_KWARGS).awrap_model_call(request, handler)
+
+    assert len(handler.seen) == 2
+    assert str(response.result[0].content) == _CITATION_KWARGS["give_up_message"]
+
+
+async def test_命中内容答不上问题时明确拒答_不强迫引用无关条文() -> None:
+    handler = _ScriptedHandler([_plain("知识库里查不到明确依据，不能据此判断。")])
+    request = _FakeRequest(messages=[HumanMessage(content="查规范"), _regulation_result()])
+
+    response = await RequireEvidenceCitation(**_CITATION_KWARGS).awrap_model_call(request, handler)
+
+    assert len(handler.seen) == 1
+    assert "查不到明确依据" in str(response.result[0].content)
