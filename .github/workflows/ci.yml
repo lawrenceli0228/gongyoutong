@@ -378,6 +378,145 @@ jobs:
           echo "----- 服务日志(完整) -----"
           cat "${{ runner.temp }}/langgraph.log" 2>/dev/null || echo "(无日志)"
 
+  # ===========================================================================
+  # job: build-push —— 构建后端镜像并推 GHCR
+  #
+  # 为什么把构建搬到 CI(2026-08-23 定案,这是 TODO-40 的根治):
+  #   线上那台 VPS 是 2 核 / 1966MB / 30GB,而后端镜像 6.34GB。TODO-40 实测过一次
+  #   全量重建的峰值约 13.2GB,结论是「**这台机器上全量重建从来就不成立**」——
+  #   以前能成全靠增量缓存,缓存一断就是那条事故链:撞盘 → tag 已经打到半截镜像 →
+  #   Docker 29 的 containerd 把失去引用的旧镜像记录 GC 掉 → 容器还活着但既不能打
+  #   tag、也不能重启,而 `docker ps` 和站点一切正常,外面完全看不出来。
+  #
+  #   W7 手册 §2.1 曾用「开发机上行 0.27 MB/s」把「离机构建再传」否掉,结论写成
+  #   「在 VPS 上构,不要在开发机构了传」。**那条结论对被测的那个方案成立,当成通则
+  #   就错了** —— 构建放在 CI 的话,开发机那条链路根本不在路径上。2026-08-23 补量:
+  #   VPS 上行 6.72 MB/s、下行 20 MB/s。而镜像是分层的,改源码之后 VPS 只拉变化的
+  #   那一层(`COPY . /app` 实测 2.96MB),权重那 2.3GB 一个字节都不重传。
+  #
+  # 🔴 三条别改错的:
+  #   ① **只加载基础档 `docker-compose.yml`,绝不要再 `-f docker-compose.vps.yml`。**
+  #      构建配置(context / dockerfile / target / args)整个在基础档里;vps 档只改
+  #      image / ports / environment / volumes,没有 build 段。而 vps 档的
+  #      environment 里有 `GYT_ACCESS_TOKEN: ${GYT_ACCESS_TOKEN:?…}` —— compose 是
+  #      **解析期**求值,加载它会让 build 在还没开始时就失败。
+  #   ② **构建参数一个都不许写在这个文件里。** `HF_ENDPOINT` 的真相在基础档的
+  #      build.args,而它与 backend/Dockerfile 的 `ARG HF_ENDPOINT` 是 CLAUDE.md
+  #      同源清单上登记过的一对(「全仓唯一允许的重复点」)。在 workflow 里再抄一份
+  #      = 那一行从两处变三处,而漂了不报错:CI 用旧模型构建、线上向量库和查询向量
+  #      不在一个空间里,检索全错而一声不吭。
+  #   ③ **tag 用 commit SHA,不用浮动的 `:vps`。** 浮动 tag 的坏法是「以为部署了、
+  #      其实跑的还是旧镜像」;而「线上现在是哪个提交」这个问题已经因为拿一个 12 天
+  #      前的旧数做过一次错误的风险评估(见 TODO-33 的过期标注)。
+  #
+  # ⚠️ 第一版**刻意不接 buildx 的 GHA 缓存**:接它要往基础档的 build 段加
+  #    cache_to/cache_from,而那个文件是本机开发也在用的。全量构建十几分钟、只在
+  #    main 上跑,先按「无聊但正确」上线;等真的嫌慢再单独加,别在迁移里塞第二件事。
+  # ===========================================================================
+  build-push:
+    name: 构建后端镜像并推 GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # 单测没过就不必构建,省额度
+    needs: test
+    # PR 上不跑。一次全量构建十几分钟(含 2.2GB 权重下载),而私有仓每月 2000 分钟
+    # 的额度经不起每个 PR push 都烧一次。合进 main、或在 Actions 页面手点才构建。
+    if: github.event_name != 'pull_request'
+
+    permissions:
+      contents: read
+      # 推 GHCR 必需。工作流级只给了 contents:read,这里单独放开,别提到全局。
+      packages: write
+
+    env:
+      # ⚠️ GHCR 的路径必须全小写。owner 目前是 lawrenceli0228(本来就是小写),
+      #    哪天换成带大写的账号名,这里要加一步 tr '[:upper:]' '[:lower:]'。
+      IMAGE: ghcr.io/${{ github.repository_owner }}/gyt-backend
+      # 冒烟用的假 Key —— 只为让进程起得来。没有它们,图在加载期就抛
+      # MissingAPIKeyError,容器起不来,而那不是镜像的问题。
+      GYT_DEEPSEEK_API_KEY: ci-fake-deepseek-key
+      GYT_MOONSHOT_API_KEY: ci-fake-moonshot-key
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 登录 GHCR
+        # 用内置的 GITHUB_TOKEN,不需要任何 PAT —— 上面那句 packages: write 就是它的授权。
+        # (VPS 侧拉取才需要一把只读 PAT,那是另一回事,见部署文档。)
+        run: |
+          set -euo pipefail
+          echo '${{ secrets.GITHUB_TOKEN }}' \
+            | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - name: 构建镜像(只用基础档,理由见上方 ①②)
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml build backend
+          docker image inspect gyt-backend:dev --format '构建产物 {{.Id}} 大小 {{.Size}}'
+
+      - name: 冒烟 —— 用 compose 自带的 healthcheck 起一次
+        # 刻意走 `compose up` 而不是自己写探活:healthcheck 的定义在基础档里,
+        # 抄一份到这儿就是第二份真相。数据目录要先 chown 到 10001 ——
+        # 镜像里是非 root 用户跑的(Dockerfile 的 `USER gyt`,uid 10001),
+        # runner 上新建的目录属主是 runner,容器写不进去。
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          sudo chown -R 10001:10001 data
+          docker compose -f docker-compose.yml up -d backend
+          for i in $(seq 1 40); do
+            status="$(docker inspect gyt-backend --format '{{.State.Health.Status}}' 2>/dev/null || echo none)"
+            [ "${status}" = "healthy" ] && { echo "容器 healthy(第 ${i} 次探测)"; break; }
+            [ "${i}" = "40" ] && { echo "::error::镜像起来了但 200 秒没 healthy"; exit 1; }
+            sleep 5
+          done
+
+      - name: 冒烟断言 —— 图 "gyt" 在镜像里也注册得上
+        # 与 e2e job 那条同判据,但打的是**镜像里烤死的那份** langgraph.json。
+        # e2e 跑的是源码,抓不到「文件没被 COPY 进镜像」这一类。
+        run: |
+          set -euo pipefail
+          response="$(curl --silent --fail --max-time 15 \
+            -X POST "http://127.0.0.1:${{ env.BACKEND_PORT }}/assistants/search" \
+            -H 'Content-Type: application/json' -d '{"limit": 100}')"
+          echo "${response}" | grep -q '"gyt"' \
+            || { echo "::error::镜像里找不到已注册的图 \"gyt\""; exit 1; }
+          echo '冒烟通过:镜像能起来,且图 "gyt" 已注册'
+
+      - name: 收尾 —— 停容器并归档日志
+        if: always()
+        run: |
+          set -uo pipefail
+          echo "----- 容器日志 -----"
+          docker compose -f docker-compose.yml logs --no-color backend 2>&1 | tail -100 || true
+          docker compose -f docker-compose.yml down --remove-orphans || true
+
+      - name: 打标签并推送
+        run: |
+          set -euo pipefail
+          docker tag gyt-backend:dev "${IMAGE}:${GITHUB_SHA}"
+          docker push "${IMAGE}:${GITHUB_SHA}"
+
+      - name: 写部署提示到运行摘要
+        # 用 printf 而不是 echo:这段要输出反引号、引号和路径,echo 在
+        # shellcheck 下会连报 SC1003/SC2016/SC2028 三条,而 `make lint-ci`
+        # 是 `&&` 串起来的,有任何输出就红。printf + 双引号取变量最省事。
+        run: |
+          set -euo pipefail
+          {
+            printf '## 后端镜像已就绪\n\n'
+            printf '    %s:%s\n\n' "${IMAGE}" "${GITHUB_SHA}"
+            printf '在 VPS 上部署,三步:\n\n'
+            printf '1. 把 /opt/gyt/.env 里的 GYT_IMAGE_TAG 改成 %s\n' "${GITHUB_SHA}"
+            printf '2. docker compose -f docker-compose.yml -f docker-compose.vps.yml pull backend\n'
+            printf '3. docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --no-build --no-deps backend\n\n'
+            printf '注意一:拉之前先量 df -h / 的可用,要不少于镜像大小 + 1G。\n'
+            printf '注意二:确认新容器 healthy 之后**才**删旧镜像。顺序反了会撞上 TODO-40 记的那条\n'
+            printf '        GC 事故链(tag 一移走,失去引用的旧镜像记录会被 containerd 回收,\n'
+            printf '        于是容器还活着但既不能打 tag 也不能重启)。\n'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
 # =============================================================================
 # job: eval —— 三套评测门槛(仍是注释占位,但**卡点已经只剩一条**)
 #
