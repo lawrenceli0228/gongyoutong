@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ from gyt.core import artifacts
 logger = logging.getLogger(__name__)
 
 _TMP_SUFFIX = ".tmp"
+_WRITE_LOCK = threading.Lock()
 
 
 def _index_path(drawing_id: str) -> Path:
@@ -61,23 +63,25 @@ def write(drawing_id: str, data: dict[str, Any]) -> None:
     ``<id>.json.tmp`` 写 → 先跑完的 ``replace`` 把它移走 → 后一个 rename 时源已经没了。
 
     表现是随机某个 cad 工具失败,而另一个成功 —— 同样的提问重跑一遍又好了,
-    最难复现的那一类。用 mkstemp 在**同目录**下开一个唯一文件就没有这个问题
-    (同目录是为了保证 rename 是同一文件系统内的原子操作)。
+    最难复现的那一类。用 mkstemp 在**同目录**下开一个唯一文件解决源文件争抢;
+    Windows 上多个线程同时 replace 同一目标仍可能 PermissionError,所以最终写盘再用
+    进程内锁串行。解析仍在线程池并行,锁只包几十 KB 的 JSON 写入,不会拖慢读图。
     """
     path = _index_path(drawing_id)
-    directory = path.parent
-    directory.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=path.name + ".", suffix=_TMP_SUFFIX)
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
-        tmp.replace(path)
-    except BaseException:
-        # 失败了别把半截临时文件留在索引目录里 —— 那些名字长得像索引,
-        # 下一个人排查时会以为索引写坏了。
-        tmp.unlink(missing_ok=True)
-        raise
+    with _WRITE_LOCK:
+        directory = path.parent
+        directory.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=path.name + ".", suffix=_TMP_SUFFIX)
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+            tmp.replace(path)
+        except BaseException:
+            # 失败了别把半截临时文件留在索引目录里 —— 那些名字长得像索引,
+            # 下一个人排查时会以为索引写坏了。
+            tmp.unlink(missing_ok=True)
+            raise
     if data.get("format") == "pdf":
         logger.info("已写入 CAD 索引 %s(PDF,%d 页)", drawing_id, data.get("page_count", 0))
     else:
@@ -104,13 +108,26 @@ def read(drawing_id: str) -> dict[str, Any] | None:
 
 
 def _stale(cached: dict[str, Any]) -> bool:
-    """旧版本索引判据:DXF 索引缺 ``extents_outlier``(2026-08-20 新增的离群检测字段)
-    就当未命中、重解析一次补上。没有版本号也能升级已缓存的图,且不碰 read/write 的等值语义。
+    """旧版本 DXF 索引缺新字段时重解析,避免修了代码却继续命中旧缓存。
 
     用 ``entities_by_kind`` 认 DXF —— 不用 ``format``:该键是后加的,更老的缓存索引压根没有它
     (会漏判)。PDF 索引没有 ``entities_by_kind`` 也没有 ``extents_outlier``,天然不触发重建
-    (否则 parse_pdf 不产出这个字段,会每次访问都重解析、死循环)。"""
-    return "entities_by_kind" in cached and "extents_outlier" not in cached
+    (否则 parse_pdf 不产出这些字段,会每次访问都重解析、死循环)。
+
+    2026-08-23 又给尺寸补了端点/方向、给文字补了坐标。旧索引若继续命中,
+    「衣帽间开间」仍无法做空间关联,所以任一已有记录缺空间字段都判旧。
+    """
+    if "entities_by_kind" not in cached:
+        return False
+    if cached.get("index_schema_version") != parse.DXF_INDEX_SCHEMA_VERSION:
+        return True
+    if "extents_outlier" not in cached:
+        return True
+    dimensions = cached.get("dimensions", [])
+    annotations = cached.get("annotations", [])
+    return any(
+        "orientation" not in dim or "start" not in dim or "end" not in dim for dim in dimensions
+    ) or any("position" not in annotation for annotation in annotations)
 
 
 async def ensure_index(drawing_id: str) -> dict[str, Any]:

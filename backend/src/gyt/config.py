@@ -252,19 +252,22 @@ class Settings(BaseSettings):
     #
     # 提到 12 的代价可控:2026-08-22 的整链评测量过 **8 档与 12 档在 20 行上逐行结果相同**
     # (那批链路都只有两跳,用不到多出来的步数),所以这四步是纯余量,不改变已有行为。
+    # 2026-08-23 规范审图新增「CAD 取图纸事实 → knowledge 检索条文 → supervisor
+    # 配对结论」的双证据链,真机在 CAD 尚未交回时就会耗尽 12 步。这里再提到 24,
+    # 让两个 Agent 都能完成工具调用并交回,同时仍远低于 LangGraph 的宽松默认值。
     # ⚠️ 熔断本身仍然存在,而且**熔断之后用户什么都看不到**(TODO-32)——
     # 这个数只是让正常对话不再撞上它,不是把那个洞补上了。
-    supervisor_recursion_limit: int = Field(default=12, ge=1)
+    supervisor_recursion_limit: int = Field(default=24, ge=1)
     # 客户端**自己传**的 recursion_limit 上限。超过就拒(backend/auth.py)。
     # 为什么需要它:上面那个 8 是编译时 .with_config 钉的,而 2026-08-11 安全复核实测
     # ——调用时 config 里的 recursion_limit **会盖掉它**(传 60 就真跑 60 步)。
     # 于是「限流限住了次数」这句话不成立:次数有上限,单次成本却由客户端说了算。
     # 默认取 supervisor_recursion_limit 的两倍:留一点余量给正当的长任务,
     # 又不至于让好奇的测试者一发把额度打空。改它之前先想清楚要防的是谁。
-    # ⚠️ **「两倍」这句话得跟着上面那个数走**:2026-08-22 上面从 8 提到 12,
-    #    这里同步 16 → 24。两个数写死在两行里,漂开了不会有任何东西报错 ——
+    # ⚠️ **「两倍」这句话得跟着上面那个数走**:2026-08-23 上面从 12 提到 24,
+    #    这里同步 24 → 48。两个数写死在两行里,漂开了不会有任何东西报错 ——
     #    表现是这句注释开始说谎,而下一个人会照着它算。
-    max_client_recursion_limit: int = Field(default=24, ge=1)
+    max_client_recursion_limit: int = Field(default=48, ge=1)
     # 150 而不是契约 v1 写的 60 —— **对契约的刻意偏离,需团队追认**(同 max_retries 那处)。
     # 2026-08-07 真调 kimi-k3 实测三张,视觉判断比文本慢一个量级:
     #     1600×1067 办公室(一眼判定不是工地)      10.1 秒
@@ -340,6 +343,11 @@ class Settings(BaseSettings):
     # 注意:VLM 输入普遍会被降采样到 ~1568px,一张 A1 大图的小字仍可能糊 —— 再高倍率也救不回,
     # 这是「整图一发」的根本限制(要精读得上分块,不在本期)。
     cad_ocr_render_scale: float = Field(default=3.0, gt=0)
+    # CAD 房间尺寸关联阈值。查询「衣帽间开间」时,先以房间文字为锚点,再看尺寸线
+    # 是否覆盖该锚点、离房间是否足够近。两个比值都按尺寸线自身长度归一化,
+    # 因而 mm/cm/m 图都适用;放太大会把外围总尺寸串到房间,放太小会漏掉图外尺寸链。
+    cad_dimension_max_perpendicular_ratio: float = Field(default=2.0, gt=0)
+    cad_dimension_max_overrun_ratio: float = Field(default=0.25, ge=0)
     photo_compress_target_mb: float = Field(default=4.0, gt=0)  # 压到多大再喂视觉模型
     photo_compress_max_edge_px: int = Field(default=2048, ge=1)  # 长边像素上限
 
@@ -404,7 +412,7 @@ class Settings(BaseSettings):
     # 提示词版本号,是 LLM 缓存键的组成部分:改了提示词就把它 +1,
     # 老缓存自然失效,不会拿旧提示词的答案糊弄人。
     # v2:W7 CAD/knowledge 改了 cad prompt 与 knowledge 工具描述,老缓存作废
-    prompt_version: str = "v2"
+    prompt_version: str = "v3"
 
     # --- 对外访问闸门(鉴权 + 限流;消费者是 backend/auth.py)---------------
     #
