@@ -7,12 +7,17 @@
 #        │
 #        ├─► lint-shell ──┐   (秒级:shell 脚本语法自检,不需要任何依赖)
 #        │                │
+#        ├─► test-frontend│   (vitest,前端纯函数)
+#        │                │
 #        ├─► test ────────┤   (主关卡:ruff + pytest,覆盖率 <80% 直接红)
 #        │   3.11 / 3.12  │
-#        │                ▼
-#        └─────────────► e2e   (冒烟:后端能起来 + /ok 探活通过)
-#                              ├ 当前 continue-on-error,不拦合并
-#                              └ W3 接 Playwright 全量后去掉该开关
+#        │                ├──► e2e   (冒烟:后端能起来 + /ok 探活通过)
+#        │                │          ├ 当前 continue-on-error,不拦合并
+#        │                │          └ W3 接 Playwright 全量后去掉该开关
+#        │                │
+#        └─► image-changed┴──► build-push   ← **只在 push 到 main / 手点时**
+#            (改动会不会          构建后端镜像 → 推 GHCR
+#             进镜像?)           线上 VPS 只 pull,不再自己构建(2026-08-23)
 #
 #        ( eval —— W2 启用,见文件末尾被注释掉的 job )
 #
@@ -38,10 +43,18 @@
 #   cache-dependency-glob / cache-suffix 均存在且语义如下方使用方式。
 # -----------------------------------------------------------------------------
 # 刻意不做的事:
-#   · 不在 CI 里构建后端镜像 —— 那会触发 BGE-M3 约 2.2GB 权重下载,
-#     免费 runner 上又慢又容易超时。镜像正确性靠本地 `make up` 验证,
-#     真要上 CI 得先配自托管 runner 或权重缓存,属于赛后的事(见 TODOS.md)。
 #   · 不跑任何真实模型调用 —— 测试全部 mock,CI 里也只给假 Key。
+#   · 不在 PR 上构建镜像 —— 一次十几分钟(含 2.2GB 权重下载),
+#     私有仓每月 2000 分钟的额度经不起每个 PR push 都烧一次。
+#   · 不在「改动不进镜像」时构建 —— 见 image-changed job。
+#
+# ⚠️ **上面这段 2026-08-23 改过。** 原文写的是「刻意不在 CI 里构建后端镜像 ——
+#    那会触发 2.2GB 权重下载,免费 runner 上又慢又容易超时……属于赛后的事」。
+#    那个判断在**只考虑「CI 构建 vs 本地构建」时**是合理的,但它漏了线上那台
+#    VPS 的约束:2 核 / 1966MB / 30GB,而镜像 6.3GB —— TODO-40 实测「这台机器上
+#    全量重建从来就不成立」。也就是说「靠本地 make up 验证、线上自己构建」
+#    这条退路**根本不存在**。CI 慢十几分钟是代价,不是理由。
+#    完整推翻过程见 W7 手册 §2.1 顶部的订正框。
 # =============================================================================
 
 name: CI
@@ -413,15 +426,96 @@ jobs:
   #    cache_to/cache_from,而那个文件是本机开发也在用的。全量构建十几分钟、只在
   #    main 上跑,先按「无聊但正确」上线;等真的嫌慢再单独加,别在迁移里塞第二件事。
   # ===========================================================================
+  # ===========================================================================
+  # job: image-changed —— 这次改动会不会改变镜像内容?
+  #
+  # 2026-08-23 加的。当天合并 PR #60 时发现:那次**只改了文档和 compose**
+  # (.env.vps.example / TODOS.md / docker-compose.vps.yml / docs/W7…md),
+  # 一行后端源码都没动,而 CI 照样跑了一次完整构建 —— 十几分钟 + 2.2GB 权重下载,
+  # 产出的镜像与线上正跑的那个功能完全一样。私有仓每月 2000 分钟,
+  # 一天几次文档提交就很可观。
+  #
+  # 🔴 **判据刻意 fail-open:拿不准就构建。** 白构建一次只是浪费十几分钟额度;
+  #    而漏构建的表现是「合进 main 了却没有对应的镜像」,要等到有人去部署、
+  #    `docker pull` 报 manifest unknown 时才发现 —— 那时人多半正赶时间。
+  #    这两种错的代价不对称,所以这里不追求判得准,只追求不漏。
+  # ===========================================================================
+  image-changed:
+    name: 判断要不要重建镜像
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # 与 build-push 同一个条件:PR 上压根不构建,也就不用判
+    if: github.event_name != 'pull_request'
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          # 要和 push 之前那个提交比,浅克隆拿不到基线
+          fetch-depth: 0
+
+      - name: 判断
+        id: decide
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          # 手点 workflow_dispatch 一律构建 —— 人显式要一个镜像,别猜他的意图
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "手动触发,无条件构建"
+            echo "build=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # 拿不到基线(新分支 / 强推 / 仓库首次推送)→ fail-open
+          if [ -z "${BEFORE}" ] || [ "${BEFORE}" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "拿不到基线 '${BEFORE}',保守判为「要构建」"
+            echo "build=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          changed="$(git diff --name-only "${BEFORE}" "${GITHUB_SHA}")"
+          echo "本次改动的文件:"
+          echo "${changed}" | awk '{print "  " $0}'
+
+          # 会进镜像的东西:
+          #   backend/**            构建上下文(Dockerfile 的 context 就是它)
+          #   docker-compose.yml    build 段:context / dockerfile / target / args
+          #   .github/workflows/ci.yml  改的是构建方式本身,重建一次去验
+          # 排除 backend/tests/**:backend/.dockerignore 里 `tests` 把它挡在
+          #   构建上下文之外,只改测试**不会**改变镜像内容。而本仓测试改得很勤,
+          #   不排掉的话这个 job 基本等于没加。
+          #   ⚠️ 判据来自 .dockerignore,那个文件改了要回来核这一行 ——
+          #      而 .dockerignore 自己在 backend/ 下,改它必然触发构建,不会漏。
+          matched="$(echo "${changed}" \
+            | grep -E '^(backend/|docker-compose\.yml$|\.github/workflows/ci\.yml$)' \
+            | grep -vE '^backend/tests/' || true)"
+
+          if [ -n "${matched}" ]; then
+            echo "build=true" >> "${GITHUB_OUTPUT}"
+            echo "→ 要构建。触发它的是:"
+            echo "${matched}" | awk '{print "  " $0}'
+          else
+            echo "build=false" >> "${GITHUB_OUTPUT}"
+            echo "→ 跳过构建:没有任何改动会进镜像"
+            echo "  (线上继续跑上一个镜像即可,不需要重新部署)"
+          fi
+
   build-push:
     name: 构建后端镜像并推 GHCR
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # 单测没过就不必构建,省额度
-    needs: test
+    # 单测没过就不必构建,省额度;image-changed 说不用建就不建。
+    needs: [test, image-changed]
     # PR 上不跑。一次全量构建十几分钟(含 2.2GB 权重下载),而私有仓每月 2000 分钟
     # 的额度经不起每个 PR push 都烧一次。合进 main、或在 Actions 页面手点才构建。
-    if: github.event_name != 'pull_request'
+    #
+    # ⚠️ 这里**不能**只写 `needs`:job 之间的 needs 只管顺序与成败,
+    #    不看 outputs。少了下面这个 if,image-changed 判出 false 也照样构建。
+    if: needs.image-changed.outputs.build == 'true'
 
     permissions:
       contents: read
