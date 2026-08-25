@@ -62,9 +62,7 @@ def _make_report(
     (线上现存的那些全都是这样)—— 那条路径才是常态,别只测有标题的。
     """
     extra = {"title": title} if title is not None else None
-    return artifacts.register(
-        FAKE_DOCX, kind=ArtifactKind.REPORT, original_name=name, extra=extra
-    )
+    return artifacts.register(FAKE_DOCX, kind=ArtifactKind.REPORT, original_name=name, extra=extra)
 
 
 def _make_photo() -> str:
@@ -144,9 +142,7 @@ class Test列表:
         assert 行["size_bytes"] == len(FAKE_DOCX)
         assert 行["created_at"], "没有它前端排不了序、也显示不出「什么时候出的」"
 
-    def test_老记录没有标题时给_null_不许拿编号或文件名顶上(
-        self, client: TestClient
-    ) -> None:
+    def test_老记录没有标题时给_null_不许拿编号或文件名顶上(self, client: TestClient) -> None:
         """🔴 2026-08-25 上线时**线上现存 9 份记录全都没有这个键**,所以这条是常态路径。
 
         在后端编一个出来(比如回 filename 或 report_no),前端就再也分不清

@@ -52,9 +52,9 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import Enum
-from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 from uuid import uuid4
