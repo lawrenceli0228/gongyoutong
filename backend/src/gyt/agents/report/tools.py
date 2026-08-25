@@ -77,8 +77,64 @@ _DISCLAIMER: Final[str] = (
 _RENDER_DESCRIPTION = (
     "把一张已检查过的现场照片生成正式的巡检记录文档(Word)。"
     "参数 artifact_id 是照片的产物编号(32 位十六进制),从对话上文里原样复制。"
+    "参数 title 选填:**只有用户明确说了要什么标题时才传**,原样转述他说的那几个字,"
+    "不要自己拟、不要润色、不要加书名号;用户没提就别传这个参数。"
     "返回巡检记录的报告编号与隐患摘要。用户要「出巡检记录」「留档」「出报告」时调它。"
 )
+
+DEFAULT_REPORT_TITLE: Final[str] = "工地安全巡检记录"
+"""没有自定义标题时用的标题,也是**文种**本身。
+
+⚠️ 这个值同时出现在两处:文档标题(可被自定义标题替换)与元信息表的「文档类型」
+(**永远不变**)。别把元信息表那处也改成可变的 —— 理由见 `_clean_title`。
+"""
+
+_TITLE_MAX_LEN: Final[int] = 40
+"""自定义标题的字数上限。
+
+40 是按 A4 标题行排得下一行定的(docgen 的标题是居中大字号,超了会折行、
+把元信息表挤到第二页)。**这不是安全边界,是排版边界** —— 安全那半靠
+「文种进元信息表」那条,见 `_clean_title`。
+"""
+
+
+def _clean_title(raw: str) -> str:
+    """把用户/模型给的标题收拾成能进文档的样子;拿不到有效内容就回默认标题。
+
+    🔴 **为什么允许自定义标题、却坚持把文种钉在元信息表里**(2026-08-24):
+
+        这份文档是要留档、可能用于追责的。本仓对「文书标题」一贯的态度是**由类型
+        决定、不由人填**:六种监理文书的标题写死在 ``core/doc_no.DOC_TITLE_ZH``,
+        而 ``docgen.render_document`` 把 ``disclaimer`` 做成必填无默认,就是为了让
+        「漏传参数于是悄悄套上另一句」在结构上不可能发生。
+
+        但「给这一轮巡检起个名字」是真实需求(真实的巡检记录本来就叫
+        「XX项目 安全巡检记录」),复验报告 P0-2 要的也是它。
+
+        取法是**两者都要**:标题给人填,而「文档类型:工地安全巡检记录」进元信息表,
+        **每一份文档都自我标明它是什么**。这样即使标题被写成
+        「现场无隐患确认书」,打开文档第一张表里仍然写着它是一份巡检记录 ——
+        一份文档不会因为标题就变成另一个文种。
+
+    净化做四件事,每件都有具体的坏法要防:
+
+      · 折行字符全压成空格 —— docx 的标题是单行段落,塞进 ``\\n`` 不会报错,
+        只会渲染成一个看不见的怪空格,而人对着 Word 找不出哪里不对。
+      · 去掉控制字符 —— 同上,而且它们会让 docx 在某些阅读器上直接打不开。
+      · 连续空白压成一个 —— 「海之子   验收」这种粘贴产物看着像排版事故。
+      · 截到 40 字 —— 排版边界,理由见 ``_TITLE_MAX_LEN``。
+
+    ⚠️ **收拾完是空就回默认标题,不抛异常。** 标题是附属信息,为它让整份文档
+    生不出来不划算;而「用户传了个纯空格」跟「没传」在意图上没区别。
+    """
+    if not raw:
+        return DEFAULT_REPORT_TITLE
+    # 控制字符(含 \n \r \t)一律当空白处理,再把连续空白压成一个
+    flattened = "".join(" " if (ch.isspace() or ord(ch) < 32) else ch for ch in raw)
+    cleaned = " ".join(flattened.split())
+    if not cleaned:
+        return DEFAULT_REPORT_TITLE
+    return cleaned[:_TITLE_MAX_LEN]
 
 
 def _render_docx(
@@ -88,6 +144,7 @@ def _render_docx(
     generated_at: str,
     data: dict[str, Any],
     settings: Any,
+    title: str = DEFAULT_REPORT_TITLE,
 ) -> bytes:
     """按巡检记录模板渲染 docx,返回文件字节。纯函数式:不落盘、不改入参。
 
@@ -128,8 +185,13 @@ def _render_docx(
     )
 
     return docgen.render_document(
-        title="工地安全巡检记录",
+        title=title,
         meta=(
+            # 🔴 **「文档类型」这一行永远是 DEFAULT_REPORT_TITLE,不跟着 title 走。**
+            #    它是这份文档的**文种**:标题可以由人起名(「海之子验收测试」),
+            #    但打开文档第一张表里必须写着它到底是什么。理由见 _clean_title 的头注 ——
+            #    一句话:一份文档不许因为标题就变成另一个文种。
+            ("文档类型", DEFAULT_REPORT_TITLE),
             ("记录编号", report_no),
             ("生成时间", generated_at),
             ("照片编号", photo_id),
@@ -146,8 +208,13 @@ def _render_docx(
 
 @tool("render_inspection_report", description=_RENDER_DESCRIPTION)
 @tool_guard
-async def render_inspection_report(artifact_id: str) -> Envelope:
+async def render_inspection_report(artifact_id: str, title: str = "") -> Envelope:
     """生成一张照片的巡检记录 docx,登记为 REPORT 产物。
+
+    title 选填(2026-08-24 加):用户明确要求标题时原样转述,空则用
+    ``DEFAULT_REPORT_TITLE``。**它只改标题,不改文种** —— 元信息表里那行
+    「文档类型」恒为「工地安全巡检记录」,推演见 ``_clean_title`` 的头注。
+    净化(压折行 / 去控制字符 / 截 40 字)也在那儿。
 
     artifact_id
       │ 编号不合法/照片不存在/识别失败 ──▶ 原样透传 safety 识别的失败信封
@@ -191,6 +258,7 @@ async def render_inspection_report(artifact_id: str) -> Envelope:
         generated_at=snap.display,
         data=data,
         settings=settings,
+        title=_clean_title(title),
     )
     filename = f"巡检记录_{report_no}.docx"
     report_id = artifacts.register(payload, kind=ArtifactKind.REPORT, original_name=filename)
