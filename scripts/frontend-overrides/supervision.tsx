@@ -89,6 +89,7 @@ import { getApiKey } from "@/lib/api-key";
 import { useCurrentProjectId, useProjectOptions } from "./ProjectUploadPanel";
 import {
   ACTION_LABEL,
+  DOCLESS_ACTIONS,
   ACTION_ENDPOINT,
   actionBody,
   actionNeedsConfirm,
@@ -1445,6 +1446,7 @@ function HazardRow({
   failure,
   artifactBase,
   expanded,
+  workOpen,
   detail,
   sharedPhoto,
   usedPhotoId,
@@ -1454,6 +1456,7 @@ function HazardRow({
   onDisarm,
   onAct,
   onToggleDetail,
+  onToggleWork,
   onRetryDetail,
 }: {
   hazard: HazardBrief;
@@ -1469,6 +1472,11 @@ function HazardRow({
   artifactBase: string;
   /** 证据链展开着没有。 */
   expanded: boolean;
+  /**
+   * 处置区(定级 / 期限 / 原因 / 挪工地 / 动作按钮)展开着没有 —— 2026-08-25 设计审计 D7。
+   * **默认收起**,而且**可以多条同时开**,理由见下面那块的头注。
+   */
+  workOpen: boolean;
   /** 这条的详情三态;`undefined` = 还没开始读(见 `DetailState` 头注)。 */
   detail: DetailState | undefined;
   /** 面板顶上那张共用照片现在什么样(整屏一份,不是每行一份)。 */
@@ -1481,6 +1489,8 @@ function HazardRow({
   onDisarm: () => void;
   onAct: (action: DisposalAction, grade?: string, result?: "pass" | "fail") => void;
   onToggleDetail: () => void;
+  /** 展开/收起处置区(D7)。**不跟着 `busy` 禁用** —— 它只改本地展开状态,不写任何东西。 */
+  onToggleWork: () => void;
   onRetryDetail: () => void;
 }) {
   const actions = availableActions(hazard);
@@ -1689,8 +1699,60 @@ function HazardRow({
             )}
           </div>
         </div>
+
+        {/* 处置区的开关(D7)。放在头部**最右**,与左边那坨信息拉开 ——
+            扫列表的人视线走左边(图 → 违规项 → 徽章),要动手的人才往右够。
+
+            ⚠️ **不跟着 `busy` 禁用**:它只改本地展开状态、不写任何东西。
+               busy 时把它锁上的话,一个动作在飞的那几百毫秒里人连"看看别条"都做不到。
+            ⚠️ armed(二次确认条亮着)时**锁住**:那时候处置区是强制展开的,
+               这颗按钮按下去不会有任何反应 —— 一颗点了没反应的按钮读起来就是坏了。
+               所以直接禁用并把话说清楚。 */}
+        <button
+          type="button"
+          onClick={onToggleWork}
+          disabled={!!armedAction}
+          aria-expanded={workOpen || !!armedAction}
+          title={armedAction ? "先把上面那句確認回答掉" : undefined}
+          className="ml-auto flex shrink-0 items-center gap-1 self-start rounded-md border border-gray-200 px-2.5 py-1.5 text-[12px] font-medium text-[#33403A] transition hover:border-[#7FCDAE] hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11"
+        >
+          {workOpen || armedAction ? "收起" : "處置"}
+          <ChevronDown
+            className={`size-3.5 transition-transform${
+              workOpen || armedAction ? " rotate-180" : ""
+            }`}
+          />
+        </button>
       </div>
 
+      {/*
+        ── 处置区(2026-08-25 设计审计 D7)。**默认收起。** ────────────────────
+
+        病状(1440×900 线上实测):九条隐患,每条把**所有可能的动作都渲染出来**,
+        不管这一条适不适用 —— 整改期限输入 + 关掉原因输入 + 挪工地下拉 +
+        五颗动作按钮 + 文书折叠区。每张卡 **467px**,九张 ≈ **4200px 滚动**,
+        一屏 **28 个输入框 + 51 个按钮**。
+        这正是 gstack design skill 的 App UI 硬否决第 7 条
+        (*App UI made of stacked cards instead of layout*):
+        监理要找「哪条超期了」得滚过四千像素的表单。
+
+        收起之后,一行就是一行:图 + 违规项 + 徽章 + 编号 + 期限状态 —— 那正是
+        「扫一眼决定处理哪条」需要的全部信息;要动手再点开。
+
+        🔴 **可以多条同时开,不做手风琴。** 这不是偷懒,是下面证据链那块头注②
+           已经论证过的同一件事,原话:
+             「手风琴看着整齐,但展开第 5 行时自动收起第 2 行,于是第 3、4、5 行
+               整体往上跳 —— 手指正落向第 5 行,而那一块在半路上移走了,
+               底下换成了别人。」
+           而这块里每一颗按钮都是法律动作(签发暂停令后面跟着停工与索赔)。
+           省下来的那点屏幕,换的是一次可能签错文书的位移,不划算。
+           ⚠️ 写这条时我原本打算做手风琴,是那段注释拦下来的。别再改回去。
+
+        ⚠️ **`armedAction` 在飞的时候强制展开**:二次确认条长在这块里面,
+           收起了就等于把「真的要签发吗」那句话藏起来,而 armed 状态还在。
+      */}
+      {(workOpen || armedAction) && (
+        <>
       {hazard.needs_grading && (
         <div className="rounded-lg bg-fuchsia-50 px-2.5 py-2 text-[12px] text-fuchsia-900">
           現場判的是「待定級」(詞表外的隱患項)。不知道不等於不嚴重 ——
@@ -1820,10 +1882,26 @@ function HazardRow({
                     <Button
                       key={grade}
                       size="sm"
-                      variant={grade === GRADE_SEVERE ? "destructive" : "outline"}
+                      // 🔴 **「嚴重」不许再用 destructive(2026-08-25 设计审计 D8)。**
+                      //
+                      //    这个面板的红有一个明确含义:**不可撤销**
+                      //    (`actionNeedsConfirm` 那四颗 —— 暂停令 / 上报 / 否决 / 关掉,
+                      //     每一颗都要过二次确认)。而定级**是可以改的**,按钮上就写着
+                      //    「改判為」。同一片红既是「按下去就回不来」又是「随便改」,
+                      //    那颗最危险的按钮就不再显眼了 —— 红失去了它唯一的作用。
+                      //
+                      //    改成红色描边:级别本身的轻重照样一眼看得出(它跟旁边
+                      //    「一般」那颗对比明显),但**实心红仍然只属于不可撤销那一档**。
+                      //    ⚠️ 别换成 destructive 的浅色版之类 —— 判据是「实心 vs 描边」,
+                      //       不是深浅;深浅在户外强光的手机屏上根本分不出来。
+                      variant="outline"
                       disabled={busy}
                       onClick={() => onAct("grade", grade)}
-                      className="pointer-coarse:min-h-11"
+                      className={
+                        grade === GRADE_SEVERE
+                          ? "border-red-300 text-red-700 hover:border-red-400 hover:bg-red-50 hover:text-red-800 pointer-coarse:min-h-11"
+                          : "pointer-coarse:min-h-11"
+                      }
                     >
                       {gradeLabels[i]}
                     </Button>
@@ -1883,11 +1961,26 @@ function HazardRow({
               <Button
                 key={action}
                 size="sm"
+                // 三档,判据是**这一下会产生什么**,不是「有多重要」:
+                //
+                //   实心红 destructive  按下去回不来(暂停令 / 上报主管部门 / 关掉)
+                //   实心黑 default      **会发一张纸出去**(监理通知单 / 工程复工令)
+                //   描边   outline      订正类:不出纸、事后还能再改
+                //                       (改期限 / 改工地 / 登记复查结论 / 否决)
+                //
                 // 「否决」不能长成 destructive 那颗红按钮:它跟「签发暂停令」并排站,
                 // 两颗一样红的话,手最先够到的那颗是哪颗就成了运气问题(而这两颗一颗
-                // 停工、一颗删数据)。它走 outline + 垃圾桶图标,红只留给签发那两颗。
+                // 停工、一颗删数据)。它走 outline + 垃圾桶图标。
+                //
+                // 🔴 **2026-08-25 设计审计 D8 补的是第三档。** 在此之前
+                // 「改工地(不出文書)」和「簽發監理通知單」都是实心黑 ——
+                // 一个是改一行元数据、一个是发一份法律文书,而它们长得一模一样。
+                // 监理在一屏九条隐患里连续操作时,靠的是形状记忆不是逐字读按钮。
+                // ⚠️ 判据写成「出不出纸」而不是「重不重要」是刻意的:重要是主观的,
+                //    下一个人会有不同的排序;而「这一下会不会有一张盖章的纸发出去」
+                //    只有一个答案,并且按钮上本来就写着「不出文書」。
                 variant={
-                  action === "reject"
+                  action === "reject" || DOCLESS_ACTIONS.has(action)
                     ? "outline"
                     : actionNeedsConfirm(action)
                       ? "destructive"
@@ -1898,7 +1991,9 @@ function HazardRow({
                 className={
                   action === "reject"
                     ? "text-gray-600 pointer-coarse:min-h-11"
-                    : "pointer-coarse:min-h-11"
+                    : DOCLESS_ACTIONS.has(action)
+                      ? "text-[#33403A] pointer-coarse:min-h-11"
+                      : "pointer-coarse:min-h-11"
                 }
               >
                 {action === "reject" ? (
@@ -1917,7 +2012,11 @@ function HazardRow({
           )}
         </div>
       )}
+        </>
+      )}
 
+      {/* failure 在处置区**外面** —— 上一次动作为什么失败,收起来之后也必须看得见,
+          否则人点了「處置」→ 做了个动作 → 收起 → 屏幕上什么都没有,而它其实失败了。 */}
       {failure && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-[13px] text-red-700">
           {/* 🔴 后端的人话**原样上屏,一个字都不转**(W12 复审定案:user_msg 一律不转)。
@@ -2105,6 +2204,21 @@ export function SupervisionPanel({
    * 在半路上往上跳。
    */
   const [expandedDetails, setExpandedDetails] = useState<string[]>([]);
+  /**
+   * 哪几条隐患的**处置区**是展开的(2026-08-25 设计审计 D7)。
+   *
+   * 默认全收起 —— 收起前一屏九条要滚 4200px、28 个输入框 51 颗按钮,
+   * 而扫列表的人此刻只想知道「哪条超期了」。完整推演在 HazardRow 里那块的头注。
+   *
+   * 🔴 **和上面 `expandedDetails` 一样是数组不是单值** —— 手风琴会让下面的行
+   * 在手指落下去的半路上往上跳,而这块里每一颗按钮都是法律动作。
+   * 那条论证写在 `expandedDetails` 头注和证据链那块的②,别绕过去。
+   *
+   * ⚠️ **不随筛子 / 重拉清空**:清了的话,监理点开一条、去改个筛子再回来,
+   *    他刚才展开的那条又合上了,而他以为自己弄丢了什么。
+   *    列表里已经没有的编号留在这个数组里是无害的(`includes` 查不到就是收起)。
+   */
+  const [openWork, setOpenWork] = useState<string[]>([]);
   /**
    * 已经拉过的详情,键是隐患编号。**收起不清它**(再展开就不用等一次网络),
    * 但**动作成功之后必须把那一条删掉**(见 `invalidateDetail`)。
@@ -3247,6 +3361,7 @@ export function SupervisionPanel({
                 failure={failures[hazard.hazard_no] ?? null}
                 artifactBase={artifactBase}
                 expanded={expandedDetails.includes(hazard.hazard_no)}
+                workOpen={openWork.includes(hazard.hazard_no)}
                 detail={details[hazard.hazard_no]}
                 sharedPhoto={sharedPhotoState}
                 usedPhotoId={usedPhotos[hazard.hazard_no] ?? null}
@@ -3256,6 +3371,7 @@ export function SupervisionPanel({
                 onDisarm={() => setArmed(null)}
                 onAct={(action, grade, result) => void runAction(hazard, action, grade, result)}
                 onToggleDetail={() => toggleDetail(hazard.hazard_no)}
+                onToggleWork={() => setOpenWork((prev) => toggleSelected(prev, hazard.hazard_no))}
                 onRetryDetail={() => retryDetail(hazard.hazard_no)}
               />
             ))
