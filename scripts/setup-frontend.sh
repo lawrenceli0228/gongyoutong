@@ -482,6 +482,12 @@ install_new_file() {
   log_warn "$2 与本仓版本不同,已按本仓版本覆盖。本文件由本仓管理;若是上游新增了同名文件,请人工核对两份内容再定归属。"
 }
 
+# 根布局(2026-08-25 设计审计)。修上游那三处:标签页写着 "Agent Chat"、
+# `<html lang="en">` 挂在一个整屏繁體的界面上、Inter 只订了拉丁字集导致**每一个汉字**
+# 都落进操作系统兜底(Windows 上是简体字形表)。完整推演在覆盖件自己的头注里。
+# 🔴 里面那张字体表与 `scripts/login-page.html` 的 body 字体表**同源,改一处要改两处**。
+apply_override "layout.tsx" "src/app/layout.tsx"
+
 apply_override "tool-calls.tsx" "src/components/thread/messages/tool-calls.tsx"
 apply_override "ai.tsx" "src/components/thread/messages/ai.tsx"
 apply_override "markdown-text.tsx" "src/components/thread/markdown-text.tsx"
@@ -561,11 +567,13 @@ apply_override "stream-provider.tsx" "src/providers/Stream.tsx"
 #   checkin-lib.ts —— 纯函数库,scripts/frontend-tests/ 的 vitest 直接测它
 #   qrcode.tsx     —— 电脑端二维码面板(依赖下面步骤 2.6 装的 qrcode.react)
 #   checkin.tsx    —— 自拍打卡组件,thread-index.tsx 的动作条里是它的入口
-# ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override **十三件** + install_new_file
+# ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override **十四件** + install_new_file
 #    **十七件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
 #    合并之后数出来永远对不上。
 #    (2026-08-24:install_new_file 从十五涨到十七 —— 补登记了 08-23 漏掉的
 #     cad-preview-lib.ts 与 interrupt-lib.ts,见步骤 2.5.4 的说明。)
+#    (2026-08-25:apply_override 从十三涨到十四 —— 设计审计加了 layout.tsx,
+#     那是整个 App 的**根**布局:标签页名字、`lang`、字体表三样都在里面。)
 #
 # 🔴 **2026-08-22 起这两个数有机器盯着了**,别再靠手改:
 #    `scripts/frontend-tests/override-count.test.ts` 拿两条 grep 的真值去比

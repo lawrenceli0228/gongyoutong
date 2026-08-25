@@ -81,7 +81,12 @@
     --surface:#FFFFFF;
     --ink:#17150F;
     --ink-soft:#5C574B;
-    --ink-faint:#8B8578;
+    /* 🔴 2026-08-25 设计审计:原值 #8B8578 在白卡上只有 **3.67:1**,门槛 4.5。
+       挂在它上面的是 .foot(「沒有口令?找發你這個鏈接的人要」)和 .pics ——
+       而 .pics 是 PDPO 第486章下的**法律文本**,「以切实可行方式告知」的前提是
+       它得先读得见。#6E6859 = 5.54:1,仍然比 --ink-soft(7.19)浅,层级没塌。
+       ⚠️ 工地用户多在**户外强光**下开这一页,办公室里勉强能读的 3:1 在太阳底下等于没有。 */
+    --ink-faint:#6E6859;
 
     /* 安全警示黄。这是这一页唯一的高饱和色,只给「下一步」用 */
     --amber:#F5A200;
@@ -190,7 +195,10 @@
     border-radius:2px;
     outline:none;
   }
-  input::placeholder{color:var(--ink-faint);font-family:inherit;letter-spacing:0;}
+  /* 占位符用 --ink-soft 而不是 --ink-faint:它落在 --concrete-deep(#DDD8CF)那个
+     **更暗的底**上,不是白卡。同一个 --ink-faint 在白卡上 5.54、在这个底上只有 3.68。
+     --ink-soft 在这个底上是 5.07,过线。—— 两个背景,所以这里必须分叉。 */
+  input::placeholder{color:var(--ink-soft);font-family:inherit;letter-spacing:0;}
   input:focus{
     background:var(--surface);
     box-shadow:0 0 0 3px var(--amber);
