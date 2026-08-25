@@ -42,7 +42,7 @@ import {
   formatSize,
   parseReportsEnvelope,
   reportDownloadUrl,
-  reportTitle,
+  reportHeadline,
   reportsUrl,
 } from "@/lib/reports-lib";
 import { useApiBase } from "./supervision";
@@ -205,7 +205,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
         </header>
 
         {loading && reports.length === 0 && (
-          <p className="py-8 text-center text-sm text-[#6B7772]">正在找…</p>
+          <p className="py-8 text-center text-sm text-[#626D68]">正在找…</p>
         )}
 
         {/* 读不出来 —— 与「真的没有」分开画,理由见组件头注。 */}
@@ -224,7 +224,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
 
         {/* 真的一份都没有。这句话要告诉人**下一步做什么**。 */}
         {!loading && error === null && reports.length === 0 && (
-          <p className="py-8 text-center text-sm text-[#6B7772]">
+          <p className="py-8 text-center text-sm text-[#626D68]">
             還沒有巡檢記錄。
             <br />
             工地上拍張照發給我,我看完就給你出一份。
@@ -245,7 +245,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
 
         {truncated && reports.length > 0 && (
           // 「只列了最近这些」**必须说**:不说的话人以为更早的记录丢了。
-          <p className="mt-3 text-xs text-[#6B7772]">
+          <p className="mt-3 text-xs text-[#626D68]">
             只列了最近這些。要找更早的記錄,把編號報給我。
           </p>
         )}
@@ -271,7 +271,7 @@ interface ReportRowProps {
  * 而他要找的是「上周那份临边防护的记录」。
  */
 function ReportRow({ report, artifactBase }: ReportRowProps) {
-  const title = reportTitle(report);
+  const headline = reportHeadline(report);
   const when = formatReportTime(report.reportNo);
   const size = formatSize(report.sizeBytes);
 
@@ -282,19 +282,32 @@ function ReportRow({ report, artifactBase }: ReportRowProps) {
         download={report.filename || undefined}
         className="flex min-h-14 items-center gap-3 rounded-[12px] border border-[#EEF1F0] bg-[#FAFBFB] px-4 py-3 transition hover:border-[#7FCDAE]"
       >
-        <FileText className="size-5 shrink-0 text-[#0E9F6E]" />
+        <FileText className="size-5 shrink-0 text-[#0E7A55]" />
         <span className="min-w-0 flex-1">
-          {/* tabular-nums:编号是等宽数字,一列排下来才对得齐 */}
-          <span className="block truncate text-sm font-bold text-[#33403A] tabular-nums">
-            {title}
+          {/* 🔴 **主行是名字,不是编号(2026-08-25 设计审计 D9)。**
+              改之前这里放的是 `reportTitle()`,也就是 19 位的
+              `GYT-20260825-083033`;而**编号里那串数字就是下面那行的时间** ——
+              主行是副行的机器格式复读,九行除编号外完全一样(同图标、同 37 KB),
+              班组长要找「今早那份」只能一个个下载来看。
+              ⚠️ tabular-nums 一起去掉了:那是给编号排列用的,而名字是中文,
+                 等宽数字在这儿只会让字距变怪。 */}
+          <span className="block truncate text-sm font-bold text-[#33403A]">
+            {headline}
           </span>
-          <span className="block text-xs text-[#6B7772]">
-            {/* 时间与大小之间那个「·」只在两样都有时才出现 —— 任何一样缺了,
+          <span className="block truncate text-xs text-[#626D68]">
+            {/* 编号降到副行,和时间、大小并排 —— **没有删掉**:
+                要拿编号去对账 / 报给监理的人照样一眼看得到。
+                tabular-nums 跟着编号搬到这一行来了。
+                三样之间那个「·」只在两边都有东西时才出现 —— 任何一样缺了,
                 屏幕上不许留一个孤零零的分隔符(那看着像出了错)。 */}
+            <span className="tabular-nums">{report.reportNo ?? ""}</span>
+            {[report.reportNo ?? "", when, size].filter(Boolean).length > 1 && (
+              <span aria-hidden="true">{report.reportNo ? " · " : ""}</span>
+            )}
             {[when, size].filter(Boolean).join(" · ")}
           </span>
         </span>
-        <Download className="size-4 shrink-0 text-[#6B7772]" />
+        <Download className="size-4 shrink-0 text-[#626D68]" />
       </a>
     </li>
   );

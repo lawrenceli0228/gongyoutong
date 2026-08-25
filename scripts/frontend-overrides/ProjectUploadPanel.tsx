@@ -343,7 +343,7 @@ function PreviewModal() {
           <div className="truncate text-[15px] font-bold text-[#1B2420]">{preview.title}</div>
           <button
             onClick={closePreview}
-            className="ml-auto text-[22px] leading-none text-[#B4BDB8] hover:text-[#6B7772]"
+            className="ml-auto text-[22px] leading-none text-[#626D68] hover:text-[#626D68]"
             title="關閉預覽"
           >
             ✕
@@ -509,7 +509,7 @@ function ProjectSwitcher() {
   const rowCls = (active: boolean) =>
     cn(
       "flex w-full items-center gap-2 px-3 py-2 text-left text-[14px] transition hover:bg-[#F7F9F8]",
-      active ? "font-bold text-[#1B2420]" : "text-[#6B7772]",
+      active ? "font-bold text-[#1B2420]" : "text-[#626D68]",
     );
 
   return (
@@ -524,7 +524,7 @@ function ProjectSwitcher() {
           "flex items-center gap-1.5 rounded-full border px-2.5 py-2 text-[14px] font-bold whitespace-nowrap transition sm:gap-2 sm:px-4",
           scoped
             ? "border-[#0E9F6E] bg-[#EEF6F2] text-[#0E7A55]"
-            : "border-dashed border-[#C6D0CB] bg-white text-[#8A948F] hover:border-[#7FCDAE]",
+            : "border-dashed border-[#C6D0CB] bg-white text-[#626D68] hover:border-[#7FCDAE]",
         )}
         title="當前工地 —— 問答 / 看圖 / 歸檔都按它走"
       >
@@ -543,15 +543,26 @@ function ProjectSwitcher() {
         {/* currentName 是**用户自己起的项目名**(经后端存的原文),不许转 ——
             工地名转了会跟台账 / 回执里的写法对不上,而且那是人家填的字。
             只有兜底那句是我们的文案,写繁體。 */}
-        <span className="max-w-[72px] truncate max-[359px]:max-w-[52px] sm:max-w-[180px]">
-          🏗 {currentName ?? "全部工地(未選)"}
+        {/* 🔴 2026-08-25 设计审计,两处一起改:
+            ① 兜底文案从「全部工地(未選)」改成「全部工地」。「未選」是**内部状态词**
+               (选没选过),而这颗按钮回答的是「现在按哪个工地在看」——
+               答案就是「全部」。下拉里那一行本来写的也是「全部工地(不限項目)」,
+               两处口径这才一致。
+            ② 窄屏宽度 72 → 92px。原来的 72px 在 390 视口把这四个字截成「全部...」,
+               而**选了哪个工地是有后果的**(问答 / 看图 / 归档都按它走),
+               截成省略号等于把唯一的状态提示藏了。92px 刚够「全部工地」四个字;
+               真实工地名更长,仍然截断 —— 那是对的,名字截了还看得出截的是名字,
+               而「全部...」看不出是「全部工地」还是某个「全部…」开头的工地名。
+            ⚠️ 359px 以下那档没动:那是 iPhone SE 一代级别的窄,给它 92px 会挤掉「新對話」。 */}
+        <span className="max-w-[92px] truncate max-[359px]:max-w-[52px] sm:max-w-[180px]">
+          🏗 {currentName ?? "全部工地"}
         </span>
-        <span className="shrink-0 text-[#9AA5A0]">▾</span>
+        <span className="shrink-0 text-[#626D68]">▾</span>
       </button>
 
       {menuOpen && (
         <div className="absolute right-0 z-50 mt-2 w-[248px] overflow-hidden rounded-[14px] border border-[#E4E8E6] bg-white shadow-[0_12px_40px_rgba(27,36,32,0.16)]">
-          <div className="px-3 pt-2.5 pb-1 text-[12px] font-bold text-[#9AA5A0]">切換當前工地</div>
+          <div className="px-3 pt-2.5 pb-1 text-[12px] font-bold text-[#626D68]">切換當前工地</div>
           <button
             onClick={() => {
               setProjectId("");
@@ -578,7 +589,7 @@ function ProjectSwitcher() {
                 )}
               />
               <span className="truncate">{p.name}</span>
-              <span className="ml-auto shrink-0 text-[12px] text-[#B4BDB8]">{p.id}</span>
+              <span className="ml-auto shrink-0 text-[12px] text-[#626D68]">{p.id}</span>
             </button>
           ))}
           <button
@@ -615,8 +626,19 @@ export function ArchiveHeaderControls() {
       <LibraryButton />
       <button
         onClick={() => setOpen(true)}
-        className="flex shrink-0 items-center gap-2 rounded-full bg-[#1B2420] px-2.5 py-2.5 text-[14px] font-bold whitespace-nowrap text-white transition hover:bg-black sm:px-4"
+        // 🔴 2026-08-25 设计审计:这颗原本是 `bg-[#1B2420]` 纯黑实心,**是整个顶栏
+        //    对比度最高的元素**,也就是视觉上的「主操作」。但工友打开这个 app 是为了
+        //    **拍照**,不是归档 —— 头号动作在输入条上(那颗实心绿的「拍照」),
+        //    顶栏这三件全是次级导航。让次级的比主级的还响,是在跟自己的信息架构打架。
+        //
+        //    降成和旁边「資料庫」同一档,但**留一点区别**:它是写入(往库里放东西),
+        //    邻居是只读(浏览),所以给一个浅底 + 略深的边,而不是做成一模一样。
+        className="flex shrink-0 items-center gap-2 rounded-full border border-[#CBD5D0] bg-[#F1F4F3] px-2.5 py-2.5 text-[14px] font-bold whitespace-nowrap text-[#1B2420] transition hover:border-[#7FCDAE] hover:bg-white sm:px-4"
         title="按項目歸檔圖紙 / 規範 / 任務書"
+        // ⚠️ aria-label 不能省:下面那两个 span 在窄屏只剩一个 📂,**按钮就没有可读名字了**。
+        //    `title` 在触屏上根本不显示,读屏软件对它的支持也时有时无 —— 手机是工地的主力
+        //    设备,而这颗在窄屏恰好是「只剩图标」的那一档。
+        aria-label="資料歸檔"
       >
         {/* 窄屏只留 📂 图标(顶栏放不下三颗带字的按钮),≥640px 恢复「📂 资料归档」。
             功能一件不少:图标本身就是按钮,点开的还是同一个归档抽屉。
@@ -761,14 +783,14 @@ function ArchiveDrawer() {
   }
 
   // --- 样式片段(方案 B 调性)---------------------------------------------------
-  const stepLabel = "mb-2.5 text-[13px] font-bold text-[#0E9F6E]";
+  const stepLabel = "mb-2.5 text-[13px] font-bold text-[#0E7A55]";
   const fieldCls =
-    "w-full rounded-[14px] border border-[#E4E8E6] bg-white px-4 py-3.5 text-[15px] text-[#33403A] placeholder:text-[#A2ABA6] focus:border-[#0E9F6E] focus:outline-none";
+    "w-full rounded-[14px] border border-[#E4E8E6] bg-white px-4 py-3.5 text-[15px] text-[#33403A] placeholder:text-[#626D68] focus:border-[#0E9F6E] focus:outline-none";
   const toggle = (active: boolean) =>
     "rounded-[12px] py-3.5 text-center text-[16px] font-bold transition " +
     (active
       ? "bg-[#0E9F6E] text-white"
-      : "border border-[#E4E8E6] bg-white text-[#6B7772] hover:border-[#7FCDAE]");
+      : "border border-[#E4E8E6] bg-white text-[#626D68] hover:border-[#7FCDAE]");
   const bigChoice = (active: boolean) =>
     "rounded-[14px] p-4 text-center transition " +
     (active
@@ -795,11 +817,11 @@ function ArchiveDrawer() {
           </div>
           <div>
             <div className="text-[19px] font-black text-[#1B2420]">資料歸檔</div>
-            <div className="text-[13px] text-[#8A948F]">把圖紙、規範正式存進項目</div>
+            <div className="text-[13px] text-[#626D68]">把圖紙、規範正式存進項目</div>
           </div>
           <button
             onClick={() => setOpen(false)}
-            className="ml-auto text-[22px] leading-none text-[#B4BDB8] hover:text-[#6B7772]"
+            className="ml-auto text-[22px] leading-none text-[#626D68] hover:text-[#626D68]"
           >
             ✕
           </button>
@@ -863,7 +885,7 @@ function ArchiveDrawer() {
                 <div
                   className={
                     "text-[18px] font-black " +
-                    (tab === "drawing" ? "text-[#0E7A55]" : "text-[#6B7772]")
+                    (tab === "drawing" ? "text-[#0E7A55]" : "text-[#626D68]")
                   }
                 >
                   📐 圖紙
@@ -871,7 +893,7 @@ function ArchiveDrawer() {
                 <div
                   className={
                     "mt-1 text-[13px] font-bold " +
-                    (tab === "drawing" ? "text-[#5FAE8E]" : "text-[#A2ABA6]")
+                    (tab === "drawing" ? "text-[#0E7A55]" : "text-[#626D68]")
                   }
                 >
                   DXF / PDF 文件
@@ -881,7 +903,7 @@ function ArchiveDrawer() {
                 <div
                   className={
                     "text-[18px] font-black " +
-                    (tab === "doc" ? "text-[#0E7A55]" : "text-[#6B7772]")
+                    (tab === "doc" ? "text-[#0E7A55]" : "text-[#626D68]")
                   }
                 >
                   📄 資料
@@ -889,7 +911,7 @@ function ArchiveDrawer() {
                 <div
                   className={
                     "mt-1 text-[13px] font-bold " +
-                    (tab === "doc" ? "text-[#5FAE8E]" : "text-[#A2ABA6]")
+                    (tab === "doc" ? "text-[#0E7A55]" : "text-[#626D68]")
                   }
                 >
                   PDF 文件
@@ -908,7 +930,7 @@ function ArchiveDrawer() {
                   e.preventDefault();
                   pickDrawing(e.dataTransfer.files?.[0] ?? null);
                 }}
-                className="block cursor-pointer rounded-[16px] border-2 border-dashed border-[#C6D0CB] bg-white px-6 py-6 text-center text-[16px] text-[#8A948F]"
+                className="block cursor-pointer rounded-[16px] border-2 border-dashed border-[#C6D0CB] bg-white px-6 py-6 text-center text-[16px] text-[#626D68]"
               >
                 <input
                   type="file"
@@ -920,12 +942,12 @@ function ArchiveDrawer() {
                   <span className="font-bold text-[#1B2420]">{dwgFile.name}</span>
                 ) : (
                   <>
-                    拖入 .dxf / .pdf,或 <span className="font-bold text-[#0E9F6E]">點擊選擇</span>
+                    拖入 .dxf / .pdf,或 <span className="font-bold text-[#0E7A55]">點擊選擇</span>
                   </>
                 )}
               </label>
 
-              <div className="text-[14px] font-semibold text-[#6B7772]">這是哪種圖?</div>
+              <div className="text-[14px] font-semibold text-[#626D68]">這是哪種圖?</div>
               <div className="grid grid-cols-3 gap-2">
                 {VIEW_OPTIONS.map((o) => (
                   <button
@@ -946,7 +968,7 @@ function ArchiveDrawer() {
                   onChange={(e) => setTitle(e.target.value)}
                 />
                 <input
-                  className="w-[130px] rounded-[14px] border border-[#E4E8E6] bg-white px-4 py-3.5 text-[15px] placeholder:text-[#A2ABA6]"
+                  className="w-[130px] rounded-[14px] border border-[#E4E8E6] bg-white px-4 py-3.5 text-[15px] placeholder:text-[#626D68]"
                   placeholder="樓層·可選"
                   value={floor}
                   onChange={(e) => setFloor(e.target.value)}
@@ -962,21 +984,21 @@ function ArchiveDrawer() {
             <section className="flex flex-col gap-3">
               <div className={stepLabel + " mb-0"}>③ 資料信息</div>
 
-              <div className="text-[14px] font-semibold text-[#6B7772]">作用域</div>
+              <div className="text-[14px] font-semibold text-[#626D68]">作用域</div>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={() => setDocScope("global")}
                   className={bigChoice(docScope === "global")}
                 >
                   <div className="text-[16px] font-black text-[#1B2420]">全局規範</div>
-                  <div className="mt-1 text-[12px] font-bold text-[#8A948F]">所有項目通用</div>
+                  <div className="mt-1 text-[12px] font-bold text-[#626D68]">所有項目通用</div>
                 </button>
                 <button
                   onClick={() => setDocScope("project")}
                   className={bigChoice(docScope === "project")}
                 >
                   <div className="text-[16px] font-black text-[#1B2420]">本項目</div>
-                  <div className="mt-1 text-[12px] font-bold text-[#8A948F]">
+                  <div className="mt-1 text-[12px] font-bold text-[#626D68]">
                     {currentName ?? "先選項目"}
                   </div>
                 </button>
@@ -1007,7 +1029,7 @@ function ArchiveDrawer() {
                   e.preventDefault();
                   setDocFile(e.dataTransfer.files?.[0] ?? null);
                 }}
-                className="block cursor-pointer rounded-[16px] border-2 border-dashed border-[#C6D0CB] bg-white px-6 py-6 text-center text-[16px] text-[#8A948F]"
+                className="block cursor-pointer rounded-[16px] border-2 border-dashed border-[#C6D0CB] bg-white px-6 py-6 text-center text-[16px] text-[#626D68]"
               >
                 <input
                   type="file"
@@ -1019,7 +1041,7 @@ function ArchiveDrawer() {
                   <span className="font-bold text-[#1B2420]">{docFile.name}</span>
                 ) : (
                   <>
-                    拖入 .pdf,或 <span className="font-bold text-[#0E9F6E]">點擊選擇</span>
+                    拖入 .pdf,或 <span className="font-bold text-[#0E7A55]">點擊選擇</span>
                   </>
                 )}
               </label>
@@ -1113,7 +1135,7 @@ function RowDelete({
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  if (busy) return <span className="text-[12px] text-[#B4BDB8]">刪除中…</span>;
+  if (busy) return <span className="text-[12px] text-[#626D68]">刪除中…</span>;
   if (confirming) {
     return (
       <span className="flex items-center gap-2 text-[12px]">
@@ -1133,7 +1155,7 @@ function RowDelete({
         </button>
         <button
           onClick={() => setConfirming(false)}
-          className="text-[#8A948F] hover:underline"
+          className="text-[#626D68] hover:underline"
         >
           取消
         </button>
@@ -1143,7 +1165,7 @@ function RowDelete({
   return (
     <button
       onClick={() => setConfirming(true)}
-      className="text-[12px] font-bold text-[#B4BDB8] transition hover:text-[#C0392B]"
+      className="text-[12px] font-bold text-[#626D68] transition hover:text-[#C0392B]"
       title={label}
     >
       {label}
@@ -1204,18 +1226,18 @@ export function LibraryButton() {
           </div>
           <div>
             <div className="text-[19px] font-black text-[#1B2420]">資料庫</div>
-            <div className="text-[13px] text-[#8A948F]">所有項目的圖紙與規範</div>
+            <div className="text-[13px] text-[#626D68]">所有項目的圖紙與規範</div>
           </div>
           <button
             onClick={() => void load()}
-            className="ml-auto rounded-[10px] border border-[#E4E8E6] px-3 py-1.5 text-[13px] font-bold text-[#6B7772] transition hover:border-[#7FCDAE]"
+            className="ml-auto rounded-[10px] border border-[#E4E8E6] px-3 py-1.5 text-[13px] font-bold text-[#626D68] transition hover:border-[#7FCDAE]"
             title="刷新"
           >
             刷新
           </button>
           <button
             onClick={() => setOpen(false)}
-            className="text-[22px] leading-none text-[#B4BDB8] hover:text-[#6B7772]"
+            className="text-[22px] leading-none text-[#626D68] hover:text-[#626D68]"
           >
             ✕
           </button>
@@ -1223,7 +1245,7 @@ export function LibraryButton() {
 
         <div className="flex flex-col gap-5 overflow-y-auto px-7 py-6">
           {loading && (
-            <div className="py-10 text-center text-[15px] text-[#8A948F]">加載中…</div>
+            <div className="py-10 text-center text-[15px] text-[#626D68]">加載中…</div>
           )}
           {!loading && data && <LibraryBody data={data} reload={load} />}
         </div>
@@ -1237,6 +1259,8 @@ export function LibraryButton() {
         onClick={() => setOpen(true)}
         className="flex shrink-0 items-center gap-2 rounded-full border border-[#E4E8E6] bg-white px-2.5 py-2 text-[14px] font-bold whitespace-nowrap text-[#33403A] transition hover:border-[#7FCDAE] sm:px-4"
         title="查看所有項目的圖紙與規範"
+        // 理由同「資料歸檔」那颗:窄屏只剩 📚,没有 aria-label 就是一颗无名按钮。
+        aria-label="資料庫"
       >
         {/* 与「资料归档」同一处理(含那条 flex gap 的坑,见那边的注释):
             窄屏只留 📚 图标,≥640px 恢复带字的原样。
@@ -1255,7 +1279,7 @@ function LibraryBody({ data, reload }: { data: LibraryData; reload: () => Promis
 
   if (empty) {
     return (
-      <div className="rounded-[16px] border border-dashed border-[#C6D0CB] bg-white px-6 py-12 text-center text-[15px] leading-relaxed text-[#8A948F]">
+      <div className="rounded-[16px] border border-dashed border-[#C6D0CB] bg-white px-6 py-12 text-center text-[15px] leading-relaxed text-[#626D68]">
         還沒有任何圖紙或資料。
         <br />
         點右上角「📂 資料歸檔」傳第一份吧。
@@ -1293,7 +1317,7 @@ function LibraryBody({ data, reload }: { data: LibraryData; reload: () => Promis
             }
           >
             {dwgs.length === 0 && docs.length === 0 ? (
-              <div className="px-1 py-1.5 text-[13px] text-[#A2ABA6]">（暫無圖紙或資料)</div>
+              <div className="px-1 py-1.5 text-[13px] text-[#626D68]">（暫無圖紙或資料)</div>
             ) : (
               <>
                 {dwgs.map((d) => (
@@ -1328,7 +1352,7 @@ function LibrarySection({
     <section>
       <div className="mb-2 flex items-baseline gap-2">
         <div className="text-[15px] font-black text-[#1B2420]">{title}</div>
-        <div className="text-[12px] text-[#A2ABA6]">{hint}</div>
+        <div className="text-[12px] text-[#626D68]">{hint}</div>
         <div className="ml-auto flex items-baseline gap-3">
           {action}
           <div className="rounded-full bg-[#EEF6F2] px-2.5 py-0.5 text-[12px] font-bold text-[#0E7A55]">
@@ -1395,7 +1419,7 @@ function DrawingRow({ dwg, reload }: { dwg: LibDrawing; reload: () => Promise<vo
       </div>
       <div className="min-w-0">
         <div className="truncate text-[15px] font-bold text-[#1B2420]">{dwg.title}</div>
-        <div className="text-[12px] text-[#8A948F]">圖紙{dwg.floor ? ` · ${dwg.floor}` : ""}</div>
+        <div className="text-[12px] text-[#626D68]">圖紙{dwg.floor ? ` · ${dwg.floor}` : ""}</div>
       </div>
       <span className="ml-auto shrink-0 rounded-full bg-[#EEF6F2] px-2.5 py-1 text-[12px] font-bold text-[#0E7A55]">
         {VIEW_LABEL[dwg.view_type] ?? dwg.view_type}
@@ -1427,13 +1451,13 @@ function DrawingRow({ dwg, reload }: { dwg: LibDrawing; reload: () => Promise<vo
 /** 一份文档的检索状态徽标:已可检索 / 处理中 / 可预览但不可检索(OCR 待支援)。 */
 function DocStatus({ doc }: { doc: LibDoc }) {
   if (doc.status === "indexed" || (doc.status !== "unsearchable" && doc.chunks > 0)) {
-    return <span className="text-[#5FAE8E]">已入庫 {doc.chunks} 段</span>;
+    return <span className="text-[#0E7A55]">已入庫 {doc.chunks} 段</span>;
   }
   if (doc.status === "unsearchable") {
     // 无文字层(扫描件/转曲):归了档、能预览,但暂不可检索。不伪造 OCR,如实说。
-    return <span className="font-bold text-[#C2892B]">可預覽 · 暫不可檢索(OCR 待支援)</span>;
+    return <span className="font-bold text-[#8F6318]">可預覽 · 暫不可檢索(OCR 待支援)</span>;
   }
-  return <span className="animate-pulse font-bold text-[#C2892B]">入庫中…</span>;
+  return <span className="animate-pulse font-bold text-[#8F6318]">入庫中…</span>;
 }
 
 function DocRow({ doc, reload }: { doc: LibDoc; reload: () => Promise<void> }) {
@@ -1461,7 +1485,7 @@ function DocRow({ doc, reload }: { doc: LibDoc; reload: () => Promise<void> }) {
       </div>
       <div className="min-w-0">
         <div className="truncate text-[15px] font-bold text-[#1B2420]">{doc.filename}</div>
-        <div className="text-[12px] text-[#8A948F]">
+        <div className="text-[12px] text-[#626D68]">
           {DOC_LABEL[doc.doc_type] ?? doc.doc_type} · {fmtSize(doc.size_bytes)} · <DocStatus doc={doc} />
         </div>
       </div>
