@@ -79,11 +79,28 @@ def _day_dir(name: str) -> Path:
     return path
 
 
-def _plant(day: str, artifact_id: str, original_name: str, *, kind: str = "REPORT") -> None:
+def _plant(
+    day: str,
+    artifact_id: str,
+    original_name: str,
+    *,
+    kind: str = "REPORT",
+    at: str = "09:00:00",
+) -> None:
     """往指定日期目录里种一份 sidecar + 正文。
 
     形状**逐字照 ``core/artifacts.register()`` 写出来的那份**(两边注释互指):
     它哪天改存法,这里种出来的东西就不再代表真库,而用例会照绿。
+
+    ``at``(2026-08-25 加):当天的时刻,进 ``created_at``。默认全是 ``09:00:00`` ——
+    那对「跨天」类用例够用,但**测天内顺序时必须逐条给不同的值**:
+    几条的 ``created_at`` 完全相等时排序退化成「保持输入顺序」,
+    用例会因为 glob 的巧合而绿,不是因为排序真的对。
+
+    ⚠️ **用 ``_make_report`` 测天内顺序是测不出来的**:它走真的 ``artifacts.register``,
+    ``created_at`` 取的是注册那一刻的时钟,与文件名里那个编号无关。
+    写这组用例时先踩了这个坑 —— 三份按 090000 / 230000 / 120000 的名字注册,
+    实际时间序却是注册顺序,断言当场对不上。
     """
     folder = _day_dir(day)
     (folder / f"{artifact_id}.docx").write_bytes(FAKE_DOCX)
@@ -96,7 +113,7 @@ def _plant(day: str, artifact_id: str, original_name: str, *, kind: str = "REPOR
                 "ext": ".docx",
                 "size_bytes": len(FAKE_DOCX),
                 "sha256": "0" * 64,
-                "created_at": f"{day[:4]}-{day[4:6]}-{day[6:]}T09:00:00+00:00",
+                "created_at": f"{day[:4]}-{day[4:6]}-{day[6:]}T{at}+00:00",
             },
             ensure_ascii=False,
         ),
@@ -249,16 +266,29 @@ class Test列表:
         ]
 
     def test_同一天里也按新的在前(self, client: TestClient) -> None:
-        """同一个日期目录内部按 sidecar 文件名倒序 —— 这是个**近似**(artifact_id 是
-        uuid4,与时间无关),写在这儿是为了让人知道它是近似:
-        真正的时间序在 ``created_at`` 里,前端要严格排序就按那个字段排。
-        跨天那一层是准的,而抽屉里绝大多数情况就是跨天。"""
-        _plant("20260822", "f" * 32, "巡检记录_GYT-20260822-180000.docx")
-        _plant("20260822", "0" * 32, "巡检记录_GYT-20260822-080000.docx")
+        """🔴 **2026-08-25 改过判据,别照旧版注释理解这条。**
+
+        旧版断的是「同一天内按 sidecar **文件名**倒序」,并在注释里承认那是个
+        **近似**(artifact_id 是 uuid4,与时间无关),说「真正的时间序在
+        ``created_at`` 里,前端要严格排序就按那个字段排」。
+
+        问题是**前端那半从来没实现过**,而模块头注对外承诺的是
+        「按**生成时间倒序**(最近的在最前)」—— 契约比代码给的强。
+        线上实测照出来了:8/25 三份显示成 08:30 → 10:52 → 08:58。
+
+        现在服务端自己排(``_by_time_desc``),这条也跟着断真时间序:
+        **artifact_id 与顺序刻意反着来** —— 全 f 的那份时间更早,
+        真按文件名排的实现会在这里红。
+        """
+        _plant("20260822", "f" * 32, "巡检记录_GYT-20260822-080000.docx", at="08:00:00")
+        _plant("20260822", "0" * 32, "巡检记录_GYT-20260822-180000.docx", at="18:00:00")
 
         reports = _get(client)["data"]["reports"]
 
-        assert [r["artifact_id"] for r in reports] == ["f" * 32, "0" * 32]
+        assert [r["report_no"] for r in reports] == [
+            "GYT-20260822-180000",
+            "GYT-20260822-080000",
+        ]
 
     def test_坏掉的sidecar跳过而不是让整个抽屉打不开(self, client: TestClient) -> None:
         """一份坏元数据不该让人连别的记录都看不到(同 ``cleanup.py``:宁可漏,不可炸)。"""
@@ -336,7 +366,21 @@ class Test条数与扫描上限:
 
         _get(client, "?limit=2")
 
-        assert len(读过的) == 2, f"收够就该停,实际读了 {len(读过的)} 份"
+        # 🔴 **2026-08-25 判据从「读满 limit 就停」放宽成「不碰用不着的日期目录」。**
+        #
+        #   为什么放宽:同一天内的顺序原来是按随机 artifact_id 排的(见 Test排序 的
+        #   头注),要给出真的时间序就必须把**当天目录读完再排** —— 边读边判 limit
+        #   会在同一天里丢掉更新的那几份,而它们本该排最前。
+        #
+        #   代价量过再决定的,不是拍脑袋:线上 13 个日期目录、167 份 sidecar、
+        #   **单日最多 43 份**。而默认 limit=20,要凑够 20 份巡检记录本来就得翻遍
+        #   所有日期目录(记录在照片里是稀疏的)—— 也就是说「天内提前退出」
+        #   在生产上几乎从不触发,这次放宽的实际成本接近零。
+        #   真正的性能保险仍然是 _MAX_SIDECARS_SCANNED(2000),它一个字没动。
+        #
+        #   仍然要守住的是**跨天**那一层:够了就不许再去翻更旧的日期目录 ——
+        #   那才是「读上万个文件」的来源。下面按这个断。
+        assert len(读过的) == 6, f"当天目录该读完再排,实际读了 {len(读过的)} 份"
 
 
 class Test鉴权:
@@ -388,3 +432,99 @@ def test_路由挂进了webapp() -> None:
 
     assert declared <= mounted, f"这些路由没挂进 webapp.py:{sorted(declared - mounted)}"
     assert "/reports" in mounted
+
+
+class Test排序:
+    """🔴 「按生成时间倒序」这条契约,**2026-08-25 之前只在跨天成立**。
+
+    sidecar 文件名是 ``<artifact_id>.json``,而 artifact_id 是 ``uuid4().hex`` ——
+    随机。原来按文件名倒序 = 按一串随机十六进制倒序,同一天内顺序是乱的。
+    线上实测(改之前)8/25 三份显示成 08:30 → 10:52 → 08:58。
+
+    ⚠️ 这条 bug 活了这么久是因为「大部分时候看着没问题」(跨天那部分一直是对的),
+       而且在抽屉主行改成显示标题之前,每行长得一模一样,没人会去核对顺序。
+    """
+
+    def test_同一天内按时间倒序_不是按随机的产物编号(self, client: TestClient) -> None:
+        # 三份同一天,**artifact_id 的字典序与时间序刻意相反**:
+        #   文件名序(升)  000…09:00 → aaa…23:00 → fff…12:00
+        #   时间序(降)    23:00 → 12:00 → 09:00
+        # 真按文件名排的实现在这里必红。
+        _plant("20260822", "0" * 32, "巡检记录_GYT-20260822-090000.docx", at="09:00:00")
+        _plant("20260822", "a" * 32, "巡检记录_GYT-20260822-230000.docx", at="23:00:00")
+        _plant("20260822", "f" * 32, "巡检记录_GYT-20260822-120000.docx", at="12:00:00")
+
+        编号 = [r["report_no"] for r in _get(client)["data"]["reports"]]
+
+        assert 编号 == [
+            "GYT-20260822-230000",
+            "GYT-20260822-120000",
+            "GYT-20260822-090000",
+        ], "同一天内没有按时间倒序 —— 最近那份该在最前"
+
+    def test_缺_created_at_的排最后_而不是让整个抽屉打不开(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """一份缺字段的 sidecar 不该炸掉整个列表(同 _read_meta 的取舍)。"""
+        好的 = "1" * 32
+        坏的 = "2" * 32
+        _plant("20260822", 好的, "巡检记录_GYT-20260822-120000.docx", at="12:00:00")
+        _plant("20260822", 坏的, "巡检记录_GYT-20260822-230000.docx", at="23:00:00")
+
+        # 把「坏的」那份的 created_at 抹掉(它本该因为 23:00 排最前)
+        (sidecar,) = list(get_settings().artifacts_dir.glob(f"*/{坏的}.json"))
+        meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        del meta["created_at"]
+        sidecar.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+        reports = _get(client)["data"]["reports"]
+
+        assert len(reports) == 2, "缺字段的那份该还在列表里,不是被丢掉"
+        assert reports[0]["artifact_id"] == 好的, "有时间的排前面"
+        assert reports[-1]["artifact_id"] == 坏的, "没时间的垫底"
+
+    def test_limit_截断发生在排序之后_不是之前(self, client: TestClient) -> None:
+        """🔴 这条钉的是修法本身。
+
+        原来的写法是「边扫边收,够 N 条就 return」—— 而目录内顺序随机,
+        那样会在同一天里**丢掉更新的那几份**,而它们本该排最前。
+        改成「整天收完再排再截」。这里三份同天、只要一份,拿到的必须是最新那份。
+        """
+        # 最新那份的 artifact_id 排在文件名序的**中间**:
+        # 「先收够 1 条就停」会拿到 000…(09:00),而正确答案是 aaa…(23:00)。
+        _plant("20260822", "0" * 32, "巡检记录_GYT-20260822-090000.docx", at="09:00:00")
+        _plant("20260822", "a" * 32, "巡检记录_GYT-20260822-230000.docx", at="23:00:00")
+        _plant("20260822", "f" * 32, "巡检记录_GYT-20260822-120000.docx", at="12:00:00")
+
+        reports = _get(client, "?limit=1")["data"]["reports"]
+
+        assert [r["report_no"] for r in reports] == ["GYT-20260822-230000"]
+
+
+class Test跨天不多读:
+    """够了就不许再翻更旧的日期目录 —— 那才是「线上读上万个文件」的来源。
+
+    (天内那一层 2026-08-25 起是读完再排的,理由与代价见
+     ``test_凑够了就停_不再往下扫`` 里那段。)
+    """
+
+    def test_够了就不碰更旧的日期目录(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        读过的: list[str] = []
+        真读 = reports_api._read_meta
+
+        def 记账(sidecar: Path) -> Any:
+            读过的.append(sidecar.parent.name)
+            return 真读(sidecar)
+
+        monkeypatch.setattr(reports_api, "_read_meta", 记账)
+
+        _plant("20260822", "a" * 32, "巡检记录_GYT-20260822-090000.docx")
+        for i in range(20):
+            _plant("20260801", f"{i:032x}", f"巡检记录_GYT-20260801-0900{i:02d}.docx")
+
+        reports = _get(client, "?limit=1")["data"]["reports"]
+
+        assert [r["report_no"] for r in reports] == ["GYT-20260822-090000"]
+        assert set(读过的) == {"20260822"}, f"只该读最新那个日期目录,实际读了 {sorted(set(读过的))}"
