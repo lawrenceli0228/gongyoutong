@@ -23,6 +23,8 @@ import {
   formatSize,
   parseReportsEnvelope,
   reportDownloadUrl,
+  DEFAULT_REPORT_LABEL,
+  reportHeadline,
   reportTitle,
   reportsUrl,
 } from "@/lib/reports-lib";
@@ -80,7 +82,9 @@ describe("地址", () => {
 });
 
 describe("解析", () => {
-  it("正常一份,五个键都读出来", () => {
+  it("正常一份,六个键都读出来", () => {
+    // ⚠️ `toEqual` 是**全等比对**,加字段这条会红 —— 那是刻意的:
+    //    后端 reports_api 的模块头注写着「每条六个键」,两边一起改才对得上。
     const result = parseReportsEnvelope(envelope({ reports: [reportRow()], total: 1 }));
 
     expect(result.ok).toBe(true);
@@ -92,8 +96,28 @@ describe("解析", () => {
         filename: "巡检记录_GYT-20260822-153012.docx",
         sizeBytes: 20480,
         createdAt: "2026-08-22T07:30:12+00:00",
+        // 老记录没有这个键 —— 线上现存那 9 份全是,所以这才是常态路径。
+        title: null,
       },
     ]);
+  });
+
+  it("后端给了标题就带上来", () => {
+    const result = parseReportsEnvelope(
+      envelope({ reports: [{ ...reportRow(), title: "海之子驗收測試" }], total: 1 }),
+    );
+
+    expect(result.reports[0]?.title).toBe("海之子驗收測試");
+  });
+
+  it("标题是空白时压成 null,不留空串", () => {
+    // 空串和 null 在 JS 里都是假值,但**在界面上是两种不同的话**:
+    // null → 显示默认文种;"" → 主行一片空白,那一行看着像坏了。
+    const result = parseReportsEnvelope(
+      envelope({ reports: [{ ...reportRow(), title: "   " }], total: 1 }),
+    );
+
+    expect(result.reports[0]?.title).toBeNull();
   });
 
   it.each([
@@ -212,6 +236,7 @@ describe("排版", () => {
         filename: "巡检记录_x.docx",
         sizeBytes: 1,
         createdAt: "",
+        title: null,
       }),
     ).toBe("GYT-20260822-153012");
 
@@ -222,7 +247,41 @@ describe("排版", () => {
         filename: "不知道谁生成的.docx",
         sizeBytes: 1,
         createdAt: "",
+        title: null,
       }),
     ).toBe("不知道谁生成的.docx");
+  });
+});
+
+describe("reportHeadline —— 抽屉里那一行的粗体主行(2026-08-25 设计审计 D9)", () => {
+  const 底 = {
+    artifactId: "a".repeat(32),
+    reportNo: "GYT-20260825-083033",
+    filename: "巡检记录_GYT-20260825-083033.docx",
+    sizeBytes: 37 * 1024,
+    createdAt: "2026-08-25T00:30:33+00:00",
+  };
+
+  it("起过名就用那个名字", () => {
+    expect(reportHeadline({ ...底, title: "海之子驗收測試" })).toBe("海之子驗收測試");
+  });
+
+  it("🔴 没起名退回默认文种,**不是**退回编号", () => {
+    // 退回编号 = 什么都没改:改之前主行放的就是编号,而编号里那串数字
+    // 就是副行那个时间 —— 主行是副行的机器格式复读,九行长得一模一样。
+    expect(reportHeadline({ ...底, title: null })).toBe(DEFAULT_REPORT_LABEL);
+    expect(reportHeadline({ ...底, title: null })).not.toBe(底.reportNo);
+  });
+
+  it("默认文种是繁體(界面恒繁體)", () => {
+    // 简体的「检」「录」出现在这儿,就是一处漏网的界面文案。
+    expect(DEFAULT_REPORT_LABEL).toBe("工地安全巡檢記錄");
+    expect(DEFAULT_REPORT_LABEL).not.toContain("检");
+    expect(DEFAULT_REPORT_LABEL).not.toContain("录");
+  });
+
+  it("连编号都没有的记录照样有主行,不会是空白", () => {
+    // 主行空白的那一行在屏幕上看着像坏了,而它其实是可以下载的。
+    expect(reportHeadline({ ...底, reportNo: null, title: null })).toBe(DEFAULT_REPORT_LABEL);
   });
 });

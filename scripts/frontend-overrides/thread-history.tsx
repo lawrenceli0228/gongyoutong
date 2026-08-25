@@ -251,7 +251,7 @@ function DeleteConfirmBar({
           onCancel();
         }
       }}
-      className="flex h-9 w-[280px] items-center justify-between gap-1 rounded-md border border-red-300 bg-red-50 pr-1 pl-2.5"
+      className="flex h-11 w-[280px] items-center justify-between gap-1 rounded-md border border-red-300 bg-red-50 pr-1 pl-2.5"
     >
       <span className="truncate text-xs text-red-700">刪了找不回來,真刪?</span>
       {/* ⚠️ 顺序是「删除 / 取消」,取消在**最右** —— 这是刻意的,别按习惯调回去。
@@ -336,7 +336,11 @@ function ThreadRow({
           */}
           <Button
             variant="ghost"
-            className="w-[280px] items-start justify-start text-left font-normal"
+            // h-11(2026-08-25 设计审计 D6):shadcn 的 ghost 默认 h-9 = 36px。
+            // 这是一列可滚动的目标,手指在滚动中落点,**竖向**才是真正会miss 的那一轴;
+            // 36 → 44 两个目标一起长高,横向一个像素没动。
+            // 代价:一屏少看两三条历史。这条是取舍,不是白赚。
+            className="h-11 w-[280px] items-center justify-start text-left font-normal"
             onClick={(e) => {
               e.preventDefault();
               onOpen();
@@ -346,8 +350,19 @@ function ThreadRow({
               13rem = 208px。这一行的排布(单位 px,从行容器左边缘算起):
               行宽 300(侧栏 w-[300px])→ px-1 让 Button 从 4 起、宽 280、到 284;
               Button 的 px-4 让正文从 20 起,截断到 20+208 = 228 为止;
-              删除按钮 right-2 + size-7,占 264~292。中间留 36px,标题绝不会被压住。
+              删除按钮 right-2 + **size-11**,占 **248~292**。中间仍留 20px,标题绝不会被压住。
               280 和 300 这两个数是上游写死的,改了它们记得回来重算这里。
+
+              🔴 **2026-08-25 设计审计重算过一次,顺带纠正一个当时差点犯的错。**
+              审计初稿把「删除按钮 28×28,低于 44 下限」标成 HIGH,并打算横向放大到 44 ——
+              而先读这段注释才发现两件事:
+                ① 28×28 **已经过 WCAG 2.2 SC 2.5.8**(下限是 24×24)。44 是 Apple HIG
+                   和审计清单的数,不是本仓承诺过的标准;
+                ② 这段注释算过的「留 36px」指的是**到可见文字**的距离,不是到
+                   兄弟按钮的距离 —— 删除按钮与「打开」那颗在 264~284 本来就叠着 20px。
+                   放大到 44 之后叠 36px,而**文字那头仍有 20px 净空**,一个字都盖不住。
+              所以横向放大没有当初担心的那个副作用。真正值钱的是**竖向**(见 Button 上
+              那条 h-11):这是滚动列表,手指在动的时候落点,竖向才是会 miss 的那一轴。
 
               ⚠️ 界面繁體化(W12)绕开了这里:title 是 getThreadTitle 取回来的
               **工友自己打的那句话**(第一条用户消息的正文),一个字都不许转。
@@ -381,7 +396,7 @@ function ThreadRow({
               onArm();
             }}
             className={cn(
-              "absolute top-1/2 right-2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md",
+              "absolute top-1/2 right-2 flex size-11 -translate-y-1/2 items-center justify-center rounded-md",
               // 这里只能写一个 transition:transition-opacity 和 transition-colors 都是
               // transition-property 这一组的,cn() 底下的 tailwind-merge 会按同组冲突处理、
               // 只留后写的那个 —— 两个都写等于其中一个白写(悬停显形就不带淡入了)。
@@ -551,7 +566,12 @@ export default function ThreadHistory() {
           {/* 上游原文 "Thread History"。桌面侧栏与手机抽屉各一份,
               两处必须同字 —— 同一个东西在两条路径上叫两个名字,工友会以为是两个功能。
               ⚠️ 英文残留那套繁體守卫抓不到(判据 s2hk(v)!==v 对英文恒等)。 */}
-          <h1 className="text-xl font-semibold tracking-tight">歷史記錄</h1>
+          {/* h1 → h2(2026-08-25 设计审计 D15):一页只能有一个 h1,而首页那个
+              「有事就問工友通」才是。侧栏是页面里的一个区块,不是页面本身。
+              两个 h1 的代价只落在读屏用户身上:按标题跳转时,「歷史記錄」和页面主标题
+              被念成同一级,听不出谁包着谁 —— 眼睛看的人一辈子发现不了。
+              字号字重一个字没动,观感逐像素不变。 */}
+          <h2 className="text-xl font-semibold tracking-tight">歷史記錄</h2>
         </div>
         {threadsLoading ? (
           <ThreadHistoryLoading />

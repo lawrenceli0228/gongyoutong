@@ -252,16 +252,35 @@ async def render_inspection_report(artifact_id: str, title: str = "") -> Envelop
     snap = make_snapshot()
     report_no = new_report_no(snap)
 
+    cleaned_title = _clean_title(title)
     payload = _render_docx(
         photo_id=cleaned,
         report_no=report_no,
         generated_at=snap.display,
         data=data,
         settings=settings,
-        title=_clean_title(title),
+        title=cleaned_title,
     )
     filename = f"巡检记录_{report_no}.docx"
-    report_id = artifacts.register(payload, kind=ArtifactKind.REPORT, original_name=filename)
+    # 🔴 标题跟着进 sidecar(2026-08-25 设计审计 D9)。
+    #
+    #   在此之前标题**只存在于 docx 内容里**,于是「巡檢記錄」抽屉里九行长得一模一样:
+    #   粗体主行是 19 位机器编号 `GYT-20260825-083033`,副行是灰色小字的时间 ——
+    #   而编号里那串数字**就是**副行那个时间,主行等于副行的机器格式复读。
+    #   同图标、同 37 KB、无项目名,认不出哪份是哪份。
+    #   2026-08-24 刚上线的自定义标题,在**最需要它的那个列表里看不到**。
+    #
+    #   ⚠️ 为什么不塞进 filename:`reports_api._REPORT_NO_RE` 从 original_name 里解编号,
+    #      标题里出现一串像编号的数字就会解出一个假编号 —— 而那是静默的。
+    #      走 sidecar 的独立字段,两件事互不干扰。
+    #   ⚠️ 这里写的是 `cleaned_title` 不是原始 `title`:它已经过折行压缩、去控制字符、
+    #      截 40 字。存原始串等于把用户可控的任意文本原样送进 JSON 再原样送上前端。
+    report_id = artifacts.register(
+        payload,
+        kind=ArtifactKind.REPORT,
+        original_name=filename,
+        extra={"title": cleaned_title},
+    )
     stored = artifacts.resolve(report_id)
     logger.info("巡检记录已生成:%s(%s,%d 字节)", report_no, report_id, len(payload))
 

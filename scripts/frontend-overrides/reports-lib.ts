@@ -93,6 +93,17 @@ export interface InspectionReport {
   sizeBytes: number | null;
   /** 登记时刻(UTC ISO)。 */
   createdAt: string;
+  /**
+   * 这份记录**叫什么**(2026-08-25 设计审计 D9)。
+   *
+   * 用户在出记录时说了「标题写『海之子驗收測試』」才有;没说就是 `null`。
+   * 🔴 **`null` 不许在这一层顶成默认文种** —— 顶了之后调用方就分不清
+   * 「用户真起了这个名」和「我们编的」。默认文种只在渲染那一刻兜底
+   * (`reportTitle`),那里兜是显示逻辑,在这里兜是**篡改数据**。
+   * ⚠️ 2026-08-25 之前生成的记录一律没有这个键(上线时线上现存 9 份全是),
+   *    所以 `null` 是常态不是异常,别把它当错误处理。
+   */
+  title: string | null;
 }
 
 export interface ReportsResult {
@@ -139,6 +150,8 @@ function toReport(entry: unknown): InspectionReport | null {
     // 0 会被读成「这是个空文件」,而真相是「不知道多大」。
     sizeBytes: typeof size === "number" && Number.isFinite(size) && size >= 0 ? size : null,
     createdAt: textOf(rec, "created_at"),
+    // 同 reportNo:空串压成 null,让调用方只判一种「没有」。
+    title: textOf(rec, "title") || null,
   };
 }
 
@@ -227,4 +240,25 @@ export function formatReportTime(reportNo: string | null): string {
  */
 export function reportTitle(report: InspectionReport): string {
   return report.reportNo ?? report.filename ?? "";
+}
+
+/** 没起过名的记录在界面上显示的名字。**繁體**(界面恒繁體)。 */
+export const DEFAULT_REPORT_LABEL = "工地安全巡檢記錄";
+
+/**
+ * 抽屉里那一行的**粗体主行**(2026-08-25 设计审计 D9)。
+ *
+ * 🔴 改这个函数之前先看病状:在它之前主行是 19 位机器编号
+ * `GYT-20260825-083033`,而**编号里那串数字就是副行那个时间** ——
+ * 主行等于副行的机器格式复读。九行除编号外完全相同(同图标、同 37 KB、
+ * 无项目名、无隐患数),班组长要找「今早那份」只能一个个下载来看。
+ *
+ * 编号是给系统对账的,名字才是给人认的。所以:
+ *   有 title → 用它;
+ *   没有     → 退回默认文种「工地安全巡檢記錄」,**不是**退回编号
+ *              (退回编号就等于什么都没改)。
+ * 编号仍然显示,降到副行,和时间并排 —— 要报编号的人照样拿得到。
+ */
+export function reportHeadline(report: InspectionReport): string {
+  return report.title ?? DEFAULT_REPORT_LABEL;
 }

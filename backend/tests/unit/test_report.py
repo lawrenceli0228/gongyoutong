@@ -576,3 +576,64 @@ def test_净化函数本身(monkeypatch: pytest.MonkeyPatch) -> None:
     assert clean("正常标题") == "正常标题"
     assert clean("a b") == "a b", "不间断空格也算空白"
     assert len(clean("字" * 200)) == report_tools._TITLE_MAX_LEN
+
+
+# --- 标题进产物元数据(2026-08-25 设计审计 D9)-------------------------------
+#
+# 在此之前标题**只存在于 docx 内容里**,而「巡檢記錄」抽屉(GET /reports)是扫
+# sidecar 列清单的 —— 不可能为了显示一个名字去解压每份 docx。于是那个抽屉九行
+# 长得一模一样(粗体主行是 19 位编号、副行是时间,而编号里那串数字就是那个时间)。
+
+
+async def test_起过名的记录_标题进_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch(monkeypatch, _ok_envelope())
+    result = await _render_titled("海之子驗收測試")
+
+    meta = artifacts.read_meta(result["data"]["report_id"])
+    assert meta["title"] == "海之子驗收測試"
+
+
+async def test_没起名时_sidecar_里是默认文种_不是空串(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_clean_title("")`` 回的是默认文种,所以这里**有值**。
+
+    ⚠️ 与「2026-08-25 之前的老记录压根没有这个键」是两回事,别混:
+       那条路径由 test_reports_api.py 的
+       `test_老记录没有标题时给_null_不许拿编号或文件名顶上` 钉着。
+    """
+    _patch(monkeypatch, _ok_envelope())
+    result = await _render()
+
+    meta = artifacts.read_meta(result["data"]["report_id"])
+    assert meta["title"] == report_tools.DEFAULT_REPORT_TITLE
+
+
+async def test_进_sidecar_的是收拾过的标题_不是用户原始串(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """存原始串 = 把用户可控的任意文本原样送进 JSON 再原样送上前端。
+
+    折行压成空格、去控制字符、截 40 字 —— 与写进 docx 的**必须是同一个值**,
+    两处各清洗一遍的话,文档里和列表里会显示成两个不一样的名字。
+    """
+    _patch(monkeypatch, _ok_envelope())
+    result = await _render_titled("臨邊\n\t防護  複查")
+
+    meta = artifacts.read_meta(result["data"]["report_id"])
+    assert meta["title"] == "臨邊 防護 複查"
+
+
+async def test_标题不许进文件名(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔴 ``reports_api._REPORT_NO_RE`` 从 ``original_name`` 里解编号。
+
+    标题里出现一串长得像编号的数字,就会解出一个**假编号**并当成真的显示、
+    让人拿去对账 —— 而整个过程完全静默。所以标题走 sidecar 的独立字段,
+    文件名一个字都不许沾。
+    """
+    _patch(monkeypatch, _ok_envelope())
+    result = await _render_titled("GYT-19990101-000000 這不是編號")
+
+    meta = artifacts.read_meta(result["data"]["report_id"])
+    assert meta["original_name"] == f"巡检记录_{result['data']['report_no']}.docx"
+    assert "這不是編號" not in meta["original_name"]

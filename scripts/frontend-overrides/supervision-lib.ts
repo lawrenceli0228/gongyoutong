@@ -902,6 +902,29 @@ export function actionNeedsPhoto(action: DisposalAction): boolean {
  * `notice` 不问:它是监理日常动作,而且期限那一格本来就要动手打字 ——
  * 每一颗按钮都弹确认框的下场是人闭着眼点「确定」,那时真正该拦的三颗也就废了。
  */
+/**
+ * **不会产生任何一份文书**的那几颗动作(2026-08-25 设计审计 D8)。
+ *
+ * 界面拿它决定按钮长相:这几颗走描边,不走实心 —— 实心留给「发一张纸出去」
+ * (监理通知单 / 复工令)和「按下去回不来」(暂停令 / 上报 / 关掉)。
+ *
+ * 🔴 **判据是「出不出纸」,不是「重不重要」。** 重要是主观的,下一个人会有不同的
+ * 排序;而「这一下会不会有一份盖章的文书发出去」只有一个答案 —— 而且这几颗的
+ * `ACTION_LABEL` 上本来就写着「不出文書」,界面和判据说的是同一句话。
+ *
+ * ⚠️ `dismiss` **不在这里**:它虽然也不出纸(标签上写着「不出文書,要寫原因」),
+ *    但它是**终态** —— `closed` 在 `ALLOWED_TRANSITIONS` 里出边是空集,关掉之后
+ *    系统里没有任何一条路能开回来。它归红色那一档,由 `actionNeedsConfirm` 管。
+ *    两个集合都收 dismiss 的话,红色会被描边盖掉,而那颗恰恰是最需要红的。
+ * ⚠️ `reject` 也不在这里:它整行删数据,界面上单独走 outline + 垃圾桶图标
+ *    (理由在 supervision.tsx 那个 variant 三元上方),判据与本集合无关。
+ */
+export const DOCLESS_ACTIONS: ReadonlySet<DisposalAction> = new Set<DisposalAction>([
+  "extend",
+  "reassign",
+  "reinspect",
+]);
+
 export function actionNeedsConfirm(action: DisposalAction): boolean {
   return (
     action === "suspend" ||

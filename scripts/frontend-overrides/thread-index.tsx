@@ -167,6 +167,8 @@ function ThreadInner() {
     parseAsBoolean.withDefault(false),
   );
   const [input, setInput] = useState("");
+  /** 输入框本体 —— 能力卡填例句之后要把光标送进去(2026-08-25 设计审计 D2)。 */
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const {
     contentBlocks,
     setContentBlocks,
@@ -524,7 +526,23 @@ function ThreadInner() {
           {/* W7 首页重设计:4 张能力状态卡片(常驻,派活时对应卡片发亮)。
               首页顶栏是 absolute 覆盖,给卡片留出顶栏高度避免被挡;进入对话后顶栏在流内,无需留白。 */}
           <div className={cn(!chatStarted && "pt-16")}>
-            <GytStatusCards />
+            {/* onPick(2026-08-25 设计审计 D2):点带例句的卡 → 把例句**填进输入框**
+                并聚焦,不自动发送。卡片本身仍然是状态灯不是按钮,完整推演在
+                GytStatusCards.tsx 那个 onClick 上方。
+                聚焦要 requestAnimationFrame 兜一下:setInput 触发的重渲染这一帧还没提交,
+                同步 focus 会落在旧节点上,表现是「字填进去了但光标不在里面」。 */}
+            <GytStatusCards
+              onPick={(text) => {
+                setInput(text);
+                requestAnimationFrame(() => {
+                  const el = composerRef.current;
+                  if (!el) return;
+                  el.focus();
+                  // 光标落到末尾,方便直接接着改(默认会全选或落在开头)
+                  el.setSelectionRange(text.length, text.length);
+                });
+              }}
+            />
           </div>
 
           <StickToBottom className="relative flex-1 overflow-hidden">
@@ -558,8 +576,25 @@ function ThreadInner() {
                 //    700 这个数 = 实测 mt-4 时发送键底边 654px + ~46px 余量(第二排附件)。
                 //    ⚠️ 改这个数要回去重量一遍,别拍脑袋 —— 量法:附一张图,
                 //       逐档设 viewport 高度,读发送键的 getBoundingClientRect().bottom。
+                // 🔴 **25vh → 12vh(2026-08-25 设计审计 D3)。**
+                //    上面那套「按高度连续退让」的机制没动,只把**上限**收了一档。
+                //    病状:1440×900 实测,四张卡的底边在 y≈215,而大标题的顶在 y≈510 ——
+                //    中间 **~300px 什么都没有**。眼睛从卡片掉进一个坑再爬上来找标题,
+                //    首页读起来像两个互不相干的页面拼在一起。
+                //
+                //    ⚠️ **这个方向是安全的**:上面那段注释担心的是「动作条被顶出屏幕」,
+                //       而收小 mt 是把上面那坨往上提,给下面**多**留空间,
+                //       新值在任何高度上都 ≤ 旧值。所以那套 700px 的余量算法一个字没改,
+                //       它守的边界只会更宽松,不会更紧。
+                //
+                //    按文件里那条「改这个数要回去重量一遍」的规矩实测(附一张图,
+                //    逐档设视口高度,读发送键 getBoundingClientRect().bottom):
+                //
+                //        视口 1180 → mt 142(原 295)   视口 900 → mt 108(原 200)
+                //        视口 1000 → mt 120(原 250)   视口 800 → mt  96(原 100)
+                //        视口 ≤716 → mt  16(与原来一样,已经在最低档)
                 !chatStarted &&
-                  "mt-4 flex flex-col items-stretch sm:mt-[max(1rem,min(25vh,100vh-700px))]",
+                  "mt-4 flex flex-col items-stretch sm:mt-[max(1rem,min(12vh,100vh-700px))]",
                 chatStarted && "grid grid-rows-[1fr_auto]",
               )}
               contentClassName="pt-8 pb-16 max-w-3xl mx-auto flex flex-col gap-4 w-full"
@@ -621,7 +656,7 @@ function ThreadInner() {
                       <h1 className="text-[30px] leading-tight font-black tracking-tight text-[#1B2420] sm:text-[44px]">
                         有事就問工友通
                       </h1>
-                      <p className="mt-2 text-[15px] text-[#6B7772] sm:mt-3 sm:text-[18px]">
+                      <p className="mt-2 text-[15px] text-[#626D68] sm:mt-3 sm:text-[18px]">
                         説一句話、拍張照,或者傳個文件,我來幫你派活
                       </p>
                     </div>
@@ -647,6 +682,7 @@ function ThreadInner() {
                         onRemove={removeBlock}
                       />
                       <textarea
+                        ref={composerRef}
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         onPaste={handlePaste}
@@ -664,7 +700,7 @@ function ThreadInner() {
                           }
                         }}
                         placeholder="對着我説話、拍張照,或問一句…"
-                        className="field-sizing-content resize-none border-none bg-transparent p-5 pb-2 text-[17px] text-[#33403A] shadow-none ring-0 outline-none placeholder:text-[#A2ABA6] focus:ring-0 focus:outline-none"
+                        className="field-sizing-content resize-none border-none bg-transparent p-5 pb-2 text-[17px] text-[#33403A] shadow-none ring-0 outline-none placeholder:text-[#626D68] focus:ring-0 focus:outline-none"
                       />
 
                       {/* 底部动作条 —— 手机上这里是**打卡功能的唯一入口**,挤爆等于打卡不可用。
@@ -687,7 +723,7 @@ function ThreadInner() {
                             />
                             <Label
                               htmlFor="render-tool-calls"
-                              className="text-sm whitespace-nowrap text-[#6B7772]"
+                              className="text-sm whitespace-nowrap text-[#626D68]"
                             >
                               隱藏中間步驟
                             </Label>
@@ -712,6 +748,7 @@ function ThreadInner() {
                             (image-compress.ts 头注:canvas 只画得出第一帧,
                             动图经过它会变成单帧而服务端那道闸再也不触发)。
                             相机拍出来的本来就是 JPEG,所以这条收窄对用户零影响。 */}
+                        <div className="flex shrink-0 items-center gap-2">
                         <Label
                           htmlFor="camera-input"
                           className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-[12px] border border-[#0E9F6E] bg-[#0E9F6E] px-3 py-2 text-sm font-bold whitespace-nowrap text-white transition hover:bg-[#0B8A5E] sm:min-h-0"
@@ -727,12 +764,33 @@ function ThreadInner() {
                           capture="environment"
                           className="hidden"
                         />
+                        {/* ── 分组线(2026-08-25 设计审计 D12)──────────────────────
+                            这条动作条上六颗按钮**做的是两类完全不同的事**,而在此之前
+                            它们并排等距、只靠三种样式(实心绿 / 描边 / 纯文字)区分,
+                            而那三种样式编码的是「重要程度」,不是「这颗按钮会发生什么」:
+
+                              左边两颗(拍照 / 上傳圖紙·資料)—— **往这条消息上附文件**,
+                                                              附完还要按發送
+                              右边三颗(打卡 / 隱患 / 記錄)  —— **打开一个独立操作台**,
+                                                              不进对话、不产生消息,
+                                                              跟你正在打的那句话毫无关系
+
+                            后者是本仓「直连 HTTP」那条路的三个出口(见 CLAUDE.md 架构大图),
+                            它们和發送之间**没有任何先后关系** —— 而并排等距恰恰暗示有。
+                            一条竖线 + 把两类各自收进一个 flex 组,让间距自己说话:
+                            组内 gap-2、组间 gap-6,鼠标扫过去就看得出是两拨东西。
+
+                            ⚠️ 分组还顺手修了手机上的一个乱象:flex-wrap 原本按**单颗按钮**
+                               换行,于是「發送」经常和「隱患」「記錄」落在同一行,
+                               看着像它们是一组。现在换行以**组**为单位,不会再拆散。
+                            ⚠️ 竖线 `hidden sm:block`:窄屏本来就要换行,那时候竖线会
+                               卡在行尾变成一根没来由的短杠。窄屏靠分组换行表达,不靠线。 */}
                         {/* min-h-11 = 44px,触摸目标的通用下限;≥640px 退回原来的高度(sm:min-h-0)。 */}
                         <Label
                           htmlFor="file-input"
                           className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-[12px] border border-[#E4E8E6] bg-white px-3 py-2 text-sm font-bold whitespace-nowrap text-[#33403A] transition hover:border-[#7FCDAE] sm:min-h-0"
                         >
-                          <Plus className="size-4 text-[#0E9F6E]" />
+                          <Plus className="size-4 text-[#0E7A55]" />
                           <span>上傳圖紙·資料</span>
                         </Label>
                         <input
@@ -743,6 +801,14 @@ function ThreadInner() {
                           accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,.dxf,image/vnd.dxf"
                           className="hidden"
                         />
+                        </div>
+
+                        <span
+                          aria-hidden="true"
+                          className="hidden h-6 w-px shrink-0 bg-[#E4E8E6] sm:block"
+                        />
+
+                        <div className="flex shrink-0 items-center gap-2">
                         {/* 打卡入口(W7 · D15):点开是直连 POST /checkin 的自拍面板,
                             不进对话、不产生消息 —— 所以放在动作条而不是消息区
                             (tool-calls.tsx 只消费 ToolMessage,直连打卡根本不产生它,
@@ -766,6 +832,7 @@ function ThreadInner() {
                             按钮自带 type="button",刻意**没有徽章**(理由在组件头注:
                             存档不等人干活,红点只会让人去点掉一个不用处理的提醒)。 */}
                         <ReportsEntry />
+                        </div>
                         {stream.isLoading ? (
                           <Button
                             key="stop"

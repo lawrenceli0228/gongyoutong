@@ -48,13 +48,21 @@ def client() -> TestClient:
     return TestClient(Starlette(routes=list(reports_api.REPORTS_ROUTES)))
 
 
-def _make_report(name: str = "巡检记录_GYT-20260822-153012.docx") -> str:
+def _make_report(
+    name: str = "巡检记录_GYT-20260822-153012.docx",
+    *,
+    title: str | None = None,
+) -> str:
     """真走 ``artifacts.register`` 登记一份 REPORT 产物,返回 artifact_id。
 
     **不手搓 sidecar**:手搓的那份是测试自己编的形状,比对了也不说明
     这条端点读得懂 ``register()`` 真正写出来的东西 —— 而那正是唯一要验的事。
+
+    ``title=None`` 时**不传 extra**,模拟 2026-08-25 之前生成的老记录
+    (线上现存的那些全都是这样)—— 那条路径才是常态,别只测有标题的。
     """
-    return artifacts.register(FAKE_DOCX, kind=ArtifactKind.REPORT, original_name=name)
+    extra = {"title": title} if title is not None else None
+    return artifacts.register(FAKE_DOCX, kind=ArtifactKind.REPORT, original_name=name, extra=extra)
 
 
 def _make_photo() -> str:
@@ -110,18 +118,62 @@ class Test列表:
         assert 信封["data"] == {"reports": [], "total": 0, "scan_truncated": False}
         assert "拍张照" in 信封["user_msg"]
 
-    def test_列出巡检记录_五个键齐全(self, client: TestClient) -> None:
-        """少一个键前端就少渲一块,而且不会报错。"""
+    def test_列出巡检记录_六个键齐全(self, client: TestClient) -> None:
+        """少一个键前端就少渲一块,而且不会报错。
+
+        ⚠️ 这条是**契约的同源闸**:模块头注里写着「每条六个键」。
+           加键要连它一起改 —— 那是刻意的,别把 `set(行) ==` 改成 `<=`。
+        """
         artifact_id = _make_report()
 
         (行,) = _get(client)["data"]["reports"]
 
-        assert set(行) == {"artifact_id", "report_no", "filename", "size_bytes", "created_at"}
+        assert set(行) == {
+            "artifact_id",
+            "report_no",
+            "filename",
+            "size_bytes",
+            "created_at",
+            "title",
+        }
         assert 行["artifact_id"] == artifact_id
         assert 行["report_no"] == "GYT-20260822-153012"
         assert 行["filename"] == "巡检记录_GYT-20260822-153012.docx"
         assert 行["size_bytes"] == len(FAKE_DOCX)
         assert 行["created_at"], "没有它前端排不了序、也显示不出「什么时候出的」"
+
+    def test_老记录没有标题时给_null_不许拿编号或文件名顶上(self, client: TestClient) -> None:
+        """🔴 2026-08-25 上线时**线上现存 9 份记录全都没有这个键**,所以这条是常态路径。
+
+        在后端编一个出来(比如回 filename 或 report_no),前端就再也分不清
+        「用户真给这份起了名」和「我们替他编的」—— 而抽屉的主行显示的就是它。
+        默认文种由前端在渲染那一刻兜(`reportHeadline`),那里兜是显示逻辑;
+        在这儿兜是**篡改数据**。
+        """
+        _make_report()  # 不传 title
+
+        (行,) = _get(client)["data"]["reports"]
+
+        assert 行["title"] is None
+        assert 行["report_no"] == "GYT-20260822-153012", "编号该有的还得有"
+
+    def test_出记录时起过名的_标题原样回出来(self, client: TestClient) -> None:
+        """名字是给人认的:抽屉九行长得一模一样时,这是唯一能分辨的东西。"""
+        _make_report(title="海之子驗收測試")
+
+        (行,) = _get(client)["data"]["reports"]
+
+        assert 行["title"] == "海之子驗收測試"
+
+    def test_标题是空白时当成没有_不是回一个空串(self, client: TestClient) -> None:
+        """空串和 None 在 JS 里是两种假值,但**在界面上是两种不同的话**:
+        `null` → 显示默认文种;`""` → 主行是一片空白,那一行看着像坏了。
+        """
+        _make_report(title="   ")
+
+        (行,) = _get(client)["data"]["reports"]
+
+        assert 行["title"] is None
 
     def test_照片不进这个抽屉(self, client: TestClient) -> None:
         """线上绝大多数产物是照片。kind 判据松掉的表现是抽屉里混进一堆

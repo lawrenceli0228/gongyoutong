@@ -50,7 +50,7 @@
          "data": {"reports": [...], "total": 3, "scan_truncated": false},
          "user_msg": "…", "error_code": null}
 
-        reports  按**生成时间倒序**(最近的在最前)。每条五个键::
+        reports  按**生成时间倒序**(最近的在最前)。每条**六个键**::
 
             artifact_id  32 位十六进制。前端拿它拼下载地址:
                          ``<ARTIFACT_BASE>/by-id/<artifact_id>``
@@ -64,6 +64,13 @@
             filename     原始文件名(``巡检记录_GYT-….docx``),下载时显示的名字
             size_bytes   文件大小
             created_at   登记时刻(UTC ISO,产物 sidecar 里那个)
+            title        这份记录**叫什么**(2026-08-25 加)。由 report/tools.py 写进
+                         sidecar 的 ``extra``,前端拿它当粗体主行、编号降成副行。
+                         🔴 **没有就是 ``null``,不许拿 filename 或 report_no 顶** ——
+                         2026-08-25 之前生成的记录 sidecar 里没有这个键(上线时线上
+                         现存 9 份全都没有),那时候正确的表述是「这份没起过名」,
+                         由前端退回默认文种;在后端编一个出来,前端就分不清
+                         「用户真起了这个名」和「我们编的」
 
         total          本次**列出来**几条(不是磁盘上一共几份)
         scan_truncated 扫到上限还没扫完 → true
@@ -285,7 +292,7 @@ def _read_meta(sidecar: Path) -> dict[str, Any] | None:
 
 
 def _report_payload(artifact_id: str, meta: dict[str, Any], report_no: str) -> dict[str, Any]:
-    """一份巡检记录的对外形状(五个键,契约见模块头注)。
+    """一份巡检记录的对外形状(六个键,契约见模块头注)。
 
     ``report_no`` **由调用方传进来**,不在这儿重算一遍:它是 ``_scan_reports`` 的
     过滤判据,算两遍就有两份判据 —— 而那种漂移的表现是「过滤时认作巡检记录、
@@ -302,6 +309,15 @@ def _report_payload(artifact_id: str, meta: dict[str, Any], report_no: str) -> d
         "filename": str(meta.get("original_name", "")),
         "size_bytes": meta.get("size_bytes"),
         "created_at": meta.get("created_at"),
+        # title(2026-08-25 设计审计 D9):这份记录**叫什么**,由 report/tools.py 写进
+        # sidecar 的 extra。抽屉拿它当粗体主行,编号降成副行 —— 编号是给系统对账的,
+        # 名字才是给人认的。
+        #
+        # ⚠️ **取不到给 None,不许拿 filename 或 report_no 顶上。**
+        #    2026-08-25 之前生成的记录 sidecar 里没有这个键(线上现存 9 份全是),
+        #    那时候正确的表述是「这份没有自定义标题」,由前端退回默认文种;
+        #    在这儿硬编一个出来,前端就分不清「用户真起了这个名」和「我们编的」。
+        "title": (lambda v: v if isinstance(v, str) and v.strip() else None)(meta.get("title")),
     }
 
 
