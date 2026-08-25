@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -154,11 +155,31 @@ created_at 是 ``timespec="seconds"`` 截断过的;容器时钟与宿主时钟
 「上一轮跑批」的间隔,骗不过陈年快照。"""
 
 
+def _auth_headers() -> dict[str, str]:
+    """令牌头。**没配就不发**,发一个空的反而会被当成"presented 了但不对"。
+
+    🔴 **2026-08-25 补的,补它的理由是:在此之前这个脚本压根打不了线上。**
+    本机 ``make dev`` 不设令牌,所以一直没人撞见;而线上是设了的
+    (``GYT_ACCESS_TOKEN``),于是脚本第一个 ``POST /threads`` 就 401,
+    25 条一条都跑不到 —— 也就是说**最该验的那台机器从来没被这个脚本验过**。
+
+    头名 ``X-Api-Key`` 与判定同源于 ``core/access.py``
+    (``_api_key_from_headers`` / ``effective_access_token``):
+    那边改名字或改判据,这里跟着改,否则表现是整轮 401 而不是某一条红。
+
+    ⚠️ 环境变量名是 ``GYT_ACCESS_TOKEN`` —— ``config.py`` 的 ``env_prefix="GYT_"``
+       加字段名 ``access_token``。**别写成 ``GYT_API_KEY``**:那个名字不存在,
+       写错了脚本会以为"没配令牌"而不发头,再一次整轮 401。
+    """
+    token = os.environ.get("GYT_ACCESS_TOKEN", "").strip()
+    return {"X-Api-Key": token} if token else {}
+
+
 def api(path: str, payload: dict | None = None) -> dict | list:
     req = urllib.request.Request(
         BASE + path,
         data=json.dumps(payload).encode() if payload is not None else b"{}",
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **_auth_headers()},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=300) as resp:
