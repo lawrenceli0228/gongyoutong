@@ -263,8 +263,29 @@ def _scan_reports(limit: int) -> tuple[list[dict[str, Any]], bool]:
     for day_dir in sorted(
         (p for p in artifacts_dir.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True
     ):
-        for sidecar in sorted(day_dir.glob(_SIDECAR_GLOB), reverse=True):
+        # 🔴 **同一天内必须按 created_at 排,不能按文件名排(2026-08-25 线上照出来的)。**
+        #
+        #   sidecar 的文件名是 ``<artifact_id>.json``,而 ``artifact_id = uuid4().hex``
+        #   —— **随机**。原来这里写的是 ``sorted(day_dir.glob(...), reverse=True)``,
+        #   也就是「按一串随机十六进制倒序」。于是「按生成时间倒序」这条契约
+        #   **只在跨天成立,同一天内是乱的**。
+        #
+        #   线上实测(改之前):8/25 三份显示成 08:30 → 10:52 → 08:58,
+        #   8/23 两份是 09:48 → 22:35。而 8/11 那四份碰巧是对的 —— 巧合,
+        #   正是这种「大部分时候看着没问题」让它活了这么久。
+        #
+        #   ⚠️ **为什么拖到今天才发现**:在「抽屉主行显示标题」(设计审计 D9)之前,
+        #      每一行都是粗体机器编号 + 灰色小字时间,九行长得一模一样,
+        #      没人会去核对顺序。是 D9 把这条老 bug 照出来的。
+        #
+        #   ⚠️ **为什么要整天收完再排,不能边扫边判 limit**:目录内顺序是随机的,
+        #      「先收够 N 条就停」会在同一天里丢掉更新的那几份 —— 而它们本该排最前。
+        #      按天收完再排,既保住「按天从新往旧、够了就不翻下一天」这条流式性质
+        #      (那是 _MAX_SIDECARS_SCANNED 那条性能保险的前提),又让天内顺序是对的。
+        day_rows: list[dict[str, Any]] = []
+        for sidecar in sorted(day_dir.glob(_SIDECAR_GLOB)):
             if scanned >= _MAX_SIDECARS_SCANNED:
+                collected.extend(_by_time_desc(day_rows)[: limit - len(collected)])
                 return collected, True
             scanned += 1
             meta = _read_meta(sidecar)
@@ -275,11 +296,25 @@ def _scan_reports(limit: int) -> tuple[list[dict[str, Any]], bool]:
             report_no = _report_no_of(str(meta.get("original_name", "")))
             if report_no is None:
                 continue
-            collected.append(_report_payload(sidecar.stem, meta, report_no))
-            if len(collected) >= limit:
-                return collected, False
+            day_rows.append(_report_payload(sidecar.stem, meta, report_no))
+        collected.extend(_by_time_desc(day_rows)[: limit - len(collected)])
+        if len(collected) >= limit:
+            return collected, False
 
     return collected, False
+
+
+def _by_time_desc(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """同一天内按 ``created_at`` 从新到旧。
+
+    ``created_at`` 是 ``register()`` 写的 UTC ISO 串,**同一天内字典序即时间序**,
+    所以直接拿字符串排就够,不必解析成 datetime —— 解析要处理时区后缀、要处理读坏的值,
+    而这里排的是同一天的十来条,不值得引入那些失败模式。
+
+    ⚠️ 取不到 ``created_at`` 的排最后而不是抛:一份缺字段的 sidecar 不该让整个抽屉
+    打不开(同 ``_read_meta`` 的取舍)。空串在字典序里最小,天然落到末尾。
+    """
+    return sorted(rows, key=lambda r: str(r.get("created_at") or ""), reverse=True)
 
 
 def _read_meta(sidecar: Path) -> dict[str, Any] | None:
