@@ -311,3 +311,49 @@ def test_delete_只删自己那份_不碰同目录的其它产物() -> None:
 
     assert resolve(victim).read_bytes() == PAYLOAD
     assert read_meta(victim)["kind"] == "PHOTO"
+
+
+class Test额外元数据:
+    """``register(extra=...)`` —— 2026-08-25 为「巡检记录抽屉要显示标题」加的。"""
+
+    def test_extra_写进_sidecar_并能读回来(self) -> None:
+        aid = register(
+            PAYLOAD, kind=ArtifactKind.REPORT, original_name="a.docx", extra={"title": "海之子驗收"}
+        )
+
+        assert read_meta(aid)["title"] == "海之子驗收"
+
+    def test_不传_extra_时_sidecar_里就没有那个键(self) -> None:
+        """老记录走的就是这条路。用 `in` 判而不是 `.get() is None` ——
+        后者分不清「没写」和「写了个 None」,而前端要靠「没写」退回默认文种。"""
+        aid = register(PAYLOAD, kind=ArtifactKind.REPORT, original_name="a.docx")
+
+        assert "title" not in read_meta(aid)
+
+    @pytest.mark.parametrize("保留键", ["kind", "created_at", "id", "sha256", "ext", "size_bytes"])
+    def test_不许覆盖保留键_直接报错而不是静默改掉(self, 保留键: str) -> None:
+        """🔴 ``attendance/cleanup.py`` 按 ``kind`` + ``created_at`` 决定**删哪些文件**。
+
+        允许调用方改写这两个字段 = 给出一条「让清理器删错东西」的路,
+        而且事后完全看不出来(sidecar 上没有任何痕迹说它被改过)。
+        所以这里必须**抛**,不许静默忽略、更不许静默覆盖。
+        """
+        with pytest.raises(ValueError, match="保留键"):
+            register(
+                PAYLOAD,
+                kind=ArtifactKind.REPORT,
+                original_name="a.docx",
+                extra={保留键: "篡改"},
+            )
+
+    def test_值一律转成字符串_不让别的类型漏进_JSON(self) -> None:
+        """sidecar 是要被 ``json.dumps`` 的。放进去一个不可序列化的对象,
+        炸的地方是**写盘那一刻**,而那时候正文文件已经落盘了 —— 半份产物。"""
+        aid = register(
+            PAYLOAD,
+            kind=ArtifactKind.REPORT,
+            original_name="a.docx",
+            extra={"title": 123},  # type: ignore[dict-item]
+        )
+
+        assert read_meta(aid)["title"] == "123"

@@ -54,8 +54,9 @@ import logging
 import re
 from datetime import UTC, datetime
 from enum import Enum
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Final
 from uuid import uuid4
 
 from gyt.config import (
@@ -204,12 +205,39 @@ def _read_sidecar(sidecar: Path) -> dict[str, Any]:
 # --- 对外 API ----------------------------------------------------------------
 
 
-def register(data: bytes | Path, *, kind: ArtifactKind, original_name: str) -> str:
+#: sidecar 里由 :func:`register` 自己写的键。``extra`` 不许覆盖它们 —— 见那边的说明。
+_RESERVED_META_KEYS: Final[frozenset[str]] = frozenset(
+    {"id", "kind", "original_name", "ext", "size_bytes", "sha256", "created_at"}
+)
+
+
+def register(
+    data: bytes | Path,
+    *,
+    kind: ArtifactKind,
+    original_name: str,
+    extra: Mapping[str, str] | None = None,
+) -> str:
     """登记一份产物,返回 32 位十六进制的 artifact_id。
 
     落盘位置: ``<artifacts_dir>/<YYYYMMDD>/<artifact_id><ext>``
     同目录另写 ``<artifact_id>.json`` 元数据 sidecar。
     文件名一律用 artifact_id,原始文件名只进元数据,绝不参与拼路径。
+
+    ``extra``(2026-08-25 加):额外写进 sidecar 的展示用字段,**值只能是字符串**。
+
+        为什么需要它:巡检记录抽屉(``GET /reports``)要显示这份文档**叫什么**,
+        而标题只存在于 docx 内容里,列清单时不可能去解压每个 docx 读一遍。
+
+        为什么不塞进 ``original_name``:那个字段有明确语义(「原始文件名」),
+        而且下游按「文件名」用它(下载时的建议名、``reports_api`` 从里面解编号)。
+        往里塞标题会让两件事纠缠 —— 标题里出现一串像编号的数字,
+        ``_REPORT_NO_RE`` 就会解出一个假编号,而那是**静默**的。
+
+        🔴 **保留键不许覆盖**:``extra`` 里出现 ``kind`` / ``created_at`` 这类键会直接
+        ``ValueError``,不是静默忽略也不是静默覆盖。理由是 ``attendance/cleanup.py``
+        按 ``kind`` + ``created_at`` 决定**删哪些文件** —— 让调用方能改写这两个字段,
+        等于给了一条「让清理器删错东西」的路,而且事后完全看不出来。
     """
     payload = _load_bytes(data)
     kind_value = _normalize_kind(kind)
@@ -230,6 +258,14 @@ def register(data: bytes | Path, *, kind: ArtifactKind, original_name: str) -> s
         "sha256": hashlib.sha256(payload).hexdigest(),
         "created_at": datetime.now(UTC).isoformat(),
     }
+    if extra:
+        clashes = sorted(_RESERVED_META_KEYS & set(extra))
+        if clashes:
+            raise ValueError(
+                f"extra 不许覆盖 sidecar 的保留键:{'、'.join(clashes)}"
+                "(cleanup 按 kind/created_at 决定删哪些文件)"
+            )
+        meta.update({str(k): str(v) for k, v in extra.items()})
     _write_atomic(
         day_dir / f"{artifact_id}{_META_SUFFIX}",
         json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8"),
