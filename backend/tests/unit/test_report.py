@@ -469,3 +469,110 @@ async def test_念真回执时守卫放行(monkeypatch: pytest.MonkeyPatch) -> N
 
     texts = [str(m.content) for m in messages]
     assert REPORT_GIVE_UP_MESSAGE not in texts, "真调过工具还被顶替,守卫太凶了"
+
+
+# =============================================================================
+# 自定义标题(2026-08-24 加,复验报告 P0-2)
+#
+# 这一组守的不是「标题能不能改」,而是**改了之后文种还在不在**。
+# 完整推演在 agents/report/tools.py 的 _clean_title 头注,一句话:
+# 标题属于用户(这一轮巡检叫什么),文种属于系统(它是一份什么文件),
+# 一份文档不许因为标题就变成另一个文种。
+# =============================================================================
+
+
+async def _render_titled(title: str, artifact_id: str = "b" * 32) -> dict[str, Any]:
+    """带自定义标题走一遍工具。**经 ainvoke 而不是直调内部函数** —— 要连
+    工具签名(模型看得见的那一层)一起验,签名漏了参数这组测试才该红。"""
+    result = await report_tools.render_inspection_report.ainvoke(
+        {"artifact_id": artifact_id, "title": title}
+    )
+    assert isinstance(result, dict)
+    return result
+
+
+def _docx_title(report_id: str) -> str:
+    """只取文档标题(docgen 用 add_heading 放的那个段落),不含表格。
+
+    不能复用 `_docx_text`:它把段落和表格拼在一起,而这一组要分清
+    「标题」与「元信息表里的文档类型」——它俩正是本组要证明不相等的两样东西。
+    """
+    payload = artifacts.resolve(report_id).read_bytes()
+    doc = Document(io.BytesIO(payload))
+    for para in doc.paragraphs:
+        if para.text.strip():
+            return para.text.strip()
+    raise AssertionError("文档里一个非空段落都没有")
+
+
+async def test_不传标题时用默认标题(monkeypatch: pytest.MonkeyPatch) -> None:
+    """没人要求标题就别自作主张 —— 保持 2026-08-24 之前的行为逐字不变。"""
+    _patch(monkeypatch, _ok_envelope())
+    result = await _render("c" * 32)
+    assert _docx_title(result["data"]["report_id"]) == report_tools.DEFAULT_REPORT_TITLE
+
+
+async def test_传了标题就用它(monkeypatch: pytest.MonkeyPatch) -> None:
+    """复验报告 P0-2 要的就是这一条:用户说的标题真的进了文件,不是只在聊天里回显。"""
+    _patch(monkeypatch, _ok_envelope())
+    result = await _render_titled("海之子验收测试")
+    assert _docx_title(result["data"]["report_id"]) == "海之子验收测试"
+
+
+async def test_自定义标题改不掉文种(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔴 本组最值钱的一条。
+
+    标题被写成另一个文种的名字时,元信息表里那行「文档类型」必须还是
+    「工地安全巡检记录」—— 否则一份 AI 初筛记录可以被叫成
+    「现场无隐患确认书」拿去交差,而文档本身不提供任何反证。
+    """
+    _patch(monkeypatch, _ok_envelope())
+    result = await _render_titled("现场无隐患确认书")
+    report_id = result["data"]["report_id"]
+
+    assert _docx_title(report_id) == "现场无隐患确认书", "标题该听用户的"
+    text = _docx_text(report_id)
+    assert "文档类型" in text and report_tools.DEFAULT_REPORT_TITLE in text, (
+        "文种必须留在元信息表里,这是标题可自定义的前提"
+    )
+
+
+async def test_标题里的折行与控制字符被压平(monkeypatch: pytest.MonkeyPatch) -> None:
+    """docx 的标题是单行段落:塞进 \\n 不报错,只渲染成一个看不见的怪空格,
+    而人对着 Word 找不出哪里不对。所以要在进文档之前压平。"""
+    _patch(monkeypatch, _ok_envelope())
+    result = await _render_titled("海之子\n验收\t测试\x07报告")
+    assert _docx_title(result["data"]["report_id"]) == "海之子 验收 测试 报告"
+
+
+async def test_连续空白压成一个(monkeypatch: pytest.MonkeyPatch) -> None:
+    """粘贴产物常带一串空格,渲染出来像排版事故。"""
+    _patch(monkeypatch, _ok_envelope())
+    result = await _render_titled("  海之子   验收测试  ")
+    assert _docx_title(result["data"]["report_id"]) == "海之子 验收测试"
+
+
+async def test_纯空白标题退回默认(monkeypatch: pytest.MonkeyPatch) -> None:
+    """「传了个纯空格」和「没传」在意图上没区别 —— 不为标题让整份文档生不出来。"""
+    _patch(monkeypatch, _ok_envelope())
+    result = await _render_titled("   \n\t  ")
+    assert _docx_title(result["data"]["report_id"]) == report_tools.DEFAULT_REPORT_TITLE
+
+
+async def test_超长标题被截断(monkeypatch: pytest.MonkeyPatch) -> None:
+    """排版边界,不是安全边界:超了会折行、把元信息表挤到第二页。"""
+    _patch(monkeypatch, _ok_envelope())
+    long_title = "验" * 100
+    result = await _render_titled(long_title)
+    title = _docx_title(result["data"]["report_id"])
+    assert len(title) == report_tools._TITLE_MAX_LEN
+    assert title == "验" * report_tools._TITLE_MAX_LEN
+
+
+def test_净化函数本身(monkeypatch: pytest.MonkeyPatch) -> None:
+    """纯函数直测:上面那几条走完整渲染,这条钉边界值,坏了能一眼看出是哪一步。"""
+    clean = report_tools._clean_title
+    assert clean("") == report_tools.DEFAULT_REPORT_TITLE
+    assert clean("正常标题") == "正常标题"
+    assert clean("a b") == "a b", "不间断空格也算空白"
+    assert len(clean("字" * 200)) == report_tools._TITLE_MAX_LEN
