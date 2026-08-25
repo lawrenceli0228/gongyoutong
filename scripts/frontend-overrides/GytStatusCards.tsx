@@ -65,6 +65,35 @@ function useActiveAgent(): string | null {
   return null;
 }
 
+/**
+ * 待命态的灰 —— **一个数,三处用**(顶上那行 caption、卡片右上「待命」、卡片说明文字)。
+ *
+ * 🔴 2026-08-25 设计审计实测,原先三处全都不过 WCAG AA:
+ *
+ *     caption   #9AA5A0 13px  → 2.30:1   (页底 #F1F4F3 上)
+ *     待命徽章  #B4BDB8 11px  → 约 2.0:1 (白卡上;11px 粗体**不吃**粗体豁免,
+ *                                        那条豁免的门槛是 ≥14px 粗体)
+ *     卡片说明  #8A948F 12px  → 3.13:1   (白卡上)
+ *
+ * 门槛 4.5。#626D68 在**两种背景上都过**:白卡 5.38、页底 4.86 —— 所以三处共用一个数,
+ * 不必按背景分叉(分叉了就会有人只改一处)。
+ *
+ * ⚠️ 这不是「灰得好不好看」的问题。工地是**户外强光**环境,手机屏幕反光,
+ *    办公室里勉强能读的 3:1 在太阳底下等于没有。挑更浅的灰之前先拿这个脚本重算:
+ *
+ *      python3 -c "
+ *      def lin(c):
+ *          c/=255
+ *          return c/12.92 if c<=0.03928 else ((c+0.055)/1.055)**2.4
+ *      def L(h):
+ *          h=h.lstrip('#'); r,g,b=(int(h[i:i+2],16) for i in (0,2,4))
+ *          return 0.2126*lin(r)+0.7152*lin(g)+0.0722*lin(b)
+ *      f=L('#626D68')
+ *      for bg in ('#FFFFFF','#F1F4F3'):
+ *          b=L(bg); print(bg, round((max(f,b)+.05)/(min(f,b)+.05),2))"
+ */
+const IDLE_GRAY = "text-[#626D68]";
+
 export function GytStatusCards() {
   const active = useActiveAgent();
   const activeName = CARDS.find((c) => c.key === active)?.name;
@@ -78,7 +107,7 @@ export function GytStatusCards() {
             已經交給 <b className="text-[#1B2420]">{activeName}</b> 在處理…
           </span>
         ) : (
-          <span className="text-[#9AA5A0]">有事就問工友通 · 誰在忙誰就亮</span>
+          <span className={IDLE_GRAY}>誰在忙,誰就亮起來</span>
         )}
       </div>
 
@@ -113,7 +142,7 @@ export function GytStatusCards() {
                 <span
                   className={cn(
                     "flex items-center gap-1.5 text-[11px] font-bold",
-                    lit ? "text-[#0E9F6E]" : "text-[#B4BDB8]",
+                    lit ? "text-[#0E9F6E]" : IDLE_GRAY,
                   )}
                 >
                   <span
@@ -129,7 +158,7 @@ export function GytStatusCards() {
               <div
                 className={cn(
                   "mt-0.5 text-[12px] font-medium leading-tight",
-                  lit ? "text-[#0E7A55]" : "text-[#8A948F]",
+                  lit ? "text-[#0E7A55]" : IDLE_GRAY,
                 )}
               >
                 {lit ? c.busy : c.idle}
