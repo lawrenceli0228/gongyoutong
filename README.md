@@ -72,6 +72,7 @@ docker compose --profile ui up -d   # 再起前端,浏览器开 http://localhost
 | `scripts/setup-frontend.sh` | 生成 `frontend/`(上游快照,不进 git) |
 | `data/demo/` | 演示素材(照片 / 规范 / DXF),见该目录下的 README |
 | `TODOS.md` | 已知欠账与后续待办 |
+| `LICENSE` / `NOTICE.md` | 授权条款,以及第三方素材的来源与署名 |
 
 ---
 
@@ -81,3 +82,16 @@ docker compose --profile ui up -d   # 再起前端,浏览器开 http://localhost
 2. **服务端口只绑回环。** `docker-compose.yml` 里写的是 `127.0.0.1:2024:2024`,
    不要改成 `2024:2024` —— 那会把一个零鉴权的 Agent 执行端点连同你的 API Key
    暴露给整个局域网。
+
+---
+
+## 许可
+
+**MIT License**,全文见 [`LICENSE`](LICENSE)。
+
+    Copyright (c) 2026 Lawrence L, Chenghao Fan
+
+⚠️ **MIT 只覆盖本项目自己写的代码。** 仓库里还带着一批第三方素材 ——
+前端上游(agent-chat-ui,MIT)、30 张演示照片(Pexels / CC BY 4.0)、
+一份国标规范 PDF —— 它们各自有各自的许可,**不随本项目的 MIT 再许可**。
+来源、署名与已知局限全在 [`NOTICE.md`](NOTICE.md),拿去二次分发前先看那一份。
