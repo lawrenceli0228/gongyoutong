@@ -1714,7 +1714,7 @@ function HazardRow({
           disabled={!!armedAction}
           aria-expanded={workOpen || !!armedAction}
           title={armedAction ? "先把上面那句確認回答掉" : undefined}
-          className="ml-auto flex shrink-0 items-center gap-1 self-start rounded-md border border-gray-200 px-2.5 py-1.5 text-[12px] font-medium text-[#33403A] transition hover:border-[#7FCDAE] hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11"
+          className="ml-auto flex shrink-0 items-center gap-1 self-start rounded-md border border-gray-200 px-2.5 py-1.5 text-[12px] font-medium text-[#33403A] transition hover:border-[#8FC4B0] hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11"
         >
           {workOpen || armedAction ? "收起" : "處置"}
           <ChevronDown
@@ -3043,7 +3043,7 @@ export function SupervisionPanel({
       {/* 高度上限取 min(92dvh, 100dvh-2rem):理由原样见 checkin.tsx ——
           dvh 因为手机地址栏会伸缩,减 2rem 是外层那圈 p-4,少了它在矮视口上
           居中会把顶部连同关闭按钮推出视口,而外层不滚动。 */}
-      <div className="relative z-10 flex max-h-[min(92dvh,calc(100dvh-2rem))] w-full max-w-2xl flex-col gap-3 overflow-y-auto rounded-2xl bg-white p-4 shadow-xl">
+      <div className="relative z-10 flex max-h-[min(92dvh,calc(100dvh-2rem))] w-full max-w-2xl flex-col gap-3 overflow-y-auto rounded-[22px] bg-white p-4 shadow-[0_1px_2px_rgba(23,28,26,0.05),0_24px_60px_rgba(23,28,26,0.12)]">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-base font-semibold tracking-tight">
             <ClipboardCheck className="size-5 text-gray-700" />

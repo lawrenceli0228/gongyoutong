@@ -1,22 +1,36 @@
 /**
- * 工友通首页 · 4 张能力状态卡片(W7 前端重设计 · 方案 B「清爽卡片」· 第 1 块)。
+ * 工友通首页 · 調度中樞 → 4 個子 Agent 的「流」導線圖(前端提升方案 1b「流」)。
  *
  * 新增组件(上游 agent-chat-ui 没有),由 scripts/setup-frontend.sh 直接拷进
  * frontend/src/components/thread/GytStatusCards.tsx,并在 thread-index.tsx 里挂一次
- * <GytStatusCards />(放在消息区之上,首页/聊天都常驻可见 —— 这样"派活时卡片亮"在跑的过程中看得到)。
+ * <GytStatusCards />(放在消息区之上,首页/聊天都常驻可见 —— 这样"派活时导线亮"在跑的过程中看得到)。
  *
- * 卡片是**状态灯,不是按钮**(用户定的):当调度中枢把当前这句话派给某个子 Agent 时,对应卡片亮起
- * (绿底 + 呼吸点 + 进度条 + "正在做什么"文案),其余变暗;没有活跃 Agent 时全部待命。
+ * 卡片是**状态灯,不是按钮**(用户定的):当调度中枢把当前这句话派给某个子 Agent 时,
+ * 对应的**导线亮起、会走**(flow-dash),卡片亮起(绿边 + 呼吸点 + 进度扫光 + "正在做什么"文案),
+ * 其余变暗;没有活跃 Agent 时全部待命、导线是静止的浅灰。
  *
  * "当前活跃 Agent"从 useStreamContext() 的流里推断:isLoading 时,从消息尾部往前找最近的
  * 子 Agent 署名(message.name)或 transfer_to_<name> 交接;推不出就当全待命(不报错、不乱亮)。
  * 后端子 Agent 名 → 卡片的映射见 AGENT_TO_CARD(inspection/report 归到「识隐患」这条链)。
  *
- * ⚠️ 未在无 Node 环境编译过:首次 apply 后在 WSL2/Node 里 pnpm dev 肉眼过一遍,修 TS/样式。
+ * ── 1b「流」设计落地时的调色板纪律(2026-08-26) ───────────────────────────────
+ * 品牌绿从 `#0E9F6E` 换成 `#16805C`(更深、更沉,方案定的)。实测 WCAG:
+ *   `#16805C` 当文字:白底 4.91、页底渐变 4.52 —— **两处都过 AA**,所以它既当品牌色
+ *   (背景 / 圆点 / 边框 / 导线)也能当文字。文字要更稳时用 `#0F5F44`(7.66)。
+ *   次级灰用 `#5F6B66`(白 5.55 / 页底 5.12,过 AA);**方案里那档 `#8A948F` 不过 AA
+ *   (2.88),一律不当文字用** —— 这条与 GytStatusCards 原来的「#626D68 灰阶下限」同理。
+ *
+ * ⚠️ 关键帧动画(flow-dash / halo / breathe / sweep)**内联在本组件的 <style> 里**,
+ *    不写进 globals.css:globals.css 是上游文件、不在覆盖件清单里,动它会脱离
+ *    setup-frontend.sh 的管理。keyframes 全局生效,名字加 `gyt-` 前缀避免撞车。
+ *
+ * ⚠️ 图标从 emoji 换成 lucide-react 线性图标(scan-eye / list-checks / ruler /
+ *    book-open-text),与方案 dc.html 一致;lucide-react 本来就是全站图标库。
  */
 
 import { useStreamContext } from "@/providers/Stream";
 import { cn } from "@/lib/utils";
+import { ScanEye, ListChecks, Ruler, BookOpenText, type LucideIcon } from "lucide-react";
 
 const AGENT_TO_CARD: Record<string, string> = {
   safety: "safety",
@@ -30,34 +44,26 @@ const AGENT_TO_CARD: Record<string, string> = {
 // 界面恒繁體(负责人 2026-08-18 定案:中建国际在港,现场语言是繁體)。
 // 🔴 `key` 与上面 AGENT_TO_CARD 的键**都是后端 Agent 名 / 内部卡片号,一律留英文**,
 //    转了就再也匹配不上、卡片永远不亮,而且**一行报错都不会有**。
-// 这三段中文只是给人看的字,所以**源码里就写成繁體**、不走运行时转换:
-// 这四张卡是常驻主界面(thread-index.tsx 里无条件挂一次),挂 useHantUI 等于
-// 让每个用户首屏都拉 438 KB 字典 —— 包括从不看繁體的简体工友
-// (那条红线见 hant-convert.tsx 的「图 3」)。
+// 这几段中文只是给人看的字,所以**源码里就写成繁體**、不走运行时转换。
 // 「排期」简繁同形,所以它看着没改,不是漏了。
 //
-// `sample` 是点这张卡时**填进输入框**的那句话(2026-08-25 设计审计加的,见下面
-// GytStatusCards 里那段推演)。它是**给人照抄和改的例句,不是自动发送的指令** ——
-// 填完停在输入框里,发不发、改不改由工友决定。
-// ⚠️ 写例句的两条:
-//   ① 必须是这个 Agent **真答得了**的问法(拿不准就去 eval/datasets/routing.csv
-//      找同类的行,那里每一行都标了 expected_agent);
-//   ② 「識隱患」那张**故意不给例句**:它的入口是拍照,不是打字。给一句
-//      「幫我看看這張照片」只会让人对着空输入框发懵 —— 没有照片,那句话没有意义。
+// `sample` 是点这张卡时**填进输入框**的那句话(2026-08-25 设计审计加的)。
+// 它是**给人照抄和改的例句,不是自动发送的指令** —— 填完停在输入框里,发不发、改不改由工友决定。
+//   ①「識隱患」故意不给例句:它的入口是拍照,不是打字。
 const CARDS: {
   key: string;
   name: string;
-  emoji: string;
+  Icon: LucideIcon;
   idle: string;
   busy: string;
   sample?: string;
 }[] = [
-  { key: "safety", name: "識隱患", emoji: "📷", idle: "拍照識別現場隱患", busy: "正在看這張照片有沒有隱患…" },
-  { key: "schedule", name: "排期", emoji: "📋", idle: "記任務 / 改期限 / 查進度", busy: "正在記任務…",
+  { key: "safety", name: "識隱患", Icon: ScanEye, idle: "拍照識別現場隱患", busy: "正在看這張照片有沒有隱患…" },
+  { key: "schedule", name: "排期", Icon: ListChecks, idle: "記任務 / 改期限 / 查進度", busy: "正在記任務…",
     sample: "記一下:明天上午整改臨邊防護" },
-  { key: "cad", name: "圖紙", emoji: "📐", idle: "讀 DXF 尺寸·標高·構件", busy: "正在讀圖紙參數…",
+  { key: "cad", name: "圖紙", Icon: Ruler, idle: "讀 DXF 尺寸·標高·構件", busy: "正在讀圖紙參數…",
     sample: "當前項目有哪些圖紙?" },
-  { key: "knowledge", name: "規範", emoji: "📖", idle: "查消防 / 防火 / 安全條文", busy: "正在查規範…",
+  { key: "knowledge", name: "規範", Icon: BookOpenText, idle: "查消防 / 防火 / 安全條文", busy: "正在查規範…",
     sample: "腳手架的防護欄杆高度,規範怎麼要求?" },
 ];
 
@@ -85,49 +91,34 @@ function useActiveAgent(): string | null {
 }
 
 /**
- * 待命态的灰 —— **一个数,三处用**(顶上那行 caption、卡片右上「待命」、卡片说明文字)。
- *
- * 🔴 2026-08-25 设计审计实测,原先三处全都不过 WCAG AA:
- *
- *     caption   #9AA5A0 13px  → 2.30:1   (页底 #F1F4F3 上)
- *     待命徽章  #B4BDB8 11px  → 约 2.0:1 (白卡上;11px 粗体**不吃**粗体豁免,
- *                                        那条豁免的门槛是 ≥14px 粗体)
- *     卡片说明  #8A948F 12px  → 3.13:1   (白卡上)
- *
- * 门槛 4.5。#626D68 在**两种背景上都过**:白卡 5.38、页底 4.86 —— 所以三处共用一个数,
- * 不必按背景分叉(分叉了就会有人只改一处)。
- *
- * 🔴 **后来这个数扩成了全仓的文字灰**(同日第二轮审计):清点下来,覆盖件里
- *    28 处文字用的是 `#8A948F` / `#A2ABA6` / `#9AA5A0` / `#B4BDB8` 四档浅灰,
- *    **没有一处是边框或背景,全是文字,而四档全部不过 AA**(1.92 ~ 3.13)。
- *    也就是说这套调色板里**根本没有一档「比 #33403A 浅、又还读得见」的灰** ——
- *    四档都是在同一个不存在的位置上反复取色。
- *
- *    结论:低于 `#626D68` 的层级**不用亮度表达,用字号和字重表达**。
- *    现在文字色只剩六个,每一个都在白底和页底上都过 4.5:
- *
- *        #1B2420 15.9/14.0   #33403A 10.9/9.6   #626D68 5.4/4.7
- *        #0E7A55  5.3/4.7    #8F6318  5.3/4.7   #C0392B 5.4/4.8
- *
- *    ⚠️ **绿色分两个**:`#0E9F6E` 是**品牌绿**,只许当背景 / 圆点 / 边框
- *    (当文字只有 3.39);当文字一律用 `#0E7A55`。这两个本来就都在调色板里,
- *    以前是混着用的。加新文案时别顺手写 `text-[#0E9F6E]`。
- *
- * ⚠️ 这不是「灰得好不好看」的问题。工地是**户外强光**环境,手机屏幕反光,
- *    办公室里勉强能读的 3:1 在太阳底下等于没有。挑更浅的灰之前先拿这个脚本重算:
- *
- *      python3 -c "
- *      def lin(c):
- *          c/=255
- *          return c/12.92 if c<=0.03928 else ((c+0.055)/1.055)**2.4
- *      def L(h):
- *          h=h.lstrip('#'); r,g,b=(int(h[i:i+2],16) for i in (0,2,4))
- *          return 0.2126*lin(r)+0.7152*lin(g)+0.0722*lin(b)
- *      f=L('#626D68')
- *      for bg in ('#FFFFFF','#F1F4F3'):
- *          b=L(bg); print(bg, round((max(f,b)+.05)/(min(f,b)+.05),2))"
+ * 次级灰(卡片右上「待命」、卡片说明、副标题)。方案 1b 用的 `#8A948F` 不过 WCAG AA
+ * (白底 3.13、页底 2.88),这里落到过 AA 的 `#5F6B66`(白 5.55 / 页底 5.12)。
+ * 🔴 低于此的层级用字号/字重表达,不用更浅的灰 —— 工地是户外强光,3:1 在太阳下等于没有。
  */
-const IDLE_GRAY = "text-[#626D68]";
+const SUBTLE = "text-[#5F6B66]";
+
+/**
+ * 关键帧 + 导线基础样式。内联注入,scoped 靠 `gyt-` 前缀。
+ * flow-dash:亮起的导线上有一段更亮的绿在走,做出「派活流过去」的方向感。
+ */
+function FlowStyle() {
+  return (
+    <style>{`
+      @keyframes gyt-flowdash { to { background-position: 220px 0; } }
+      @keyframes gyt-halo { 0%,100% { box-shadow: 0 0 0 0 rgba(22,128,92,.16) } 50% { box-shadow: 0 0 0 8px rgba(22,128,92,0) } }
+      @keyframes gyt-breathe { 0%,100% { opacity:.35 } 50% { opacity:1 } }
+      @keyframes gyt-sweep { 0% { transform: translateX(-100%) } 100% { transform: translateX(320%) } }
+      .gyt-wire { background:#E4E8E6; }
+      .gyt-wire-lit { background:linear-gradient(180deg,#16805C,#8FC4B0); background-size:100% 80px; animation:gyt-flowdash 1.6s linear infinite; }
+      .gyt-halo { animation:gyt-halo 2.4s ease-out infinite; }
+      .gyt-breathe { animation:gyt-breathe 1.6s ease-in-out infinite; }
+      .gyt-sweep { animation:gyt-sweep 2.4s linear infinite; }
+      @media (prefers-reduced-motion: reduce) {
+        .gyt-wire-lit,.gyt-halo,.gyt-breathe,.gyt-sweep { animation:none !important; }
+      }
+    `}</style>
+  );
+}
 
 /**
  * @param onPick 点了带例句的那几张卡时调用,把例句**填进输入框**(不自动发送)。
@@ -135,54 +126,72 @@ const IDLE_GRAY = "text-[#626D68]";
  */
 export function GytStatusCards({ onPick }: { onPick?: (text: string) => void } = {}) {
   const active = useActiveAgent();
-  const activeName = CARDS.find((c) => c.key === active)?.name;
+  const activeIndex = CARDS.findIndex((c) => c.key === active);
+  const activeName = CARDS[activeIndex]?.name;
 
   return (
     <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pt-3 pb-1">
-      <div className="mb-2 flex h-5 items-center justify-center gap-2 text-[13px] font-medium">
-        {active ? (
-          <span className="flex items-center gap-2 text-[#0E7A55]">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-[#0E9F6E]" />
-            已經交給 <b className="text-[#1B2420]">{activeName}</b> 在處理…
+      <FlowStyle />
+
+      {/* ── 調度中樞:导线的起点 ───────────────────────────────────────── */}
+      <div className="flex items-center justify-center">
+        <span
+          className={cn(
+            "flex items-center gap-2 rounded-full bg-white px-4 py-[7px] text-[13px] font-bold shadow-[0_1px_2px_rgba(23,28,26,.06)]",
+            active ? "text-[#0F5F44] gyt-halo" : SUBTLE,
+          )}
+        >
+          <span
+            className={cn(
+              "flex h-5 w-5 items-center justify-center rounded-md text-[11px] font-black",
+              active ? "bg-[#16805C] text-white" : "bg-[#EEF3F1] text-[#16805C]",
+            )}
+          >
+            工
           </span>
-        ) : (
-          <span className={IDLE_GRAY}>誰在忙,誰就亮起來</span>
-        )}
+          {active ? (
+            <>
+              已經交給 <b className="text-[#171C1A]">{activeName}</b> 在處理…
+            </>
+          ) : (
+            "調度中樞 · 全部待命"
+          )}
+        </span>
       </div>
 
-      {/* 窄屏 2×2、≥640px 恢复四列一排。
-          为什么加这个断点:2026-08-15 用无头浏览器在 390×844(iPhone)视口实测,
-          四列并排会把每张卡压到 **56px 宽**,卡名与说明文字被压成竖条、卡片顶部被裁掉。
-          页面并没有横向滚动(scrollWidth == innerWidth),所以不是溢出而是 flex/grid 挤压。
-          640px 是 Tailwind 的 sm 断点:768(iPad)与 1280(桌面)都在它之上,
-          走的仍是原来的 grid-cols-4,观感一个像素不变。 */}
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+      {/* 中枢往下的竖导线 */}
+      <div className="flex justify-center">
+        <span className={cn("h-4 w-0.5", active ? "gyt-wire-lit" : "gyt-wire")} />
+      </div>
+      {/* 横向总线(对齐到四列的中心:12.5% ~ 87.5%) */}
+      <div className={cn("mx-[12.5%] h-0.5 rounded", active ? "bg-[#16805C]" : "gyt-wire")} />
+      {/* 四条降到卡片的竖导线;只有活跃那条会走 */}
+      <div className="grid grid-cols-2 sm:grid-cols-4">
+        {CARDS.map((c, i) => (
+          <span
+            key={c.key}
+            className={cn(
+              "hidden h-4 w-0.5 justify-self-center sm:block",
+              active === c.key ? "gyt-wire-lit" : "gyt-wire",
+            )}
+          />
+        ))}
+      </div>
+
+      {/* ── 4 张能力卡 ─────────────────────────────────────────────────── */}
+      <div className="mt-2 grid grid-cols-2 gap-2.5 sm:mt-0 sm:grid-cols-4">
         {CARDS.map((c) => {
           const lit = active === c.key;
           const dim = !!active && !lit;
-          // 只有「带例句」且「当前没在跑」的卡才是可点的。
-          // 跑起来之后全部变回纯展示:那时候它们在报状态,点一下换掉输入框里的字
-          // 只会打断人。
           const pickable = !!c.sample && !active && !!onPick;
+          const Icon = c.Icon;
           return (
             <div
               key={c.key}
-              // 🔴 **这四张卡是状态灯,不是按钮** —— 这条 2026-08-15 定的没变,
-              //    所以这里仍然是 <div>,不是 <button>,也没有 role="button"。
-              //
-              //    2026-08-25 设计审计改的是另一件事:它们**长得像能点**
-              //    (白卡 + 圆角 + 边框 + 阴影,占着桌面首屏最上方、手机 31% 的屏),
-              //    而点下去什么都不发生 —— 实测 `cursor: auto`、无 role、DOM 里是 DIV。
-              //    工友会去点「識隱患」,然后得到一个死路。
-              //
-              //    修法是**给那个点击一个去处,而不是把卡片变成按钮**:
-              //    点了往输入框填一句这张卡真答得了的例句,停在那儿等人改或发。
-              //    状态灯还是状态灯(该亮照亮、该暗照暗),只是不再是死路。
-              //    ⚠️ 别升级成「点了直接发送」:那就真变成按钮了,而且会替工友
-              //       做决定 —— 他可能只是想看看这张卡是干嘛的。
+              // 🔴 **这四张卡是状态灯,不是按钮**(2026-08-15 定),所以仍是 <div>,无 role="button"。
+              //    2026-08-25 起给「可点」的卡一个去处:点了往输入框填一句例句,停在那儿等人改或发。
+              //    ⚠️ 别升级成「点了直接发送」:那就替工友做决定了。
               onClick={pickable ? () => onPick!(c.sample!) : undefined}
-              // 键盘可达:能点的东西就得能用 Tab 走到、能用回车/空格触发。
-              // 不能点的那几张 tabIndex 给 undefined,不进 Tab 序列(它们只是灯)。
               tabIndex={pickable ? 0 : undefined}
               onKeyDown={
                 pickable
@@ -196,51 +205,49 @@ export function GytStatusCards({ onPick }: { onPick?: (text: string) => void } =
               }
               title={pickable ? `試試:${c.sample}` : undefined}
               className={cn(
-                "rounded-2xl border bg-white p-3 transition",
-                lit ? "border-2 border-[#0E9F6E] bg-[#EEF6F2]" : "border-[#EAEDEB]",
+                "rounded-[20px] bg-white p-3.5 shadow-[0_1px_2px_rgba(23,28,26,.05),0_14px_34px_rgba(23,28,26,.05)] transition",
+                lit && "shadow-[0_1px_2px_rgba(23,28,26,.05),0_14px_34px_rgba(22,128,92,.12)] outline outline-[1.5px] outline-[#16805C] gyt-halo",
                 dim && "opacity-50",
-                // 可点的才给手型和悬停反馈 —— 反过来说:**不给例句的那张卡
-                // 现在明确不是手型**,它不再假装自己能点。
                 pickable &&
-                  "cursor-pointer hover:border-[#7FCDAE] hover:shadow-[0_6px_18px_rgba(27,36,32,0.08)] focus-visible:border-[#0E9F6E] focus-visible:ring-2 focus-visible:ring-[#7FCDAE] focus-visible:outline-none",
+                  "cursor-pointer hover:-translate-y-px hover:shadow-[0_6px_18px_rgba(23,28,26,.09)] focus-visible:outline focus-visible:outline-[1.5px] focus-visible:outline-[#16805C] focus-visible:ring-2 focus-visible:ring-[#8FC4B0] focus-visible:outline-none",
               )}
             >
               <div className="flex items-center justify-between">
-                <div
+                <span
                   className={cn(
-                    "flex h-9 w-9 items-center justify-center rounded-xl text-lg",
-                    lit ? "bg-[#0E9F6E]" : "bg-[#F1F4F3]",
+                    "flex h-9 w-9 items-center justify-center rounded-[13px]",
+                    lit ? "bg-[#16805C]" : "bg-[#F2F5F4]",
                   )}
                 >
-                  {c.emoji}
-                </div>
+                  <Icon className="h-[18px] w-[18px]" strokeWidth={2} color={lit ? "#ffffff" : "#5F6B66"} />
+                </span>
                 <span
                   className={cn(
                     "flex items-center gap-1.5 text-[11px] font-bold",
-                    lit ? "text-[#0E7A55]" : IDLE_GRAY,
+                    lit ? "text-[#0F5F44]" : SUBTLE,
                   )}
                 >
                   <span
                     className={cn(
-                      "h-2 w-2 rounded-full",
-                      lit ? "animate-pulse bg-[#0E9F6E]" : "bg-[#D5DBD8]",
+                      "h-1.5 w-1.5 rounded-full",
+                      lit ? "gyt-breathe bg-[#16805C]" : "bg-[#C9D2CD]",
                     )}
                   />
                   {lit ? "正在忙" : "待命"}
                 </span>
               </div>
-              <div className="mt-2 text-[15px] font-black text-[#1B2420]">{c.name}</div>
+              <div className="mt-3 text-[15px] font-black text-[#171C1A]">{c.name}</div>
               <div
                 className={cn(
                   "mt-0.5 text-[12px] font-medium leading-tight",
-                  lit ? "text-[#0E7A55]" : IDLE_GRAY,
+                  lit ? "text-[#0F5F44]" : SUBTLE,
                 )}
               >
                 {lit ? c.busy : c.idle}
               </div>
               {lit && (
-                <div className="mt-2 h-1.5 overflow-hidden rounded bg-[#D6EFE4]">
-                  <span className="block h-full w-1/3 animate-pulse rounded bg-[#0E9F6E]" />
+                <div className="mt-3 h-1 overflow-hidden rounded bg-[#E3EFE9]">
+                  <span className="gyt-sweep block h-full w-1/3 rounded bg-[#16805C]" />
                 </div>
               )}
             </div>

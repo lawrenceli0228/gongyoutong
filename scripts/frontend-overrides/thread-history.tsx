@@ -296,6 +296,7 @@ function DeleteConfirmBar({
  */
 function ThreadRow({
   title,
+  isActive,
   isArmed,
   armedAt,
   isDeleting,
@@ -306,6 +307,8 @@ function ThreadRow({
   onConfirm,
 }: {
   title: string;
+  /** 是不是当前正打开的这条 —— 1b「流」里当前项亮绿点 + 浅绿底(dc.html 歷史記錄面板)。 */
+  isActive: boolean;
   isArmed: boolean;
   /** 举手那一刻的时间戳,透传给确认条卡静默期。 */
   armedAt: number;
@@ -340,7 +343,11 @@ function ThreadRow({
             // 这是一列可滚动的目标,手指在滚动中落点,**竖向**才是真正会miss 的那一轴;
             // 36 → 44 两个目标一起长高,横向一个像素没动。
             // 代价:一屏少看两三条历史。这条是取舍,不是白赚。
-            className="h-11 w-[280px] items-center justify-start text-left font-normal"
+            // rounded-[14px] + 当前项浅绿底(1b「流」):tailwind-merge 会用它盖掉 ghost 的 rounded-md。
+            className={cn(
+              "h-11 w-[280px] items-center justify-start rounded-[14px] text-left font-normal",
+              isActive && "bg-[#F0F5F3] font-bold text-[#171C1A] hover:bg-[#F0F5F3]",
+            )}
             onClick={(e) => {
               e.preventDefault();
               onOpen();
@@ -371,6 +378,9 @@ function ThreadRow({
               转了不会有任何报错:简体工友打的「今天还有哪些任务没做完」在**他自己的**
               历史列表里变成繁體,他会以为点错了对话,然后一条条翻找那条「不见了」的记录。
             */}
+            {isActive && (
+              <span className="mr-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#16805C]" />
+            )}
             <p className="max-w-[13rem] truncate text-ellipsis">{title}</p>
           </Button>
 
@@ -496,6 +506,7 @@ function ThreadList({
         <ThreadRow
           key={t.thread_id}
           title={getThreadTitle(t)}
+          isActive={t.thread_id === threadId}
           isArmed={armed?.id === t.thread_id}
           armedAt={armed?.at ?? 0}
           isDeleting={deletingId === t.thread_id}
@@ -520,7 +531,7 @@ function ThreadHistoryLoading() {
       {Array.from({ length: 30 }).map((_, i) => (
         <Skeleton
           key={`skeleton-${i}`}
-          className="h-10 w-[280px]"
+          className="h-10 w-[280px] rounded-[14px]"
         />
       ))}
     </div>
@@ -571,7 +582,7 @@ export default function ThreadHistory() {
               两个 h1 的代价只落在读屏用户身上:按标题跳转时,「歷史記錄」和页面主标题
               被念成同一级,听不出谁包着谁 —— 眼睛看的人一辈子发现不了。
               字号字重一个字没动,观感逐像素不变。 */}
-          <h2 className="text-xl font-semibold tracking-tight">歷史記錄</h2>
+          <h2 className="text-xl font-black tracking-tight text-[#171C1A]">歷史記錄</h2>
         </div>
         {threadsLoading ? (
           <ThreadHistoryLoading />

@@ -178,12 +178,12 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
       onClick={onClose}
     >
       <div
-        className="max-h-[80vh] w-full max-w-xl overflow-y-auto rounded-t-2xl bg-white p-5 shadow-xl sm:rounded-2xl"
+        className="max-h-[80vh] w-full max-w-xl overflow-y-auto rounded-t-[22px] bg-white p-5 shadow-[0_1px_2px_rgba(23,28,26,0.05),0_24px_60px_rgba(23,28,26,0.12)] sm:rounded-[22px]"
         // 点内容区不该关掉抽屉 —— 点遮罩才关。
         onClick={(event) => event.stopPropagation()}
       >
         <header className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-bold text-[#33403A]">巡檢記錄</h2>
+          <h2 className="text-lg font-black text-[#171C1A]">巡檢記錄</h2>
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -205,7 +205,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
         </header>
 
         {loading && reports.length === 0 && (
-          <p className="py-8 text-center text-sm text-[#626D68]">正在找…</p>
+          <p className="py-8 text-center text-sm text-[#5F6B66]">正在找…</p>
         )}
 
         {/* 读不出来 —— 与「真的没有」分开画,理由见组件头注。 */}
@@ -215,7 +215,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
             <button
               type="button"
               onClick={() => void load()}
-              className="mt-3 min-h-11 rounded-[10px] bg-[#0E9F6E] px-4 text-sm font-bold text-white sm:min-h-0 sm:py-2"
+              className="mt-3 min-h-11 rounded-[10px] bg-[#16805C] px-4 text-sm font-bold text-white sm:min-h-0 sm:py-2"
             >
               再試一次
             </button>
@@ -224,7 +224,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
 
         {/* 真的一份都没有。这句话要告诉人**下一步做什么**。 */}
         {!loading && error === null && reports.length === 0 && (
-          <p className="py-8 text-center text-sm text-[#626D68]">
+          <p className="py-8 text-center text-sm text-[#5F6B66]">
             還沒有巡檢記錄。
             <br />
             工地上拍張照發給我,我看完就給你出一份。
@@ -245,7 +245,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
 
         {truncated && reports.length > 0 && (
           // 「只列了最近这些」**必须说**:不说的话人以为更早的记录丢了。
-          <p className="mt-3 text-xs text-[#626D68]">
+          <p className="mt-3 text-xs text-[#5F6B66]">
             只列了最近這些。要找更早的記錄,把編號報給我。
           </p>
         )}
@@ -280,9 +280,9 @@ function ReportRow({ report, artifactBase }: ReportRowProps) {
       <a
         href={reportDownloadUrl(artifactBase, report.artifactId)}
         download={report.filename || undefined}
-        className="flex min-h-14 items-center gap-3 rounded-[12px] border border-[#EEF1F0] bg-[#FAFBFB] px-4 py-3 transition hover:border-[#7FCDAE]"
+        className="flex min-h-14 items-center gap-3 rounded-[16px] border border-transparent bg-[#F9FAFA] px-4 py-3 transition hover:border-[#8FC4B0]"
       >
-        <FileText className="size-5 shrink-0 text-[#0E7A55]" />
+        <FileText className="size-5 shrink-0 text-[#16805C]" />
         <span className="min-w-0 flex-1">
           {/* 🔴 **主行是名字,不是编号(2026-08-25 设计审计 D9)。**
               改之前这里放的是 `reportTitle()`,也就是 19 位的
@@ -294,7 +294,7 @@ function ReportRow({ report, artifactBase }: ReportRowProps) {
           <span className="block truncate text-sm font-bold text-[#33403A]">
             {headline}
           </span>
-          <span className="block truncate text-xs text-[#626D68]">
+          <span className="block truncate text-xs text-[#5F6B66]">
             {/* 编号降到副行,和时间、大小并排 —— **没有删掉**:
                 要拿编号去对账 / 报给监理的人照样一眼看得到。
                 tabular-nums 跟着编号搬到这一行来了。
@@ -307,7 +307,7 @@ function ReportRow({ report, artifactBase }: ReportRowProps) {
             {[when, size].filter(Boolean).join(" · ")}
           </span>
         </span>
-        <Download className="size-4 shrink-0 text-[#626D68]" />
+        <Download className="size-4 shrink-0 text-[#5F6B66]" />
       </a>
     </li>
   );

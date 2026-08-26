@@ -329,7 +329,7 @@ function RecentRow({ receipt }: { receipt: Receipt }) {
 function PairTakeoverNotice({ state }: { state: PairState }) {
   return (
     <div
-      className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-10 text-center"
+      className="flex flex-col items-center gap-2 rounded-[16px] border border-dashed border-[#C6D0CB] bg-[#F9FAFA] px-4 py-10 text-center"
       aria-live="polite"
     >
       <Smartphone className="size-6 text-gray-400" />
@@ -790,7 +790,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
             视口矮到 400px 以下时(手机横过来就是 390px)92dvh+32px 会超出视口,
             外层 items-center 居中把超出的部分**上下均分**,顶部连同关闭按钮被推到
             视口外面,而外层不滚动 —— 又是一次「看得见点不着」。 */}
-      <div className="relative z-10 flex max-h-[min(92dvh,calc(100dvh-2rem))] w-full max-w-md flex-col gap-4 overflow-y-auto rounded-2xl bg-white p-4 shadow-xl lg:max-w-3xl">
+      <div className="relative z-10 flex max-h-[min(92dvh,calc(100dvh-2rem))] w-full max-w-md flex-col gap-4 overflow-y-auto rounded-[22px] bg-white p-4 shadow-[0_1px_2px_rgba(23,28,26,0.05),0_24px_60px_rgba(23,28,26,0.12)] lg:max-w-3xl">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-base font-semibold tracking-tight">
             <Camera className="size-5 text-gray-700" />
@@ -857,7 +857,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
                     <img
                       src={photo.previewUrl}
                       alt="待提交的打卡照片"
-                      className="max-h-64 w-full rounded-xl border border-gray-200 object-contain"
+                      className="max-h-64 w-full rounded-[16px] border border-[#E4E8E6] object-contain"
                     />
                     <div className="flex items-center gap-2">
                       <Button
@@ -893,7 +893,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
                       autoPlay
                       playsInline
                       muted
-                      className="aspect-[3/4] w-full -scale-x-100 rounded-xl border border-gray-200 bg-gray-900 object-cover"
+                      className="aspect-[3/4] w-full -scale-x-100 rounded-[18px] border border-[#E4E8E6] bg-[#141917] object-cover"
                     />
                     <Button
                       onClick={capture}
@@ -920,7 +920,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
                     />
                     <Label
                       htmlFor="gyt-checkin-file"
-                      className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-sm text-gray-600 hover:bg-gray-100"
+                      className="flex cursor-pointer items-center justify-center gap-2 rounded-[16px] border border-dashed border-[#C6D0CB] bg-[#F9FAFA] px-4 py-8 text-sm text-gray-600 hover:bg-gray-100"
                     >
                       <Camera className="size-5" />
                       拍一張自拍(或從相冊選 JPEG)

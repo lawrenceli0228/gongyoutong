@@ -42,7 +42,7 @@
 
 import type { Metadata } from "next";
 import "./globals.css";
-import { Inter } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import React from "react";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 
@@ -54,6 +54,23 @@ const inter = Inter({
   // 用 inter.className 的话它会把整条 font-family 写死成「Inter + 系统兜底」,
   // 那正是原来的病 —— 汉字挂不上任何一个指定的字体。
   variable: "--gyt-font-latin",
+});
+
+/**
+ * 等宽字体(前端提升方案 1b「流」)。界面上大量的编号 `GYT-H-0312`、耗时 `6.83s`、
+ * 文件大小 `42.6 KB` 都用等宽 —— 方案 dc.html 用的是 JetBrains Mono。
+ *
+ * 🔴 **只订 latin**:这些字符全是 ASCII,汉字永远走不到这条 `font-mono` 上
+ *    (CSS 逐字符回退,汉字在 JetBrains Mono 里查不到会落回上面的 CJK 表)。
+ *    latin 子集 ~30 KB woff2,守得住首屏预算;整套 CJK 等宽有好几 MB,绝不自托管。
+ * ⚠️ 只定义 `--gyt-font-mono`,下面在 <body> 上把 Tailwind 的 `--font-mono` 指过来 ——
+ *    这样全站 `font-mono` 工具类(编号 / 数字 / 代码)一次性换成它,不必逐处改 className。
+ */
+const jbMono = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  display: "swap",
+  variable: "--gyt-font-mono",
 });
 
 /**
@@ -90,8 +107,17 @@ export default function RootLayout({
   return (
     <html lang="zh-HK">
       <body
-        className={inter.variable}
-        style={{ fontFamily: FONT_STACK }}
+        className={`${inter.variable} ${jbMono.variable}`}
+        // `--font-mono` 是 Tailwind v4 `font-mono` 工具类读的令牌(globals.css 没自定义,
+        // 走的是框架默认);在 body 上把它指向 JetBrains Mono,自定义属性会向下继承,
+        // 全站 `font-mono` 一次性生效。等宽只吃 ASCII,末尾照留系统兜底。
+        style={
+          {
+            fontFamily: FONT_STACK,
+            "--font-mono":
+              "var(--gyt-font-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+          } as React.CSSProperties
+        }
       >
         <NuqsAdapter>{children}</NuqsAdapter>
       </body>
