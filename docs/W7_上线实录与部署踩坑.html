@@ -170,30 +170,30 @@ GET /checkin/recent        → 1 条,geo_status=ok
   <h3>1.0 前置:备份 + 摸底(只读,不改任何东西)</h3>
 <pre># 数据是唯一不可再生的东西(实测只有 <b>181MB</b>,备份很便宜)
 mkdir -p ~/gyt-backups
-rsync -az -e ssh animego-old:/opt/gyt/data/ ~/gyt-backups/data-$(date +%Y%m%d-%H%M%S)/
+rsync -az -e ssh gyt-prod:/opt/gyt/data/ ~/gyt-backups/data-$(date +%Y%m%d-%H%M%S)/
 
 # 摸底:磁盘、镜像、容器
-ssh animego-old 'df -h /; docker system df; docker images; docker ps'</pre>
+ssh gyt-prod 'df -h /; docker system df; docker images; docker ps'</pre>
   <div class="box b-warn">
     <p>⚠️ <b>注意 <code>Build Cache</code> 那一行。</b> 它是 0B 就意味着<b>下一次构建是全量的</b>
       (含 2.2GB 权重重下),峰值需求会高出一个量级 —— §3 的账全看这个数。</p>
   </div>
 
   <h3>1.1 腾空间(§3 会给出这一步能不能省)</h3>
-<pre>ssh animego-old 'journalctl --vacuum-size=50M; apt-get clean'</pre>
-  <p><code>/opt/animego-mongo-final-*.tar.gz</code>(214MB)可以挪到开发机再删 ——
+<pre>ssh gyt-prod 'journalctl --vacuum-size=50M; apt-get clean'</pre>
+  <p><code>/opt/旧站冷备-*.tar.gz</code>(214MB)可以挪到开发机再删 ——
     <b>先 scp 下来、比对 sha256 再删源</b>。实测这一轮共回收 <b>597MB</b>(11G → 12G)。</p>
 
   <h3>1.2 同步代码 —— ⚠️ 别用旧文档里那条命令</h3>
 <pre># 演练:先看清楚要删什么(<b>必做</b>)
 rsync -azn --delete -i --no-o --no-g --filter=':- .gitignore' \
   --exclude '.git' <b>--exclude 'backups/'</b> \
-  ./ animego-old:/opt/gyt/
+  ./ gyt-prod:/opt/gyt/
 
 # 确认无误再真跑
 rsync -az --delete <b>--no-o --no-g --filter=':- .gitignore' \
   --exclude '.git' --exclude 'backups/'</b> \
-  ./ animego-old:/opt/gyt/</pre>
+  ./ gyt-prod:/opt/gyt/</pre>
   <p>四个开关缺一不可,理由分别见 §2.2(<code>--filter</code>)、§2.3(<code>--no-o --no-g</code>)、
     §2.2(<code>--exclude '.git'</code>)、下面这一段(<code>--exclude 'backups/'</code>)。</p>
 
@@ -212,43 +212,43 @@ rsync -az --delete <b>--no-o --no-g --filter=':- .gitignore' \
       (对话历史、属主、<code>.git</code>)全是演练档抓出来的,这是第四个。
       数一下 <code>deleting</code> 的行数比逐行读更省事:</p>
 <pre>rsync -azn --delete -i --no-o --no-g --filter=':- .gitignore' \
-  --exclude '.git' --exclude 'backups/' ./ animego-old:/opt/gyt/ | grep -c deleting
+  --exclude '.git' --exclude 'backups/' ./ gyt-prod:/opt/gyt/ | grep -c deleting
 # 期望 0。非 0 就逐行看清楚每一条,别 rsync 完再后悔。</pre>
   </div>
 
   <h3>1.3 构建后端 —— <b>在 VPS 上构,不要在开发机构了传</b></h3>
-<pre>ssh animego-old 'cd /opt/gyt &amp;&amp; DOCKER_BUILDKIT=1 \
+<pre>ssh gyt-prod 'cd /opt/gyt &amp;&amp; DOCKER_BUILDKIT=1 \
   docker compose -f docker-compose.yml -f docker-compose.vps.yml build backend'</pre>
   <p>⚠️ <b>构建期间另开一个窗口盯磁盘</b>(实测 <b>6 分钟内从 13G 掉到 1.6G</b>):</p>
-<pre>ssh animego-old 'while true; do df -h / | tail -1 | awk "{print \$4}"; sleep 30; done'</pre>
+<pre>ssh gyt-prod 'while true; do df -h / | tail -1 | awk "{print \$4}"; sleep 30; done'</pre>
   <p>⚠️ <b>构完立刻回收缓存</b>,别等:</p>
-<pre>ssh animego-old 'docker builder prune -af'   # 实测回收 <b>7.89GB</b></pre>
+<pre>ssh gyt-prod 'docker builder prune -af'   # 实测回收 <b>7.89GB</b></pre>
 
   <h3>1.4 起后端 —— ⚠️ <b>不带 <code>--build</code></b></h3>
-<pre>ssh animego-old 'cd /opt/gyt &amp;&amp; \
+<pre>ssh gyt-prod 'cd /opt/gyt &amp;&amp; \
   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d <b>--no-build</b> backend'</pre>
   <p>带 <code>--build</code> 会把刚构好的镜像<b>再构一遍</b>,理由见 §2.4。</p>
 
   <h3>1.5 前端:先重新生成 <code>frontend/</code>,再构</h3>
   <p><code>frontend/</code> 不进 git、也被 rsync 排除,VPS 上那份是旧的(§2.6):</p>
-<pre>ssh animego-old 'cd /opt/gyt &amp;&amp; COREPACK_ENABLE_DOWNLOAD_PROMPT=0 bash scripts/setup-frontend.sh'</pre>
+<pre>ssh gyt-prod 'cd /opt/gyt &amp;&amp; COREPACK_ENABLE_DOWNLOAD_PROMPT=0 bash scripts/setup-frontend.sh'</pre>
   <p>⚠️ VPS 上<b>没有 pnpm</b>,脚本装 <code>qrcode.react</code> 那一步会 <code>die</code>。用容器补(§2.7):</p>
-<pre>ssh animego-old 'cd /opt/gyt/frontend &amp;&amp; docker run --rm -v "$PWD":/app -w /app \
+<pre>ssh gyt-prod 'cd /opt/gyt/frontend &amp;&amp; docker run --rm -v "$PWD":/app -w /app \
   -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 node:22-slim \
   sh -c "corepack enable &amp;&amp; pnpm add --save-exact qrcode.react@4.2.0"'</pre>
   <p>然后构建 + 起:</p>
-<pre>ssh animego-old 'cd /opt/gyt &amp;&amp; DOCKER_BUILDKIT=1 \
+<pre>ssh gyt-prod 'cd /opt/gyt &amp;&amp; DOCKER_BUILDKIT=1 \
   docker compose -f docker-compose.yml -f docker-compose.vps.yml build frontend'
-ssh animego-old 'cd /opt/gyt &amp;&amp; \
+ssh gyt-prod 'cd /opt/gyt &amp;&amp; \
   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --no-build'</pre>
 
   <h3>1.6 Caddyfile 改了就必须 <b>重建 caddy 容器</b>,不是 reload</h3>
-<pre>ssh animego-old 'cd /opt/gyt &amp;&amp; \
+<pre>ssh gyt-prod 'cd /opt/gyt &amp;&amp; \
   docker compose -f docker-compose.yml -f docker-compose.vps.yml up -d --no-build <b>--force-recreate caddy</b>'</pre>
   <p><code>caddy reload</code> 在这套部署里<b>用不了</b>(admin API 没开),
     而绑定挂载的 inode 问题让容器看不到新文件 —— 见 §2.8。</p>
   <p>核对路由顺序(<b>这是唯一可靠的判据,<code>caddy validate</code> 说 Valid 不算数</b>):</p>
-<pre>ssh animego-old 'docker exec gyt-caddy caddy adapt --config /etc/caddy/Caddyfile' \
+<pre>ssh gyt-prod 'docker exec gyt-caddy caddy adapt --config /etc/caddy/Caddyfile' \
   | python3 -c "import json,sys;..."   # 完整脚本见 §2.8</pre>
   <p><code>/api/checkin*</code> 必须排在 <code>/api/*</code> <b>之前</b>。</p>
 
@@ -281,9 +281,9 @@ ssh animego-old 'cd /opt/gyt &amp;&amp; \
       <b>要搬之前先量两个方向的带宽</b>,两条命令的事。</p>
   </div>
 <pre># 开发机上行
-dd if=/dev/zero bs=1m count=50 | ssh animego-old 'cat &gt; /dev/null'
+dd if=/dev/zero bs=1m count=50 | ssh gyt-prod 'cat &gt; /dev/null'
 # VPS 下行
-ssh animego-old 'curl -sL -o /dev/null -r 0-209715200 &lt;某个大文件 URL&gt;'</pre>
+ssh gyt-prod 'curl -sL -o /dev/null -r 0-209715200 &lt;某个大文件 URL&gt;'</pre>
   <div class="box b-ok">
     <p><b>中止是安全的</b>:<code>docker save | ssh | docker load</code> 被 kill 之后,VPS 上
       <code>docker images</code> 里没有任何新镜像、tag 没动 —— <code>docker load</code>
@@ -308,7 +308,7 @@ ssh animego-old 'curl -sL -o /dev/null -r 0-209715200 &lt;某个大文件 URL&gt
   <p><b>根因</b>:线上 <code>data/</code> 下有 <b>8 样</b>,而那份 exclude 清单只排了 <b>3 样</b>。
     这是「维护一份平行清单」必然的漂移 —— <b>补四行不解决问题,下次加第九样还会漏</b>。</p>
   <p><b>修法:让 rsync 直接读 <code>.gitignore</code></b>,单一真相:</p>
-<pre>rsync -az --delete <b>--no-o --no-g --filter=':- .gitignore' --exclude '.git'</b> ./ animego-old:/opt/gyt/</pre>
+<pre>rsync -az --delete <b>--no-o --no-g --filter=':- .gitignore' --exclude '.git'</b> ./ gyt-prod:/opt/gyt/</pre>
   <p>实测效果:</p>
   <table>
     <tr><th></th><th>旧命令</th><th>新命令</th></tr>
@@ -338,7 +338,7 @@ ssh animego-old 'curl -sL -o /dev/null -r 0-209715200 &lt;某个大文件 URL&gt
   <p><b>修法</b>:加 <code>--no-o --no-g</code>。验证靠 itemize 输出那一列标志位:</p>
 <pre><i>.d..t.og. data/</i>     ← 危险:o(属主)g(属组)都要改
 <b>.d..t.... data/</b>     ← 加了 --no-o --no-g 之后,只剩 mtime</pre>
-  <p>同步后顺手核一次:<code>ssh animego-old 'stat -c "%u:%g" /opt/gyt/data'</code>
+  <p>同步后顺手核一次:<code>ssh gyt-prod 'stat -c "%u:%g" /opt/gyt/data'</code>
     必须仍是 <b><code>10001:996</code></b>。</p>
 
   <h3>2.4 🔴 <code>up -d --build</code> 把已经构好的镜像又构一遍,直接撞盘</h3>

@@ -5,6 +5,12 @@
 >
 > ⚠️ **这个文件不含任何密码、令牌、私钥。** 需要的秘密都在服务器上,下面写了在哪儿取。
 > 别往这个文件里粘任何 Key —— 它进 git。
+>
+> 🔴 **仓库转公开时(2026-08-26)已把主机坐标脱敏。** 下面出现的
+> `<VPS_IP>` / `<SSH_PORT>` / 用户名 `deploy` / 主机别名 `gyt-prod` **都是占位符**,
+> 换成你自己那台的真值。真实值不进 git —— 一台还在跑的机器,
+> 把「打哪台 + 走哪个端口 + 用哪个用户名」三件事凑齐公开出去,
+> 非标端口这层防护就没了。文档其余部分(尤其 §1 那段「docker 组实质等于 root」)一字未改。
 
 ---
 
@@ -48,22 +54,22 @@ cat ~/.ssh/id_ed25519.pub
 
 ```bash
 # 在 Lawrence 的电脑上执行,把 <公钥> 换成队友发来的那一整行
-ssh animego-old "echo '<公钥>' >> /home/cfan/.ssh/authorized_keys"
+ssh gyt-prod "echo '<公钥>' >> /home/deploy/.ssh/authorized_keys"
 
 # 确认加上了
-ssh animego-old "wc -l < /home/cfan/.ssh/authorized_keys"
+ssh gyt-prod "wc -l < /home/deploy/.ssh/authorized_keys"
 ```
 
 > **为什么不直接把 Lawrence 的私钥拷给队友:** 共用一把钥匙就没法单独吊销
 > —— 哪天要收回权限,只能把两个人一起踢下来再重发。日志里也分不清谁动的。
-> 服务器上已经开好了独立账号 `cfan`(在 `docker` 组,能读写 `/opt/gyt`),
+> 服务器上已经开好了独立账号 `deploy`(在 `docker` 组,能读写 `/opt/gyt`),
 > **现在 authorized_keys 是空的,所以还没人能用它登进来**。
 >
-> 要收回权限:`ssh animego-old "userdel -r cfan"`,一条命令,不影响别的东西。
+> 要收回权限:`ssh gyt-prod "userdel -r deploy"`,一条命令,不影响别的东西。
 >
 > ### ⚠️ 但要把话说清楚:`docker` 组**实质等于 root**
 >
-> 这不是理论,是 2026-08-11 用一把一次性钥匙**实测过**的:`cfan` 用
+> 这不是理论,是 2026-08-11 用一把一次性钥匙**实测过**的:`deploy` 用
 > `docker run -v /root:/r ...` 可以直接读到 `/root` 下 `600` 权限的口令明文文件。
 > 任何能调 docker 守护进程的人,都能挂载宿主机上任意目录、以任意 uid 运行。
 >
@@ -77,11 +83,11 @@ ssh animego-old "wc -l < /home/cfan/.ssh/authorized_keys"
 ### 第 3 步 · 你把这段加进 `~/.ssh/config`
 
 ```sshconfig
-# 工友通线上机(原 animego 老 VPS)
+# 工友通线上机
 Host gyt
-  HostName 45.152.65.208
-  Port 17776
-  User cfan
+  HostName <VPS_IP>
+  Port <SSH_PORT>
+  User deploy
   IdentityFile ~/.ssh/id_ed25519
   IdentitiesOnly yes
   ServerAliveInterval 30
@@ -93,7 +99,7 @@ Host gyt
 ssh gyt
 ```
 
-⚠️ **端口是 17776,不是 22。** 直接 `ssh root@45.152.65.208 # ❌ 错:没写端口,默认走 22,永远连不上`
+⚠️ **端口是 <SSH_PORT>,不是 22。** 直接 `ssh root@<VPS_IP> # ❌ 错:没写端口,默认走 22,永远连不上`
 —— **不是墙的问题,是端口不对。** 这台机器**只认密钥不认密码**(`PasswordAuthentication no`),
 所以「让我输密码」这种提示不会出现;真出现了说明你连错机器了。
 
@@ -115,7 +121,7 @@ ssh gyt
 | `/opt/gyt/.env` | 两把模型 Key、访问令牌、口令哈希。`640 root:docker`,你在 docker 组里所以读得到 |
 | `/opt/gyt/data/` | **这台机器的全部状态**:台账 SQLite、上传件、产物、LLM 缓存、向量库、对话历史。备份就是拷这一个目录 |
 | `/root/.gyt-basic-auth-plaintext` | **登录口令的明文**。仓库里只有哈希,哈希不可逆 —— 这是唯一一份。标着 `600 root`,但**这不是对你的边界**(见 §1 那段:docker 组实质等于 root)。这个权限防的是手滑,不是防你 |
-| `/opt/animego-mongo-final-20260811.tar.gz` | 老 animego 站的 mongo 冷备(214MB)。跟本项目无关,别删,那是拆老栈前留的 |
+| `/opt/<旧站点冷备>.tar.gz` | 这台机器上跑过的**上一个项目**留下的 mongo 冷备(214MB)。跟本项目无关,别删 |
 
 **代码怎么更新到线上:** 从开发机 rsync 上去(不是在服务器上 `git pull`)。
 **排除规则直接让 rsync 读 `.gitignore`,不要手写 `--exclude` 清单** —— 理由是下面那张表。
@@ -129,7 +135,7 @@ rsync -az --delete --filter=':- .gitignore' --exclude '.git' ./ gyt:/opt/gyt/
 ```
 
 > **`gyt` 是 §1 第 3 步那段 `~/.ssh/config` 里的别名。** 你机器上要是配成了别的名字
-> (Lawrence 这台是 `animego-old`),换成你实际配的那个 —— 同一台机,别照抄。
+> (Lawrence 这台是 `gyt-prod`),换成你实际配的那个 —— 同一台机,别照抄。
 
 ⚠️ **别把 `--filter` 换回手写的 `--exclude` 清单。** 这不是风格偏好,是 2026-08-15
 拿 `rsync -n` 对着**线上机**演练出来的**生产数据丢失**。
