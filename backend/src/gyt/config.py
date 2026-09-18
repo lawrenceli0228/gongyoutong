@@ -391,6 +391,13 @@ class Settings(BaseSettings):
     # 这是**上下文闸**不是业务上限:一屏几百行隐患既挤爆模型上下文,人也读不完 ——
     # 真要逐条看走界面。50 远大于一次巡检能出的隐患数。
     supervision_list_max_rows: int = Field(default=50, ge=1)
+    # 签发文书时**按级别预填**的整改期限(2026-09-18 用户反馈:期限选日期、少填)。
+    # 单位是「今天起几天」,按香港日历日算(scoping.due_defaults),清单端点把算好的
+    # ISO 日期给前端,监理不改就直接签。**这两个数只在这里有一份**,前端不镜像天数。
+    # 0 是合法值(严重隐患"今天之内改好");负数没有意义 —— dates.py 会把过去的日期拒掉,
+    # 而那时前端预填的默认值本身就是一颗点下去必挨骂的按钮。
+    supervision_due_days_normal: int = Field(default=7, ge=0)
+    supervision_due_days_severe: int = Field(default=1, ge=0)
 
     # --- 知识库(RAG)-----------------------------------------------------
     # 方案 B 启动预置:开则起服务时若规范索引缺失/有改动,自动建库(agents/knowledge/ingest)。

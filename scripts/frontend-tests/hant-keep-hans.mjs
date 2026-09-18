@@ -264,6 +264,14 @@ export const KEEP_HANS = Object.freeze({
         "所以真要删,先回来看这段。",
       contexts: [/^const:HAZARD_SCOPE_PENDING$/, /^object-value:pending$/],
     },
+    待复查: {
+      why:
+        "🔴 送后端的 `?scope=` 受控词(2026-09-18 加的第五档,`scoping.SCOPE_REINSPECT`)," +
+        "词表外回 400。上屏的繁體由渲染处转(`useHantUIAll(HAZARD_SCOPES)`),与「在办」同款。" +
+        "转成「待複查」的表现:那颗按钮一点就 400,而那句 400 会原样上屏 ——" +
+        "监理以为是自己按错了。",
+      contexts: [/^const:HAZARD_SCOPE_REINSPECT$/],
+    },
     严重: {
       why:
           "🔴 三重身份:① `HAZARD_GRADES.includes(grade)` 校验后**送后端**;" +

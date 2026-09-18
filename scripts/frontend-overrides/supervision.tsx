@@ -107,8 +107,11 @@ import {
   describePhotoFile,
   describeSharedPhotoCoverage,
   DisposalAction,
+  disposalSteps,
+  DisposalStep,
   documentUrl,
   docTypeZh,
+  effectiveDuePhrase,
   effectivePhotoId,
   evidenceRows,
   formatHkMoment,
@@ -116,6 +119,8 @@ import {
   GRADE_SEVERE,
   hazardsUsingSharedPhoto,
   isPhotoId,
+  ISSUE_ACTIONS,
+  issuedDocTypes,
   HAZARD_SCOPE_ACTIVE,
   HAZARD_SCOPE_PENDING,
   HAZARD_SCOPES,
@@ -234,39 +239,13 @@ const CONFIRM_BUTTON_LABEL: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /**
- * 整改期限那一格的例句。🔴 **这两条必须留简体,界面繁體化时是唯一的例外。**
- *
- * 它们不是「给人看的字」,是**让人照抄进输入框的原话** —— 而那格原话原样送后端,
- * 由 `agents/schedule/dates.py` 解析,那边的词表和正则**从头到尾只认简体**
- * (`_NEXT_WEEKS_RE` 是 `(下下周|下周)`、`_DAYS_RE` 是 `(.+)天[后内]`、
- * `_BARE_WEEKDAY_RE` 收的是 `周|星期|礼拜`),后端也**没有任何繁→简归一化**。
- *
- * ✅ **2026-08-18 后端补上了繁→简归一化,这两条已经可以是繁體了。**
- * `dates.py` 的 `_strip_noise()` 第一行做一次折叠(週→周 / 後→后 / 禮→礼 /
- * 這→这 / 個→个 / 號→号 / 內→内 / 兩→两),所以「下週三」「後天」「9月1號」
- * 现在都解析得出来,而且与对应简体写法**结果完全一致**(测试是
- * `parse(繁) == parse(简)` 那种写法,不写死日期)。
- *
- * 🔴 **但这条约束本身没有消失,只是判据变了。** 例句仍然是「让人照抄进输入框、
- * 抄完原样送后端」的原话 —— 它不是普通标签。往这两个常量里加新写法之前,
- * 必须先确认 `agents/schedule/dates.py` 认得那个写法:
- *
- *     cd backend && .venv/bin/python -c "
- *     import sys; sys.path.insert(0,'src')
- *     from datetime import date
- *     from gyt.agents.schedule.dates import parse_due
- *     print(parse_due('你要加的写法', today=date.today()))"
- *
- * 已知**仍然不认**的:「下星期三」「下禮拜三」—— 那是**词表缺口不是简繁缺口**
- * (简体的「下星期三」一样被拒:`_NEXT_WEEKS_RE` 只收「周」,不收「星期|礼拜」)。
- * 别往例句里写它们。
- *
- * 「3天后」的「后」保持不变是对的:opencc 把「天后」当成天后娘娘那个词、本来就不转,
- * 而后端两种都认,所以这一项转不转都行。
+ * 整改期限那一格 2026-09-18 起是**日期框**(`<input type="date">`),不再是自由文本。
+ * 用户反馈原话:「期限最好是选择日期的形式而不是由他们自己填,不然格式不一致后面
+ * 很难统计和展示」。日期框的值天然是 `YYYY-MM-DD`,后端 `dates.py` 的 ISO 分支原样认,
+ * 所以前端仍然**一行日期换算都不写**;那张「让人照抄的例句表」(`DUE_PHRASE_EXAMPLES` /
+ * `DUE_PHRASE_SAMPLE`)随之删掉 —— 它存在的全部理由是自由文本框里人不知道该怎么写。
+ * 预填(一般 7 天 / 严重 1 天)由后端算好随清单给(`dueDefaults`),见 `effectiveDuePhrase`。
  */
-const DUE_PHRASE_EXAMPLES = "明天 / 3天后 / 下週三 / 月底";
-/** 同上 —— 输入框 placeholder 里那个单独的例子。 */
-const DUE_PHRASE_SAMPLE = "下週三";
 
 /** 状态徽章配色:能动的暖色、收尾的灰、出事的红。认不出的状态退回灰色,不炸。 */
 const STATUS_CHIP: Record<string, string> = {
@@ -358,6 +337,57 @@ async function callSupervision(
     };
   }
   return { ok: true, text };
+}
+
+/**
+ * 每条隐患下面那条「走到哪一步了」(2026-09-18 用户反馈:「处置流程要有逻辑地体现在
+ * 每个事件下面」,并建议「从如何闭环处理一件事情的逻辑去考虑每个步骤」)。
+ *
+ * 判据一行都不在这儿:`disposalSteps` 算好 done / current / todo 三态,这里只画。
+ * 三种样子的区分**靠形状不靠颜色**(户外强光的手机屏上深浅分不出来,与定级按钮
+ * 那条「实心 vs 描边」同一个理由):done = 勾 + 灰字;current = 实心深底 + 白字;
+ * todo = 只有序号、淡字。`aria-current="step"` 给读屏用。
+ *
+ * `notes` 与 `steps` **按下标配对**,由调用方过完繁體转换再传进来(备注里可能有
+ * 后端原值:简体的级别名 / due_display / closed_reason)。标签源码里已是繁體。
+ *
+ * 一行放不下就换行(`flex-wrap`),不横向滚 —— 横向滚在触屏上等于「看不见后面几格」。
+ */
+function DisposalStepper({ steps, notes }: { steps: readonly DisposalStep[]; notes: readonly string[] }) {
+  return (
+    <ol className="mt-1.5 flex flex-wrap items-center gap-x-1 gap-y-1" aria-label="處置進度">
+      {steps.map((step, i) => {
+        const note = notes[i] ?? "";
+        const tone =
+          step.state === "done"
+            ? "bg-gray-100 text-gray-500 ring-gray-200"
+            : step.state === "current"
+              ? "bg-[#33403A] text-white ring-[#33403A]"
+              : "bg-white text-gray-400 ring-gray-200";
+        return (
+          <li key={step.key} className="flex items-center gap-1">
+            {i > 0 && <span className="text-[10px] text-gray-300" aria-hidden="true">›</span>}
+            <span
+              aria-current={step.state === "current" ? "step" : undefined}
+              className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] leading-4 ring-1 ring-inset ${tone}`}
+            >
+              {step.state === "done" ? (
+                <Check className="size-3" aria-label="已完成" />
+              ) : (
+                <span className="tabular-nums" aria-hidden="true">{i + 1}.</span>
+              )}
+              <span className={step.state === "current" ? "font-medium" : undefined}>{step.label}</span>
+              {note && (
+                <span className={step.state === "current" ? "text-white/80" : "text-gray-400"}>
+                  {note}
+                </span>
+              )}
+            </span>
+          </li>
+        );
+      })}
+    </ol>
+  );
 }
 
 /** 小徽章。ring-inset 让它在浅底上也有边界,不至于糊成一片。 */
@@ -1450,6 +1480,8 @@ function HazardRow({
   detail,
   sharedPhoto,
   usedPhotoId,
+  dueDefaults,
+  today,
   onToggleSelect,
   onFormChange,
   onArm,
@@ -1483,6 +1515,10 @@ function HazardRow({
   sharedPhoto: SharedPhotoState;
   /** 这一行上一次登记复查用掉的编号;null = 这一轮还没登记过(见 `reinspectBlocker`)。 */
   usedPhotoId: string | null;
+  /** 按级别预填的整改期限(后端随清单给,`{级别: ISO}`);老后端是空表。 */
+  dueDefaults: Readonly<Record<string, string>>;
+  /** 后端那一侧的香港日历日(清单的 `today`),当日期框的 `min`。空串 = 不设下限。 */
+  today: string;
   onToggleSelect: () => void;
   onFormChange: (patch: Partial<FormState>) => void;
   onArm: (action: DisposalAction) => void;
@@ -1496,6 +1532,18 @@ function HazardRow({
   const actions = availableActions(hazard);
   const isPending = hazard.status === "pending";
   const needsDue = actions.some(actionNeedsDuePhrase);
+  /**
+   * 这一行要期限的那个动作(一档里最多一个:open 是 notice **或** suspend,
+   * notified/suspended 是 extend)。日期框里显示的值按它算 —— 与举手 / 发请求时
+   * `effectiveDuePhrase` 算的必须是同一个,所以三处都只传 `form.due` + 这个动作。
+   */
+  const dueAction = actions.find(actionNeedsDuePhrase) ?? null;
+  const effectiveDue = dueAction
+    ? effectiveDuePhrase({ typed: form.due, action: dueAction, grade: hazard.grade, dueDefaults })
+    : "";
+  /** 日期框里现在显示的是**预填的**(人没改过)—— 那行小字要说出来,否则人不知道它从哪来。 */
+  const dueIsPrefilled = effectiveDue !== "" && form.due.trim() === "";
+  const steps = disposalSteps(hazard);
   const needsPhoto = actions.some(actionNeedsPhoto);
   const needsReason = actions.some(actionNeedsReason);
   const needsProject = actions.some(actionNeedsProject);
@@ -1603,6 +1651,11 @@ function HazardRow({
   // 它对认不出的动作会落到最后那个 return(上报主管部门那句),而这句话是人在按下
   // 不可撤销的那一下之前唯一读的东西,拼错了比抛异常还坏(异常至少看得见)。
   const confirmText = useHantUI(armedAction ? confirmPrompt(armedAction, hazard) : "");
+  // 步骤条的备注可能含后端原值(简体的级别名、due_display、closed_reason),整条过转换;
+  // 标签源码里已是繁體,不转。hook 要无条件调用,所以没备注的位置喂空串。
+  const stepNotes = useHantUIAll(steps.map((step) => step.note ?? ""));
+  // 签发按钮下面那行「带出哪几份」:文书名走 DOC_TYPE_ZH(受控词表,简体),渲染处转。
+  const issuePlan = useHantUI(issuedDocTypes(hazard.grade).map(docTypeZh).join(" + "));
 
   return (
     <div className="flex flex-col gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5">
@@ -1698,6 +1751,11 @@ function HazardRow({
               </span>
             )}
           </div>
+          {/* 处置步骤条(2026-09-18 用户反馈:「处置流程要有逻辑地体现在每个事件下面」)。
+              **常驻,不折在处置区里**:它回答的是「这条走到哪了、下一步是什么」,
+              那正是扫一眼清单时要的信息;处置区折的是"动手"的那部分。
+              判据全在 `disposalSteps`(纯函数,有测试),这里只画三种样子。 */}
+          {steps.length > 0 && <DisposalStepper steps={steps} notes={stepNotes} />}
         </div>
 
         {/* 处置区的开关(D7)。放在头部**最右**,与左边那坨信息拉开 ——
@@ -1763,17 +1821,29 @@ function HazardRow({
       {needsDue && (
         <div className="flex flex-col gap-1">
           <Label htmlFor={`gyt-due-${hazard.hazard_no}`} className="text-[12px]">
-            整改期限(寫原話:{DUE_PHRASE_EXAMPLES})
+            整改期限
           </Label>
-          {/* 原话原样送后端,**前端一行日期换算都不写** —— agents/schedule/dates.py
-              用 314 行证明了中文日期不好算,红线是「只传原话,代码来算」。 */}
+          {/* 日期框(2026-09-18):值天然是 YYYY-MM-DD,原样当 due_phrase 送后端,
+              **前端一行日期换算都不写**(dates.py 的 ISO 分支认它)。
+              `value` 与举手 / 发请求走同一个 `effectiveDuePhrase` —— 屏幕上写着 8/27、
+              发出去的是空串,这种坏法就是从"各算一遍"来的。
+              `min` 用后端那一侧的今天(清单的 `today`),不用这台电脑的日期。 */}
           <Input
             id={`gyt-due-${hazard.hazard_no}`}
-            value={form.due}
+            type="date"
+            value={effectiveDue}
+            min={today || undefined}
             onChange={(e) => onFormChange({ due: e.target.value })}
-            placeholder={`如:${DUE_PHRASE_SAMPLE}`}
             disabled={busy}
+            className="max-w-[12rem]"
           />
+          <span className="text-[12px] text-gray-600">
+            {dueIsPrefilled
+              ? "已按級別預填,不合適就改。"
+              : dueAction === "extend"
+                ? "選一個新的到期日。"
+                : "選一個到期日。"}
+          </span>
         </div>
       )}
 
@@ -2010,6 +2080,18 @@ function HazardRow({
               這條已經走完流程,沒有下一步了。
             </span>
           )}
+        </div>
+      )}
+      {/* 签发按钮下面那一行:**这一下会带出哪几份**(2026-09-18 用户反馈:文书该按等级
+          自动带出)。按钮上的字对一般 / 严重是同一句,区别全在这一行 —— 所以它不能省,
+          省了就是一颗「簽發處置文書」按钮,人不知道按下去会不会停一片人的工。
+          文书名来自 DOC_TYPE_ZH(受控词表),不手写。armed 时也留着:确认条上那句话
+          说的是后果,这行说的是清单,两句互补。 */}
+      {actions.some((a) => ISSUE_ACTIONS.has(a)) && issuePlan && (
+        <div className="text-[12px] text-gray-600">
+          按監理定級自動帶出:
+          <span className="font-medium text-gray-800">{issuePlan}</span>
+          {hazard.grade === GRADE_SEVERE ? "(三份一次出,簽了就停工)" : "(一份)"}
         </div>
       )}
         </>
@@ -2850,7 +2932,13 @@ export function SupervisionPanel({
       try {
         actionBody(action, {
           hazardNo: hazard.hazard_no,
-          duePhrase: form.due,
+          // 与行内日期框显示的、与 runAction 发的是同一个函数算的(预填 / 人改的)
+          duePhrase: effectiveDuePhrase({
+            typed: form.due,
+            action,
+            grade: hazard.grade,
+            dueDefaults: snapshot?.dueDefaults ?? {},
+          }),
           reason: form.reason,
           // ⚠️ 直接透传 form.projectId(可能是 undefined)—— **不许 `?? ""`**:
           // 空串是「未歸屬」这个值,undefined 才是「还没选」。压平之后
@@ -2870,7 +2958,7 @@ export function SupervisionPanel({
       setFailure(hazard.hazard_no, null);
       setArmed({ hazardNo: hazard.hazard_no, action, at: Date.now() });
     },
-    [forms, sharedPhotoState, setFailure],
+    [forms, sharedPhotoState, setFailure, snapshot],
   );
 
   /** 单条处置:定级 / 签发 / 复查 / 复工 / 上报。**一次只飞一个请求**(busy 全局)。 */
@@ -2887,7 +2975,12 @@ export function SupervisionPanel({
       try {
         body = actionBody(action, {
           hazardNo: hazard.hazard_no,
-          duePhrase: form.due,
+          duePhrase: effectiveDuePhrase({
+            typed: form.due,
+            action,
+            grade: hazard.grade,
+            dueDefaults: snapshot?.dueDefaults ?? {},
+          }),
           reason: form.reason,
           // 同 armAction:透传 undefined,不许压成空串(理由在那边)。
           projectId: form.projectId,
@@ -2946,6 +3039,13 @@ export function SupervisionPanel({
             status: parsed.status,
             ...(parsed.grade ? { grade: parsed.grade } : {}),
             ...(parsed.needsGrading === null ? {} : { needs_grading: parsed.needsGrading }),
+            // 🔴 步骤条靠这两个键分岔,而动作回执里没有它们(回执只带 status / grade)。
+            //    不补的话,刚点完「關掉」的那一行会立刻画成「簽發文書 ✓ 複查 ✓ 銷項 ✓」——
+            //    给一条识错了的"隐患"编一整条证据链,直到下次刷新才纠正。
+            //    两处都不是"猜":理由就是人刚填的那句(后端原样存,同一个 200 字上限);
+            //    停过工是 mark_suspended 的定义本身。
+            ...(action === "dismiss" ? { closed_reason: form.reason.trim() } : {}),
+            ...(action === "suspend" ? { was_suspended: true } : {}),
           }),
         );
         if (parsed.documents.length > 0) {
@@ -3011,14 +3111,14 @@ export function SupervisionPanel({
         setBusy(false);
       }
     },
-    [apiBase, forms, sharedPhotoState, setFailure, invalidateDetail, loadDetail, signerName],
+    [apiBase, forms, sharedPhotoState, setFailure, invalidateDetail, loadDetail, signerName, snapshot],
   );
 
   // ── 面板这一层要上屏的字(界面恒繁體)──────────────────────────────────────
   //
   // 🔴 **必须排在下面那句 `return null` 之前** —— hooks 不许在 early return 之后调。
   //
-  // · scopeLabels —— 四颗筛子按钮的字。原值 `HAZARD_SCOPES` 是**送后端的 `?scope=`
+  // · scopeLabels —— 五颗筛子按钮的字。原值 `HAZARD_SCOPES` 是**送后端的 `?scope=`
   //   受控词**(`agents/supervision/scoping.SCOPES`),词表外后端直接回 400,
   //   所以 key / aria-pressed / setScope 三处一律还用原值,只有按钮上的字用这一份。
   //   ⚠️ 「在办」「待确认」简繁不同形,「超期」「全部」同形 —— 别以为同形的那两个
@@ -3103,8 +3203,9 @@ export function SupervisionPanel({
           </span>
         </div>
 
-        {/* 四档筛子。**顺序就是 HAZARD_SCOPES 的顺序**(受控词表,后端词表外直接 400)——
-            所以这里 map 那个常量,不手写四颗按钮:手写的下场是哪天后端加一档而界面上没有,
+        {/* 五档筛子(2026-09-18 加「待複查」)。**顺序就是 HAZARD_SCOPES 的顺序**
+            (受控词表,后端词表外直接 400)——
+            所以这里 map 那个常量,不手写五颗按钮:手写的下场是哪天后端加一档而界面上没有,
             或者拼错一个字然后每次都 400。刻意不做自由输入框,理由同上。 */}
         <div
           role="group"
@@ -3365,6 +3466,8 @@ export function SupervisionPanel({
                 detail={details[hazard.hazard_no]}
                 sharedPhoto={sharedPhotoState}
                 usedPhotoId={usedPhotos[hazard.hazard_no] ?? null}
+                dueDefaults={snapshot?.dueDefaults ?? {}}
+                today={snapshot?.today ?? ""}
                 onToggleSelect={() => setSelected((prev) => toggleSelected(prev, hazard.hazard_no))}
                 onFormChange={(patch) => setForm(hazard.hazard_no, patch)}
                 onArm={(action) => armAction(hazard, action)}

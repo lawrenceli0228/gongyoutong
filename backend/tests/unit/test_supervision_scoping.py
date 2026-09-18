@@ -161,9 +161,81 @@ def test_野筛子落在在办这一档_所以调用方必须自己先拦() -> N
     assert not scoping.in_scope(_行(status=db.STATUS_CLOSED), scope="严重的", today_iso=TODAY_ISO)
 
 
-def test_筛子就这四个词() -> None:
-    """加一个筛子要连 supervision_api 的查询端点和前端一起改,别在这儿单方面加。"""
-    assert scoping.SCOPES == ("在办", "待确认", "超期", "全部")
+def test_待复查这个筛子只出已下期限等现场复查的三档() -> None:
+    """「待复查」(2026-09-18 用户反馈)= 文书已经签出去、现场整改中或复查过不合格、
+    **等监理去复查**的三档。它与「待确认」分开列的理由:两张清单上的人要做的事完全不同 ——
+    待确认是「看照片判是不是隐患」,待复查是「拿整改后的照片下合格/不合格结论」。
+    混在「在办」里的表现是监理翻一屏才找得到今天该去复查哪几条。
+
+    刻意排除的三档,每一档对应一条定案:
+      · ``open`` —— 还没签文书、没下期限,施工方还不知道要改,谈不上复查;
+      · ``resuming`` —— 复查**已经合格**,只欠一份复工令,再列进待复查会让人再复查一次;
+      · ``pending`` —— D17,连隐患都还没被人确认。
+    """
+    只出的 = {
+        s
+        for s in db.STATUSES
+        if scoping.in_scope(_行(status=s), scope=scoping.SCOPE_REINSPECT, today_iso=TODAY_ISO)
+    }
+    assert 只出的 == {db.STATUS_NOTIFIED, db.STATUS_SUSPENDED, db.STATUS_REINSPECT_FAILED}
+
+
+def test_待复查不看期限_到期没到期都列() -> None:
+    """待复查按**状态**筛,不按日期:期限没到的也要列 —— 监理提前去看是常事,
+    而「超期」那一档才是按日期筛的子集(见下一条)。"""
+    for due in (None, YESTERDAY_ISO, TODAY_ISO, FUTURE_ISO):
+        行 = _行(status=db.STATUS_NOTIFIED, due_date=due)
+        assert scoping.in_scope(行, scope=scoping.SCOPE_REINSPECT, today_iso=TODAY_ISO), due
+
+
+def test_超期是待复查的子集_不许各写一套状态表() -> None:
+    """超期 = 待复查 ∧ 期限已过。两档共用同一张状态表是**定义**不是巧合:
+    一条隐患只有在等复查的时候才谈得上「过了期限还没改好」。
+    漂开的表现是超期清单里出现一条待复查清单里没有的隐患,而两张清单在同一个面板上。"""
+    for status in db.STATUSES:
+        for needs_grading in (False, True):
+            行 = _行(status=status, due_date=YESTERDAY_ISO, needs_grading=needs_grading)
+            if scoping.in_scope(行, scope=scoping.SCOPE_OVERDUE, today_iso=TODAY_ISO):
+                assert scoping.in_scope(行, scope=scoping.SCOPE_REINSPECT, today_iso=TODAY_ISO)
+    assert scoping.OVERDUE_STATUSES == scoping.REINSPECT_STATUSES
+
+
+def test_筛子就这五个词_顺序即界面按钮顺序() -> None:
+    """加一个筛子要连 supervision_api 的查询端点和前端一起改,别在这儿单方面加。
+
+    顺序是按一条隐患走过的先后排的(待确认 → 待复查 → 超期),前端
+    ``HAZARD_SCOPES`` 逐字镜像、按同一顺序摆按钮。
+    """
+    assert scoping.SCOPES == ("在办", "待确认", "待复查", "超期", "全部")
+
+
+# ===========================================================================
+# 按级别预填的默认整改期限(2026-09-18 用户反馈:期限选日期、少填)
+# ===========================================================================
+
+
+def test_默认期限按级别给_两档都有_值是后端自己认得的ISO日期() -> None:
+    """一般 → N 天后、严重 → M 天后。天数从 ``config.py`` 来(端点传进来,本模块不读配置 ——
+    它的 import 白名单里没有 config,而且纯函数好测)。
+
+    值必须是 ``YYYY-MM-DD``:前端把它原样塞进 ``due_phrase`` 送回来,而
+    ``agents/schedule/dates.py`` 只认这种写法的日期串。**用 ``parse_due`` 回读一遍**
+    才算闭环 —— 只断字面量的话,哪天 dates.py 收窄了 ISO 分支,这里照绿、签发照 400。
+    """
+    from gyt.agents.schedule.dates import parse_due
+
+    defaults = scoping.due_defaults(TODAY, normal_days=7, severe_days=1)
+    assert set(defaults) == set(db.GRADES)
+    assert defaults[db.GRADE_NORMAL] == "2026-08-27"
+    assert defaults[db.GRADE_SEVERE] == "2026-08-21"
+    for grade, iso in defaults.items():
+        assert parse_due(iso, today=TODAY) == date.fromisoformat(iso), grade
+
+
+def test_默认期限允许当天_零天不是负数() -> None:
+    """严重隐患「今天之内改好」是合法配置(0 天);dates.py 的 ISO 分支只拒**过去**。"""
+    defaults = scoping.due_defaults(TODAY, normal_days=3, severe_days=0)
+    assert defaults == {db.GRADE_NORMAL: "2026-08-23", db.GRADE_SEVERE: TODAY_ISO}
 
 
 # ===========================================================================
