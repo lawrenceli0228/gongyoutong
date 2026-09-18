@@ -2728,3 +2728,22 @@ DUMP_ROOT = REPO / "data" / "acceptance_dumps"
 「T1/T2/恰好 3 条」这类断言改成相对判据(比如「本轮新建的那条」),
 而 A10 那条子串 bug(`"T1" not in st`)不论在哪都该修 —— 它在本机也会在
 第 10 条任务之后开始误判。
+
+## TODO-61 設計審查(2026-09-18)修完 9 條之後留下的三個口子
+
+背景:`/design-review` 真跑「拍照 → 識隱患 → 監理簽發」一遍,Design Score C+ → B+,9 條發現
+全部落地(`d81f3d6`…`b7e28d4`,每條一個 commit,提交信息都以 `style(design): FINDING-00N` 開頭)。
+提案與可點的 demo 在 `docs/拍照識隱患_簡化流程提案_2026-09-18.{md,html}` /
+`docs/拍照識隱患_簡化流程Demo_2026-09-18.html`,審查全文與前後截圖在
+`~/.gstack/projects/buildMateAIAgent/designs/design-audit-20260918/`。
+沒修的三件,每件都小,但都跨到了別的泳道:
+
+1. **上游頂欄那幾顆 32–43px**(logo 按鈕、全部工地、資料庫、資料歸檔、側欄「新對話」24px)——
+   在 `thread-index.tsx` / `ProjectUploadPanel.tsx` 的頂欄那段,不在這次「拍照 → 隱患」流程裏。
+   修法同 F6:`pointer-coarse:min-h-11`。
+2. **調度中樞派活那句旁白裏的英文 agent 名**(「這活派給 inspection」)—— 那是模型輸出,
+   歸 `graph.py` 的 supervisor 提示詞;F4 把整條旁白折進「過程 ▸」裏,所以默認看不見,
+   但點開仍是英文。改提示詞 = 路由評測緩存作廢 + `GYT_PROMPT_VERSION` +1,單獨排。
+3. **`ai.tsx` 的 `isRoutingHandoff` 在流式期間先露幾百毫秒**:派活旁白的 transfer 工具調用
+   是最後才到的,旁白會先出現再收起(與 `isBackHandoff` 按內容兜底同一類權衡)。
+   要根治得讓後端在流開頭就標出「這條是派活消息」,或者把旁白也做成 custom 事件。
