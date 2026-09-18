@@ -89,6 +89,7 @@ import { getApiKey } from "@/lib/api-key";
 import { useCurrentProjectId, useProjectOptions } from "./ProjectUploadPanel";
 import {
   ACTION_LABEL,
+  DISMISS_REASON_MIN_LEN,
   DOCLESS_ACTIONS,
   ACTION_ENDPOINT,
   actionBody,
@@ -1944,8 +1945,10 @@ function HazardRow({
             disabled={busy}
           />
           <span className="text-[12px] text-gray-600">
+            {/* 「至少 N 個字」要提前說:2026-09-18 真人填了「已整改」(3 個字)點「確定關掉」,
+                被本地校驗攔下而提示渲染在格子下面看不見 —— 他看到的就是「點不動」。 */}
             {reasonAction === "dismiss"
-              ? "關掉之後這條就是終點,系統裏開不回來。這句話會留在台賬裏。"
+              ? `至少 ${DISMISS_REASON_MIN_LEN} 個字。關掉之後這條就是終點,系統裏開不回來。這句話會留在台賬裏。`
               : // 改期是**可以反复用**的动作,所以这句提示说的不是「不可撤销」,
                 // 而是「会被一起看」—— 那才是它真正的约束力所在。
                 "改期不出新文書,但每一次都會留在台賬裏 —— 展了幾次、每次什麼理由,事後都看得到。"}
@@ -2089,6 +2092,15 @@ function HazardRow({
               )}
             </div>
           )}
+          {/* 🔴 這一步為什麼沒走成 —— **就在按鈕正下方**。原來只渲染在整個處置格下面
+              (下面那個 `failure` 塊),手機上落在屏幕外:2026-09-18 真人反饋「確定關掉點不動」,
+              其實是原因少於 4 個字被攔了,而那句話他根本看不見。格子開着時在這兒說,
+              收起了才由下面那塊兜底(兩處只出現一處)。 */}
+          {failure && (
+            <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-[13px] text-red-700">
+              {failure}
+            </div>
+          )}
           <button
             type="button"
             onClick={() => onChoose(null)}
@@ -2101,7 +2113,7 @@ function HazardRow({
 
       {/* failure 在处置区**外面** —— 上一次动作为什么失败,收起来之后也必须看得见,
           否则人点了「處置」→ 做了个动作 → 收起 → 屏幕上什么都没有,而它其实失败了。 */}
-      {failure && (
+      {failure && !(chosenAction && !armedAction) && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-[13px] text-red-700">
           {/* 🔴 后端的人话**原样上屏,一个字都不转**(W12 复审定案:user_msg 一律不转)。
               批量确认失败那条走的是 `result.failed[].reason`,而后端拼这些句子时

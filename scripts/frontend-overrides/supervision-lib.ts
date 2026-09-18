@@ -321,6 +321,12 @@ export class SupervisionContractError extends Error {}
  * 对话链、老前端、curl 都还能发「下周三」,只是面板不再让人打字。
  */
 
+/** 关掉理由的最短字数,**镜像后端 `supervision_api._DISMISS_REASON_MIN_LEN`**。
+ * 漂了的表现不算静默(后端会回 400,那句人话原样上屏),但会让人以为是自己按错了。
+ * 2026-09-18 起提示文案裏直接念這個數(「至少 4 個字」):真人填了「已整改」被攔,
+ * 而提示沒說門檻在哪 —— 他看到的是「點不動」。所以它必須聲明在 SUPERVISION_MESSAGES 之前。 */
+export const DISMISS_REASON_MIN_LEN = 4;
+
 /**
  * 前端这份固定文案。后端 Envelope 的 `user_msg` 到了前端**原样透传**,
  * 不在这里改写 —— 三条硬拦、状态机拒绝的那几句都是后端写好的人话,
@@ -342,7 +348,7 @@ export const SUPERVISION_MESSAGES = Object.freeze({
   noSelection: "先勾選要確認的隱患。",
   // 2026-08-21:不出文书关掉时要写的原因。措辞给两个真实例子 ——
   // 只说「要写原因」的话人会写「不用了」,而那句话事后什么都回答不了。
-  missingReason: "關掉之前要寫清為什麼(比如「白色安全帽,現場核過」「已當場整改」)。這句話會留在台賬裏。",
+  missingReason: `關掉的原因至少 ${DISMISS_REASON_MIN_LEN} 個字,寫清為什麼(比如「白色安全帽,現場核過」「已當場整改,現場核過」)。這句話會留在台賬裏。`,
   // 2026-08-22:改期限时要写的原因。**同样带真实例子**,理由与上面那句一字不差。
   // 这一句还多一层:改期是可以被反复用的动作,一屏「順延」什麼都回答不了,
   // 而「這條被展了幾次期」正是事后最该问的那个问题。
@@ -1132,9 +1138,9 @@ export function confirmBatchPrompt(count: number): string {
  */
 export const SIGNER_NAME_STORAGE_KEY = "gyt:supervision:signer-name";
 
-/** 关掉理由的最短字数,**镜像后端 `supervision_api._DISMISS_REASON_MIN_LEN`**。
- * 漂了的表现不算静默(后端会回 400,那句人话原样上屏),但会让人以为是自己按错了。 */
-export const DISMISS_REASON_MIN_LEN = 4;
+// `DISMISS_REASON_MIN_LEN` 搬到文件前面(SUPERVISION_MESSAGES 之前)——
+// 那句「原因至少 N 個字」的提示要引用它,而 const 在模塊頂層有 TDZ,聲明在後面會在
+// 加載那一刻就 ReferenceError。定義見 `SUPERVISION_MESSAGES` 上方。
 
 /**
  * 改期理由的最短字数,**镜像后端 `supervision_api._DUE_REASON_MIN_LEN`**(2026-08-22)。
