@@ -21,14 +21,16 @@
  * 在 @/lib/supervision-lib —— 那一份零依赖,scripts/frontend-tests/ 的 vitest 直接测。
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ClipboardCheck } from "lucide-react";
 import { getApiKey } from "@/lib/api-key";
+import { useStreamContext } from "@/providers/Stream";
 import {
   HAZARD_SCOPE_PENDING,
   hazardListUrl,
   parseHazardListEnvelope,
   OPEN_SUPERVISION_EVENT,
+  threadPhotoIds,
 } from "@/lib/supervision-lib";
 import { SupervisionPanel, useApiBase, useProjectFilter } from "./supervision";
 
@@ -103,6 +105,17 @@ export function SupervisionEntry() {
   // 点开面板一看只有两条 —— 人会以为面板漏了。
   const projectFilter = useProjectFilter();
   const [open, setOpen] = useState(false);
+  /**
+   * 這次對話拍過的照片(2026-09-18 用戶原話:「隱患應該就查看當前 session 的東西,所有的都在
+   * 一起太亂了」)。從線程裏所有用戶消息抠 `(照片编号:…)`;徽章計數與面板默認都按它篩。
+   * 沒拍過照片(空白首頁 / 純文字對話)→ 空數組 → 退回整張台賬,與從前一樣。
+   */
+  const stream = useStreamContext();
+  const sessionPhotoIds = useMemo(
+    () => threadPhotoIds((stream.messages as ReadonlyArray<{ type?: unknown; content?: unknown }>) ?? []),
+    [stream.messages],
+  );
+  const sessionKey = sessionPhotoIds.join(",");
   /** null = 还没成功读到过(不显示徽章);数字 = 台账里待确认几条。 */
   const [pendingCount, setPendingCount] = useState<number | null>(null);
 
@@ -136,7 +149,12 @@ export function SupervisionEntry() {
       try {
         const apiKey = getApiKey();
         const res = await fetch(
-          hazardListUrl(apiBase, { scope: HAZARD_SCOPE_PENDING, projectId: projectFilter }),
+          hazardListUrl(apiBase, {
+            scope: HAZARD_SCOPE_PENDING,
+            projectId: projectFilter,
+            // 徽章上的數與面板默認看的是同一份:這次對話的照片(沒有就是整張台賬)
+            ...(sessionPhotoIds.length > 0 ? { photoIds: sessionPhotoIds } : {}),
+          }),
           {
             headers: apiKey ? { "x-api-key": apiKey } : undefined,
             signal: controller.signal,
@@ -163,7 +181,9 @@ export function SupervisionEntry() {
       clearInterval(timer);
       controller.abort();
     };
-  }, [apiBase, projectFilter, open]);
+    // sessionKey 代替 sessionPhotoIds 進依賴:按內容比
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase, projectFilter, open, sessionKey]);
 
   const close = useCallback(() => setOpen(false), []);
 
@@ -218,6 +238,7 @@ export function SupervisionEntry() {
         <SupervisionPanel
           artifactBase={ARTIFACT_BASE}
           initialScope={hasPending ? HAZARD_SCOPE_PENDING : undefined}
+          sessionPhotoIds={sessionPhotoIds}
           onClose={close}
         />
       )}

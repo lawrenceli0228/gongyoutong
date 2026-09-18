@@ -1472,14 +1472,14 @@ def _photo_ids(params: dict[str, Any]) -> list[str] | None:
 def _work_list_hazards(params: dict[str, Any]) -> _Result:
     """GET /supervision/hazards —— 隐患清单。一次取全后在内存里筛(禁在循环里逐条查)。
 
-    帶 ``photo_id`` 時按**照片**看:只出那幾張照片登記的隱患、狀態不限(scope 一律按「全部」算,
-    傳了別的也忽略)—— 卡片是按照片看的,同一張照片上一條已確認、一條待確認,卡上都要有。
+    帶 ``photo_id`` 時按**照片**看:只出那幾張照片登記的隱患。兩個篩子**疊加**:
+    ``scope`` 沒傳時缺省是「全部」(不是「在办」—— 拍完照那張卡要的是這幾張照片上的每一條,
+    同一張照片上一條已確認、一條待確認都得在);傳了就照傳的算(監理面板「本次對話」模式下
+    待確認 / 待複查那幾檔照樣能切)。
     """
     photo_ids = _photo_ids(params)
-    scope = (
-        scoping.SCOPE_ALL
-        if photo_ids is not None
-        else (_text(params, "scope") or scoping.SCOPE_ACTIVE)
+    scope = _text(params, "scope") or (
+        scoping.SCOPE_ALL if photo_ids is not None else scoping.SCOPE_ACTIVE
     )
     if scope not in scoping.SCOPES:
         # 🔴 明确拒绝,**不许静默回落到某一档**:``scoping.in_scope`` 认不出的词会落在

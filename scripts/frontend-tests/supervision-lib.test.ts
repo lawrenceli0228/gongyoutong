@@ -80,6 +80,7 @@ import {
   patchHazard,
   pendingHazards,
   photoIdsInText,
+  threadPhotoIds,
   hazardsForPhotos,
   OPEN_SUPERVISION_EVENT,
   primaryAction,
@@ -2642,5 +2643,21 @@ describe("拍完照的隱患卡(2026-09-18 FINDING-001):從用戶消息裏抠照
 
   it("OPEN_SUPERVISION_EVENT:卡上「去監理處置」與入口按鈕之間的約定名,改了兩邊一起改", () => {
     expect(OPEN_SUPERVISION_EVENT).toBe("gyt:open-supervision");
+  });
+});
+
+describe("threadPhotoIds —— 監理面板「本次對話」模式:這條線程裏所有用戶消息的照片編號", () => {
+  const A = "27ba7e5933f54547b77a30772959b3fb";
+  const B = "b2943b0eb7fc43b9b4f2db2a0b180731";
+  it("只看 human 消息;字符串 content 與文本塊數組都認;去重、按出現順序", () => {
+    const messages = [
+      { type: "human", content: `看看这张照片。(照片编号:${A})` },
+      { type: "ai", content: `我看到了 (照片编号:${B})` }, // AI 複述的不算
+      { type: "human", content: [{ type: "text", text: `再看 (照片编号:${B}、${A})` }, { type: "gyt_attachment" }] },
+      { type: "human", content: "沒照片的一句" },
+    ];
+    expect(threadPhotoIds(messages)).toEqual([A, B]);
+    expect(threadPhotoIds([])).toEqual([]);
+    expect(threadPhotoIds([{ type: "human", content: null }])).toEqual([]);
   });
 });

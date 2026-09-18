@@ -2184,16 +2184,29 @@ export function SupervisionPanel({
   artifactBase,
   onClose,
   initialScope,
+  sessionPhotoIds,
 }: {
   artifactBase: string;
   onClose: () => void;
   /** 打开时先看哪一档。省略 = 「在办」(与后端缺省同一档)。 */
   initialScope?: HazardScope;
+  /**
+   * **這次對話**拍過的照片編號(2026-09-18 用戶原話:「隱患應該就查看當前 session 的東西,
+   * 所有的都在一起太亂了」)。給了且非空 → 面板默認按這批照片篩(`?photo_id=`),頂上有
+   * 「本次對話 / 全部台賬」切換;沒給或空 → 只有全部台賬(功能不減,整張台賬仍一鍵可達)。
+   */
+  sessionPhotoIds?: readonly string[];
 }) {
   const apiBase = useApiBase();
   const projectFilter = useProjectFilter();
 
   const [scope, setScope] = useState<HazardScope>(initialScope ?? HAZARD_SCOPE_ACTIVE);
+  const hasSession = !!sessionPhotoIds && sessionPhotoIds.length > 0;
+  /** 「本次對話」還是「全部台賬」。有這次對話的照片就默認前者 —— 人是從對話裏點進來的。 */
+  const [viewMode, setViewMode] = useState<"session" | "all">(hasSession ? "session" : "all");
+  const sessionOnly = hasSession && viewMode === "session";
+  // 照片編號按內容比,別按引用(調用方每次渲染現算的數組,引用每次都新)
+  const sessionKey = sessionOnly ? sessionPhotoIds!.join(",") : "";
   /** 手动重拉的计数器:切筛子之外的重新取数(重试 / 刷新)靠它触发。 */
   const [reloadTick, setReloadTick] = useState(0);
   const [phase, setPhase] = useState<LoadPhase>("loading");
@@ -2485,10 +2498,18 @@ export function SupervisionPanel({
     void (async () => {
       try {
         const apiKey = getApiKey();
-        const res = await fetch(hazardListUrl(apiBase, { scope, projectId: projectFilter }), {
-          headers: apiKey ? { "x-api-key": apiKey } : undefined,
-          signal: controller.signal,
-        });
+        const res = await fetch(
+          hazardListUrl(apiBase, {
+            scope,
+            projectId: projectFilter,
+            // 「本次對話」模式:只拉這次對話拍的那幾張照片登記的隱患;scope 照樣疊加
+            ...(sessionOnly ? { photoIds: sessionPhotoIds } : {}),
+          }),
+          {
+            headers: apiKey ? { "x-api-key": apiKey } : undefined,
+            signal: controller.signal,
+          },
+        );
         const bodyText = await res.text();
         if (cancelled) return;
         if (!res.ok) {
@@ -2543,7 +2564,9 @@ export function SupervisionPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [apiBase, scope, projectFilter, reloadTick]);
+    // sessionKey 代替 sessionPhotoIds 進依賴:按內容比,不按引用
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase, scope, projectFilter, reloadTick, sessionKey]);
 
   /** 重新拉一屏(错误态的「重试」与标题栏的「刷新」共用这一颗)。 */
   const reload = useCallback(() => setReloadTick((n) => n + 1), []);
@@ -3227,6 +3250,40 @@ export function SupervisionPanel({
           </span>
         </div>
 
+        {/* 「本次對話 / 全部台賬」(2026-09-18 用戶原話:「隱患應該就查看當前 session 的東西,
+            所有的都在一起太亂了」)。只在這次對話真拍過照片時出現;默認本次對話。
+            **不是篩子**,是看哪一份台賬:切到全部台賬時下面五檔照舊。
+            切換時清單整份換掉,所以有動作在飛時禁用(理由同下面五顆篩子)。 */}
+        {hasSession && (
+          <div
+            role="group"
+            aria-label="看哪一份台賬"
+            className="flex items-center gap-1 rounded-lg bg-gray-100 p-1 text-[13px]"
+          >
+            {(
+              [
+                ["session", `本次對話(${sessionPhotoIds!.length} 張照片)`],
+                ["all", "全部台賬"],
+              ] as const
+            ).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                disabled={busy}
+                aria-pressed={viewMode === mode}
+                onClick={() => setViewMode(mode)}
+                className={`flex-1 rounded-md px-3 py-1.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11 ${
+                  viewMode === mode
+                    ? "bg-white text-[var(--gyt-ink)] shadow-sm"
+                    : "text-gray-500 hover:text-gray-700"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* 五档筛子(2026-09-18 加「待複查」)。**顺序就是 HAZARD_SCOPES 的顺序**
             (受控词表,后端词表外直接 400)——
             所以这里 map 那个常量,不手写五颗按钮:手写的下场是哪天后端加一档而界面上没有,
@@ -3469,9 +3526,13 @@ export function SupervisionPanel({
           ) : list.length === 0 ? (
             <div className="rounded-lg border border-dashed border-gray-300 px-3 py-8 text-center text-[13px] text-gray-500">
               {/* 念的是繁體那份;`scope` 原值仍是送后端的受控词,别在这儿念它。 */}
-              「{scopeLabel}」這一檔裏沒有隱患。
+              {sessionOnly
+                ? `這次對話拍的照片裏,「${scopeLabel}」這一檔沒有隱患。`
+                : `「${scopeLabel}」這一檔裏沒有隱患。`}
               <br />
-              換上面的篩子看別的檔;頂欄選了工地的話,也可能是這個工地下面沒有。
+              {sessionOnly
+                ? "換上面的篩子看別的檔;要看整張台賬,切「全部台賬」。"
+                : "換上面的篩子看別的檔;頂欄選了工地的話,也可能是這個工地下面沒有。"}
             </div>
           ) : (
             list.map((hazard) => (

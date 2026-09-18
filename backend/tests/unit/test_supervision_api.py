@@ -1548,11 +1548,10 @@ class Test隐患清单:
         """2026-09-18 設計審查 FINDING-001:拍完照回答上方那張隱患卡,拿用戶消息裏的
         ``photo_id`` 直查台賬 —— 不等被 ``output_mode="last_message"`` 丟掉的工具返回。
 
-        判據:``?photo_id=a,b`` 只出這幾張照片登記的隱患,**狀態不限**(同一張照片上
-        認出的兩條,一條已確認、一條還待確認,卡上都要有);認不出的編號 → 空清單
+        判據:``?photo_id=a,b`` 只出這幾張照片登記的隱患;scope **沒傳時缺省「全部」**
+        (同一張照片上認出的兩條,一條已確認、一條還待確認,卡上都要有);傳了就疊加
+        (監理面板「本次對話」模式下待確認那幾檔照樣能切)。認不出的編號 → 空清單
         (不是 400:照片還沒登記完是正常時序,前端會再拉一次)。
-        ⚠️ 帶 ``photo_id`` 時 scope 一律按「全部」算 —— 卡片是按**照片**看的,
-        而不是按流程檔看的;傳了別的 scope 也不報錯,直接忽略。
         """
         甲 = _photo("甲.jpg")
         乙 = _photo("乙.jpg")
@@ -1575,8 +1574,10 @@ class Test隐患清单:
         assert 單張["data"]["scope"] == scoping.SCOPE_ALL
         兩張 = _清单(client, photo_id=f"{甲},{乙}")
         assert _编号(兩張) == {a, b, c}
-        # 傳了 scope 也被照片維度蓋掉(待確認檔裏 b 已不在,但卡上仍要它)
-        assert _编号(_清单(client, photo_id=甲, scope=scoping.SCOPE_PENDING)) == {a, b}
+        # 傳了 scope 就疊加:待確認檔裏 b 已確認、不在;a 還在
+        待确认 = _清单(client, photo_id=甲, scope=scoping.SCOPE_PENDING)
+        assert _编号(待确认) == {a}
+        assert 待确认["data"]["scope"] == scoping.SCOPE_PENDING
         assert _编号(_清单(client, photo_id="0" * 32)) == set()
 
     def test_照片编号畸形就拒_不许静默当成全部(self, client: TestClient) -> None:

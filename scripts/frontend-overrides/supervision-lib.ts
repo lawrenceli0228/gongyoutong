@@ -2634,3 +2634,28 @@ export function requestOpenSupervision(): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent(OPEN_SUPERVISION_EVENT));
 }
+
+/**
+ * 一條線程裏**用戶消息**帶過的全部照片編號(監理面板「本次對話」模式的篩子)。
+ * 只看 human:AI 複述編號不算(它可能在講別的線程的事)。content 是字符串(後端改寫過的
+ * 歷史消息)或文本塊數組(剛發出去那一瞬間)都認;去重、按出現順序。
+ * 參數收最小形狀,不 import SDK 類型 —— 本文件要保持零依賴(測試包直接 import 它)。
+ */
+export function threadPhotoIds(
+  messages: ReadonlyArray<{ type?: unknown; content?: unknown }>,
+): string[] {
+  const out: string[] = [];
+  for (const m of messages) {
+    if (m.type !== "human") continue;
+    const text =
+      typeof m.content === "string"
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content
+              .map((b) => (b && typeof b === "object" && typeof (b as { text?: unknown }).text === "string" ? (b as { text: string }).text : ""))
+              .join("\n")
+          : "";
+    for (const id of photoIdsInText(text)) if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
