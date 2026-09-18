@@ -28,9 +28,11 @@
  *    book-open-text),与方案 dc.html 一致;lucide-react 本来就是全站图标库。
  */
 
+import { useState } from "react";
 import { useStreamContext } from "@/providers/Stream";
 import { cn } from "@/lib/utils";
-import { ScanEye, ListChecks, Ruler, BookOpenText, type LucideIcon } from "lucide-react";
+import { AGENT_LABELS } from "@/lib/timing-lib";
+import { ScanEye, ListChecks, Ruler, BookOpenText, ChevronDown, type LucideIcon } from "lucide-react";
 
 const AGENT_TO_CARD: Record<string, string> = {
   safety: "safety",
@@ -67,24 +69,35 @@ const CARDS: {
     sample: "腳手架的防護欄杆高度,規範怎麼要求?" },
 ];
 
-/** 从流里推断"当前活跃的子 Agent";not loading → null(全待命)。推不出也返回 null,不乱亮。 */
+/**
+ * 从流里推断"当前活跃的子 Agent"**的后端名**(safety / inspection / attendance …);
+ * not loading → null(全待命)。推不出也返回 null,不乱亮。
+ *
+ * 🔴 2026-09-18 設計審查 FINDING-002 之前這裏只認 `AGENT_TO_CARD` 那四張卡的鍵:
+ *    考勤 / 監理跑着時返回 null,屏幕上轉着圈而藥丸寫着「全部待命」—— 狀態燈說謊。
+ *    現在凡是 `AGENT_LABELS` 認得的名字都算活躍;有卡的亮卡,沒卡的只亮藥丸
+ *    (「已經交給 考勤 在處理…」)。`supervisor` 自己不算子 Agent(它是派活的那個)。
+ */
 function useActiveAgent(): string | null {
   const stream = useStreamContext();
   if (!stream.isLoading) return null;
+  const known = (n: string | undefined): string | null =>
+    n && n !== "supervisor" && (AGENT_TO_CARD[n] || AGENT_LABELS[n]) ? n : null;
   const messages: any[] = (stream.messages as any[]) ?? [];
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i] ?? {};
     const name: string | undefined = m.name;
     if (name) {
-      if (AGENT_TO_CARD[name]) return AGENT_TO_CARD[name];
-      const t = /^transfer_to_(\w+)/.exec(name)?.[1];
-      if (t && AGENT_TO_CARD[t]) return AGENT_TO_CARD[t];
+      const direct = known(name);
+      if (direct) return direct;
+      const t = known(/^transfer_to_(\w+)/.exec(name)?.[1]);
+      if (t) return t;
     }
     const tcs: any[] = m.tool_calls ?? m.additional_kwargs?.tool_calls ?? [];
     for (const tc of tcs) {
       const tn: string | undefined = tc?.name ?? tc?.function?.name;
-      const t = tn ? /^transfer_to_(\w+)/.exec(tn)?.[1] : undefined;
-      if (t && AGENT_TO_CARD[t]) return AGENT_TO_CARD[t];
+      const t = known(tn ? /^transfer_to_(\w+)/.exec(tn)?.[1] : undefined);
+      if (t) return t;
     }
   }
   return null;
@@ -124,40 +137,82 @@ function FlowStyle() {
  * @param onPick 点了带例句的那几张卡时调用,把例句**填进输入框**(不自动发送)。
  *               不传就退回纯展示 —— 组件在任何情况下都不该因为少个回调而炸。
  */
-export function GytStatusCards({ onPick }: { onPick?: (text: string) => void } = {}) {
-  const active = useActiveAgent();
+/**
+ * @param onPick 点了带例句的那几张卡时调用,把例句**填进输入框**(不自动发送)。
+ *               不传就退回纯展示 —— 组件在任何情况下都不该因为少个回调而炸。
+ * @param compact **對話頁**用(2026-09-18 設計審查 FINDING-002):只露頂上那一行藥丸,
+ *               四張卡點藥丸才展開。在此之前四張卡在每個對話頁常駐,手機 812px 的屏
+ *               卡 330px + 輸入條 230px,對話只剩 250px,照片都露不全 —— 而進了對話,
+ *               它唯一有用的信息是「哪個 Agent 正在忙」,一行就夠。空白首頁仍是全幅
+ *               (那裏它是「能幹什麼」的說明)。正在忙時藥丸自己會說是誰,不必展開。
+ */
+export function GytStatusCards({
+  onPick,
+  compact = false,
+}: { onPick?: (text: string) => void; compact?: boolean } = {}) {
+  const activeAgent = useActiveAgent();
+  // 有卡的亮卡;沒卡的(考勤 / 監理)只在藥丸上報名字
+  const active = activeAgent ? (AGENT_TO_CARD[activeAgent] ?? null) : null;
   const activeIndex = CARDS.findIndex((c) => c.key === active);
-  const activeName = CARDS[activeIndex]?.name;
+  const activeName = CARDS[activeIndex]?.name ?? (activeAgent ? AGENT_LABELS[activeAgent] : undefined);
+  const [expanded, setExpanded] = useState(false);
+  const showGrid = !compact || expanded;
+
+  const pillBody = (
+    <>
+      <span
+        className={cn(
+          "flex h-5 w-5 items-center justify-center rounded-md text-[11px] font-black",
+          activeAgent ? "bg-[var(--gyt-green)] text-white" : "bg-[var(--gyt-soft)] text-[var(--gyt-green)]",
+        )}
+      >
+        工
+      </span>
+      {activeAgent ? (
+        <>
+          已經交給 <b className="text-[var(--gyt-ink)]">{activeName}</b> 在處理…
+        </>
+      ) : (
+        "調度中樞 · 全部待命"
+      )}
+    </>
+  );
 
   return (
-    <div className="mx-auto w-full max-w-3xl shrink-0 px-4 pt-3 pb-1">
+    <div className={cn("mx-auto w-full max-w-3xl shrink-0 px-4", compact ? "pt-1.5 pb-0" : "pt-3 pb-1")}>
       <FlowStyle />
 
       {/* ── 調度中樞:导线的起点 ───────────────────────────────────────── */}
       <div className="flex items-center justify-center">
-        <span
-          className={cn(
-            "flex items-center gap-2 rounded-full bg-white px-4 py-[7px] text-[13px] font-bold shadow-[0_1px_2px_rgba(23,28,26,.06)]",
-            active ? "text-[var(--gyt-green-deep)] gyt-halo" : SUBTLE,
-          )}
-        >
-          <span
+        {compact ? (
+          // 對話頁:藥丸是開關。44px 觸控高;箭頭說明它能點。
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            aria-label={expanded ? "收起四個 Agent 的狀態卡" : "展開四個 Agent 的狀態卡"}
             className={cn(
-              "flex h-5 w-5 items-center justify-center rounded-md text-[11px] font-black",
-              active ? "bg-[var(--gyt-green)] text-white" : "bg-[var(--gyt-soft)] text-[var(--gyt-green)]",
+              "flex min-h-11 cursor-pointer items-center gap-2 rounded-full bg-white px-4 text-[13px] font-bold shadow-[0_1px_2px_rgba(23,28,26,.06)] transition hover:shadow-[0_2px_6px_rgba(23,28,26,.10)]",
+              activeAgent ? "text-[var(--gyt-green-deep)] gyt-halo" : SUBTLE,
             )}
           >
-            工
+            {pillBody}
+            <ChevronDown className={cn("size-3.5 transition-transform", expanded && "rotate-180")} />
+          </button>
+        ) : (
+          <span
+            className={cn(
+              "flex items-center gap-2 rounded-full bg-white px-4 py-[7px] text-[13px] font-bold shadow-[0_1px_2px_rgba(23,28,26,.06)]",
+              activeAgent ? "text-[var(--gyt-green-deep)] gyt-halo" : SUBTLE,
+            )}
+          >
+            {pillBody}
           </span>
-          {active ? (
-            <>
-              已經交給 <b className="text-[var(--gyt-ink)]">{activeName}</b> 在處理…
-            </>
-          ) : (
-            "調度中樞 · 全部待命"
-          )}
-        </span>
+        )}
       </div>
+
+      {showGrid && (
+        <>
 
       {/* 中枢往下的竖导线 */}
       <div className="flex justify-center">
@@ -260,6 +315,8 @@ export function GytStatusCards({ onPick }: { onPick?: (text: string) => void } =
           );
         })}
       </div>
+        </>
+      )}
     </div>
   );
 }

@@ -523,8 +523,10 @@ function ThreadInner() {
             </div>
           )}
 
-          {/* W7 首页重设计:4 张能力状态卡片(常驻,派活时对应卡片发亮)。
-              首页顶栏是 absolute 覆盖,给卡片留出顶栏高度避免被挡;进入对话后顶栏在流内,无需留白。 */}
+          {/* W7 首页重设计:4 张能力状态卡片(派活时对应卡片发亮)。
+              首页顶栏是 absolute 覆盖,给卡片留出顶栏高度避免被挡;进入对话后顶栏在流内,无需留白。
+              🔴 進了對話只露一行藥丸(compact,2026-09-18 FINDING-002):四張卡在對話頁常駐時
+                 手機上吃掉 330px,對話只剩 250px;正在忙的 Agent 名字藥丸自己會報。 */}
           <div className={cn(!chatStarted && "pt-16")}>
             {/* onPick(2026-08-25 设计审计 D2):点带例句的卡 → 把例句**填进输入框**
                 并聚焦,不自动发送。卡片本身仍然是状态灯不是按钮,完整推演在
@@ -532,6 +534,7 @@ function ThreadInner() {
                 聚焦要 requestAnimationFrame 兜一下:setInput 触发的重渲染这一帧还没提交,
                 同步 focus 会落在旧节点上,表现是「字填进去了但光标不在里面」。 */}
             <GytStatusCards
+              compact={chatStarted}
               onPick={(text) => {
                 setInput(text);
                 requestAnimationFrame(() => {
