@@ -79,6 +79,9 @@ import {
   parsePhotoEnvelope,
   patchHazard,
   pendingHazards,
+  primaryAction,
+  secondaryActions,
+  actionFields,
   PHOTO_MAX_BYTES,
   PHOTO_MAX_MB,
   PHOTO_MESSAGES,
@@ -2533,5 +2536,69 @@ describe("disposalSteps —— 每条隐患下面那条「走到哪一步了」(
 
   it("认不出的状态一格都不画(画错比不画更坏)", () => {
     expect(disposalSteps(hazard({ status: "brand_new" }))).toEqual([]);
+  });
+});
+
+describe("primaryAction / secondaryActions —— 一條隱患只露一顆主按鈕(2026-09-18 FINDING-003)", () => {
+  it("主按鈕 = 步驟條上的當前步:待確認→確認,open→簽發,整改中→登記複查,待復工→簽復工令", () => {
+    expect(primaryAction(hazard({ status: "pending" }))).toBe("confirm");
+    expect(primaryAction(hazard({ status: "open", grade: GRADE_NORMAL }))).toBe("notice");
+    expect(primaryAction(hazard({ status: "open", grade: GRADE_SEVERE }))).toBe("suspend");
+    expect(primaryAction(hazard({ status: "notified" }))).toBe("reinspect");
+    expect(primaryAction(hazard({ status: "suspended", grade: GRADE_SEVERE }))).toBe("reinspect");
+    expect(primaryAction(hazard({ status: "reinspect_failed" }))).toBe("reinspect");
+    expect(primaryAction(hazard({ status: "resuming", grade: GRADE_SEVERE }))).toBe("resume");
+    expect(primaryAction(hazard({ status: "closed" }))).toBeNull();
+    expect(primaryAction(hazard({ status: "escalated" }))).toBeNull();
+  });
+
+  it("🔴 未定級的 open:主按鈕是定級,不是簽發(硬攔③:任何簽發都會被拒)", () => {
+    expect(primaryAction(hazard({ status: "open", grade: GRADE_SEVERE, needs_grading: true }))).toBe("grade");
+    // pending 未定級仍先確認(D17 的順序:確認 → 定級 → 簽發)
+    expect(primaryAction(hazard({ status: "pending", needs_grading: true }))).toBe("confirm");
+  });
+
+  it("「更多」= 可用動作減去主按鈕,順序不變,一個都不丟", () => {
+    const h = hazard({ status: "open", grade: GRADE_NORMAL });
+    expect(secondaryActions(h)).toEqual(["grade", "dismiss", "reassign"]);
+    const p = hazard({ status: "pending" });
+    expect(secondaryActions(p)).toEqual(["grade", "reject", "reassign"]);
+    const n = hazard({ status: "notified" });
+    expect(secondaryActions(n)).toEqual(["extend"]);
+    expect(secondaryActions(hazard({ status: "closed" }))).toEqual([]);
+  });
+
+  it("功能不減:主按鈕 + 更多 = availableActions 的全集(pending 另加一顆「確認」)", () => {
+    for (const status of HAZARD_STATUSES) {
+      for (const grade of HAZARD_GRADES) {
+        for (const needs_grading of [false, true]) {
+          const h = hazard({ status, grade, needs_grading });
+          const p = primaryAction(h);
+          const all = [...(p && p !== "confirm" ? [p] : []), ...secondaryActions(h)].sort();
+          expect(all, `${status}/${grade}/${needs_grading}`).toEqual([...availableActions(h)].sort());
+        }
+      }
+    }
+  });
+
+  it("每個動作都有自己那一格要填什麼(actionFields),跟 actionBody 的必填一致", () => {
+    // 簽發 / 改期要日期;關掉 / 改期要原因;複查要照片;改工地要工地;其餘一格都不用
+    expect(actionFields("notice")).toEqual({ due: true, reason: false, photo: false, project: false });
+    expect(actionFields("suspend")).toEqual({ due: true, reason: false, photo: false, project: false });
+    expect(actionFields("extend")).toEqual({ due: true, reason: true, photo: false, project: false });
+    expect(actionFields("dismiss")).toEqual({ due: false, reason: true, photo: false, project: false });
+    expect(actionFields("reinspect")).toEqual({ due: false, reason: false, photo: true, project: false });
+    expect(actionFields("reassign")).toEqual({ due: false, reason: false, photo: false, project: true });
+    for (const a of ["grade", "resume", "escalate", "reject"] as const) {
+      expect(actionFields(a)).toEqual({ due: false, reason: false, photo: false, project: false });
+    }
+    // 與四個 actionNeeds* 判據同源:漂了的表現是那一格不出現而請求被前端自己攔
+    for (const a of DISPOSAL_ACTIONS) {
+      const f = actionFields(a);
+      expect(f.due).toBe(actionNeedsDuePhrase(a));
+      expect(f.reason).toBe(actionNeedsReason(a));
+      expect(f.photo).toBe(actionNeedsPhoto(a));
+      expect(f.project).toBe(actionNeedsProject(a));
+    }
   });
 });

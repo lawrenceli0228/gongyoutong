@@ -93,11 +93,7 @@ import {
   ACTION_ENDPOINT,
   actionBody,
   actionNeedsConfirm,
-  actionNeedsDuePhrase,
-  actionNeedsPhoto,
-  actionNeedsProject,
-  actionNeedsReason,
-  availableActions,
+  actionFields,
   currentGrade,
   confirmBatchPrompt,
   confirmBody,
@@ -144,6 +140,9 @@ import {
   parsePhotoEnvelope,
   patchHazard,
   pendingHazards,
+  primaryAction,
+  PrimaryAction,
+  secondaryActions,
   PHOTO_MESSAGES,
   photoSizeProblem,
   photoSourceOf,
@@ -224,6 +223,19 @@ const GRADE_CHOICES = [GRADE_NORMAL, GRADE_SEVERE] as const;
  * 在删除的确认条上写「确认签发」等于告诉人「这一下会出一份文书」——
  * 而真实后果正好相反。W10 接上 reject 时它一度就是这么写的。
  */
+/**
+ * 選中的那一格裏「去做」那顆按鈕的字(FINDING-003)。與行上主按鈕的字**故意不同**:
+ * 主按鈕是「我要做這件事」(打開那一格),這顆是「填好了,做」—— 兩顆一樣的字並排,
+ * 人會以為是同一顆按鈕出現了兩次。沒登記的動作退回 ACTION_LABEL。
+ */
+const SHEET_GO_LABEL: Readonly<Partial<Record<DisposalAction, string>>> = Object.freeze({
+  notice: "確定簽發",
+  suspend: "確定簽發(三份)",
+  extend: "確定改期",
+  dismiss: "確定關掉",
+  reassign: "確定改工地",
+});
+
 const CONFIRM_BUTTON_LABEL: Readonly<Record<string, string>> = Object.freeze({
   suspend: "確認簽發",
   escalate: "確認簽發",
@@ -1468,19 +1480,20 @@ function HazardRow({
   failure,
   artifactBase,
   expanded,
-  workOpen,
   detail,
   sharedPhoto,
   usedPhotoId,
   dueDefaults,
   today,
+  chosen,
   onToggleSelect,
   onFormChange,
   onArm,
   onDisarm,
   onAct,
+  onConfirmOne,
+  onChoose,
   onToggleDetail,
-  onToggleWork,
   onRetryDetail,
 }: {
   hazard: HazardBrief;
@@ -1497,10 +1510,12 @@ function HazardRow({
   /** 证据链展开着没有。 */
   expanded: boolean;
   /**
-   * 处置区(定级 / 期限 / 原因 / 挪工地 / 动作按钮)展开着没有 —— 2026-08-25 设计审计 D7。
-   * **默认收起**,而且**可以多条同时开**,理由见下面那块的头注。
+   * 這一行**選中的動作**(2026-09-18 FINDING-003「動作優先」):null = 只露主按鈕 + 更多;
+   * 選了哪個才展開那個動作的那一格(日期 / 原因 / 工地 / 照片)。
+   * 取代了 D7 的 `workOpen`(那時是「展開 = 把所有動作的輸入框一次全擺出來」)。
+   * **可以多條同時選**,不做手風琴 —— 理由見下面動作區的頭注。
    */
-  workOpen: boolean;
+  chosen: PrimaryAction | null;
   /** 这条的详情三态;`undefined` = 还没开始读(见 `DetailState` 头注)。 */
   detail: DetailState | undefined;
   /** 面板顶上那张共用照片现在什么样(整屏一份,不是每行一份)。 */
@@ -1516,47 +1531,59 @@ function HazardRow({
   onArm: (action: DisposalAction) => void;
   onDisarm: () => void;
   onAct: (action: DisposalAction, grade?: string, result?: "pass" | "fail") => void;
+  /** pending 的主按鈕:確認這一條(走批量端點、只帶這一個編號)。 */
+  onConfirmOne: () => void;
+  /** 選 / 取消一個動作(null = 收起那一格)。**不跟着 `busy` 禁用** —— 只改本地狀態。 */
+  onChoose: (action: PrimaryAction | null) => void;
   onToggleDetail: () => void;
-  /** 展开/收起处置区(D7)。**不跟着 `busy` 禁用** —— 它只改本地展开状态,不写任何东西。 */
-  onToggleWork: () => void;
   onRetryDetail: () => void;
 }) {
-  const actions = availableActions(hazard);
   const isPending = hazard.status === "pending";
-  const needsDue = actions.some(actionNeedsDuePhrase);
   /**
-   * 这一行要期限的那个动作(一档里最多一个:open 是 notice **或** suspend,
-   * notified/suspended 是 extend)。日期框里显示的值按它算 —— 与举手 / 发请求时
-   * `effectiveDuePhrase` 算的必须是同一个,所以三处都只传 `form.due` + 这个动作。
+   * 動作優先(2026-09-18 FINDING-003):一條隱患只露**一顆主按鈕**(= 步驟條當前步)
+   * + 「更多 ▾」;`chosen` 是選中的那個,那一格要露哪幾個輸入由 `actionFields` 決定。
+   * 在此之前這裏是 `needsDue = actions.some(...)`:任一可用動作要這格就渲染,一條 open 的
+   * 隱患點開就是日期框 + 關掉的原因 + 挪工地下拉 + 五顆按鈕 —— 人還沒說要幹什麼,
+   * 先看到三件事要填(用戶反饋原話:「太繁瑣、UI 不明確」)。
+   * 判據全在 supervision-lib(有測試),這裏不自己比狀態。
    */
-  const dueAction = actions.find(actionNeedsDuePhrase) ?? null;
+  const primary = primaryAction(hazard);
+  const secondary = secondaryActions(hazard);
+  const chosenAction: DisposalAction | null = chosen && chosen !== "confirm" ? chosen : null;
+  const fields = chosenAction
+    ? actionFields(chosenAction)
+    : { due: false, reason: false, photo: false, project: false };
+  const needsDue = fields.due;
+  const needsPhoto = fields.photo;
+  const needsReason = fields.reason;
+  const needsProject = fields.project;
+  /** 「原因」那一格是給哪個動作用的 —— 就是選中的那個(dismiss / extend 的例句不一樣,給錯例子等於沒給)。 */
+  const reasonAction: DisposalAction | null =
+    chosenAction === "dismiss" || chosenAction === "extend" ? chosenAction : null;
+  const [menuOpen, setMenuOpen] = useState(false);
+  /**
+   * 點了一個動作:要填格子的(簽發 / 改期 / 關掉 / 改工地 / 複查)或要挑一檔的(定級)
+   * → 展開那一格;什麼都不用填的(復工令 / 上報 / 否決)→ 直接走(要二次確認的舉手),
+   * 不開一個空格子讓人再點一次。再點一次已選中的 = 收起。
+   */
+  const pick = (action: DisposalAction) => {
+    const f = actionFields(action);
+    const hasSheet = f.due || f.reason || f.photo || f.project || action === "grade";
+    if (!hasSheet) {
+      if (actionNeedsConfirm(action)) onArm(action);
+      else onAct(action);
+      return;
+    }
+    onChoose(chosen === action ? null : action);
+  };
+  /** 日期框顯示的值:只有選中的動作要期限時才算;與舉手 / 發請求走同一個 `effectiveDuePhrase`。 */
+  const dueAction = needsDue ? chosenAction : null;
   const effectiveDue = dueAction
     ? effectiveDuePhrase({ typed: form.due, action: dueAction, grade: hazard.grade, dueDefaults })
     : "";
   /** 日期框里现在显示的是**预填的**(人没改过)—— 那行小字要说出来,否则人不知道它从哪来。 */
   const dueIsPrefilled = effectiveDue !== "" && form.due.trim() === "";
   const steps = disposalSteps(hazard);
-  const needsPhoto = actions.some(actionNeedsPhoto);
-  const needsReason = actions.some(actionNeedsReason);
-  const needsProject = actions.some(actionNeedsProject);
-  /**
-   * 这一行的「原因」格是给哪个动作用的。
-   *
-   * `dismiss` 只长在 `open`、`extend` 只长在 `notified`/`suspended` —— 两者**永不同时出现**
-   * (`availableActions` 是按 status 分档给的)。所以一格输入框够用,
-   * 只是那句提示要跟着换:两件事的例子完全不一样(「白色安全帽,现场核过」
-   * vs「连续下雨停工三天」),而**给错例子等于没给** —— 提示的全部作用就是
-   * 让人别写「不用了」那种事后什么都回答不了的字。
-   *
-   * ⚠️ 哪天它们真的同时出现了(状态机变了),这里会**静默取到其中一个**的文案。
-   * 下面那个 `console` 级别的断言不值当,但这句话得留着:发现文案对不上时,
-   * 先回去看 `availableActions` 是不是把两颗放进了同一档。
-   */
-  const reasonAction: DisposalAction | null = actions.includes("dismiss")
-    ? "dismiss"
-    : actions.includes("extend")
-      ? "extend"
-      : null;
   /**
    * 期限那一行只在**源里真给了这个键**时出现(`due_date !== undefined`)。
    * 老路(聊天里的工具返回)没有这几个字段,渲成「期限:—」看着像后端没下期限,
@@ -1741,66 +1768,134 @@ function HazardRow({
           {steps.length > 0 && <DisposalStepper steps={steps} notes={stepNotes} />}
         </div>
 
-        {/* 处置区的开关(D7)。放在头部**最右**,与左边那坨信息拉开 ——
-            扫列表的人视线走左边(图 → 违规项 → 徽章),要动手的人才往右够。
-
-            ⚠️ **不跟着 `busy` 禁用**:它只改本地展开状态、不写任何东西。
-               busy 时把它锁上的话,一个动作在飞的那几百毫秒里人连"看看别条"都做不到。
-            ⚠️ armed(二次确认条亮着)时**锁住**:那时候处置区是强制展开的,
-               这颗按钮按下去不会有任何反应 —— 一颗点了没反应的按钮读起来就是坏了。
-               所以直接禁用并把话说清楚。 */}
-        <button
-          type="button"
-          onClick={onToggleWork}
-          disabled={!!armedAction}
-          aria-expanded={workOpen || !!armedAction}
-          title={armedAction ? "先把上面那句確認回答掉" : undefined}
-          className="ml-auto flex shrink-0 items-center gap-1 self-start rounded-md border border-gray-200 px-2.5 py-1.5 text-[12px] font-medium text-[var(--gyt-ink-soft)] transition hover:border-[var(--gyt-mint)] hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11"
-        >
-          {workOpen || armedAction ? "收起" : "處置"}
-          <ChevronDown
-            className={`size-3.5 transition-transform${
-              workOpen || armedAction ? " rotate-180" : ""
-            }`}
-          />
-        </button>
       </div>
 
       {/*
-        ── 处置区(2026-08-25 设计审计 D7)。**默认收起。** ────────────────────
+        ── 動作區(2026-09-18 設計審查 FINDING-003「動作優先」)────────────────────
 
-        病状(1440×900 线上实测):九条隐患,每条把**所有可能的动作都渲染出来**,
-        不管这一条适不适用 —— 整改期限输入 + 关掉原因输入 + 挪工地下拉 +
-        五颗动作按钮 + 文书折叠区。每张卡 **467px**,九张 ≈ **4200px 滚动**,
-        一屏 **28 个输入框 + 51 个按钮**。
-        这正是 gstack design skill 的 App UI 硬否决第 7 条
-        (*App UI made of stacked cards instead of layout*):
-        监理要找「哪条超期了」得滚过四千像素的表单。
+        一條隱患**只露一顆主按鈕**(= 步驟條上的當前步:確認 / 簽發處置文書 / 登記複查結論 /
+        簽發復工令)+ 「更多 ▾」(改判級別 / 關掉 / 改期限 / 改工地 / 否決 / 上報)。
+        點了哪個,才在下面展開**那一個動作**的那一格(日期 / 原因 / 工地 / 照片)。
 
-        收起之后,一行就是一行:图 + 违规项 + 徽章 + 编号 + 期限状态 —— 那正是
-        「扫一眼决定处理哪条」需要的全部信息;要动手再点开。
+        取代的是 D7 那版「處置 ▾」開關:那版展開 = 把所有可用動作的輸入框一次全擺出來
+        (`needsDue = actions.some(...)`),一條 open 的隱患點開就是日期框 + 關掉的原因 +
+        挪工地下拉 + 五顆按鈕 —— 想簽一張通知單的人被迫先讀一段關於「否決」的警告。
+        用戶反饋原話:「太繁瑣、UI 不明確」。
 
-        🔴 **可以多条同时开,不做手风琴。** 这不是偷懒,是下面证据链那块头注②
-           已经论证过的同一件事,原话:
-             「手风琴看着整齐,但展开第 5 行时自动收起第 2 行,于是第 3、4、5 行
-               整体往上跳 —— 手指正落向第 5 行,而那一块在半路上移走了,
-               底下换成了别人。」
-           而这块里每一颗按钮都是法律动作(签发暂停令后面跟着停工与索赔)。
-           省下来的那点屏幕,换的是一次可能签错文书的位移,不划算。
-           ⚠️ 写这条时我原本打算做手风琴,是那段注释拦下来的。别再改回去。
-
-        ⚠️ **`armedAction` 在飞的时候强制展开**:二次确认条长在这块里面,
-           收起了就等于把「真的要签发吗」那句话藏起来,而 armed 状态还在。
+        🔴 功能一項不減:主按鈕 + 更多 = `availableActions` 的全集(supervision-lib 有測試
+           鉗着),十個動作全在,只改了「什麼時候出現」。
+        🔴 **可以多條同時選,不做手風琴**(沿 D7 的推演:展開第 5 行時自動收起第 2 行,
+           第 3、4、5 行整體往上跳 —— 手指正落向第 5 行,而那一塊在半路上移走了;
+           這裏每一顆按鈕都是法律動作,那點屏幕換一次簽錯文書的位移不划算)。
+        ⚠️ armed(二次確認條亮着)時整個動作區換成確認條,那一格也收起 ——
+           確認條上那句話是人在按下不可撤銷的那一下之前唯一讀的東西,不能被表單擠走。
+        ⚠️ 沒有輸入格的動作(復工令 / 上報 / 否決)點了就直接走(要二次確認的舉手),
+           不開一個空格子讓人再點一次。
       */}
-      {(workOpen || armedAction) && (
-        <>
+      {armedAction ? (
+        <IssueConfirmBar
+          // 这句里插了 `hazard.item`(后端来的违规项名),所以整句过转换,
+          // 不是只转 `confirmPrompt` 里那些源码文案。
+          prompt={confirmText}
+          confirmLabel={CONFIRM_BUTTON_LABEL[armedAction] ?? "確認"}
+          armedAt={armedAt}
+          onCancel={onDisarm}
+          onConfirm={() => onAct(armedAction)}
+        />
+      ) : (
+        <div className="relative flex flex-wrap items-center gap-2">
+          {primary === "confirm" ? (
+            // pending 的主按鈕:一下就確認(D17 的人工閘,不是法律文書;錯了還有「關掉」出口)。
+            <Button size="sm" disabled={busy} onClick={onConfirmOne} className="pointer-coarse:min-h-11">
+              <Check className="mr-1 size-3.5" />
+              確認是隱患
+            </Button>
+          ) : primary ? (
+            <Button
+              size="sm"
+              // 三檔,判據是**這一下會產生什麼**(D8):實心紅 = 按下去回不來;實心綠 = 會發一張紙;
+              // 描邊 = 訂正類(不出紙、事後還能改)。定級 / 登記複查是描邊。
+              variant={
+                DOCLESS_ACTIONS.has(primary) || primary === "grade" || primary === "reinspect"
+                  ? "outline"
+                  : actionNeedsConfirm(primary)
+                    ? "destructive"
+                    : "default"
+              }
+              disabled={busy}
+              aria-expanded={chosen === primary}
+              onClick={() => pick(primary)}
+              className="pointer-coarse:min-h-11"
+            >
+              {actionNeedsConfirm(primary) && <Gavel className="mr-1 size-3.5" />}
+              {primary === "reinspect" && <Camera className="mr-1 size-3.5" />}
+              {ACTION_LABEL[primary]}
+            </Button>
+          ) : (
+            <span className="text-[12px] text-gray-400">這條已經走完流程,沒有下一步了。</span>
+          )}
+          {secondary.length > 0 && (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                onClick={() => setMenuOpen((v) => !v)}
+                className="ml-auto text-[var(--gyt-ink-soft)] pointer-coarse:min-h-11"
+              >
+                更多
+                <ChevronDown className={`ml-1 size-3.5 transition-transform${menuOpen ? " rotate-180" : ""}`} />
+              </Button>
+              {menuOpen && (
+                // 簡單的點外關閉:一層透明遮罩 + 菜單。不引第三方 Popover:上游 shadcn 的
+                // DropdownMenu 在這個 portal 面板裏的層疊上下文出過事(checkin.tsx 頭注)。
+                <>
+                  <button
+                    type="button"
+                    aria-label="關閉菜單"
+                    onClick={() => setMenuOpen(false)}
+                    className="fixed inset-0 z-10 cursor-default"
+                  />
+                  <div
+                    role="menu"
+                    className="absolute top-full right-0 z-20 mt-1 flex min-w-[220px] flex-col rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+                  >
+                    {secondary.map((action) => (
+                      <button
+                        key={action}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          pick(action);
+                        }}
+                        className={`flex items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-gray-50 pointer-coarse:min-h-11 ${
+                          actionNeedsConfirm(action) ? "text-red-700" : "text-gray-800"
+                        }`}
+                      >
+                        {action === "reject" && <Trash2 className="size-3.5" />}
+                        {action === "grade" && 已判级别 ? "改判級別" : ACTION_LABEL[action]}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* 選中的那一格。只露這個動作要的輸入,再加一顆「去做」和一顆「先不」。 */}
+      {chosenAction && !armedAction && (
+        <div className="flex flex-col gap-2 rounded-lg border border-dashed border-gray-300 bg-[#FAFCFB] p-3">
       {hazard.needs_grading && (
         <div className="rounded-lg bg-fuchsia-50 px-2.5 py-2 text-[12px] text-fuchsia-900">
           現場判的是「待定級」(詞表外的隱患項)。不知道不等於不嚴重 ——
           先由人定成一般或嚴重,才能簽文書。
         </div>
       )}
-
       {needsDue && (
         <div className="flex flex-col gap-1">
           <Label htmlFor={`gyt-due-${hazard.hazard_no}`} className="text-[12px]">
@@ -1829,7 +1924,6 @@ function HazardRow({
           </span>
         </div>
       )}
-
       {needsReason && reasonAction !== null && (
         <div className="flex flex-col gap-1">
           <Label htmlFor={`gyt-reason-${hazard.hazard_no}`} className="text-[12px]">
@@ -1858,7 +1952,6 @@ function HazardRow({
           </span>
         </div>
       )}
-
       {needsProject && (
         <ProjectChoice
           hazardNo={hazard.hazard_no}
@@ -1868,7 +1961,6 @@ function HazardRow({
           onChange={(value) => onFormChange({ projectId: value })}
         />
       )}
-
       {needsPhoto && (
         <RowPhotoChoice
           hazardNo={hazard.hazard_no}
@@ -1879,38 +1971,8 @@ function HazardRow({
         />
       )}
 
-      {armedAction ? (
-        <IssueConfirmBar
-          // 这句里插了 `hazard.item`(后端来的违规项名),所以整句过转换,
-          // 不是只转 `confirmPrompt` 里那些源码文案。
-          prompt={confirmText}
-          confirmLabel={CONFIRM_BUTTON_LABEL[armedAction] ?? "確認"}
-          armedAt={armedAt}
-          onCancel={onDisarm}
-          onConfirm={() => onAct(armedAction)}
-        />
-      ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          {actions.map((action) =>
-            action === "grade" ? (
-              // 定级给两颗按钮而不是一个下拉:少一次点击,手套也点得中。
-              //
-              // 🔴 **「现在是哪一档」不许渲染成按钮。** 2026-08-16 手工验抓到两件事,
-              //    根子都在原来那句 `disabled={busy || hazard.grade === grade}`:
-              //
-              //    ① 观感:当前级别那颗是 disabled 的,但「严重」恒用 destructive
-              //       (实心红)——而这个面板里实心红是**主操作**的样子。
-              //       一颗看着是主操作、点下去没反应的按钮,读起来就是系统坏了。
-              //    ② 🔴 **功能**:`needs_grading=1` 时 `hazard.grade` 里存的是
-              //       **映射表给的默认档(一般)**,不是有人判过的结论。于是那一档
-              //       「一般」这颗被判成「当前值」而禁用 —— 监理认定它就是一般隐患,
-              //       **却点不下去**,屏幕上唯一能点的是「严重」。
-              //       而硬拦②防的正是「一般隐患签了暂停令 = 平白停一片人的工」。
-              //
-              //    所以判据从「值相等」换成 `hasVerdict`(有没有人判过):
-              //      · 判过 → 当前那一档渲成**灰色状态片**(不是按钮),另一档才是按钮;
-              //      · 没判过(needs_grading)→ **两颗都是真按钮**,一颗都不锁。
-              <div key={action} className="flex flex-wrap items-center gap-1.5">
+          {chosenAction === "grade" ? (
+              <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[12px] text-gray-500">
                   {已判级别 ? "改判為" : "定級為"}
                 </span>
@@ -1966,27 +2028,9 @@ function HazardRow({
                   ),
                 )}
               </div>
-            ) : action === "reinspect" ? (
-              // 🔴 **照片没就绪就把这两颗按下去的路堵上**,而不是让 `actionBody` 事后抛。
-              //    ① 「合格」会把隐患**销项**,那一下不可撤销,而销项的唯一凭据就是
-              //       这张整改后的照片(方案 §5.2 那条红线)—— 不能让人在一个不可逆
-              //       动作上先点了再说;
-              //    ② 更要命的是被拦下来那句话:`SUPERVISION_MESSAGES.badPhotoId` 写的是
-              //       「在聊天记录里那张照片下面能看到」,那是**旧路**的指路话。人刚刚
-              //       明明拍了一张,却被指回聊天记录去找编号 —— 真人测试反馈的那句
-              //       「照片不能是编号意义不明」说的就是这一幕。
-              //    判据用 `复查拦路`(= `reinspectBlocker`),与提交时算编号的
-              //    `effectivePhotoId` 同源,两处不许各写一份。
-              // 变灰**必须说清差什么** —— 只变灰的话人只知道点不动、不知道要先干嘛,
-              // 那正是本仓反复防的「点了没反应」。
-              //
-              // 🔴 差什么这句话默认在 `title` 里(真人反馈「太多手续复杂」那一轮定的):
-              //    照片那一格就在面板顶上、大得多、还是虚线框/转圈/红卡 —— 缺什么是
-              //    自明的,一句常驻解释换来的是每条可复查的隐患都重复一遍。
-              //    ⚠️ **`already-used` 那一档是例外,必须常驻**:它是这一行独有的事实
-              //    (刚拿共用那张给这条登记过复查了),面板顶上那一格一点线索都没有,
-              //    而触屏根本没有 hover —— 藏进 title 等于没说,人只会看见一颗死按钮。
-              <div key={action} className="flex flex-wrap items-center gap-1.5">
+
+          ) : chosenAction === "reinspect" ? (
+              <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[12px] text-gray-500">複查結論</span>
                 <Button
                   size="sm"
@@ -2015,74 +2059,44 @@ function HazardRow({
                   <span className="text-[12px] text-gray-600">{复查拦路.message}</span>
                 )}
               </div>
-            ) : (
+
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
               <Button
-                key={action}
                 size="sm"
-                // 三档,判据是**这一下会产生什么**,不是「有多重要」:
-                //
-                //   实心红 destructive  按下去回不来(暂停令 / 上报主管部门 / 关掉)
-                //   实心黑 default      **会发一张纸出去**(监理通知单 / 工程复工令)
-                //   描边   outline      订正类:不出纸、事后还能再改
-                //                       (改期限 / 改工地 / 登记复查结论 / 否决)
-                //
-                // 「否决」不能长成 destructive 那颗红按钮:它跟「签发暂停令」并排站,
-                // 两颗一样红的话,手最先够到的那颗是哪颗就成了运气问题(而这两颗一颗
-                // 停工、一颗删数据)。它走 outline + 垃圾桶图标。
-                //
-                // 🔴 **2026-08-25 设计审计 D8 补的是第三档。** 在此之前
-                // 「改工地(不出文書)」和「簽發監理通知單」都是实心黑 ——
-                // 一个是改一行元数据、一个是发一份法律文书,而它们长得一模一样。
-                // 监理在一屏九条隐患里连续操作时,靠的是形状记忆不是逐字读按钮。
-                // ⚠️ 判据写成「出不出纸」而不是「重不重要」是刻意的:重要是主观的,
-                //    下一个人会有不同的排序;而「这一下会不会有一张盖章的纸发出去」
-                //    只有一个答案,并且按钮上本来就写着「不出文書」。
                 variant={
-                  action === "reject" || DOCLESS_ACTIONS.has(action)
+                  DOCLESS_ACTIONS.has(chosenAction)
                     ? "outline"
-                    : actionNeedsConfirm(action)
+                    : actionNeedsConfirm(chosenAction)
                       ? "destructive"
                       : "default"
                 }
                 disabled={busy}
-                onClick={() => (actionNeedsConfirm(action) ? onArm(action) : onAct(action))}
-                className={
-                  action === "reject"
-                    ? "text-gray-600 pointer-coarse:min-h-11"
-                    : DOCLESS_ACTIONS.has(action)
-                      ? "text-[var(--gyt-ink-soft)] pointer-coarse:min-h-11"
-                      : "pointer-coarse:min-h-11"
+                onClick={() =>
+                  actionNeedsConfirm(chosenAction) ? onArm(chosenAction) : onAct(chosenAction)
                 }
+                className="pointer-coarse:min-h-11"
               >
-                {action === "reject" ? (
-                  <Trash2 className="mr-1 size-3.5" />
-                ) : (
-                  actionNeedsConfirm(action) && <Gavel className="mr-1 size-3.5" />
-                )}
-                {ACTION_LABEL[action]}
+                {actionNeedsConfirm(chosenAction) && <Gavel className="mr-1 size-3.5" />}
+                {SHEET_GO_LABEL[chosenAction] ?? ACTION_LABEL[chosenAction]}
               </Button>
-            ),
+              {/* 簽發按鈕旁那一行:**這一下會帶出哪幾份**(按定級自動帶出,不讓人選)。 */}
+              {ISSUE_ACTIONS.has(chosenAction) && issuePlan && (
+                <span className="text-[12px] text-gray-600">
+                  帶出:<span className="font-medium text-gray-800">{issuePlan}</span>
+                  {hazard.grade === GRADE_SEVERE ? "(三份一次出,簽了就停工)" : "(一份)"}
+                </span>
+              )}
+            </div>
           )}
-          {actions.length === 0 && (
-            <span className="text-[12px] text-gray-400">
-              這條已經走完流程,沒有下一步了。
-            </span>
-          )}
+          <button
+            type="button"
+            onClick={() => onChoose(null)}
+            className="self-start text-[12px] text-gray-500 hover:text-gray-700 pointer-coarse:min-h-11"
+          >
+            先不{chosenAction === "grade" ? "改" : chosenAction === "reinspect" ? "登記" : "做這一步"},收起
+          </button>
         </div>
-      )}
-      {/* 签发按钮下面那一行:**这一下会带出哪几份**(2026-09-18 用户反馈:文书该按等级
-          自动带出)。按钮上的字对一般 / 严重是同一句,区别全在这一行 —— 所以它不能省,
-          省了就是一颗「簽發處置文書」按钮,人不知道按下去会不会停一片人的工。
-          文书名来自 DOC_TYPE_ZH(受控词表),不手写。armed 时也留着:确认条上那句话
-          说的是后果,这行说的是清单,两句互补。 */}
-      {actions.some((a) => ISSUE_ACTIONS.has(a)) && issuePlan && (
-        <div className="text-[12px] text-gray-600">
-          按監理定級自動帶出:
-          <span className="font-medium text-gray-800">{issuePlan}</span>
-          {hazard.grade === GRADE_SEVERE ? "(三份一次出,簽了就停工)" : "(一份)"}
-        </div>
-      )}
-        </>
       )}
 
       {/* failure 在处置区**外面** —— 上一次动作为什么失败,收起来之后也必须看得见,
@@ -2275,20 +2289,28 @@ export function SupervisionPanel({
    */
   const [expandedDetails, setExpandedDetails] = useState<string[]>([]);
   /**
-   * 哪几条隐患的**处置区**是展开的(2026-08-25 设计审计 D7)。
+   * 每條隱患**選中的動作**(2026-09-18 FINDING-003「動作優先」),鍵是編號。
+   * 取代 D7 的 `openWork`(那時是「展開 = 把所有動作的輸入框一次全擺出來」):
+   * 現在一條只露一顆主按鈕 + 更多,選了哪個才展開那個動作的那一格。
    *
-   * 默认全收起 —— 收起前一屏九条要滚 4200px、28 个输入框 51 颗按钮,
-   * 而扫列表的人此刻只想知道「哪条超期了」。完整推演在 HazardRow 里那块的头注。
+   * 🔴 **是一張表不是單值** —— 手風琴會讓下面的行在手指落下去的半路上往上跳,
+   * 而這塊裏每一顆按鈕都是法律動作。那條論證寫在 `expandedDetails` 頭注和證據鏈那塊的②。
    *
-   * 🔴 **和上面 `expandedDetails` 一样是数组不是单值** —— 手风琴会让下面的行
-   * 在手指落下去的半路上往上跳,而这块里每一颗按钮都是法律动作。
-   * 那条论证写在 `expandedDetails` 头注和证据链那块的②,别绕过去。
-   *
-   * ⚠️ **不随筛子 / 重拉清空**:清了的话,监理点开一条、去改个筛子再回来,
-   *    他刚才展开的那条又合上了,而他以为自己弄丢了什么。
-   *    列表里已经没有的编号留在这个数组里是无害的(`includes` 查不到就是收起)。
+   * ⚠️ **不隨篩子 / 重拉清空**(理由同 `expandedDetails`);**動作成功後把那一條刪掉**
+   *    (見 runAction 成功那一段)—— 簽完通知單那一格還開着,人會以為沒簽成再簽一份。
    */
-  const [openWork, setOpenWork] = useState<string[]>([]);
+  const [chosenActions, setChosenActions] = useState<Record<string, PrimaryAction>>({});
+  const chooseAction = useCallback((hazardNo: string, action: PrimaryAction | null) => {
+    setChosenActions((prev) => {
+      if (action === null) {
+        if (!(hazardNo in prev)) return prev;
+        const next = { ...prev };
+        delete next[hazardNo];
+        return next;
+      }
+      return { ...prev, [hazardNo]: action };
+    });
+  }, []);
   /**
    * 已经拉过的详情,键是隐患编号。**收起不清它**(再展开就不用等一次网络),
    * 但**动作成功之后必须把那一条删掉**(见 `invalidateDetail`)。
@@ -2856,10 +2878,16 @@ export function SupervisionPanel({
   }, [sharedPhoto, pickSharedPhoto]);
 
   /** 批量确认(pending → open)。**这是 D17 那道人工闸的全部实现。** */
-  const confirmSelected = useCallback(async () => {
+  /**
+   * 確認若干條(pending → open)。兩個入口共用:頂上那條橙條批量確認(`selectablePending`),
+   * 與每一行的主按鈕「確認是隱患」(只帶這一個編號,FINDING-003)。
+   * 同一個端點、同一套回執處理 —— 分開寫的話,單條那邊漏掉 `invalidateDetail`
+   * 這種事沒有任何測試會發現。
+   */
+  const confirmHazards = useCallback(async (hazardNos: readonly string[]) => {
     let body: { hazard_nos: string[] };
     try {
-      body = confirmBody(selectablePending);
+      body = confirmBody(hazardNos);
     } catch (err) {
       setBanner({
         tone: "bad",
@@ -2905,7 +2933,12 @@ export function SupervisionPanel({
     } finally {
       setBusy(false);
     }
-  }, [apiBase, selectablePending, invalidateDetail]);
+  }, [apiBase, invalidateDetail]);
+
+  const confirmSelected = useCallback(
+    () => confirmHazards(selectablePending),
+    [confirmHazards, selectablePending],
+  );
 
   /**
    * 举手(只给要二次确认的那两个动作)。**先把必填项验一遍再举手。**
@@ -3036,6 +3069,9 @@ export function SupervisionPanel({
             ...(action === "suspend" ? { was_suspended: true } : {}),
           }),
         );
+        // 動作成功 → 收起這一條選中的那一格(FINDING-003)。留着的話,簽完通知單日期框還開着,
+        // 人會以為沒簽成而再簽一份 —— 同一件事兩份法律文書。
+        chooseAction(hazard.hazard_no, null);
         if (parsed.documents.length > 0) {
           // 🔴 补上「这份是哪条隐患的」。后端的 documents[] 只有类型和编号 ——
           //    而「本次出的文书」是**跨隐患**的汇总:连着给三条隐患签复工令,
@@ -3099,7 +3135,7 @@ export function SupervisionPanel({
         setBusy(false);
       }
     },
-    [apiBase, forms, sharedPhotoState, setFailure, invalidateDetail, loadDetail, signerName, snapshot],
+    [apiBase, forms, sharedPhotoState, setFailure, invalidateDetail, loadDetail, signerName, snapshot, chooseAction],
   );
 
   // ── 面板这一层要上屏的字(界面恒繁體)──────────────────────────────────────
@@ -3450,7 +3486,7 @@ export function SupervisionPanel({
                 failure={failures[hazard.hazard_no] ?? null}
                 artifactBase={artifactBase}
                 expanded={expandedDetails.includes(hazard.hazard_no)}
-                workOpen={openWork.includes(hazard.hazard_no)}
+                chosen={chosenActions[hazard.hazard_no] ?? null}
                 detail={details[hazard.hazard_no]}
                 sharedPhoto={sharedPhotoState}
                 usedPhotoId={usedPhotos[hazard.hazard_no] ?? null}
@@ -3462,7 +3498,8 @@ export function SupervisionPanel({
                 onDisarm={() => setArmed(null)}
                 onAct={(action, grade, result) => void runAction(hazard, action, grade, result)}
                 onToggleDetail={() => toggleDetail(hazard.hazard_no)}
-                onToggleWork={() => setOpenWork((prev) => toggleSelected(prev, hazard.hazard_no))}
+                onConfirmOne={() => void confirmHazards([hazard.hazard_no])}
+                onChoose={(action) => chooseAction(hazard.hazard_no, action)}
                 onRetryDetail={() => retryDetail(hazard.hazard_no)}
               />
             ))

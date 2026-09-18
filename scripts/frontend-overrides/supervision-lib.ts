@@ -944,6 +944,49 @@ export function actionNeedsPhoto(action: DisposalAction): boolean {
   return action === "reinspect";
 }
 
+// ---------------------------------------------------------------------------
+// 動作優先(2026-09-18 設計審查 FINDING-003)
+// ---------------------------------------------------------------------------
+
+/**
+ * 一條隱患的**主按鈕**:= 步驟條上的當前步。pending 是「確認」(走批量端點、只帶這一條);
+ * 其餘是 `availableActions` 的第一顆 —— 那張表本來就是「主要動作在前」排的,所以
+ * open 未定級時主按鈕是定級(硬攔③:任何簽發都會被服務端拒),定過級才是簽發;
+ * 走完流程的是 null。
+ *
+ * 為什麼要有這一層:在此之前處置區把**所有可用動作的輸入框一次全擺出來**
+ * (`needsDue = actions.some(...)`),一條 open 的隱患點開就是日期框 + 關掉的原因 +
+ * 挪工地下拉 + 五顆按鈕 —— 人還沒說要幹什麼,先看到三件事要填。用戶反饋原話:
+ * 「太繁瑣、UI 不明確」。現在一條只露一顆主按鈕 + 「更多 ▾」,點了哪個才展開哪一格。
+ */
+export type PrimaryAction = DisposalAction | "confirm";
+
+export function primaryAction(hazard: HazardBrief): PrimaryAction | null {
+  if (hazard.status === "pending") return "confirm";
+  return availableActions(hazard)[0] ?? null;
+}
+
+/** 「更多 ▾」裏的那幾顆 = 可用動作減去主按鈕,順序不變,**一個都不丟**(功能不減)。 */
+export function secondaryActions(hazard: HazardBrief): DisposalAction[] {
+  const primary = primaryAction(hazard);
+  return availableActions(hazard).filter((a) => a !== primary);
+}
+
+/** 選了這個動作之後,那一格要露出哪幾個輸入。與四個 `actionNeeds*` 同源,只是換成一次拿全。 */
+export function actionFields(action: DisposalAction): {
+  due: boolean;
+  reason: boolean;
+  photo: boolean;
+  project: boolean;
+} {
+  return {
+    due: actionNeedsDuePhrase(action),
+    reason: actionNeedsReason(action),
+    photo: actionNeedsPhoto(action),
+    project: actionNeedsProject(action),
+  };
+}
+
 /**
  * 要不要二次确认。**判据是「这一下能不能反悔」**,不是「会不会写库」:
  *   · `suspend` —— 一次停掉一片人的工;
