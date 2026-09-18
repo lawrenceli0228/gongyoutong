@@ -1057,12 +1057,12 @@ export function CheckinEntry() {
           「打/卡」两个字竖排 —— 目标比指尖还小。三件套的分工:
           · whitespace-nowrap —— 不许再竖排(治本,与被挤多窄无关);
           · shrink-0 —— 不被兄弟元素压;
-          · min-h-11 / min-w-11(44px)—— 触摸目标的通用下限,只在窄屏生效,
-            sm: 之后归零,桌面端保持今天这颗「无边框图标+字」的观感不变。 */}
+          · pointer-coarse:min-h-11 / min-w-11(44px)—— 触摸目标的通用下限,按设备判(FINDING-006),
+            鼠标设备不加高,桌面端保持今天这颗「无边框图标+字」的观感不变。 */}
       <button
         type="button"
         onClick={() => setManualOpen(true)}
-        className="flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap sm:min-h-0 sm:min-w-0"
+        className="flex pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap"
       >
         <Camera className="size-5 text-gray-600" />
         <span className="text-sm text-gray-600">打卡</span>

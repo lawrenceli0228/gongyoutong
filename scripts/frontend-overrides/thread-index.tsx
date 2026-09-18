@@ -715,7 +715,8 @@ function ThreadInner() {
                             所以 768 / 1280 一个像素都不动。 */}
                       <div className="flex flex-wrap items-center gap-2 border-t border-[#EDF0EE] bg-white p-3 px-4 sm:flex-nowrap sm:gap-6">
                         <div className="order-last shrink-0 sm:order-none">
-                          <div className="flex items-center space-x-2">
+                          {/* 开关本身只有 20px 高;整行给 44px 触控高度,Label 的 htmlFor 让整行都能点。 */}
+                          <div className="flex items-center space-x-2 pointer-coarse:min-h-11">
                             <Switch
                               id="render-tool-calls"
                               checked={hideToolCalls ?? false}
@@ -751,7 +752,7 @@ function ThreadInner() {
                         <div className="flex shrink-0 items-center gap-2">
                         <Label
                           htmlFor="camera-input"
-                          className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--gyt-green)] bg-[var(--gyt-green)] px-3 py-2 text-sm font-bold whitespace-nowrap text-white transition hover:bg-[var(--gyt-green-deep)] sm:min-h-0"
+                          className="flex pointer-coarse:min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--gyt-green)] bg-[var(--gyt-green)] px-3 py-2 text-sm font-bold whitespace-nowrap text-white transition hover:bg-[var(--gyt-green-deep)]"
                         >
                           <Camera className="size-4" />
                           <span>拍照</span>
@@ -785,10 +786,11 @@ function ThreadInner() {
                                看着像它们是一组。现在换行以**组**为单位,不会再拆散。
                             ⚠️ 竖线 `hidden sm:block`:窄屏本来就要换行,那时候竖线会
                                卡在行尾变成一根没来由的短杠。窄屏靠分组换行表达,不靠线。 */}
-                        {/* min-h-11 = 44px,触摸目标的通用下限;≥640px 退回原来的高度(sm:min-h-0)。 */}
+                        {/* pointer-coarse:min-h-11 = 触屏设备上 44px 下限(2026-09-18 FINDING-006:原来按宽度判
+                            `sm:min-h-0`,1024px 平板在监理面板拿得到 44px、在这儿拿不到;全站统一按设备判)。 */}
                         <Label
                           htmlFor="file-input"
-                          className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--gyt-line)] bg-white px-3 py-2 text-sm font-bold whitespace-nowrap text-[var(--gyt-ink-soft)] transition hover:border-[var(--gyt-mint)] sm:min-h-0"
+                          className="flex pointer-coarse:min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--gyt-line)] bg-white px-3 py-2 text-sm font-bold whitespace-nowrap text-[var(--gyt-ink-soft)] transition hover:border-[var(--gyt-mint)]"
                         >
                           <Plus className="size-4 text-[var(--gyt-green-deep)]" />
                           <span>上傳圖紙·資料</span>
@@ -837,7 +839,7 @@ function ThreadInner() {
                           <Button
                             key="stop"
                             onClick={() => stream.stop()}
-                            className="ml-auto min-h-11 shrink-0 rounded-full whitespace-nowrap sm:min-h-0"
+                            className="ml-auto pointer-coarse:min-h-11 shrink-0 rounded-full whitespace-nowrap"
                           >
                             <LoaderCircle className="h-4 w-4 animate-spin" />
                             停止
@@ -845,7 +847,7 @@ function ThreadInner() {
                         ) : (
                           <Button
                             type="submit"
-                            className="ml-auto min-h-11 shrink-0 rounded-full bg-[var(--gyt-green)] px-7 text-[16px] font-black whitespace-nowrap text-white shadow-md transition-all hover:bg-[var(--gyt-green-deep)] sm:min-h-0"
+                            className="ml-auto pointer-coarse:min-h-11 shrink-0 rounded-full bg-[var(--gyt-green)] px-7 text-[16px] font-black whitespace-nowrap text-white shadow-md transition-all hover:bg-[var(--gyt-green-deep)]"
                             disabled={
                               isLoading ||
                               (!input.trim() && contentBlocks.length === 0)

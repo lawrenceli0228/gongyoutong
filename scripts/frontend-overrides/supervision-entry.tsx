@@ -180,7 +180,7 @@ export function SupervisionEntry() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap sm:min-h-0 sm:min-w-0"
+        className="flex pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap"
         aria-label={
           hasPending ? `監理確認與處置,有 ${badgeText} 條待確認` : "監理確認與處置"
         }

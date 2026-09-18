@@ -95,12 +95,13 @@ export function ReportsEntry() {
       {/* 触摸目标三件套,与 CheckinEntry / SupervisionEntry 一字不差,理由也一样
           (2026-08-15 在 390×844 的实测:动作条被 flex 挤压,「打卡」只剩 42px 宽、
           两个字竖排):whitespace-nowrap 不许竖排 / shrink-0 不被压 /
-          min-h-11 min-w-11(44px)触摸下限,sm: 之后归零,桌面观感不变。
+          pointer-coarse:min-h-11 / min-w-11(44px)触摸下限 —— 按**设备**判(有没有精确指针),不按宽度:
+          2026-09-18 设计审查 FINDING-006,1024px 平板在监理面板拿得到 44px、在这儿拿不到。
           按钮上只放两个字也是为这条 —— 这一行现在有五件东西了。 */}
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap sm:min-h-0 sm:min-w-0"
+        className="flex pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap"
         aria-label="巡檢記錄:下載或轉發已經出好的記錄"
       >
         <FileText className="size-5 text-gray-600" />
@@ -189,7 +190,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
               type="button"
               onClick={() => void load()}
               disabled={loading}
-              className="flex min-h-11 items-center gap-1.5 rounded-[10px] border border-[var(--gyt-line)] px-3 text-sm text-[var(--gyt-ink-soft)] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+              className="flex pointer-coarse:min-h-11 items-center gap-1.5 rounded-[10px] border border-[var(--gyt-line)] px-3 py-1.5 text-sm text-[var(--gyt-ink-soft)] disabled:opacity-50"
             >
               <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />
               刷新
@@ -197,7 +198,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
             <button
               type="button"
               onClick={onClose}
-              className="min-h-11 rounded-[10px] border border-[var(--gyt-line)] px-3 text-sm text-[var(--gyt-ink-soft)] sm:min-h-0 sm:py-1.5"
+              className="pointer-coarse:min-h-11 rounded-[10px] border border-[var(--gyt-line)] px-3 py-1.5 text-sm text-[var(--gyt-ink-soft)]"
             >
               關閉
             </button>
@@ -215,7 +216,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
             <button
               type="button"
               onClick={() => void load()}
-              className="mt-3 min-h-11 rounded-[10px] bg-[var(--gyt-green)] px-4 text-sm font-bold text-white sm:min-h-0 sm:py-2"
+              className="mt-3 pointer-coarse:min-h-11 rounded-[10px] bg-[var(--gyt-green)] px-4 py-2 text-sm font-bold text-white"
             >
               再試一次
             </button>
