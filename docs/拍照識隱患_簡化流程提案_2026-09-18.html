@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拍照識隱患 · 簡化流程提案</title>
+<style>
+  :root{--ink:#171c1a;--muted:#6b7570;--line:#e3e7e4;--bg:#f5f7f6;--card:#fff;--green:#1f6b4a;--green-ink:#33403a;--amber:#b45309;--amber-bg:#fff4e5;--red:#b91c1c;--red-bg:#fee2e2;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 Inter,"PingFang HK","PingFang TC","Noto Sans CJK TC",sans-serif}
+  header{padding:28px 32px 8px}
+  h1{font-size:24px;margin:0 0 6px}
+  .sub{color:var(--muted);max-width:900px}
+  .row{display:flex;gap:28px;padding:20px 32px 48px;flex-wrap:wrap;align-items:flex-start}
+  .col{display:flex;flex-direction:column;gap:12px;width:375px}
+  .col h2{font-size:14px;margin:0;color:var(--muted);font-weight:600;letter-spacing:.02em}
+  .phone{width:375px;background:var(--card);border:1px solid var(--line);border-radius:22px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  .bar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);font-weight:700}
+  .logo{width:26px;height:26px;border-radius:7px;background:var(--green);color:#fff;display:grid;place-items:center;font-size:14px}
+  .bar .right{margin-left:auto;font-weight:500;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 9px}
+  .status{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--line);background:#fafbfa}
+  .dot{width:8px;height:8px;border-radius:50%;background:#9ab5a8}
+  .dot.on{background:var(--green)}
+  .status b{color:var(--green-ink);font-weight:600}
+  .status .chev{margin-left:auto}
+  .body{padding:12px;display:flex;flex-direction:column;gap:12px;min-height:520px}
+  .me{align-self:flex-end;max-width:78%}
+  .me img{width:100%;border-radius:12px;display:block}
+  .me .txt{margin-top:6px;background:#eef1ef;border-radius:12px;padding:8px 12px;font-size:14px}
+  .card{border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .card .hd{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);font-weight:700;font-size:14px}
+  .card .hd .n{margin-left:auto;font-weight:500;font-size:12px;color:var(--muted)}
+  .hz{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line)}
+  .hz:last-of-type{border-bottom:0}
+  .chip{display:inline-block;font-size:11px;padding:2px 7px;border-radius:6px;font-weight:600;line-height:1.4}
+  .chip.amber{background:var(--amber-bg);color:var(--amber)}
+  .chip.gray{background:#eef1ef;color:#4b5550}
+  .chip.red{background:var(--red-bg);color:var(--red)}
+  .chip.wait{background:#fff7d6;color:#8a6100}
+  .hz .name{font-weight:700;font-size:15px}
+  .hz .no{font:11px var(--mono);color:#98a39d;margin-top:2px}
+  .btns{display:flex;gap:8px;margin-top:8px}
+  .btn{border-radius:9px;padding:8px 12px;font-size:13px;font-weight:600;border:1px solid var(--line);background:#fff;color:var(--green-ink);min-height:36px}
+  .btn.primary{background:var(--green-ink);border-color:var(--green-ink);color:#fff}
+  .btn.danger{background:var(--red);border-color:var(--red);color:#fff}
+  .btn.sm{padding:6px 10px;font-size:12px;min-height:32px}
+  .card .ft{padding:9px 12px;font-size:13px;color:var(--green);font-weight:600;background:#f6faf8}
+  .ai{font-size:14px}
+  .ai p{margin:0 0 6px}
+  .proc{font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center}
+  .proc .chev{font-size:10px}
+  .compose{border-top:1px solid var(--line);padding:10px 12px;display:flex;flex-direction:column;gap:8px;background:#fff}
+  .compose .input{border:1px solid var(--line);border-radius:12px;padding:10px 12px;color:#98a39d;font-size:14px}
+  .compose .acts{display:flex;align-items:center;gap:8px}
+  .compose .snap{background:var(--green);color:#fff;border-radius:999px;padding:10px 18px;font-weight:700;font-size:14px}
+  .compose .ic{width:40px;height:40px;border-radius:999px;border:1px solid var(--line);display:grid;place-items:center;color:var(--green-ink);font-size:16px;position:relative}
+  .compose .ic .badge{position:absolute;top:-4px;right:-4px;background:var(--amber);color:#fff;font-size:10px;border-radius:999px;padding:0 5px;font-weight:700}
+  .compose .send{margin-left:auto;background:#cfe3d9;color:#fff;border-radius:999px;padding:10px 18px;font-weight:700}
+  .note{font-size:13px;color:var(--muted);border-left:3px solid var(--line);padding:2px 0 2px 12px}
+  .note b{color:var(--ink)}
+  .keep{font-size:12px;color:var(--muted)}
+  .keep code{font:11px var(--mono);background:#eef1ef;padding:1px 5px;border-radius:4px}
+  /* 面板 */
+  .prow{border:1px solid var(--line);border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+  .prow .top{display:grid;grid-template-columns:64px 1fr;gap:10px}
+  .prow .thumb{width:64px;height:64px;border-radius:9px;background:linear-gradient(135deg,#cfd8d3,#9fb3a8)}
+  .prow .title{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-weight:700;font-size:15px}
+  .prow .meta{font-size:11px;color:#98a39d;font-family:var(--mono)}
+  .steps{display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:11px}
+  .step{border:1px solid var(--line);border-radius:6px;padding:2px 6px;color:#98a39d;background:#fff}
+  .step.done{color:#6b7570;background:#eef1ef}
+  .step.cur{background:var(--green-ink);color:#fff;border-color:var(--green-ink);font-weight:600}
+  .steps .arr{color:#c9d1cc;font-size:10px}
+  .primary-line{display:flex;align-items:center;gap:8px}
+  .primary-line .more{margin-left:auto;border:1px solid var(--line);border-radius:9px;padding:6px 10px;font-size:13px;color:var(--green-ink)}
+  .sheet{border:1px dashed #b9c6bf;border-radius:12px;padding:10px 12px;background:#fafcfb;display:flex;flex-direction:column;gap:8px}
+  .sheet .t{font-size:13px;font-weight:700}
+  .field{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+  .field .in{border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:#fff;color:var(--ink);font-size:14px;display:flex;justify-content:space-between}
+  .field .hint{font-size:11px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap}
+  .tab{border:1px solid var(--line);border-radius:999px;padding:4px 10px;font-size:12px;color:var(--muted)}
+  .tab.on{background:var(--green-ink);color:#fff;border-color:var(--green-ink)}
+  .tab .c{font-family:var(--mono);margin-left:3px}
+  .legend{padding:0 32px 40px;max-width:1180px}
+  .legend h2{font-size:18px;margin:0 0 10px}
+  table{border-collapse:collapse;width:100%;font-size:13px;background:#fff;border:1px solid var(--line)}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:#fafbfa;font-weight:600;color:var(--muted)}
+  td.ok{color:var(--green);font-weight:600;white-space:nowrap}
+</style>
+</head>
+<body>
+<header>
+  <h1>拍照識隱患 · 簡化流程提案(功能一項不減)</h1>
+  <div class="sub">三塊屏幕:① 拍完照看到什麼 ② 監理點開一條隱患看到什麼 ③ 首頁與輸入條。灰底虛線框 = 只在點了對應動作之後才出現的區域。每塊下面列出「現在有的功能去了哪裏」。</div>
+</header>
+
+<div class="row">
+
+  <!-- ① 結果卡 -->
+  <div class="col">
+    <h2>① 拍完照:結果就是一張能點的卡</h2>
+    <div class="phone">
+      <div class="bar"><div class="logo">工</div>工友通<span class="right">🏗 全部工地 ▾</span></div>
+      <div class="status"><span class="dot on"></span><b>識隱患</b> 已看完 · 30 秒 · 7 步<span class="chev">▸</span></div>
+      <div class="body">
+        <div class="me">
+          <div style="width:100%;height:150px;border-radius:12px;background:linear-gradient(135deg,#e8c25a,#8a6a1a 60%,#3b3b3b)"></div>
+          <div class="txt">看看這張照片。</div>
+        </div>
+        <div class="card">
+          <div class="hd">🛡 看到 2 處隱患<span class="n">已登記 · 待確認</span></div>
+          <div class="hz">
+            <span class="chip amber">較大</span>
+            <div>
+              <div class="name">用電隱患</div>
+              <div class="no">GYT-H-20260918-110634-f9ff</div>
+              <div class="btns"><span class="btn primary sm">確認是隱患</span><span class="btn sm">不是隱患</span></div>
+            </div>
+          </div>
+          <div class="hz">
+            <span class="chip gray">一般</span>
+            <div>
+              <div class="name">材料堆放混亂</div>
+              <div class="no">GYT-H-20260918-110634-d03b</div>
+              <div class="btns"><span class="btn primary sm">確認是隱患</span><span class="btn sm">不是隱患</span></div>
+            </div>
+          </div>
+          <div class="ft">去監理處置 →</div>
+        </div>
+        <div class="ai">
+          <p><b>用電隱患(較大)最要緊:</b>配電箱門敞着、電纜絕緣皮破了。先別讓人靠近,叫持證電工來斷電處理。</p>
+          <p>木方、模板堆在配電箱旁,得清開。背景遠處有人看不清戴沒戴帽,到現場順手看一眼。</p>
+        </div>
+        <div class="proc"><span class="chev">▸</span>過程 7 步 · 30.4s(調度 → 識隱患 → 調度)</div>
+      </div>
+      <div class="compose">
+        <div class="input">對着我說話、拍張照,或問一句…</div>
+        <div class="acts"><span class="snap">📷 拍照</span><span class="ic">＋</span><span class="ic">🛡<span class="badge">2</span></span><span class="ic">⋯</span><span class="send">發送</span></div>
+      </div>
+    </div>
+    <div class="note"><b>去掉的只有噪聲:</b>四張 Agent 卡在對話頁縮成頂上一行狀態;6 行「轉給 / 交回」和計時表折進「過程 ▸」一行,點開全在。</div>
+    <div class="keep">功能去向:確認 / 否決 → 卡上兩顆按鈕(打的還是 <code>POST /supervision/confirm</code> / <code>reject</code>);計時行 → 「過程」展開;隱藏中間步驟開關 → 「過程」展開裏;打卡 / 記錄 → 「⋯」;隱患台賬 → 🛡 圖標(帶待確認數)。</div>
+  </div>
+
+  <!-- ② 面板一條隱患 -->
+  <div class="col">
+    <h2>② 監理面板:先選動作,再填那一格</h2>
+    <div class="phone">
+      <div class="bar">🛡 監理確認與處置<span class="right">✕</span></div>
+      <div class="body" style="gap:10px">
+        <div class="tabs"><span class="tab">待確認<span class="c">7</span></span><span class="tab on">在辦<span class="c">4</span></span><span class="tab">待複查<span class="c">1</span></span><span class="tab">超期<span class="c">0</span></span><span class="tab">全部</span></div>
+        <div class="prow">
+          <div class="top">
+            <div class="thumb"></div>
+            <div>
+              <div class="title">臨邊無防護 <span class="chip red">嚴重</span> <span class="chip wait">待簽發</span></div>
+              <div class="meta">GYT-H-20260819-132808-e503 · 未歸工地</div>
+            </div>
+          </div>
+          <div class="steps"><span class="step done">✓ 確認</span><span class="arr">›</span><span class="step done">✓ 定級 嚴重</span><span class="arr">›</span><span class="step cur">3. 簽發文書</span><span class="arr">›</span><span class="step">整改・複查</span><span class="arr">›</span><span class="step">復工令</span><span class="arr">›</span><span class="step">銷項</span></div>
+          <div class="primary-line"><span class="btn danger">⚖ 簽發處置文書</span><span class="more">更多 ▾</span></div>
+          <div class="sheet">
+            <div class="t">簽發:通知單 + 暫停令 + 致建設單位報告(三份,簽了就停工)</div>
+            <div class="field">整改期限<div class="in"><span>2026/09/19(明天)</span><span>📅</span></div><span class="hint">已按嚴重預填,不合適就改</span></div>
+            <div class="field">簽發人<div class="in"><span style="color:#98a39d">你的姓名</span></div></div>
+            <div class="btns"><span class="btn danger">確認簽發</span><span class="btn">先不簽</span></div>
+          </div>
+          <div class="proc"><span class="chev">▸</span>已簽文書和複查記錄</div>
+        </div>
+        <div class="prow">
+          <div class="top">
+            <div class="thumb"></div>
+            <div>
+              <div class="title">未戴安全帽 <span class="chip gray">一般</span> <span class="chip wait">整改中</span></div>
+              <div class="meta">GYT-H-20260819-134747-ad4f · 期限 9月25日(週五)</div>
+            </div>
+          </div>
+          <div class="steps"><span class="step done">✓ 確認</span><span class="arr">›</span><span class="step done">✓ 定級</span><span class="arr">›</span><span class="step done">✓ 簽發</span><span class="arr">›</span><span class="step cur">4. 整改・複查</span><span class="arr">›</span><span class="step">銷項</span></div>
+          <div class="primary-line"><span class="btn primary">📷 登記複查結論</span><span class="more">更多 ▾</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="note"><b>一條隱患只露一顆主按鈕</b>(= 步驟條上的當前步);日期 / 原因 / 工地那幾格只在點了對應動作之後出現。「更多 ▾」收:改判級別、關掉(不出文書)、改整改期限、改工地、否決。</div>
+    <div class="keep">功能去向:四張徽章 → 級別 + 狀態兩顆(現場檔進「更多」下的定級面板裏,未歸工地併進 meta 行);簽發人 → 簽發面板內(仍記台賬);共用複查照片 → 「登記複查結論」面板內;證據鏈 → 底部同一行。</div>
+  </div>
+
+  <!-- ③ 首頁 -->
+  <div class="col">
+    <h2>③ 首頁:一句話 + 一顆拍照</h2>
+    <div class="phone">
+      <div class="bar"><div class="logo">工</div>工友通<span class="right">🏗 全部工地 ▾</span></div>
+      <div class="status"><span class="dot"></span>調度中樞 · 全部待命<span class="chev">▸</span></div>
+      <div class="body" style="justify-content:flex-end;min-height:420px">
+        <div style="text-align:center;padding:20px 0 8px">
+          <div style="font-size:26px;font-weight:900">有事就問工友通</div>
+          <div style="color:var(--muted);font-size:14px;margin-top:4px">拍張照、說一句,或者傳個文件</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
+          <div class="prow" style="padding:8px 10px"><b>識隱患</b><span class="keep">拍照識別現場隱患</span></div>
+          <div class="prow" style="padding:8px 10px"><b>排期</b><span class="keep">記任務 / 改期限</span></div>
+          <div class="prow" style="padding:8px 10px"><b>圖紙</b><span class="keep">讀 DXF 尺寸·標高</span></div>
+          <div class="prow" style="padding:8px 10px"><b>規範</b><span class="keep">查消防 / 安全條文</span></div>
+        </div>
+      </div>
+      <div class="compose">
+        <div class="input">對着我說話、拍張照,或問一句…</div>
+        <div class="acts"><span class="snap">📷 拍照</span><span class="ic">＋</span><span class="ic">🛡<span class="badge">7</span></span><span class="ic">⋯</span><span class="send">發送</span></div>
+      </div>
+    </div>
+    <div class="note"><b>四張能力卡只留在空白首頁</b>(這裏它們是「能幹什麼」的說明);進了對話就縮成頂上一行,正在忙的那個 Agent 名字亮起來。輸入條從 8 個控件減到 5 個。</div>
+    <div class="keep">功能去向:打卡 / 記錄 → 「⋯」;隱藏中間步驟開關 → 「過程 ▸」展開裏(默認折疊即等於原來的「隱藏」);上傳圖紙·資料 → 「＋」。</div>
+  </div>
+</div>
+
+<div class="legend">
+  <h2>現在的流程 vs 提案(以「拍一張照到監理簽發通知單」計)</h2>
+  <table>
+    <tr><th style="width:18%">環節</th><th style="width:40%">現在</th><th>提案</th></tr>
+    <tr><td>拍照 → 送出</td><td>拍照 → 縮略圖 → 發送(2 步)</td><td class="ok">不變(拍照仍需按發送,避免誤傳)</td></tr>
+    <tr><td>等結果時看到</td><td>Agent 卡亮起 + 「照片我收到了…」 + 轉給 / 已接手 + 計時行</td><td class="ok">頂上狀態行亮起 + 一行「識隱患 正在看…」,其餘折進「過程」</td></tr>
+    <tr><td>結果</td><td>純文字,隱患編號夾在句子裏;要處置得去找底欄「隱患」按鈕</td><td class="ok">一張隱患卡:級別 / 編號 / 兩顆按鈕,當場確認或否決;「去監理處置」直達</td></tr>
+    <tr><td>確認 → 簽發</td><td>開面板 → 找到那條 → 點處置 → 看到 3 個輸入框 + 5 顆按鈕 → 選日期 → 簽發</td><td class="ok">卡上點確認 → 面板該條只露「簽發處置文書」→ 面板裏日期已預填 → 確認簽發(少 2 個無關輸入框、少 3 顆無關按鈕)</td></tr>
+    <tr><td>手機上對話可視高度</td><td>約 250px(Agent 卡 330px + 輸入條 230px)</td><td class="ok">約 520px</td></tr>
+    <tr><td>刪掉的功能</td><td colspan="2" class="ok">0 項 —— 每個端點、每顆按鈕都仍可達,只是改了「什麼時候出現」</td></tr>
+  </table>
+</div>
+</body>
+</html>
