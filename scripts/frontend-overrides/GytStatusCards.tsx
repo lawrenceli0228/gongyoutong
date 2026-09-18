@@ -141,7 +141,7 @@ function FlowStyle() {
  * @param onPick 点了带例句的那几张卡时调用,把例句**填进输入框**(不自动发送)。
  *               不传就退回纯展示 —— 组件在任何情况下都不该因为少个回调而炸。
  * @param compact **對話頁**用(2026-09-18 設計審查 FINDING-002):只露頂上那一行藥丸,
- *               四張卡點藥丸才展開。在此之前四張卡在每個對話頁常駐,手機 812px 的屏
+ *               四張卡點藥丸才展開;**有 Agent 在忙時自動展開、忙完自動收回**。在此之前四張卡在每個對話頁常駐,手機 812px 的屏
  *               卡 330px + 輸入條 230px,對話只剩 250px,照片都露不全 —— 而進了對話,
  *               它唯一有用的信息是「哪個 Agent 正在忙」,一行就夠。空白首頁仍是全幅
  *               (那裏它是「能幹什麼」的說明)。正在忙時藥丸自己會說是誰,不必展開。
@@ -156,7 +156,11 @@ export function GytStatusCards({
   const activeIndex = CARDS.findIndex((c) => c.key === active);
   const activeName = CARDS[activeIndex]?.name ?? (activeAgent ? AGENT_LABELS[activeAgent] : undefined);
   const [expanded, setExpanded] = useState(false);
-  const showGrid = !compact || expanded;
+  // 對話頁:默認收起;**有 Agent 在幹活時自動展開,幹完自動收回**(2026-09-18 用戶原話:
+  // 「調度中樞默認不展開,工作的時候展開結束自動收回去」)。判據就是 activeAgent 有沒有 ——
+  // 它由 isLoading 派生,跑完翻 null,導線圖跟着收。人手動點開的(expanded)不受影響,
+  // 那是他自己的選擇。空白首頁(!compact)照舊全幅:那裏四張卡是「能幹什麼」的說明。
+  const showGrid = !compact || expanded || !!activeAgent;
 
   const pillBody = (
     <>
@@ -189,15 +193,15 @@ export function GytStatusCards({
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            aria-expanded={expanded}
-            aria-label={expanded ? "收起四個 Agent 的狀態卡" : "展開四個 Agent 的狀態卡"}
+            aria-expanded={showGrid}
+            aria-label={showGrid ? "收起四個 Agent 的狀態卡" : "展開四個 Agent 的狀態卡"}
             className={cn(
               "flex min-h-11 cursor-pointer items-center gap-2 rounded-full bg-white px-4 text-[13px] font-bold shadow-[0_1px_2px_rgba(23,28,26,.06)] transition hover:shadow-[0_2px_6px_rgba(23,28,26,.10)]",
               activeAgent ? "text-[var(--gyt-green-deep)] gyt-halo" : SUBTLE,
             )}
           >
             {pillBody}
-            <ChevronDown className={cn("size-3.5 transition-transform", expanded && "rotate-180")} />
+            <ChevronDown className={cn("size-3.5 transition-transform", showGrid && "rotate-180")} />
           </button>
         ) : (
           <span
