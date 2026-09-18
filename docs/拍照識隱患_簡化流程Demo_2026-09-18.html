@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拍照識隱患 · 簡化流程 Demo(可點)</title>
+<style>
+  /* F9:一套色系,全部走變量;shadcn 的 --primary 映射到品牌綠 */
+  :root{
+    --gyt-green:#16805C;--gyt-green-deep:#0F5F44;--gyt-ink:#171C1A;--gyt-muted:#5F6B66;--gyt-line:#E4E8E6;
+    --gyt-surface:#FFFFFF;--gyt-bg:#F2F5F4;--gyt-soft:#EEF3F1;
+    --sev-high:#B45309;--sev-high-bg:#FFF4E5;--sev-severe:#B91C1C;--sev-severe-bg:#FEE2E2;--wait:#8A6100;--wait-bg:#FFF7D6;
+    --primary:var(--gyt-green);--danger:var(--sev-severe);
+    --r-sm:8px;--r-md:12px;--r-lg:16px;--fs-xs:12px;--fs-sm:13px;--fs-base:15px;--fs-lg:17px;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--gyt-bg);color:var(--gyt-ink);font:var(--fs-base)/1.5 Inter,"PingFang HK","PingFang TC","Noto Sans CJK TC",sans-serif}
+  button{font:inherit;cursor:pointer}
+  .page{display:grid;grid-template-columns:400px 1fr;gap:28px;padding:24px 28px 60px;max-width:1240px;margin:0 auto}
+  @media (max-width:900px){.page{grid-template-columns:1fr}}
+  h1{font-size:22px;margin:0 0 4px}
+  .lead{color:var(--gyt-muted);font-size:var(--fs-sm);margin:0 0 16px}
+
+  /* ===== 手機框 ===== */
+  .phone{width:375px;height:812px;background:var(--gyt-surface);border:1px solid var(--gyt-line);border-radius:28px;overflow:hidden;display:flex;flex-direction:column;position:sticky;top:20px;box-shadow:0 2px 10px rgba(0,0,0,.05)}
+  .tabs-top{display:flex;gap:6px;padding:8px 10px 0;background:var(--gyt-bg)}
+  .tabs-top button{flex:1;border:0;background:transparent;color:var(--gyt-muted);padding:8px 0;border-radius:var(--r-sm) var(--r-sm) 0 0;font-size:var(--fs-sm);min-height:44px}
+  .tabs-top button.on{background:var(--gyt-surface);color:var(--gyt-ink);font-weight:700}
+  .screen{display:none;flex:1;min-height:0;flex-direction:column}
+  .screen.on{display:flex}
+  .bar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--gyt-line);font-weight:700;min-height:52px}
+  .logo{width:26px;height:26px;border-radius:7px;background:var(--gyt-green);color:#fff;display:grid;place-items:center;font-size:14px}
+  .pill{margin-left:auto;font-weight:500;font-size:var(--fs-xs);color:var(--gyt-muted);border:1px solid var(--gyt-line);border-radius:999px;padding:6px 10px;min-height:32px;display:flex;align-items:center}
+  /* F2:狀態行(對話頁一行,點開才是四張卡) */
+  .status{border-bottom:1px solid var(--gyt-line);background:#FBFCFB}
+  .status .line{display:flex;align-items:center;gap:8px;padding:0 12px;font-size:var(--fs-xs);color:var(--gyt-muted);min-height:44px;width:100%;border:0;background:transparent;text-align:left}
+  .dot{width:8px;height:8px;border-radius:50%;background:#9AB5A8;flex:none}
+  .dot.on{background:var(--gyt-green);box-shadow:0 0 0 3px #d9ece4}
+  .status b{color:var(--gyt-ink);font-weight:600}
+  .status .chev{margin-left:auto;transition:transform .15s}
+  .status.open .chev{transform:rotate(90deg)}
+  .cards{display:none;grid-template-columns:1fr 1fr;gap:8px;padding:0 12px 10px}
+  .status.open .cards{display:grid}
+  .card4{border:1px solid var(--gyt-line);border-radius:var(--r-md);padding:8px 10px;font-size:var(--fs-xs);background:var(--gyt-surface)}
+  .card4 b{display:block;font-size:var(--fs-sm)}
+  .card4 .st{color:var(--gyt-muted)}
+  .card4.busy{border-color:var(--gyt-green);background:#F3FAF6}
+  .card4.busy .st{color:var(--gyt-green);font-weight:600}
+  .prog{height:3px;background:var(--gyt-line);border-radius:2px;margin-top:6px;overflow:hidden}
+  .prog i{display:block;height:100%;width:30%;background:var(--gyt-green);animation:slide 1.2s linear infinite}
+  @keyframes slide{from{transform:translateX(-100%)}to{transform:translateX(340%)}}
+  .body{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:12px}
+  .me{align-self:flex-end;max-width:80%}
+  .me .img{width:100%;height:150px;border-radius:var(--r-md);background:linear-gradient(135deg,#e8c25a,#8a6a1a 60%,#3b3b3b)}
+  .me .txt{margin-top:6px;background:var(--gyt-soft);border-radius:var(--r-md);padding:8px 12px;font-size:14px}
+  /* F1:隱患卡 */
+  .hcard{border:1px solid var(--gyt-line);border-radius:var(--r-lg);overflow:hidden;animation:pop .25s ease-out}
+  @keyframes pop{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .hcard .hd{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--gyt-line);font-weight:700;font-size:14px}
+  .hcard .hd .n{margin-left:auto;font-weight:500;font-size:var(--fs-xs);color:var(--gyt-muted)}
+  .hz{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:10px 12px;border-bottom:1px solid var(--gyt-line);align-items:start}
+  .hz:last-of-type{border-bottom:0}
+  .chip{display:inline-flex;align-items:center;font-size:11px;padding:2px 7px;border-radius:6px;font-weight:600;line-height:1.5;white-space:nowrap}
+  .chip.high{background:var(--sev-high-bg);color:var(--sev-high)}
+  .chip.normal{background:var(--gyt-soft);color:#4b5550}
+  .chip.severe{background:var(--sev-severe-bg);color:var(--sev-severe)}
+  .chip.wait{background:var(--wait-bg);color:var(--wait)}
+  .chip.ok{background:#E3EFE9;color:var(--gyt-green-deep)}
+  .chip.dead{background:#eee;color:#888;text-decoration:line-through}
+  .hz .name{font-weight:700;font-size:var(--fs-base)}
+  .hz .no{font:11px var(--mono);color:#98a39d;margin-top:2px}
+  .btns{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+  /* F6:所有按鈕 ≥44px */
+  .btn{border-radius:10px;padding:0 14px;font-size:var(--fs-sm);font-weight:600;border:1px solid var(--gyt-line);background:var(--gyt-surface);color:var(--gyt-ink);min-height:44px;display:inline-flex;align-items:center;gap:6px}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+  .btn.ghost{border-color:transparent;color:var(--gyt-green-deep)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .hcard .ft{padding:0 12px;font-size:var(--fs-sm);color:var(--gyt-green-deep);font-weight:600;background:#F6FAF8;min-height:44px;display:flex;align-items:center;width:100%;border:0;text-align:left}
+  .ai{font-size:14px}.ai p{margin:0 0 6px}
+  /* F4:過程一行 */
+  .proc{font-size:var(--fs-xs);color:var(--gyt-muted)}
+  .proc .line{display:flex;gap:6px;align-items:center;min-height:44px;border:0;background:transparent;padding:0;color:inherit;text-align:left;width:100%}
+  .proc .detail{display:none;border-left:2px solid var(--gyt-line);padding:4px 0 4px 10px;font-family:var(--mono);font-size:11px;line-height:1.7}
+  .proc.open .detail{display:block}
+  .proc .tog{display:flex;align-items:center;gap:8px;font-family:inherit;margin-top:6px}
+  .switch{width:34px;height:20px;border-radius:999px;background:#c9d2cd;position:relative;border:0;padding:0}
+  .switch.on{background:var(--gyt-green)}
+  .switch i{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s}
+  .switch.on i{left:16px}
+  .empty{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px;text-align:center}
+  .empty h2{font-size:26px;margin:0}
+  .empty p{margin:0;color:var(--gyt-muted);font-size:14px}
+  .caps{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;margin-top:14px}
+  /* F8:輸入條 5 個控件 */
+  .compose{border-top:1px solid var(--gyt-line);padding:10px 12px;display:flex;flex-direction:column;gap:8px;background:var(--gyt-surface)}
+  .compose .input{border:1px solid var(--gyt-line);border-radius:var(--r-md);padding:10px 12px;color:#98a39d;font-size:14px;min-height:44px;display:flex;align-items:center;gap:8px}
+  .compose .thumb{width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,#e8c25a,#8a6a1a 60%,#3b3b3b);flex:none}
+  .compose .acts{display:flex;align-items:center;gap:8px;position:relative}
+  .snap{background:var(--gyt-green);color:#fff;border-radius:999px;padding:0 18px;font-weight:700;font-size:14px;min-height:44px;border:0;display:inline-flex;align-items:center;gap:6px}
+  .ic{width:44px;height:44px;border-radius:999px;border:1px solid var(--gyt-line);display:grid;place-items:center;color:var(--gyt-ink);font-size:16px;position:relative;background:var(--gyt-surface)}
+  .ic .badge{position:absolute;top:-4px;right:-4px;background:var(--sev-high);color:#fff;font-size:10px;border-radius:999px;padding:0 5px;font-weight:700}
+  .send{margin-left:auto;background:var(--gyt-green);color:#fff;border-radius:999px;padding:0 18px;font-weight:700;min-height:44px;border:0}
+  .send:disabled{background:#CFE3D9}
+  .menu{position:absolute;bottom:52px;right:60px;background:var(--gyt-surface);border:1px solid var(--gyt-line);border-radius:var(--r-md);box-shadow:0 8px 24px rgba(0,0,0,.12);display:none;flex-direction:column;min-width:170px;z-index:5}
+  .menu.open{display:flex}
+  .menu button{border:0;background:transparent;text-align:left;padding:0 14px;min-height:44px;font-size:14px}
+  .menu button:hover{background:var(--gyt-soft)}
+  /* ===== 面板 ===== */
+  .ftabs{display:flex;gap:6px;flex-wrap:wrap;padding:10px 12px 0}
+  .ftab{border:1px solid var(--gyt-line);border-radius:999px;padding:0 12px;font-size:var(--fs-xs);color:var(--gyt-muted);background:var(--gyt-surface);min-height:36px}
+  .ftab.on{background:var(--gyt-ink);color:#fff;border-color:var(--gyt-ink)}
+  .ftab .c{font-family:var(--mono);margin-left:3px}
+  .prow{border:1px solid var(--gyt-line);border-radius:var(--r-lg);padding:10px 12px;display:flex;flex-direction:column;gap:8px;background:var(--gyt-surface);position:relative}
+  .prow.flash{animation:flash 1.6s ease-out}
+  @keyframes flash{0%{box-shadow:0 0 0 3px #16805C66}100%{box-shadow:0 0 0 0 transparent}}
+  .prow .top{display:grid;grid-template-columns:56px 1fr;gap:10px}
+  .prow .thumb{width:56px;height:56px;border-radius:9px;background:linear-gradient(135deg,#cfd8d3,#9fb3a8)}
+  .prow .title{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-weight:700;font-size:var(--fs-base)}
+  .prow .meta{font-size:11px;color:#98a39d;font-family:var(--mono)}
+  /* 步驟條 */
+  .steps{display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:11px}
+  .step{border:1px solid var(--gyt-line);border-radius:6px;padding:2px 6px;color:#98a39d;background:var(--gyt-surface)}
+  .step.done{color:var(--gyt-muted);background:var(--gyt-soft)}
+  .step.cur{background:var(--gyt-ink);color:#fff;border-color:var(--gyt-ink);font-weight:600}
+  .steps .arr{color:#c9d1cc;font-size:10px}
+  /* F3:一顆主按鈕 + 更多 */
+  .primary-line{display:flex;align-items:center;gap:8px;position:relative}
+  .primary-line .more{margin-left:auto}
+  .pmenu{position:absolute;top:48px;right:0;background:var(--gyt-surface);border:1px solid var(--gyt-line);border-radius:var(--r-md);box-shadow:0 8px 24px rgba(0,0,0,.12);display:none;flex-direction:column;min-width:200px;z-index:5}
+  .pmenu.open{display:flex}
+  .pmenu button{border:0;background:transparent;text-align:left;padding:0 14px;min-height:44px;font-size:14px}
+  .pmenu button:hover{background:var(--gyt-soft)}
+  .pmenu button.dz{color:var(--sev-severe)}
+  .sheet{border:1px dashed #b9c6bf;border-radius:var(--r-md);padding:10px 12px;background:#FAFCFB;display:flex;flex-direction:column;gap:8px;animation:pop .2s ease-out}
+  .sheet .t{font-size:var(--fs-sm);font-weight:700}
+  .field{display:flex;flex-direction:column;gap:4px;font-size:var(--fs-xs);color:var(--gyt-muted)}
+  .field input,.field select{border:1px solid var(--gyt-line);border-radius:9px;padding:0 10px;background:#fff;color:var(--gyt-ink);font:14px inherit;min-height:44px}
+  .field .hint{font-size:11px}
+  .drop{border:1px dashed #b9c6bf;border-radius:9px;min-height:64px;display:grid;place-items:center;color:var(--gyt-muted);font-size:var(--fs-sm);background:#fff}
+  .drop.has{border-style:solid;border-color:var(--gyt-green);color:var(--gyt-green-deep);font-weight:600}
+  .evid{font-size:var(--fs-xs);color:var(--gyt-muted);min-height:44px;display:flex;align-items:center;gap:6px;border:0;background:transparent;padding:0;width:100%;text-align:left}
+  .toast{position:absolute;left:12px;right:12px;bottom:12px;background:var(--gyt-ink);color:#fff;border-radius:var(--r-md);padding:10px 12px;font-size:var(--fs-sm);display:none;z-index:9}
+  .toast.on{display:block;animation:pop .2s}
+  .frame{position:relative}
+
+  /* ===== 右側:九條對照 ===== */
+  .legend h2{font-size:16px;margin:18px 0 8px}
+  .fl{display:flex;flex-direction:column;gap:8px}
+  .f{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;background:var(--gyt-surface);border:1px solid var(--gyt-line);border-radius:var(--r-md);padding:10px 12px;font-size:var(--fs-sm)}
+  .f .id{font:700 12px var(--mono);color:var(--gyt-green-deep)}
+  .f .t b{display:block}
+  .f .t span{color:var(--gyt-muted);font-size:var(--fs-xs)}
+  .f .go{min-height:36px;padding:0 12px;font-size:var(--fs-xs)}
+  .f.done{border-color:#B8D8C8;background:#F6FAF8}
+  .flow{background:var(--gyt-surface);border:1px solid var(--gyt-line);border-radius:var(--r-md);padding:12px 14px;font-size:var(--fs-sm)}
+  .flow .k{color:var(--gyt-muted)}
+  .flow b.g{color:var(--gyt-green-deep)}
+  .keep{font-size:var(--fs-xs);color:var(--gyt-muted);margin-top:8px}
+  code{font:11px var(--mono);background:var(--gyt-soft);padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="page">
+  <!-- ================= 手機 ================= -->
+  <div class="frame">
+  <div class="phone" id="phone">
+    <div class="tabs-top">
+      <button data-tab="home" class="on">首頁</button>
+      <button data-tab="chat">拍照結果</button>
+      <button data-tab="panel">監理面板</button>
+    </div>
+
+    <!-- ===== 首頁 ===== -->
+    <section class="screen on" id="scr-home">
+      <div class="bar"><div class="logo">工</div>工友通<span class="pill">🏗 全部工地 ▾</span></div>
+      <div class="status" id="status-home"><button class="line"><span class="dot"></span>調度中樞 · 全部待命<span class="chev">▸</span></button>
+        <div class="cards"><div class="card4"><b>識隱患</b><span class="st">待命</span></div><div class="card4"><b>排期</b><span class="st">待命</span></div><div class="card4"><b>圖紙</b><span class="st">待命</span></div><div class="card4"><b>規範</b><span class="st">待命</span></div></div>
+      </div>
+      <div class="body">
+        <div class="empty">
+          <h2>有事就問工友通</h2>
+          <p>拍張照、說一句,或者傳個文件</p>
+          <div class="caps">
+            <div class="card4"><b>識隱患</b><span class="st">拍照識別現場隱患</span></div>
+            <div class="card4"><b>排期</b><span class="st">記任務 / 改期限 / 查進度</span></div>
+            <div class="card4"><b>圖紙</b><span class="st">讀 DXF 尺寸·標高·構件</span></div>
+            <div class="card4"><b>規範</b><span class="st">查消防 / 防火 / 安全條文</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="compose">
+        <div class="input" id="home-input"><span>對着我說話、拍張照,或問一句…</span></div>
+        <div class="acts">
+          <button class="snap" id="btn-snap">📷 拍照</button>
+          <button class="ic" title="上傳圖紙 · 資料">＋</button>
+          <button class="ic" title="隱患台賬" data-goto="panel">🛡<span class="badge" id="badge-home">7</span></button>
+          <button class="ic" id="btn-more-home" title="更多">⋯</button>
+          <div class="menu" id="menu-home"><button>📍 打卡</button><button>📄 巡檢記錄</button></div>
+          <button class="send" id="btn-send" disabled>發送</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 拍照結果 ===== -->
+    <section class="screen" id="scr-chat">
+      <div class="bar"><div class="logo">工</div>工友通<span class="pill">🏗 全部工地 ▾</span></div>
+      <div class="status" id="status-chat"><button class="line"><span class="dot" id="s-dot"></span><span id="s-text">調度中樞 · 全部待命</span><span class="chev">▸</span></button>
+        <div class="cards">
+          <div class="card4" id="c-safety"><b>識隱患</b><span class="st">待命</span></div>
+          <div class="card4"><b>排期</b><span class="st">待命</span></div>
+          <div class="card4"><b>圖紙</b><span class="st">待命</span></div>
+          <div class="card4"><b>規範</b><span class="st">待命</span></div>
+        </div>
+      </div>
+      <div class="body" id="chat-body">
+        <div class="me"><div class="img"></div><div class="txt">看看這張照片。</div></div>
+        <div id="chat-wait" style="display:none" class="ai"><p style="color:var(--gyt-muted)">識隱患 正在看這張照片有沒有隱患…</p><div class="prog"><i></i></div></div>
+        <div id="chat-result" style="display:none">
+          <div class="hcard" id="hcard">
+            <div class="hd">🛡 看到 2 處隱患<span class="n">已登記 · 待確認</span></div>
+            <div class="hz" data-h="f9ff">
+              <span class="chip high">較大</span>
+              <div>
+                <div class="name">用電隱患</div>
+                <div class="no">GYT-H-20260918-110634-f9ff</div>
+                <div class="btns"><button class="btn primary" data-act="confirm">確認是隱患</button><button class="btn" data-act="reject">不是隱患</button></div>
+              </div>
+            </div>
+            <div class="hz" data-h="d03b">
+              <span class="chip normal">一般</span>
+              <div>
+                <div class="name">材料堆放混亂</div>
+                <div class="no">GYT-H-20260918-110634-d03b</div>
+                <div class="btns"><button class="btn primary" data-act="confirm">確認是隱患</button><button class="btn" data-act="reject">不是隱患</button></div>
+              </div>
+            </div>
+            <button class="ft" data-goto="panel">去監理處置 →</button>
+          </div>
+          <div class="ai" style="margin-top:12px">
+            <p><b>用電隱患(較大)最要緊:</b>配電箱門敞着、電纜絕緣皮破了。先別讓人靠近,叫持證電工來斷電處理。</p>
+            <p>木方、模板堆在配電箱旁,得清開。背景遠處有人看不清戴沒戴帽,到現場順手看一眼。</p>
+          </div>
+          <div class="proc" id="proc"><button class="line"><span>▸</span>過程 7 步 · 30.4s(調度中樞 → 識隱患 → 調度中樞)</button>
+            <div class="detail">
+              調度中樞 · 收到照片,轉給識隱患 …… 1.5s<br>
+              識隱患 · 準備看圖 ……………… 1.2s<br>
+              識隱患 · kimi-k3 看圖 ………… 7.5s<br>
+              識隱患 · 判違規項(_recognize)… 7.7s<br>
+              識隱患 · 登記台賬(analyze_site_photo) 7.8s<br>
+              識隱患 · 寫回答 ……………… 2.4s<br>
+              調度中樞 · 收工 ……………… 2.3s
+              <div class="tog"><button class="switch" id="sw-steps"><i></i></button>在對話裏常駐顯示這些過程行(原「隱藏中間步驟」的反面)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="compose">
+        <div class="input"><span>對着我說話、拍張照,或問一句…</span></div>
+        <div class="acts">
+          <button class="snap">📷 拍照</button>
+          <button class="ic" title="上傳圖紙 · 資料">＋</button>
+          <button class="ic" title="隱患台賬" data-goto="panel">🛡<span class="badge" id="badge-chat">7</span></button>
+          <button class="ic" title="更多">⋯</button>
+          <button class="send">發送</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 監理面板 ===== -->
+    <section class="screen" id="scr-panel">
+      <div class="bar">🛡 監理確認與處置<span class="pill">✕</span></div>
+      <div class="ftabs" id="ftabs">
+        <button class="ftab" data-scope="pending">待確認<span class="c" id="n-pending">7</span></button>
+        <button class="ftab on" data-scope="active">在辦<span class="c" id="n-active">4</span></button>
+        <button class="ftab" data-scope="reinspect">待複查<span class="c" id="n-reinspect">1</span></button>
+        <button class="ftab" data-scope="overdue">超期<span class="c">0</span></button>
+        <button class="ftab" data-scope="all">全部</button>
+      </div>
+      <div class="body" id="panel-body"></div>
+      <div class="toast" id="toast"></div>
+    </section>
+  </div>
+  </div>
+
+  <!-- ================= 右側 ================= -->
+  <div class="legend">
+    <h1>拍照識隱患 · 簡化流程 Demo(可點)</h1>
+    <p class="lead">左邊是真能點的手機:從「首頁」按 <b>拍照 → 發送</b> 開始走一遍;或直接切「監理面板」。右邊九條發現各有「點這裏看」,會跳到對應的地方並閃一下。功能一項不減,只改「什麼時候出現」。</p>
+
+    <div class="flow">
+      <span class="k">拍一張照 → 監理簽發通知單,動作數</span><br>
+      現在:拍照 → 發送 → 讀文字 → 找底欄「隱患」→ 開面板 → 找那條 → 勾選 → 確認 → 切在辦 → 再找 → 處置 → 選日期 → 簽發 = <b>13</b><br>
+      Demo:拍照 → 發送 → 卡上「確認是隱患」→「去監理處置」→「簽發處置文書」→「確認簽發」= <b class="g">6</b>
+    </div>
+
+    <h2>九條發現 → 在 Demo 裏的樣子</h2>
+    <div class="fl" id="fl">
+      <div class="f" data-f="1"><span class="id">F1 高</span><div class="t"><b>結果是文字,隱患卻要到別處去找</b><span>拍完照,回答上方就是一張隱患卡:級別 / 編號 / 確認 / 不是隱患 / 去監理處置。數據從用戶消息裏的 photo_id 直查台賬。</span></div><button class="btn go" data-go="chat" data-hl="hcard">點這裏看</button></div>
+      <div class="f" data-f="2"><span class="id">F2 高</span><div class="t"><b>每個對話頁頂上四張 Agent 卡(手機吃 330px)</b><span>對話頁縮成一行狀態,點開才是四張卡;正在忙的 Agent 名字亮起,考勤 / 監理也會亮(不再「全部待命」說謊)。</span></div><button class="btn go" data-go="chat" data-hl="status-chat">點這裏看</button></div>
+      <div class="f" data-f="3"><span class="id">F3 高</span><div class="t"><b>處置區把所有動作的輸入框一次全擺出來</b><span>一條隱患只露一顆主按鈕(= 步驟條當前步)+「更多 ▾」;點了才展開那一格。十個動作全在。</span></div><button class="btn go" data-go="panel" data-hl="row-e503">點這裏看</button></div>
+      <div class="f" data-f="4"><span class="id">F4 中</span><div class="t"><b>回答夾着 6 行過程噪聲 + 開發者計時表</b><span>折成一行「過程 7 步 · 30.4s ▸」,展開才見計時;「隱藏中間步驟」開關搬進展開裏。</span></div><button class="btn go" data-go="chat" data-hl="proc">點這裏看</button></div>
+      <div class="f" data-f="5"><span class="id">F5 中</span><div class="t"><b>同一個 Agent 9 個名字</b><span>Demo 裏從頭到尾只叫「識隱患」和「調度中樞」(狀態行、過程行、卡片、面板)。</span></div><button class="btn go" data-go="chat" data-hl="s-text">點這裏看</button></div>
+      <div class="f" data-f="6"><span class="id">F6 中</span><div class="t"><b>手機觸控目標偏小(28px / 20px)</b><span>Demo 裏所有可點的東西 ≥ 44px:篩子、圖標、開關、狀態行、證據鏈那行。</span></div><button class="btn go" data-go="panel" data-hl="ftabs">點這裏看</button></div>
+      <div class="f" data-f="7"><span class="id">F7 潤色</span><div class="t"><b>每條隱患四顆徽章</b><span>留兩顆:級別 + 狀態;「現場檔」進定級面板當參考,「未歸工地」併進編號行。</span></div><button class="btn go" data-go="panel" data-hl="row-ad4f">點這裏看</button></div>
+      <div class="f" data-f="8"><span class="id">F8 潤色</span><div class="t"><b>輸入條 8 個控件</b><span>拍照(主)/ ＋ 上傳 / 🛡 隱患(帶待確認數)/ ⋯(打卡、記錄)/ 發送 = 5 個。</span></div><button class="btn go" data-go="home" data-hl="btn-snap">點這裏看</button></div>
+      <div class="f" data-f="9"><span class="id">F9 中</span><div class="t"><b>主按鈕兩種顏色、三套色系</b><span>本頁所有顏色走 <code>--gyt-*</code> 變量,<code>--primary</code> = 品牌綠:輸入條「發送」與面板「簽發」同色。</span></div><button class="btn go" data-go="panel" data-hl="row-ad4f">點這裏看</button></div>
+    </div>
+    <p class="keep">功能去向:確認 / 否決 → 卡上按鈕 + 面板待確認檔(打的仍是 <code>POST /supervision/confirm</code> / <code>reject</code>);定級 / 簽發 / 複查 / 復工 / 上報 / 關掉 / 改期 / 改工地 → 主按鈕 + 「更多 ▾」;簽發人 → 簽發面板內;共用複查照片 → 登記複查面板內;證據鏈 → 每條底部一行;計時行 / 隱藏中間步驟 → 「過程 ▸」;打卡 / 記錄 → 「⋯」;四張能力卡 → 首頁保留、對話頁一行。</p>
+  </div>
+</div>
+
+<script>
+// ---------- 數據:與本機台賬同形 ----------
+const H = [
+  {no:'GYT-H-20260819-132808-e503', item:'臨邊無防護', grade:'嚴重', status:'open', proj:'未歸工地'},
+  {no:'GYT-H-20260819-134747-ad4f', item:'未戴安全帽', grade:'一般', status:'notified', proj:'未歸工地', due:'9月25日(週五)'},
+  {no:'GYT-H-20260819-134747-f2eb', item:'未穿反光衣', grade:'一般', status:'open', proj:'未歸工地'},
+  {no:'GYT-H-20260819-132808-9c21', item:'高空作業未繫安全帶', grade:'嚴重', status:'open', proj:'未歸工地'},
+  {no:'GYT-H-20260918-110634-f9ff', item:'用電隱患', grade:'一般', sev:'較大', status:'pending', proj:'未歸工地'},
+  {no:'GYT-H-20260918-110634-d03b', item:'材料堆放混亂', grade:'一般', sev:'一般', status:'pending', proj:'未歸工地'},
+  {no:'GYT-H-20260819-140001-11aa', item:'臨邊無防護', grade:'嚴重', status:'pending', proj:'未歸工地'},
+  {no:'GYT-H-20260819-140001-22bb', item:'未穿反光衣', grade:'一般', status:'pending', proj:'未歸工地'},
+  {no:'GYT-H-20260819-140001-33cc', item:'材料堆放混亂', grade:'一般', status:'pending', proj:'未歸工地'},
+  {no:'GYT-H-20260819-140001-44dd', item:'未戴安全帽', grade:'一般', status:'pending', proj:'未歸工地'},
+  {no:'GYT-H-20260819-140001-55ee', item:'未穿反光衣', grade:'一般', status:'pending', proj:'未歸工地'},
+  {no:'GYT-H-20260822-144645-77ff', item:'高空作業未繫安全帶', grade:'嚴重', status:'closed', proj:'A3 工地'},
+];
+const STATUS_ZH={pending:'待確認',open:'待簽發',notified:'整改中',suspended:'已停工·整改中',reinspect_failed:'複查不合格',resuming:'待簽復工令',closed:'已銷項',escalated:'已上報'};
+const SCOPES={pending:h=>h.status==='pending',active:h=>!['closed','escalated'].includes(h.status),reinspect:h=>['notified','suspended','reinspect_failed'].includes(h.status),overdue:h=>false,all:h=>true};
+let scope='active', openSheet={};  // openSheet[no] = action
+
+// 步驟條(與 supervision-lib.disposalSteps 同一套判據)
+function steps(h){
+  const s=h.status, severe=h.grade==='嚴重';
+  const issued=!['pending','open'].includes(s), rect=['notified','suspended','reinspect_failed'].includes(s);
+  if(s==='closed'&&h.dismissed) return [['確認','done'],['關掉(不出文書)','done']];
+  const a=[['確認',s==='pending'?'cur':'done'],['定級 '+h.grade,s==='pending'?'todo':'done'],
+    ['簽發文書',issued?'done':s==='open'?'cur':'todo'],['整改・複查',rect?'cur':issued?'done':'todo']];
+  if(s==='escalated'){a.push(['上報主管部門','done']);return a}
+  if(severe) a.push(['復工令',s==='resuming'?'cur':s==='closed'?'done':'todo']);
+  a.push(['銷項',s==='closed'?'done':'todo']); return a;
+}
+// 主動作 = 當前步
+function primary(h){
+  switch(h.status){case 'pending':return ['confirm','確認是隱患','primary'];case 'open':return ['issue','簽發處置文書',h.grade==='嚴重'?'danger':'primary'];
+    case 'notified':case 'suspended':case 'reinspect_failed':return ['reinspect','📷 登記複查結論','primary'];case 'resuming':return ['resume','簽發工程復工令','primary'];default:return null}
+}
+function more(h){
+  const m=[];
+  if(['pending','open'].includes(h.status)) m.push(['grade','改判級別']);
+  if(h.status==='pending') m.push(['reject','否決(誤報,刪掉)','dz']);
+  if(h.status==='open') m.push(['dismiss','關掉(不出文書,要寫原因)','dz']);
+  if(['notified','suspended'].includes(h.status)) m.push(['extend','改整改期限(不出文書)']);
+  if(['pending','open'].includes(h.status)) m.push(['reassign','改工地(不出文書)']);
+  if(h.status==='reinspect_failed') m.push(['escalate','上報主管部門','dz']);
+  return m;
+}
+function sheet(h,act){
+  const D={
+    confirm:`<div class="t">確認「${h.item}」是隱患</div><div class="field">簽發人(留在台賬,系統不驗身份)<input placeholder="你的姓名"></div><div class="btns"><button class="btn primary" data-do="confirm">確認</button><button class="btn" data-do="cancel">先不確認</button></div>`,
+    issue:h.grade==='嚴重'?`<div class="t">簽發:通知單 + 暫停令 + 致建設單位報告(三份一次出,簽了就停工)</div><div class="field">整改期限<input type="date" value="2026-09-19"><span class="hint">已按「嚴重」預填明天,不合適就改</span></div><div class="field">簽發人<input placeholder="你的姓名"></div><div class="btns"><button class="btn danger" data-do="issue">⚖ 確認簽發(不能撤銷)</button><button class="btn" data-do="cancel">先不簽</button></div>`
+      :`<div class="t">簽發:監理通知單(一份)</div><div class="field">整改期限<input type="date" value="2026-09-25"><span class="hint">已按「一般」預填 7 天後,不合適就改</span></div><div class="field">簽發人<input placeholder="你的姓名"></div><div class="btns"><button class="btn primary" data-do="issue">簽發</button><button class="btn" data-do="cancel">先不簽</button></div>`,
+    reinspect:`<div class="t">登記複查結論(要一張整改後的照片)</div><div class="drop" data-drop>📷 拍整改後的照片</div><div class="btns"><button class="btn primary" data-do="pass" disabled>✓ 合格</button><button class="btn" data-do="fail" disabled>不合格</button><button class="btn ghost" data-do="cancel">取消</button></div>`,
+    resume:`<div class="t">簽發工程復工令(依據:上一次複查合格的那張照片)</div><div class="btns"><button class="btn primary" data-do="resume">簽發復工令</button><button class="btn" data-do="cancel">先不簽</button></div>`,
+    grade:`<div class="t">改判級別(現在:${h.grade};現場判的是「${h.sev||h.grade}」,僅供參考)</div><div class="btns"><button class="btn" data-do="grade:一般">一般</button><button class="btn" data-do="grade:嚴重" style="border-color:#f3b4b4;color:var(--sev-severe)">嚴重</button><button class="btn ghost" data-do="cancel">取消</button></div>`,
+    reject:`<div class="t">否決 = 識錯了,整行從台賬刪掉,找不回來</div><div class="btns"><button class="btn danger" data-do="reject">確認刪掉</button><button class="btn" data-do="cancel">取消</button></div>`,
+    dismiss:`<div class="t">關掉(不出文書)—— 之後開不回來,這句話留在台賬</div><div class="field">原因<input placeholder="如:白色安全帽,現場核過"></div><div class="btns"><button class="btn danger" data-do="dismiss">確認關掉</button><button class="btn" data-do="cancel">取消</button></div>`,
+    extend:`<div class="t">改整改期限(不出新文書,每次都留痕)</div><div class="field">新期限<input type="date"></div><div class="field">原因<input placeholder="如:連續下雨停工三天"></div><div class="btns"><button class="btn primary" data-do="extend">改期</button><button class="btn" data-do="cancel">取消</button></div>`,
+    reassign:`<div class="t">改工地(不出文書)</div><div class="field">挪到<select><option>選一個工地…</option><option>A3 工地</option><option>TKO 二期</option><option>未歸屬</option></select></div><div class="btns"><button class="btn primary" data-do="reassign">改工地</button><button class="btn" data-do="cancel">取消</button></div>`,
+    escalate:`<div class="t">上報主管部門(監理報告,不能撤銷)</div><div class="btns"><button class="btn danger" data-do="escalate">確認上報</button><button class="btn" data-do="cancel">取消</button></div>`,
+  };
+  return `<div class="sheet" data-sheet>${D[act]}</div>`;
+}
+function rowHtml(h){
+  const p=primary(h), m=more(h), id='row-'+h.no.slice(-4);
+  const chips=`<span class="chip ${h.grade==='嚴重'?'severe':'normal'}">${h.grade}</span><span class="chip ${h.status==='closed'?'ok':'wait'}">${STATUS_ZH[h.status]}</span>`;
+  const st=steps(h).map((s,i)=>`${i?'<span class="arr">›</span>':''}<span class="step ${s[1]}">${s[1]==='done'?'✓ ':s[1]==='cur'?(i+1)+'. ':''}${s[0]}</span>`).join('');
+  return `<div class="prow" id="${id}" data-no="${h.no}">
+    <div class="top"><div class="thumb"></div><div><div class="title">${h.item} ${chips}</div><div class="meta">${h.no} · ${h.proj}${h.due?' · 期限 '+h.due:''}</div></div></div>
+    <div class="steps">${st}</div>
+    ${p?`<div class="primary-line"><button class="btn ${p[2]}" data-act="${p[0]}">${p[1]}</button>${m.length?`<button class="btn more" data-more>更多 ▾</button><div class="pmenu">${m.map(x=>`<button data-act="${x[0]}" class="${x[2]||''}">${x[1]}</button>`).join('')}</div>`:''}</div>`:`<div class="proc"><div class="line">這條已經走完流程,沒有下一步了。</div></div>`}
+    ${openSheet[h.no]?sheet(h,openSheet[h.no]):''}
+    <button class="evid">▸ 已簽文書和複查記錄</button>
+  </div>`;
+}
+function renderPanel(){
+  const list=H.filter(SCOPES[scope]);
+  document.getElementById('panel-body').innerHTML=list.length?list.map(rowHtml).join(''):`<div class="proc"><div class="line">「這一檔」裏沒有隱患。</div></div>`;
+  document.getElementById('n-pending').textContent=H.filter(SCOPES.pending).length;
+  document.getElementById('n-active').textContent=H.filter(SCOPES.active).length;
+  document.getElementById('n-reinspect').textContent=H.filter(SCOPES.reinspect).length;
+  ['badge-home','badge-chat'].forEach(id=>document.getElementById(id).textContent=H.filter(SCOPES.pending).length);
+}
+function toast(t){const el=document.getElementById('toast');el.textContent=t;el.classList.add('on');clearTimeout(el._t);el._t=setTimeout(()=>el.classList.remove('on'),2200)}
+function find(no){return H.find(h=>h.no===no)}
+
+// ---------- 事件 ----------
+document.addEventListener('click',e=>{
+  const t=e.target.closest('button'); if(!t) return;
+  // 頂部 tab / goto
+  if(t.dataset.tab) return showTab(t.dataset.tab);
+  if(t.dataset.goto){showTab(t.dataset.goto); if(t.dataset.goto==='panel'){setScope(H.filter(SCOPES.pending).length?'pending':'active')} return}
+  // 狀態行展開
+  const st=t.closest('.status'); if(st&&t.classList.contains('line')) return st.classList.toggle('open');
+  // 過程行
+  if(t.closest('#proc')&&t.classList.contains('line')) return document.getElementById('proc').classList.toggle('open');
+  if(t.id==='sw-steps') return t.classList.toggle('on');
+  // 首頁:拍照 → 發送
+  if(t.id==='btn-snap'){document.getElementById('home-input').innerHTML='<span class="thumb"></span><span>看看這張照片。</span>';document.getElementById('btn-send').disabled=false;return}
+  if(t.id==='btn-send'){return runFlow()}
+  if(t.id==='btn-more-home'){return document.getElementById('menu-home').classList.toggle('open')}
+  // 結果卡上的確認 / 否決
+  const hz=t.closest('.hz');
+  if(hz&&t.dataset.act){const h=find('GYT-H-20260918-110634-'+hz.dataset.h);
+    if(t.dataset.act==='confirm'){h.status='open';hz.querySelector('.btns').innerHTML='<span class="chip ok">✓ 已確認,等監理處置</span>'}
+    else{H.splice(H.indexOf(h),1);hz.querySelector('.btns').innerHTML='<span class="chip dead">已否決,從台賬刪掉</span>'}
+    renderPanel(); return}
+  // 面板篩子
+  if(t.dataset.scope) return setScope(t.dataset.scope);
+  // 面板行內
+  const row=t.closest('.prow'); if(!row) return;
+  const h=find(row.dataset.no);
+  if(t.hasAttribute('data-more')){return row.querySelector('.pmenu').classList.toggle('open')}
+  if(t.dataset.act){openSheet={[h.no]:t.dataset.act}; renderPanel(); document.getElementById(row.id)?.scrollIntoView({block:'nearest',behavior:'smooth'}); return}
+  if(t.dataset.do){const d=t.dataset.do; delete openSheet[h.no];
+    if(d==='confirm'){h.status='open';toast('已確認,進正式流程')}
+    else if(d==='issue'){h.status=h.grade==='嚴重'?'suspended':'notified';h.due=h.grade==='嚴重'?'9月19日(明天)':'9月25日(週五)';toast(h.grade==='嚴重'?'已簽發三份文書,期限明天':'已簽發監理通知單,期限 9月25日')}
+    else if(d==='pass'){h.status=(h.status==='suspended')?'resuming':'closed';toast(h.status==='closed'?'複查合格,已銷項':'複查合格,下一步簽復工令')}
+    else if(d==='fail'){h.status='reinspect_failed';toast('已登記:複查不合格')}
+    else if(d==='resume'){h.status='closed';toast('已簽發復工令,已銷項')}
+    else if(d.startsWith('grade:')){h.grade=d.slice(6);toast('已改判為 '+h.grade)}
+    else if(d==='reject'){H.splice(H.indexOf(h),1);toast('已從台賬刪掉')}
+    else if(d==='dismiss'){h.status='closed';h.dismissed=true;toast('已關掉,理由留在台賬')}
+    else if(d==='extend'){toast('期限已改,留痕一條')}
+    else if(d==='reassign'){h.proj='A3 工地';toast('已改工地')}
+    else if(d==='escalate'){h.status='escalated';toast('已上報主管部門')}
+    renderPanel(); return}
+  if(t.classList.contains('evid')){t.textContent=t.textContent.startsWith('▸')?'▾ 已簽文書和複查記錄 —— (證據鏈在這裏展開,同現在)':'▸ 已簽文書和複查記錄';return}
+  // 九條對照的「點這裏看」
+  if(t.dataset.go){showTab(t.dataset.go); if(t.dataset.go==='chat'&&document.getElementById('chat-result').style.display==='none'){runFlow(true)}
+    if(t.dataset.go==='panel'){setScope('active')}
+    setTimeout(()=>{const el=document.getElementById(t.dataset.hl); if(!el) return; el.scrollIntoView({block:'center',behavior:'smooth'}); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); if(t.dataset.hl==='hcard'||t.dataset.hl==='proc'||t.dataset.hl==='status-chat'){el.classList.add('open')}},150);
+    t.closest('.f').classList.add('done'); return}
+});
+// 照片放進去 → 「拍整改後的照片」變成已有
+document.addEventListener('click',e=>{const d=e.target.closest('[data-drop]'); if(!d) return; d.classList.add('has'); d.textContent='✓ 整改後.jpg · 已上傳'; d.closest('.sheet').querySelectorAll('[data-do="pass"],[data-do="fail"]').forEach(b=>b.disabled=false)});
+document.addEventListener('click',e=>{if(!e.target.closest('[data-more]')) document.querySelectorAll('.pmenu.open').forEach(m=>m.classList.remove('open')); if(!e.target.closest('#btn-more-home')) document.getElementById('menu-home').classList.remove('open')});
+
+function showTab(name){document.querySelectorAll('.tabs-top button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on',s.id==='scr-'+name))}
+function setScope(s){scope=s;document.querySelectorAll('.ftab').forEach(b=>b.classList.toggle('on',b.dataset.scope===s));renderPanel()}
+let ran=false;
+function runFlow(instant){
+  showTab('chat');
+  if(ran) return; ran=true;
+  const wait=document.getElementById('chat-wait'), res=document.getElementById('chat-result'), stx=document.getElementById('s-text'), dot=document.getElementById('s-dot'), c=document.getElementById('c-safety');
+  wait.style.display='block'; stx.innerHTML='<b>識隱患</b> 正在看這張照片…'; dot.classList.add('on'); c.classList.add('busy'); c.querySelector('.st').textContent='正在忙 · 看照片';
+  setTimeout(()=>{wait.style.display='none';res.style.display='block';stx.innerHTML='<b>識隱患</b> 已看完 · 30 秒 · 7 步';dot.classList.remove('on');c.classList.remove('busy');c.querySelector('.st').textContent='待命';
+    // 兩條登記成 pending(本機真跑那次就是這兩條)
+    renderPanel();
+  }, instant?150:2600);
+}
+renderPanel();
+</script>
+</body>
+</html>

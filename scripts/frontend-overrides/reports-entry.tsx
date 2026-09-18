@@ -95,12 +95,13 @@ export function ReportsEntry() {
       {/* 触摸目标三件套,与 CheckinEntry / SupervisionEntry 一字不差,理由也一样
           (2026-08-15 在 390×844 的实测:动作条被 flex 挤压,「打卡」只剩 42px 宽、
           两个字竖排):whitespace-nowrap 不许竖排 / shrink-0 不被压 /
-          min-h-11 min-w-11(44px)触摸下限,sm: 之后归零,桌面观感不变。
+          pointer-coarse:min-h-11 / min-w-11(44px)触摸下限 —— 按**设备**判(有没有精确指针),不按宽度:
+          2026-09-18 设计审查 FINDING-006,1024px 平板在监理面板拿得到 44px、在这儿拿不到。
           按钮上只放两个字也是为这条 —— 这一行现在有五件东西了。 */}
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap sm:min-h-0 sm:min-w-0"
+        className="flex pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap"
         aria-label="巡檢記錄:下載或轉發已經出好的記錄"
       >
         <FileText className="size-5 text-gray-600" />
@@ -183,13 +184,13 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
         onClick={(event) => event.stopPropagation()}
       >
         <header className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-black text-[#171C1A]">巡檢記錄</h2>
+          <h2 className="text-lg font-black text-[var(--gyt-ink)]">巡檢記錄</h2>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => void load()}
               disabled={loading}
-              className="flex min-h-11 items-center gap-1.5 rounded-[10px] border border-[#E4E8E6] px-3 text-sm text-[#33403A] disabled:opacity-50 sm:min-h-0 sm:py-1.5"
+              className="flex pointer-coarse:min-h-11 items-center gap-1.5 rounded-[10px] border border-[var(--gyt-line)] px-3 py-1.5 text-sm text-[var(--gyt-ink-soft)] disabled:opacity-50"
             >
               <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />
               刷新
@@ -197,7 +198,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
             <button
               type="button"
               onClick={onClose}
-              className="min-h-11 rounded-[10px] border border-[#E4E8E6] px-3 text-sm text-[#33403A] sm:min-h-0 sm:py-1.5"
+              className="pointer-coarse:min-h-11 rounded-[10px] border border-[var(--gyt-line)] px-3 py-1.5 text-sm text-[var(--gyt-ink-soft)]"
             >
               關閉
             </button>
@@ -205,17 +206,17 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
         </header>
 
         {loading && reports.length === 0 && (
-          <p className="py-8 text-center text-sm text-[#5F6B66]">正在找…</p>
+          <p className="py-8 text-center text-sm text-[var(--gyt-muted)]">正在找…</p>
         )}
 
         {/* 读不出来 —— 与「真的没有」分开画,理由见组件头注。 */}
         {!loading && error !== null && (
           <div className="rounded-[12px] border border-amber-300 bg-amber-50 p-4">
-            <p className="text-sm text-[#33403A]">{error}</p>
+            <p className="text-sm text-[var(--gyt-ink-soft)]">{error}</p>
             <button
               type="button"
               onClick={() => void load()}
-              className="mt-3 min-h-11 rounded-[10px] bg-[#16805C] px-4 text-sm font-bold text-white sm:min-h-0 sm:py-2"
+              className="mt-3 pointer-coarse:min-h-11 rounded-[10px] bg-[var(--gyt-green)] px-4 py-2 text-sm font-bold text-white"
             >
               再試一次
             </button>
@@ -224,7 +225,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
 
         {/* 真的一份都没有。这句话要告诉人**下一步做什么**。 */}
         {!loading && error === null && reports.length === 0 && (
-          <p className="py-8 text-center text-sm text-[#5F6B66]">
+          <p className="py-8 text-center text-sm text-[var(--gyt-muted)]">
             還沒有巡檢記錄。
             <br />
             工地上拍張照發給我,我看完就給你出一份。
@@ -245,7 +246,7 @@ function ReportsPanel({ artifactBase, onClose }: ReportsPanelProps) {
 
         {truncated && reports.length > 0 && (
           // 「只列了最近这些」**必须说**:不说的话人以为更早的记录丢了。
-          <p className="mt-3 text-xs text-[#5F6B66]">
+          <p className="mt-3 text-xs text-[var(--gyt-muted)]">
             只列了最近這些。要找更早的記錄,把編號報給我。
           </p>
         )}
@@ -280,9 +281,9 @@ function ReportRow({ report, artifactBase }: ReportRowProps) {
       <a
         href={reportDownloadUrl(artifactBase, report.artifactId)}
         download={report.filename || undefined}
-        className="flex min-h-14 items-center gap-3 rounded-[16px] border border-transparent bg-[#F9FAFA] px-4 py-3 transition hover:border-[#8FC4B0]"
+        className="flex min-h-14 items-center gap-3 rounded-[16px] border border-transparent bg-[#F9FAFA] px-4 py-3 transition hover:border-[var(--gyt-mint)]"
       >
-        <FileText className="size-5 shrink-0 text-[#16805C]" />
+        <FileText className="size-5 shrink-0 text-[var(--gyt-green)]" />
         <span className="min-w-0 flex-1">
           {/* 🔴 **主行是名字,不是编号(2026-08-25 设计审计 D9)。**
               改之前这里放的是 `reportTitle()`,也就是 19 位的
@@ -291,10 +292,10 @@ function ReportRow({ report, artifactBase }: ReportRowProps) {
               班组长要找「今早那份」只能一个个下载来看。
               ⚠️ tabular-nums 一起去掉了:那是给编号排列用的,而名字是中文,
                  等宽数字在这儿只会让字距变怪。 */}
-          <span className="block truncate text-sm font-bold text-[#33403A]">
+          <span className="block truncate text-sm font-bold text-[var(--gyt-ink-soft)]">
             {headline}
           </span>
-          <span className="block truncate text-xs text-[#5F6B66]">
+          <span className="block truncate text-xs text-[var(--gyt-muted)]">
             {/* 编号降到副行,和时间、大小并排 —— **没有删掉**:
                 要拿编号去对账 / 报给监理的人照样一眼看得到。
                 tabular-nums 跟着编号搬到这一行来了。
@@ -307,7 +308,7 @@ function ReportRow({ report, artifactBase }: ReportRowProps) {
             {[when, size].filter(Boolean).join(" · ")}
           </span>
         </span>
-        <Download className="size-4 shrink-0 text-[#5F6B66]" />
+        <Download className="size-4 shrink-0 text-[var(--gyt-muted)]" />
       </a>
     </li>
   );

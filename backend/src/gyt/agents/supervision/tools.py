@@ -23,7 +23,7 @@
         │
         ▼ 本文件(工具层)   受控筛子词表校验、处置建议的**确定性**推导、人话组装;
         │                  信封契约 {ok, data, user_msg}
-        ▼ scoping.py       筛子四词、超期判定、状态与结论的中文名、hazard_item 的形状
+        ▼ scoping.py       筛子五词、超期判定、状态与结论的中文名、hazard_item 的形状
         │                  (**零 langchain**,supervision_api 的查询端点共用同一份)
         ▼ db/hazards.py    只读取数(``list_rows`` / ``fetch`` / ``docs_of``),
           │                状态机与表级约束的唯一真相也在那边
@@ -55,7 +55,7 @@ from langchain_core.tools import tool
 
 from gyt.agents.safety.severity import SEVERITY_PENDING
 
-# 筛子四词、超期判定、状态与结论的中文名、hazard_item 的形状 —— 全部在 scoping.py。
+# 筛子五词、超期判定、状态与结论的中文名、hazard_item 的形状 —— 全部在 scoping.py。
 # ⚠️ **按模块名 import,调用点写 ``scoping.xxx()``,不许 ``from ... import today_hk``**:
 #    测试把「今天」钉死靠的是 monkeypatch ``scoping.today_hk`` 这一个点,
 #    按名 import 会在导入那一刻把函数对象绑死,桩打不进去(理由写在那个函数的 docstring)。
@@ -70,11 +70,12 @@ from gyt.db import hazards as db
 # 受控词表(禁止在函数体里散落字面量)
 # ---------------------------------------------------------------------------
 
-# 筛子四个词**转出去**给老调用点(``__all__`` 里有,测试与别处直接 import 它们)。
+# 筛子五个词**转出去**给老调用点(``__all__`` 里有,测试与别处直接 import 它们)。
 # 🔴 这四行只是转出,**真相在 ``scoping.py``** —— 不许在这儿改字面量,
 #    改了就又变成两份拷贝,而两份筛子词表漂开的表现是端点认得的词对话链不认。
 SCOPE_ACTIVE: Final[str] = scoping.SCOPE_ACTIVE
 SCOPE_PENDING: Final[str] = scoping.SCOPE_PENDING
+SCOPE_REINSPECT: Final[str] = scoping.SCOPE_REINSPECT
 SCOPE_OVERDUE: Final[str] = scoping.SCOPE_OVERDUE
 SCOPE_ALL: Final[str] = scoping.SCOPE_ALL
 SCOPES: Final[tuple[str, ...]] = scoping.SCOPES
@@ -112,8 +113,8 @@ severity.py 只 import 标准库,是张纯表,拉它不构成环、也不捎带�
 
 _LIST_DESCRIPTION = (
     "查监理隐患台账:还有几条没销、待确认的有几条、超期的有哪些。"
-    f"scope 只能填这四个词之一:{'/'.join(SCOPES)}(留空按「{SCOPE_ACTIVE}」算,"
-    "「在办」= 没销项也没上报的全部)。"
+    f"scope 只能填这几个词之一:{'/'.join(SCOPES)}(留空按「{SCOPE_ACTIVE}」算,"
+    "「在办」= 没销项也没上报的全部;「待复查」= 文书已签出去、等去现场复查的)。"
     "返回每条隐患的编号(GYT-H-开头)、违规项、级别、状态、整改期限和超不超期,"
     "并单独给出待确认条数与未归属条数。回复用户时编号和日期照抄返回里的原文。"
 )
@@ -529,6 +530,7 @@ __all__ = [
     "SCOPE_ALL",
     "SCOPE_OVERDUE",
     "SCOPE_PENDING",
+    "SCOPE_REINSPECT",
     "SUPERVISION_TOOLS",
     "get_hazard",
     "list_hazards",

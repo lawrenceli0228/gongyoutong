@@ -213,7 +213,7 @@ export const KEEP_HANS = Object.freeze({
       contexts: [/^NewExpression$/],
     },
   },
-  // ── 徽章查表的中文键(三个文件,共 12 个)──────────────────────────────────
+  // ── 徽章查表的中文键(三个文件,共 12 个;supervision.tsx 那四个 2026-09-18 退休、hazard-result-card.tsx 同日加四个)──
   //
   // 这一组是 2026-08-18 补上扫描器盲区后才**第一次可见**的:CJK 是合法的 JS
   // 标识符字符,所以 `{ 重大: "…" }` 里的键是 `Identifier` 而不是 `StringLiteral`,
@@ -227,6 +227,14 @@ export const KEEP_HANS = Object.freeze({
     未完成: { why: BADGE_INNER_TABLE_WHY("任务状态"), contexts: [/^object-key$/] },
     已完成: { why: BADGE_INNER_TABLE_WHY("任务状态"), contexts: [/^object-key$/] },
     没定期限: { why: BADGE_INNER_TABLE_WHY("任务状态"), contexts: [/^object-key$/] },
+  },
+  "hazard-result-card.tsx": {
+    // 拍完照那張隱患卡的級別徽章配色表(2026-09-18 FINDING-001):鍵是後端簡體原值
+    // (`grade` 的一般/严重,沒定級時念 `severity` 的重大/较大),與 tool-calls.tsx 那份同理。
+    严重: { why: BADGE_INNER_TABLE_WHY("隐患定级"), contexts: [/^object-key$/] },
+    一般: { why: BADGE_INNER_TABLE_WHY("隐患定级"), contexts: [/^object-key$/] },
+    重大: { why: BADGE_INNER_TABLE_WHY("隐患定级"), contexts: [/^object-key$/] },
+    较大: { why: BADGE_INNER_TABLE_WHY("隐患定级"), contexts: [/^object-key$/] },
   },
   "tool-calls.tsx": {
     重大: { why: BADGE_INNER_TABLE_WHY("隐患定级"), contexts: [/^object-key$/] },
@@ -263,6 +271,14 @@ export const KEEP_HANS = Object.freeze({
         "失去登记,而守卫只会说「多了一条没登记的简体串」,不会说是谁的锅。" +
         "所以真要删,先回来看这段。",
       contexts: [/^const:HAZARD_SCOPE_PENDING$/, /^object-value:pending$/],
+    },
+    待复查: {
+      why:
+        "🔴 送后端的 `?scope=` 受控词(2026-09-18 加的第五档,`scoping.SCOPE_REINSPECT`)," +
+        "词表外回 400。上屏的繁體由渲染处转(`useHantUIAll(HAZARD_SCOPES)`),与「在办」同款。" +
+        "转成「待複查」的表现:那颗按钮一点就 400,而那句 400 会原样上屏 ——" +
+        "监理以为是自己按错了。",
+      contexts: [/^const:HAZARD_SCOPE_REINSPECT$/],
     },
     严重: {
       why:
@@ -400,15 +416,9 @@ export const KEEP_HANS = Object.freeze({
 
   },
   "supervision.tsx": {
-    // ── 隐患定级徽章的查表键(四档)────────────────────────────────────────
-    // 2026-08-18 补上扫描器盲区后才第一次可见:CJK 是合法的 JS 标识符字符,
-    // 所以 `{ 重大: "…" }` 里的键是 Identifier 不是 StringLiteral,
-    // 在那之前**两道守卫一起看不见它们**(见 hant-scan.mjs 的 isChineseObjectKey)。
-    重大: { why: BADGE_BACKEND_KEY_WHY, contexts: [/^object-key$/] },
-    较大: { why: BADGE_BACKEND_KEY_WHY, contexts: [/^object-key$/] },
-    一般: { why: BADGE_BACKEND_KEY_WHY, contexts: [/^object-key$/] },
-    待定级: { why: BADGE_BACKEND_KEY_WHY, contexts: [/^object-key$/] },
-
+    // 墓碑:「重大 / 较大 / 一般 / 待定级」四个 object-key 曾登记在这儿(SEVERITY_CHIP
+    // 的键)。2026-09-18 FINDING-007 把现场那一档从头部徽章降成定级行旁的一句灰字,
+    // 那张配色表随之删除 —— 这一档在 supervision.tsx 里不再当键用。tool-calls.tsx 那份照旧。
   },
   "hant-convert.tsx": {
     "[gyt] 繁體字典没拉到,答话保持简体显示":

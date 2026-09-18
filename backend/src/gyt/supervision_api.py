@@ -183,7 +183,7 @@ supervision Agent 只能查、只能建议(``list_hazards`` / ``get_hazard`` /
 条数的唯一真相是 ``SUPERVISION_ROUTES``,写在正文里的数已经过期过一次):
 
     200  ok=True
-    400  INVALID_INPUT   缺字段 / 级别或结论不在词表 / **筛子不在四个词里** /
+    400  INVALID_INPUT   缺字段 / 级别或结论不在词表 / **筛子不在五个词里** /
                          **期限解析不出** / 照片编号不对 /
                          **传上来的 body 是空的、或者魔数认不出是图片**
     401  UNAUTHORIZED    handler 自查令牌不过(纵深防御,同 checkin_api)。
@@ -346,7 +346,7 @@ from starlette.routing import Route
 
 from gyt.agents.schedule.dates import DueParseError, format_display, parse_due
 
-# 筛子四词、超期判定、八档状态中文名、``hazard_item()`` 的对外形状 —— 全部在 scoping.py,
+# 筛子五词、超期判定、八档状态中文名、``hazard_item()`` 的对外形状 —— 全部在 scoping.py,
 # **对话链(agents/supervision/tools.py)与本模块共用同一份判据**。判据抄第二份的表现是
 # 端点筛出来的清单与对话里报的条数悄悄对不上,而两边测试都绿(TODO-45 A 组那类漂移)。
 # ⚠️ **按模块名 import,调用点写 ``scoping.xxx()``,不许 ``from … import today_hk``**:
@@ -1399,9 +1399,9 @@ def _optional_project_id(params: dict[str, Any]) -> str | None:
 
 
 def _row_payload(row: hazards.HazardRow, *, today_iso: str) -> dict[str, Any]:
-    """清单/详情里的一行 = ``scoping.hazard_item()`` 那九个键,**再加三个**。
+    """清单/详情里的一行 = ``scoping.hazard_item()`` 那九个键,**再加五个**。
 
-    加的三个都是"表格要、对话不要"的东西,这个差别是刻意的:
+    加的五个都是"表格要、对话不要"的东西,这个差别是刻意的:
       · ``severity`` —— **未定级的隐患对人念的是它,不是 ``grade``**(那时 grade 是映射表
         给的默认档「一般」,不是有人判过的结论;照着念就是「这条是一般隐患」,
         而硬拦③ ``_require_graded`` 拦的正是这句话);
@@ -1415,8 +1415,17 @@ def _row_payload(row: hazards.HazardRow, *, today_iso: str) -> dict[str, Any]:
         ⚠️ 它**不是**复查照片:那张在 ``hazard_docs.photo_id``,一次复查一张;
         这张是首次发现那张,一条隐患只有一张。两者混起来就是拿发现时的照片
         当"整改后"的证据,而那条红线的全部意义就是事后追责时分得清。
+      · ``was_suspended`` / ``closed_reason`` —— 2026-09-18 用户反馈「处置流程要有逻辑地
+        体现在每个事件下面」:前端在每条隐患下画一条步骤条,而清单原有的键答不了
+        两个分岔 —— **要不要画复工令那一格**(grade=严重 只说明"将会停工",只有这个
+        旗子证明"真停过",与 Codex#6 判「复查合格后必须先出复工令」用的同一个旗子)、
+        以及 **closed 是走完流程销的还是不出文书关掉的**(只有 ``dismiss()`` 写
+        ``closed_reason``)。后一个分不清的坏法:给一条识错了关掉的"隐患"把
+        「簽發文書 ✓ 複查 ✓ 銷項 ✓」全打勾,等于给一个不存在的隐患编一整条证据链。
+        ``was_suspended`` 库里是 0/1,出去转成布尔 —— 前端对布尔字段只认真布尔
+        (同 ``needs_grading``),给 1 会被当成没这个键、静默少一格。
 
-    为什么 ``scoping.hazard_item()`` 自己不给这两个键:它那份**每一行都要进模型上下文**,
+    为什么 ``scoping.hazard_item()`` 自己不给这几个键:它那份**每一行都要进模型上下文**,
     少给少错(它的 docstring 里点名剔掉了 ``project_id``);这边是一张表格,多两列不花钱。
     ⚠️ 反过来也成立:**别把这两个键加回 ``hazard_item`` 去** —— 那会让对话链的每一行凭空变长,
     而且那个函数的键集合被 ``test_supervision_scoping.py`` 整个钉死了。
@@ -1426,12 +1435,52 @@ def _row_payload(row: hazards.HazardRow, *, today_iso: str) -> dict[str, Any]:
         "severity": row.severity,
         "project_id": row.project_id,
         "photo_id": row.photo_id,
+        "was_suspended": bool(row.was_suspended),
+        "closed_reason": row.closed_reason,
     }
 
 
+_PHOTO_ID_KEY: Final[str] = "photo_id"
+"""清单端点按**照片**筛的参数名(2026-09-18 設計審查 FINDING-001)。
+
+拍完照回答上方那張隱患卡拿它取數:用戶消息裏就有 ``(照片编号:<32位hex>)``,卡自己打
+``?photo_id=a,b``(逗號分隔、多張照片一次拉),不等被 supervisor 的
+``output_mode="last_message"`` 丟掉的工具返回(CLAUDE.md 記過那條路一次都沒通過)。
+"""
+
+
+def _photo_ids(params: dict[str, Any]) -> list[str] | None:
+    """``?photo_id=a,b`` → 去重後的編號列表;沒傳 → None;有一個不是 32 位 hex → 400。
+
+    畸形的**拒**而不是當沒傳:當沒傳 = 整張台賬全回,卡上會列出別人照片的隱患讓人去確認。
+    空串(``?photo_id=``)同樣拒 —— 它不是三態裏的一態,只是打錯了。
+    """
+    raw = params.get(_PHOTO_ID_KEY)
+    if raw is None:
+        return None
+    ids = [part.strip().lower() for part in str(raw).split(",")]
+    bad = [i for i in ids if not artifacts.ARTIFACT_ID_RE.fullmatch(i)]
+    if bad or not ids:
+        raise _refuse(
+            400,
+            ErrorCode.INVALID_INPUT,
+            "照片编号不对:要 32 位的编号,多张用逗号隔开。",
+        )
+    return list(dict.fromkeys(ids))
+
+
 def _work_list_hazards(params: dict[str, Any]) -> _Result:
-    """GET /supervision/hazards —— 隐患清单。一次取全后在内存里筛(禁在循环里逐条查)。"""
-    scope = _text(params, "scope") or scoping.SCOPE_ACTIVE
+    """GET /supervision/hazards —— 隐患清单。一次取全后在内存里筛(禁在循环里逐条查)。
+
+    帶 ``photo_id`` 時按**照片**看:只出那幾張照片登記的隱患。兩個篩子**疊加**:
+    ``scope`` 沒傳時缺省是「全部」(不是「在办」—— 拍完照那張卡要的是這幾張照片上的每一條,
+    同一張照片上一條已確認、一條待確認都得在);傳了就照傳的算(監理面板「本次對話」模式下
+    待確認 / 待複查那幾檔照樣能切)。
+    """
+    photo_ids = _photo_ids(params)
+    scope = _text(params, "scope") or (
+        scoping.SCOPE_ALL if photo_ids is not None else scoping.SCOPE_ACTIVE
+    )
     if scope not in scoping.SCOPES:
         # 🔴 明确拒绝,**不许静默回落到某一档**:``scoping.in_scope`` 认不出的词会落在
         #    「在办」而且一声不吭(它的 docstring 点名要求调用方自己拦野词),
@@ -1445,6 +1494,23 @@ def _work_list_hazards(params: dict[str, Any]) -> _Result:
 
     project_id = _optional_project_id(params)
     rows = hazards.list_rows(project_id=project_id)
+    if photo_ids is not None:
+        # 🔴 除了按 photo_id,還按**內容指紋**匹配:同一張照片重傳一次會登記成**新的** artifact_id,
+        #    而隱患那一行是冪等命中(D14:``(project_id, photo_sha256, item)``),``photo_id`` 停在
+        #    第一次那個 —— 只按 id 匹配,重傳後的對話裏那張卡會空着,而隱患明明在。
+        #    sidecar 裏的 ``sha256`` 與 safety 登記時算的 ``photo_sha256`` 是同一份字節的同一個
+        #    摘要(``artifacts.register`` 存的 payload = ``resolve().read_bytes()`` 讀回的)。
+        #    讀不到 sidecar 的編號當它沒有指紋(照片可能已被清理),不報錯。
+        wanted = set(photo_ids)
+        shas: set[str] = set()
+        for pid in photo_ids:
+            try:
+                sha = artifacts.read_meta(pid).get("sha256")
+            except (ArtifactNotFound, OSError, ValueError):
+                continue
+            if isinstance(sha, str) and sha:
+                shas.add(sha)
+        rows = [r for r in rows if r.photo_id in wanted or r.photo_sha256 in shas]
 
     # 未归属一共几条(D6)。**它不过筛子** —— 回答的是「有没有一批隐患没人看得见」,
     # 拿筛子筛过反而会把它藏起来(口径与 ``tools.list_hazards`` 一致)。
@@ -1460,12 +1526,14 @@ def _work_list_hazards(params: dict[str, Any]) -> _Result:
     else:
         unassigned = len(hazards.list_rows(project_id=""))
 
-    today_iso = scoping.today_hk().isoformat()
+    today = scoping.today_hk()
+    today_iso = today.isoformat()
     matched = [r for r in rows if scoping.in_scope(r, scope=scope, today_iso=today_iso)]
+    settings = get_settings()
     # **与对话链共用同一个旋钮**(``supervision_list_max_rows``,当前 50)。
     # 嫌小是改环境变量的事,不是在这儿加第二个常量 —— 加了之后面板与对话会在
     # 不同的条数上截断,而两边都显示"就这么多"。
-    limit = get_settings().supervision_list_max_rows
+    limit = settings.supervision_list_max_rows
     shown = [_row_payload(r, today_iso=today_iso) for r in matched[:limit]]
     truncated = len(matched) > limit
 
@@ -1485,6 +1553,14 @@ def _work_list_hazards(params: dict[str, Any]) -> _Result:
         "overdue": overdue_count,
         "unassigned": unassigned,
         "truncated": truncated,
+        # 签发时按级别预填的整改期限(2026-09-18):``{一般: ISO, 严重: ISO}``,
+        # 与 ``today`` 同一个快照算的。前端塞进日期框,监理不改就原样当 ``due_phrase`` 送回。
+        # 天数只在 config.py 有一份,前端不镜像。
+        "due_defaults": scoping.due_defaults(
+            today,
+            normal_days=settings.supervision_due_days_normal,
+            severe_days=settings.supervision_due_days_severe,
+        ),
     }
     return _Result(
         200,

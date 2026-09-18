@@ -291,7 +291,11 @@ const LABEL_FAIL = "失敗";
  * 英文名,是"有人加了 Agent 而这张表没跟上"的唯一信号 —— 吞掉就再也没人发现。
  */
 export const AGENT_LABELS: Readonly<Record<string, string>> = Object.freeze({
-  supervisor: "調度",
+  // 「調度中樞」而不是「調度」:狀態行(GytStatusCards 的藥丸)叫它調度中樞,同一屏上
+  // 不許有兩個名字(2026-09-18 設計審查 FINDING-005:同一個能力在界面上曾有 9 個名字)。
+  // 🔴 這張表現在是**全站唯一**的 Agent 中文名:tool-calls.tsx 的交接行、ai.tsx 的折疊行
+  //    都從這兒取(`AGENT_NAMES` 只是它的別名),別在別處再抄一份。
+  supervisor: "調度中樞",
   inspection: "識隱患",
   safety: "識隱患",
   report: "識隱患",
@@ -315,6 +319,10 @@ export const TIMING_LABELS = Object.freeze({
   headPrefixCold: "最近",
   headStep: "步",
   headTotal: "合計",
+  /** 折疊行最前面那個詞(2026-09-18 FINDING-004):「過程 · 本輪 7 步 · 合計 30.4s」。 */
+  process: "過程",
+  /** 展開後那顆開關的字。它從輸入條搬過來,語義是「隱藏」(checked = 隱藏)。 */
+  hideSteps: "隱藏中間步驟(轉給 / 交回那些行)",
   /** 读屏用(视觉上那一坨 emoji + 数字念不出意思)。 */
   ariaLabel: "本輪各步耗時",
 });

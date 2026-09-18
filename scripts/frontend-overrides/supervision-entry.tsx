@@ -21,13 +21,16 @@
  * 在 @/lib/supervision-lib —— 那一份零依赖,scripts/frontend-tests/ 的 vitest 直接测。
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardCheck } from "lucide-react";
 import { getApiKey } from "@/lib/api-key";
+import { useStreamContext } from "@/providers/Stream";
 import {
   HAZARD_SCOPE_PENDING,
   hazardListUrl,
   parseHazardListEnvelope,
+  OPEN_SUPERVISION_EVENT,
+  threadPhotoIds,
 } from "@/lib/supervision-lib";
 import { SupervisionPanel, useApiBase, useProjectFilter } from "./supervision";
 
@@ -102,8 +105,37 @@ export function SupervisionEntry() {
   // 点开面板一看只有两条 —— 人会以为面板漏了。
   const projectFilter = useProjectFilter();
   const [open, setOpen] = useState(false);
+  /**
+   * 這次對話拍過的照片(2026-09-18 用戶原話:「隱患應該就查看當前 session 的東西,所有的都在
+   * 一起太亂了」)。從線程裏所有用戶消息抠 `(照片编号:…)`;徽章計數與面板默認都按它篩。
+   * 沒拍過照片(空白首頁 / 純文字對話)→ 空數組 → 退回整張台賬,與從前一樣。
+   */
+  const stream = useStreamContext();
+  const sessionPhotoIds = useMemo(
+    () => threadPhotoIds((stream.messages as ReadonlyArray<{ type?: unknown; content?: unknown }>) ?? []),
+    [stream.messages],
+  );
+  const sessionKey = sessionPhotoIds.join(",");
+  /** 這一輪跑完(isLoading 翻 false)立刻重數一次,不等 60 秒那一拍 —— 識完隱患那一刻徽章就該動。 */
+  const runDone = !stream.isLoading;
   /** null = 还没成功读到过(不显示徽章);数字 = 台账里待确认几条。 */
   const [pendingCount, setPendingCount] = useState<number | null>(null);
+  /**
+   * 徽章上的數**變大**了就彈一下(2026-09-18 用戶反饋:「隱患沒有動畫提示」)。
+   * 只在變大時彈:變小是有人處理掉了,不需要提醒;首次從 null 拿到數也彈 —— 對剛打開頁面的人,
+   * 那就是「有活等你」的第一聲。900ms 後自動停,不常駐。
+   */
+  const [bump, setBump] = useState(false);
+  const prevCount = useRef<number | null>(null);
+  useEffect(() => {
+    if (pendingCount === null) return;
+    const grew = prevCount.current === null ? pendingCount > 0 : pendingCount > prevCount.current;
+    prevCount.current = pendingCount;
+    if (!grew) return;
+    setBump(true);
+    const t = setTimeout(() => setBump(false), 900);
+    return () => clearTimeout(t);
+  }, [pendingCount]);
 
   /**
    * 数一次待确认。
@@ -135,7 +167,12 @@ export function SupervisionEntry() {
       try {
         const apiKey = getApiKey();
         const res = await fetch(
-          hazardListUrl(apiBase, { scope: HAZARD_SCOPE_PENDING, projectId: projectFilter }),
+          hazardListUrl(apiBase, {
+            scope: HAZARD_SCOPE_PENDING,
+            projectId: projectFilter,
+            // 徽章上的數與面板默認看的是同一份:這次對話的照片(沒有就是整張台賬)
+            ...(sessionPhotoIds.length > 0 ? { photoIds: sessionPhotoIds } : {}),
+          }),
           {
             headers: apiKey ? { "x-api-key": apiKey } : undefined,
             signal: controller.signal,
@@ -162,9 +199,20 @@ export function SupervisionEntry() {
       clearInterval(timer);
       controller.abort();
     };
-  }, [apiBase, projectFilter, open]);
+    // sessionKey 代替 sessionPhotoIds 進依賴:按內容比;runDone 翻 true 時重跑 = 跑完立刻重數
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase, projectFilter, open, sessionKey, runDone]);
 
   const close = useCallback(() => setOpen(false), []);
+
+  // 拍完照那張隱患卡上的「去監理處置 →」(hazard-result-card.tsx,2026-09-18 FINDING-001):
+  // 它在對話流裏、這顆按鈕在動作條裏,中間隔着上游的 thread-index —— 用一個 DOM 事件
+  // 約定(supervision-lib.OPEN_SUPERVISION_EVENT),不把 open 狀態提三層。
+  useEffect(() => {
+    const onOpen = () => setOpen(true);
+    window.addEventListener(OPEN_SUPERVISION_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_SUPERVISION_EVENT, onOpen);
+  }, []);
 
   const hasPending = pendingCount !== null && pendingCount > 0;
   const badgeText = hasPending && pendingCount > BADGE_MAX ? `${BADGE_MAX}+` : `${pendingCount}`;
@@ -177,10 +225,16 @@ export function SupervisionEntry() {
           · shrink-0 —— 不被兄弟元素压;
           · min-h-11 / min-w-11(44px)—— 触摸目标下限,sm: 之后归零,桌面观感不变。
           按钮上只放两个字也是为这条:这一行现在有四件东西了,每多一个字都是宽度。 */}
+      {/* 徽章彈一下的關鍵幀,內聯、gyt- 前綴(globals.css 是上游文件不動);減少動效時關。 */}
+      <style>{`
+        @keyframes gyt-badge-bump { 0% { transform: scale(1); } 35% { transform: scale(1.45); } 70% { transform: scale(.92); } 100% { transform: scale(1); } }
+        .gyt-badge-bump { animation: gyt-badge-bump .9s cubic-bezier(.2,.9,.3,1.3); }
+        @media (prefers-reduced-motion: reduce) { .gyt-badge-bump { animation: none; } }
+      `}</style>
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap sm:min-h-0 sm:min-w-0"
+        className="flex pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 cursor-pointer items-center justify-center gap-2 whitespace-nowrap"
         aria-label={
           hasPending ? `監理確認與處置,有 ${badgeText} 條待確認` : "監理確認與處置"
         }
@@ -193,7 +247,9 @@ export function SupervisionEntry() {
           // 行内的坏处是按钮会变宽一点 —— 但宽度是可预期的(上面 BADGE_MAX 封了顶)。
           <span
             aria-hidden="true"
-            className="inline-flex min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 py-0.5 text-[11px] font-bold text-white tabular-nums"
+            className={`inline-flex min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 py-0.5 text-[11px] font-bold text-white tabular-nums${
+              bump ? " gyt-badge-bump" : ""
+            }`}
           >
             {badgeText}
           </span>
@@ -208,6 +264,7 @@ export function SupervisionEntry() {
         <SupervisionPanel
           artifactBase={ARTIFACT_BASE}
           initialScope={hasPending ? HAZARD_SCOPE_PENDING : undefined}
+          sessionPhotoIds={sessionPhotoIds}
           onClose={close}
         />
       )}

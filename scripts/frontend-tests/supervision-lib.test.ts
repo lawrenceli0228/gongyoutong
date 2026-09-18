@@ -33,12 +33,14 @@ import {
   describeDocuments,
   describePhotoFile,
   describeSharedPhotoCoverage,
+  disposalSteps,
   DISPOSAL_ACTIONS,
   DisposalAction,
   documentsFromToolData,
   documentUrl,
   docTypeZh,
   DOC_TYPE_ZH,
+  effectiveDuePhrase,
   effectivePhotoId,
   failedItemsFromToolData,
   GRADE_NORMAL,
@@ -48,6 +50,7 @@ import {
   HAZARD_SCOPE_ALL,
   HAZARD_SCOPE_OVERDUE,
   HAZARD_SCOPE_PENDING,
+  HAZARD_SCOPE_REINSPECT,
   HAZARD_SCOPES,
   HAZARD_SOURCE_TOOLS,
   HAZARD_STATUS_ZH,
@@ -58,8 +61,10 @@ import {
   hazardsFromToolData,
   hazardsUsingSharedPhoto,
   hazardStatusZh,
+  ISSUE_ACTIONS,
   isDownloadableDoc,
   isPhotoId,
+  issuedDocTypes,
   currentGrade,
   evidenceRows,
   formatHkMoment,
@@ -74,6 +79,13 @@ import {
   parsePhotoEnvelope,
   patchHazard,
   pendingHazards,
+  photoIdsInText,
+  threadPhotoIds,
+  hazardsForPhotos,
+  OPEN_SUPERVISION_EVENT,
+  primaryAction,
+  secondaryActions,
+  actionFields,
   PHOTO_MAX_BYTES,
   PHOTO_MAX_MB,
   PHOTO_MESSAGES,
@@ -300,12 +312,15 @@ describe("受控词表(漂了的表现是界面上冒出英文,没人会当成 b
     expect([...HAZARD_GRADES]).toEqual([GRADE_NORMAL, GRADE_SEVERE]);
   });
 
-  it("清单筛子四个词、顺序不变 —— 它同时是界面上四颗按钮的顺序", () => {
+  it("清单筛子五个词、顺序不变 —— 它同时是界面上五颗按钮的顺序", () => {
     // 逐字镜像 agents/supervision/scoping.py 的 SCOPES。写错一个字的表现是后端 400,
     // 而那句 400 会被 normalizeError 原样上屏 —— 工友看到的是「我这儿没有这个词」。
-    expect([...HAZARD_SCOPES]).toEqual(["在办", "待确认", "超期", "全部"]);
+    // 「待复查」是 2026-09-18 加的第五档(用户反馈:整改完等复查的要单独一张清单,
+    // 不和待确认混)。顺序按一条隐患走过的先后排:待确认 → 待复查 → 超期。
+    expect([...HAZARD_SCOPES]).toEqual(["在办", "待确认", "待复查", "超期", "全部"]);
     expect(HAZARD_SCOPES[0]).toBe(HAZARD_SCOPE_ACTIVE); // 缺省档排第一
     expect(HAZARD_SCOPE_PENDING).toBe("待确认");
+    expect(HAZARD_SCOPE_REINSPECT).toBe("待复查");
     expect(HAZARD_SCOPE_OVERDUE).toBe("超期");
     expect(HAZARD_SCOPE_ALL).toBe("全部");
   });
@@ -1098,6 +1113,7 @@ const LIST_ENVELOPE = JSON.stringify({
     overdue: 2,
     unassigned: 4,
     truncated: false,
+    due_defaults: { 一般: "2026-08-23", 严重: "2026-08-17" },
   },
   user_msg: "在办隐患 12 条:待确认 3 条、超期 2 条。",
   error_code: null,
@@ -1130,6 +1146,40 @@ describe("清单端点解析(读不出来 ≠ 台账里没有,这两句在界面
     // 老路径(工具结果)拿不到这几个字段,所以它们必须是**可选**的:
     // 缺了就是 undefined,渲染层显示「—」,而不是硬填一个 false 冒充「没超期」。
     expect(hazardsFromToolData({ hazards: [{ hazard_no: "A" }] })[0].overdue).toBeUndefined();
+  });
+
+  it("按级别预填的默认期限:有就原样拿到,没有 / 畸形就是空表(不编日期)", () => {
+    // 后端 `due_defaults` = `{级别: ISO}`,前端塞进日期框、监理不改就原样送回 ——
+    // 所以这里**一行日期换算都没有**,只认 YYYY-MM-DD 的串。
+    expect(parseHazardListEnvelope(LIST_ENVELOPE).dueDefaults).toEqual({
+      一般: "2026-08-23",
+      严重: "2026-08-17",
+    });
+    const of = (dueDefaults: unknown) =>
+      parseHazardListEnvelope(JSON.stringify({ ok: true, data: { hazards: [], due_defaults: dueDefaults } }))
+        .dueDefaults;
+    expect(of(undefined)).toEqual({}); // 老后端没这个键
+    expect(of(null)).toEqual({});
+    expect(of("2026-08-23")).toEqual({});
+    // 畸形的那一档单独丢,别的留着:一档坏了不该连累另一档预填不出来
+    expect(of({ 一般: "明天", 严重: "2026-08-17" })).toEqual({ 严重: "2026-08-17" });
+    expect(of({ 一般: 7 })).toEqual({});
+  });
+
+  it("步骤条要的两个键:was_suspended 只认真布尔,closed_reason 有键才挂、null 留 null", () => {
+    const row = (extra: Record<string, unknown>) =>
+      parseHazardListEnvelope(
+        JSON.stringify({ ok: true, data: { hazards: [{ hazard_no: "GYT-H-1", ...extra }] } }),
+      ).hazards[0];
+    expect(row({ was_suspended: true }).was_suspended).toBe(true);
+    expect(row({ was_suspended: false }).was_suspended).toBe(false);
+    // 库里是 0/1 —— 后端该转成布尔;真漏转了这里当成没有,**不许把 1 当 true**
+    // (同 needs_grading 那条规矩:字符串 "false" 是真值,松一点整列就全亮了)
+    expect(row({ was_suspended: 1 }).was_suspended).toBeUndefined();
+    expect(row({})).not.toHaveProperty("was_suspended");
+    expect(row({ closed_reason: "白色安全帽,现场核过" }).closed_reason).toBe("白色安全帽,现场核过");
+    expect(row({ closed_reason: null }).closed_reason).toBeNull();
+    expect(row({})).not.toHaveProperty("closed_reason");
   });
 
   it("🔴 未归属那条:project_id 是空串,**不许被压成 undefined/null**(D6)", () => {
@@ -2329,5 +2379,285 @@ describe("不出文书关掉 dismiss(2026-08-21)", () => {
     expect(text).toContain("開回來");
     expect(text).toContain("先別關");
     expect(text).not.toContain("**");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-18 用户反馈那一批:期限选日期 + 按级别预填 / 签发按钮统一 / 每条下面的步骤条
+// ---------------------------------------------------------------------------
+
+describe("effectiveDuePhrase —— 日期框里显示的和请求里发的必须是同一个日期", () => {
+  const dueDefaults = { [GRADE_NORMAL]: "2026-08-27", [GRADE_SEVERE]: "2026-08-21" };
+
+  it("没改就用按级别预填的那个;改了以改的为准", () => {
+    expect(effectiveDuePhrase({ typed: "", action: "notice", grade: GRADE_NORMAL, dueDefaults })).toBe(
+      "2026-08-27",
+    );
+    expect(effectiveDuePhrase({ typed: "  ", action: "suspend", grade: GRADE_SEVERE, dueDefaults })).toBe(
+      "2026-08-21",
+    );
+    expect(
+      effectiveDuePhrase({ typed: "2026-09-01", action: "notice", grade: GRADE_NORMAL, dueDefaults }),
+    ).toBe("2026-09-01");
+  });
+
+  it("🔴 改期限(extend)**不预填** —— 预填成默认值等于替监理决定展到哪天", () => {
+    expect(effectiveDuePhrase({ typed: "", action: "extend", grade: GRADE_NORMAL, dueDefaults })).toBe("");
+    expect(effectiveDuePhrase({ typed: "2026-09-01", action: "extend", grade: GRADE_NORMAL, dueDefaults })).toBe(
+      "2026-09-01",
+    );
+  });
+
+  it("后端没给默认值(老后端 / 级别认不出)就是空串,让必填校验去说话,不编一个日期", () => {
+    expect(effectiveDuePhrase({ typed: "", action: "notice", grade: GRADE_NORMAL, dueDefaults: {} })).toBe("");
+    expect(effectiveDuePhrase({ typed: "", action: "notice", grade: "未知", dueDefaults })).toBe("");
+  });
+
+  it("预填值直接当 due_phrase 送后端能过前端校验(它就是 ISO 串)", () => {
+    const body = actionBody("notice", {
+      hazardNo: "GYT-H-20260816-093000-1a2b",
+      duePhrase: effectiveDuePhrase({ typed: "", action: "notice", grade: GRADE_NORMAL, dueDefaults }),
+    });
+    expect(body.due_phrase).toBe("2026-08-27");
+  });
+});
+
+describe("签发按钮统一(1b):文书由级别带出,按钮上不再让人「选」", () => {
+  it("通知单与暂停令两颗按钮同一句字 —— 区别写在按钮下面那行「带出哪几份」", () => {
+    expect(ACTION_LABEL.notice).toBe(ACTION_LABEL.suspend);
+    expect([...ISSUE_ACTIONS].sort()).toEqual(["notice", "suspend"]);
+  });
+
+  it("带出哪几份:一般 → 通知单一份;严重 → 通知单 + 暂停令 + 致建设单位报告(三份原子产出)", () => {
+    // 镜像 supervision_api 的两条路(`_work_notice` 一份、`_work_suspend` 三份,顺序固定)。
+    // 文书名走 DOC_TYPE_ZH(受控词表),这里不手写中文。
+    expect(issuedDocTypes(GRADE_NORMAL)).toEqual(["notice"]);
+    expect(issuedDocTypes(GRADE_SEVERE)).toEqual(["notice", "suspension", "owner_report"]);
+    for (const t of issuedDocTypes(GRADE_SEVERE)) expect(DOC_TYPE_ZH).toHaveProperty(t);
+    // 级别认不出 = 一份都不许承诺
+    expect(issuedDocTypes("")).toEqual([]);
+    expect(issuedDocTypes("未知")).toEqual([]);
+  });
+});
+
+describe("disposalSteps —— 每条隐患下面那条「走到哪一步了」(1d)", () => {
+  const keys = (h: HazardBrief) => disposalSteps(h).map((s) => s.key);
+  const state = (h: HazardBrief, key: string) => disposalSteps(h).find((s) => s.key === key)?.state;
+  const note = (h: HazardBrief, key: string) => disposalSteps(h).find((s) => s.key === key)?.note;
+
+  it("一般隐患的整条路:确认 → 定级 → 签发 → 整改复查 → 销项;**没有复工令那一格**", () => {
+    expect(keys(hazard({ status: "open", grade: GRADE_NORMAL }))).toEqual([
+      "confirm",
+      "grade",
+      "issue",
+      "rectify",
+      "close",
+    ]);
+  });
+
+  it("严重隐患多一格复工令,排在销项之前(停过工的必须先出复工令,Codex#6)", () => {
+    expect(keys(hazard({ status: "open", grade: GRADE_SEVERE }))).toEqual([
+      "confirm",
+      "grade",
+      "issue",
+      "rectify",
+      "resume",
+      "close",
+    ]);
+    // 后端给了 was_suspended 就以它为准 —— 它是「真停过」的唯一凭据
+    expect(keys(hazard({ status: "suspended", grade: GRADE_SEVERE, was_suspended: true }))).toContain(
+      "resume",
+    );
+  });
+
+  it("🔴 未定级时不许按默认档画路:复工令那格不出现,定级那格是当前步", () => {
+    // needs_grading=1 时 grade 是映射表给的默认档,不是结论(currentGrade 那条红线)
+    const h = hazard({ status: "open", grade: GRADE_SEVERE, needs_grading: true });
+    expect(keys(h)).not.toContain("resume");
+    expect(state(h, "grade")).toBe("current");
+    expect(state(h, "issue")).toBe("todo");
+    expect(note(h, "grade")).toBeUndefined();
+  });
+
+  it("每一档状态落在哪一步(表驱动;done/current/todo 三态的顺序必须单调:done 之后不许再有 done)", () => {
+    const table: Array<[Partial<HazardBrief>, string]> = [
+      [{ status: "pending" }, "confirm"],
+      [{ status: "open" }, "issue"],
+      [{ status: "notified" }, "rectify"],
+      [{ status: "suspended", grade: GRADE_SEVERE }, "rectify"],
+      [{ status: "reinspect_failed" }, "rectify"],
+      [{ status: "resuming", grade: GRADE_SEVERE }, "resume"],
+    ];
+    for (const [overrides, expectedCurrent] of table) {
+      const steps = disposalSteps(hazard(overrides));
+      const current = steps.filter((s) => s.state === "current");
+      expect(current.map((s) => s.key), JSON.stringify(overrides)).toEqual([expectedCurrent]);
+      // 单调:done* current? todo*
+      const seq = steps.map((s) => s.state).join(",");
+      expect(seq, seq).toMatch(/^(done,)*(current,)?(todo(,todo)*)?$|^(done,)*(current)?$|^(done,)*done$/);
+    }
+  });
+
+  it("走完的:销项那一格 done,没有 current;上报的最后一格换成上报主管部门", () => {
+    const closed = disposalSteps(hazard({ status: "closed", closed_reason: null }));
+    expect(closed.every((s) => s.state === "done")).toBe(true);
+    expect(closed.at(-1)?.key).toBe("close");
+
+    const escalated = disposalSteps(hazard({ status: "escalated" }));
+    expect(escalated.every((s) => s.state === "done")).toBe(true);
+    expect(escalated.at(-1)?.key).toBe("escalate");
+    expect(escalated.map((s) => s.key)).not.toContain("close");
+    expect(escalated.map((s) => s.key)).not.toContain("resume");
+  });
+
+  it("🔴 不出文书关掉的那条:只画「确认 → 关掉」,**不许把签发/复查全打勾**", () => {
+    // 那是给一条识错了的"隐患"编一整条证据链。判据只有 closed_reason 有没有(只有 dismiss 写它)。
+    const h = hazard({ status: "closed", closed_reason: "白色安全帽,现场核过" });
+    expect(keys(h)).toEqual(["confirm", "dismiss"]);
+    expect(disposalSteps(h).every((s) => s.state === "done")).toBe(true);
+    expect(note(h, "dismiss")).toBe("白色安全帽,现场核过");
+  });
+
+  it("整改复查那一格的备注:期限 / 已超期 / 上次复查不合格,三种互不覆盖", () => {
+    expect(note(hazard({ status: "notified", due_display: "8月20日(周四)" }), "rectify")).toContain(
+      "8月20日(周四)",
+    );
+    expect(note(hazard({ status: "notified", due_display: "8月20日(周四)", overdue: true }), "rectify")).toContain(
+      "超期",
+    );
+    expect(note(hazard({ status: "reinspect_failed", due_display: "8月20日(周四)" }), "rectify")).toContain(
+      "不合格",
+    );
+    // 老路(工具返回)没有期限字段:不编「期限:—」,干脆没备注
+    expect(note(hazard({ status: "notified" }), "rectify")).toBeUndefined();
+  });
+
+  it("定级那一格的备注是后端原值(简体),交给渲染处转繁體;签发那一格写明带出哪种文书", () => {
+    expect(note(hazard({ status: "open", grade: GRADE_SEVERE }), "grade")).toBe(GRADE_SEVERE);
+    expect(note(hazard({ status: "open", grade: GRADE_NORMAL }), "issue")).toContain("通知單");
+    expect(note(hazard({ status: "open", grade: GRADE_SEVERE }), "issue")).toContain("暫停令");
+  });
+
+  it("认不出的状态一格都不画(画错比不画更坏)", () => {
+    expect(disposalSteps(hazard({ status: "brand_new" }))).toEqual([]);
+  });
+});
+
+describe("primaryAction / secondaryActions —— 一條隱患只露一顆主按鈕(2026-09-18 FINDING-003)", () => {
+  it("主按鈕 = 步驟條上的當前步:待確認→確認,open→簽發,整改中→登記複查,待復工→簽復工令", () => {
+    expect(primaryAction(hazard({ status: "pending" }))).toBe("confirm");
+    expect(primaryAction(hazard({ status: "open", grade: GRADE_NORMAL }))).toBe("notice");
+    expect(primaryAction(hazard({ status: "open", grade: GRADE_SEVERE }))).toBe("suspend");
+    expect(primaryAction(hazard({ status: "notified" }))).toBe("reinspect");
+    expect(primaryAction(hazard({ status: "suspended", grade: GRADE_SEVERE }))).toBe("reinspect");
+    expect(primaryAction(hazard({ status: "reinspect_failed" }))).toBe("reinspect");
+    expect(primaryAction(hazard({ status: "resuming", grade: GRADE_SEVERE }))).toBe("resume");
+    expect(primaryAction(hazard({ status: "closed" }))).toBeNull();
+    expect(primaryAction(hazard({ status: "escalated" }))).toBeNull();
+  });
+
+  it("🔴 未定級的 open:主按鈕是定級,不是簽發(硬攔③:任何簽發都會被拒)", () => {
+    expect(primaryAction(hazard({ status: "open", grade: GRADE_SEVERE, needs_grading: true }))).toBe("grade");
+    // pending 未定級仍先確認(D17 的順序:確認 → 定級 → 簽發)
+    expect(primaryAction(hazard({ status: "pending", needs_grading: true }))).toBe("confirm");
+  });
+
+  it("「更多」= 可用動作減去主按鈕,順序不變,一個都不丟", () => {
+    const h = hazard({ status: "open", grade: GRADE_NORMAL });
+    expect(secondaryActions(h)).toEqual(["grade", "dismiss", "reassign"]);
+    const p = hazard({ status: "pending" });
+    expect(secondaryActions(p)).toEqual(["grade", "reject", "reassign"]);
+    const n = hazard({ status: "notified" });
+    expect(secondaryActions(n)).toEqual(["extend"]);
+    expect(secondaryActions(hazard({ status: "closed" }))).toEqual([]);
+  });
+
+  it("功能不減:主按鈕 + 更多 = availableActions 的全集(pending 另加一顆「確認」)", () => {
+    for (const status of HAZARD_STATUSES) {
+      for (const grade of HAZARD_GRADES) {
+        for (const needs_grading of [false, true]) {
+          const h = hazard({ status, grade, needs_grading });
+          const p = primaryAction(h);
+          const all = [...(p && p !== "confirm" ? [p] : []), ...secondaryActions(h)].sort();
+          expect(all, `${status}/${grade}/${needs_grading}`).toEqual([...availableActions(h)].sort());
+        }
+      }
+    }
+  });
+
+  it("每個動作都有自己那一格要填什麼(actionFields),跟 actionBody 的必填一致", () => {
+    // 簽發 / 改期要日期;關掉 / 改期要原因;複查要照片;改工地要工地;其餘一格都不用
+    expect(actionFields("notice")).toEqual({ due: true, reason: false, photo: false, project: false });
+    expect(actionFields("suspend")).toEqual({ due: true, reason: false, photo: false, project: false });
+    expect(actionFields("extend")).toEqual({ due: true, reason: true, photo: false, project: false });
+    expect(actionFields("dismiss")).toEqual({ due: false, reason: true, photo: false, project: false });
+    expect(actionFields("reinspect")).toEqual({ due: false, reason: false, photo: true, project: false });
+    expect(actionFields("reassign")).toEqual({ due: false, reason: false, photo: false, project: true });
+    for (const a of ["grade", "resume", "escalate", "reject"] as const) {
+      expect(actionFields(a)).toEqual({ due: false, reason: false, photo: false, project: false });
+    }
+    // 與四個 actionNeeds* 判據同源:漂了的表現是那一格不出現而請求被前端自己攔
+    for (const a of DISPOSAL_ACTIONS) {
+      const f = actionFields(a);
+      expect(f.due).toBe(actionNeedsDuePhrase(a));
+      expect(f.reason).toBe(actionNeedsReason(a));
+      expect(f.photo).toBe(actionNeedsPhoto(a));
+      expect(f.project).toBe(actionNeedsProject(a));
+    }
+  });
+});
+
+describe("拍完照的隱患卡(2026-09-18 FINDING-001):從用戶消息裏抠照片編號,按照片直查台賬", () => {
+  const A = "27ba7e5933f54547b77a30772959b3fb";
+  const B = "b2943b0eb7fc43b9b4f2db2a0b180731";
+  const BASE = "http://localhost:2024";
+
+  it("photoIdsInText:認後端拼的「(照片编号:a、b)」,半角全角括號都認,去重,圖紙編號不算", () => {
+    expect(photoIdsInText(`看看这张照片。(照片编号:${A})`)).toEqual([A]);
+    expect(photoIdsInText(`查一下\n(照片编号:${A}、${B})`)).toEqual([A, B]);
+    expect(photoIdsInText(`（照片编号：${A}）`)).toEqual([A]);
+    expect(photoIdsInText(`(照片编号:${A}) 再看 (照片编号:${A})`)).toEqual([A]);
+    expect(photoIdsInText(`(图纸编号:${A})`)).toEqual([]);
+    expect(photoIdsInText("没有照片")).toEqual([]);
+    expect(photoIdsInText("")).toEqual([]);
+  });
+
+  it("hazardListUrl 帶 photoIds:逗號拼、不帶 scope(後端按照片看時 scope 一律全部)", () => {
+    expect(hazardListUrl(BASE, { photoIds: [A, B] })).toBe(
+      `${BASE}/supervision/hazards?photo_id=${A}%2C${B}`,
+    );
+    // 空數組 = 沒這個鍵(不許拼出 photo_id= 讓後端 400)
+    expect(hazardListUrl(BASE, { photoIds: [] })).toBe(`${BASE}/supervision/hazards`);
+  });
+
+  it("hazardsForPhotos:客戶端再篩一遍 photo_id(老後端不認 photo_id 參數時的兜底),沒 photo_id 的行不算", () => {
+    const rows = [
+      hazard({ hazard_no: "1", photo_id: A }),
+      hazard({ hazard_no: "2", photo_id: B }),
+      hazard({ hazard_no: "3" }),
+    ];
+    expect(hazardsForPhotos(rows, [A]).map((h) => h.hazard_no)).toEqual(["1"]);
+    expect(hazardsForPhotos(rows, [A, B]).map((h) => h.hazard_no)).toEqual(["1", "2"]);
+    expect(hazardsForPhotos(rows, [])).toEqual([]);
+  });
+
+  it("OPEN_SUPERVISION_EVENT:卡上「去監理處置」與入口按鈕之間的約定名,改了兩邊一起改", () => {
+    expect(OPEN_SUPERVISION_EVENT).toBe("gyt:open-supervision");
+  });
+});
+
+describe("threadPhotoIds —— 監理面板「本次對話」模式:這條線程裏所有用戶消息的照片編號", () => {
+  const A = "27ba7e5933f54547b77a30772959b3fb";
+  const B = "b2943b0eb7fc43b9b4f2db2a0b180731";
+  it("只看 human 消息;字符串 content 與文本塊數組都認;去重、按出現順序", () => {
+    const messages = [
+      { type: "human", content: `看看这张照片。(照片编号:${A})` },
+      { type: "ai", content: `我看到了 (照片编号:${B})` }, // AI 複述的不算
+      { type: "human", content: [{ type: "text", text: `再看 (照片编号:${B}、${A})` }, { type: "gyt_attachment" }] },
+      { type: "human", content: "沒照片的一句" },
+    ];
+    expect(threadPhotoIds(messages)).toEqual([A, B]);
+    expect(threadPhotoIds([])).toEqual([]);
+    expect(threadPhotoIds([{ type: "human", content: null }])).toEqual([]);
   });
 });

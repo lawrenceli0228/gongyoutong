@@ -572,7 +572,7 @@ apply_override "stream-provider.tsx" "src/providers/Stream.tsx"
 #   qrcode.tsx     —— 电脑端二维码面板(依赖下面步骤 2.6 装的 qrcode.react)
 #   checkin.tsx    —— 自拍打卡组件,thread-index.tsx 的动作条里是它的入口
 # ⚠️ 计数口径(CLAUDE.md「前端覆盖件」):apply_override **十五件** + install_new_file
-#    **十七件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
+#    **十八件**,是**两个数**,别合成一个 —— 「以 apply_override 调用为准」那句话
 #    合并之后数出来永远对不上。
 #    (2026-08-24:install_new_file 从十五涨到十七 —— 补登记了 08-23 漏掉的
 #     cad-preview-lib.ts 与 interrupt-lib.ts,见步骤 2.5.4 的说明。)
@@ -715,6 +715,18 @@ install_new_file "GytTimingRows.tsx" "src/components/thread/GytTimingRows.tsx"
 #    那时 GET /reports 是 404,而抽屉里永远是空的(前端对非 2xx 安静走开)。
 install_new_file "reports-lib.ts" "src/lib/reports-lib.ts"
 install_new_file "reports-entry.tsx" "src/components/thread/reports-entry.tsx"
+
+# -----------------------------------------------------------------------------
+# 步骤 2.5.3b:拍完照那張隱患卡(2026-09-18 設計審查 FINDING-001,install_new_file 十七 → 十八)
+#
+# 🔴 它補的是「拍照 → 識隱患 → 監理確認」這條鏈在**對話裏的出口**:隱患真進了台賬,
+#    對話裏卻只有一段文字,確認 / 否決 / 去處置全在底欄那顆 12px 的「隱患」後面。
+#    數據不等被 output_mode="last_message" 丟掉的工具返回 —— 拿用戶消息裏的
+#    `(照片编号:…)` 打 `GET /supervision/hazards?photo_id=a,b`(同日加的後端參數)。
+#    ai.tsx 在本輪最後一條調度中樞回答上方掛它;卡底「去監理處置」靠
+#    supervision-lib.OPEN_SUPERVISION_EVENT 叫 supervision-entry.tsx 開面板。
+# ⚠️ 漏裝 = 前端構建 Module not found(ai.tsx import 它),這個壞法是響的。
+install_new_file "hazard-result-card.tsx" "src/components/thread/hazard-result-card.tsx"
 
 # -----------------------------------------------------------------------------
 # 步骤 2.5.4:cad 预览 与 中断卡过滤(2026-08-23 队友那两件,**当时漏了注册**)

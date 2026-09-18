@@ -23,6 +23,7 @@ import {
   XIcon,
   Plus,
   Camera,
+  Ellipsis,
 } from "lucide-react";
 import { useQueryState, parseAsBoolean } from "nuqs";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
@@ -41,7 +42,7 @@ import {
 import { toast } from "sonner";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { Label } from "../ui/label";
-import { Switch } from "../ui/switch";
+import { createPortal } from "react-dom";
 import { useFileUpload } from "@/hooks/use-file-upload";
 // 发送前把附件块换成编号块 —— 附件在取件时就直传过了,这里只搬编号(见 handleSubmit)。
 import { toWireBlocks } from "@/lib/multimodal-utils";
@@ -123,7 +124,7 @@ function GytBrand({
       className="flex shrink-0 cursor-pointer items-center gap-2 sm:gap-2.5"
     >
       {/* 窄屏把徽标与字号各降一档,给右侧那组顶栏入口腾出约 20px;≥640px 原样恢复。 */}
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] bg-[#16805C] text-base font-black text-white sm:h-9 sm:w-9 sm:text-lg">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] bg-[var(--gyt-green)] text-base font-black text-white sm:h-9 sm:w-9 sm:text-lg">
         工
       </span>
       {/* 360px 以下(iPhone SE 一代那种老屏)连字都放不下:顶栏可用 298px,
@@ -133,7 +134,7 @@ function GytBrand({
           底下那句大标题「有事就问工友通」也还在,认得出是谁家的产品。 */}
       <span
         className={cn(
-          "text-lg font-black tracking-tight whitespace-nowrap text-[#171C1A] sm:text-xl",
+          "text-lg font-black tracking-tight whitespace-nowrap text-[var(--gyt-ink)] sm:text-xl",
           hideTextOnMobile ? "hidden sm:inline" : "max-[359px]:hidden",
         )}
       >
@@ -162,11 +163,16 @@ function ThreadInner() {
     "chatHistoryOpen",
     parseAsBoolean.withDefault(false),
   );
-  const [hideToolCalls, setHideToolCalls] = useQueryState(
-    "hideToolCalls",
-    parseAsBoolean.withDefault(false),
-  );
+  // 「隱藏中間步驟」那個 URL 參數(hideToolCalls)這裏不再讀寫:開關搬進了 GytTimingRows,
+  // 判據在 ai.tsx,兩處默認都是 true(2026-09-18 FINDING-004 / 008)。
   const [input, setInput] = useState("");
+  /** 輸入條上「⋯」菜單開着沒有(FINDING-008:打卡 / 記錄收在裏面)。 */
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [morePos, setMorePos] = useState<{ right: number; bottom: number }>({ right: 8, bottom: 80 });
+  const moreBtnRef = useRef<HTMLButtonElement>(null);
+  // portal 要等客戶端掛載後才有 document.body(SSR 首幀沒有)
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   /** 输入框本体 —— 能力卡填例句之后要把光标送进去(2026-08-25 设计审计 D2)。 */
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const {
@@ -523,8 +529,10 @@ function ThreadInner() {
             </div>
           )}
 
-          {/* W7 首页重设计:4 张能力状态卡片(常驻,派活时对应卡片发亮)。
-              首页顶栏是 absolute 覆盖,给卡片留出顶栏高度避免被挡;进入对话后顶栏在流内,无需留白。 */}
+          {/* W7 首页重设计:4 张能力状态卡片(派活时对应卡片发亮)。
+              首页顶栏是 absolute 覆盖,给卡片留出顶栏高度避免被挡;进入对话后顶栏在流内,无需留白。
+              🔴 進了對話只露一行藥丸(compact,2026-09-18 FINDING-002):四張卡在對話頁常駐時
+                 手機上吃掉 330px,對話只剩 250px;正在忙的 Agent 名字藥丸自己會報。 */}
           <div className={cn(!chatStarted && "pt-16")}>
             {/* onPick(2026-08-25 设计审计 D2):点带例句的卡 → 把例句**填进输入框**
                 并聚焦,不自动发送。卡片本身仍然是状态灯不是按钮,完整推演在
@@ -532,6 +540,7 @@ function ThreadInner() {
                 聚焦要 requestAnimationFrame 兜一下:setInput 触发的重渲染这一帧还没提交,
                 同步 focus 会落在旧节点上,表现是「字填进去了但光标不在里面」。 */}
             <GytStatusCards
+              compact={chatStarted}
               onPick={(text) => {
                 setInput(text);
                 requestAnimationFrame(() => {
@@ -635,11 +644,11 @@ function ThreadInner() {
                       `{ gyt_timing: {…} }`,在 providers/Stream.tsx 收下、存进
                       @/lib/timing-lib 那个 run 级 store —— **不是**从 messages 里
                       倒推的(耗时消息里根本没有,倒推不出来)。
-                      🔴 受 hideToolCalls 控制,与工具调用痕迹同一档:它俩是同一类
-                      东西(讲架构有用、给工地师傅看纯属干扰),开关只有一个,
-                      漏了这个条件的表现是「关了中间步骤,底下还挂着一坨秒数」。
-                      放在消息之后、加载点之前:一轮跑的过程中能看着它一行行长出来。 */}
-                  {!hideToolCalls && <GytTimingRows />}
+                      2026-09-18 FINDING-004 起它**不再受 hideToolCalls 控制**:它自己就是
+                      「過程 N 步 · Xs ▸」那一行 —— 默認折疊只露一行,點開才是各步耗時;
+                      「隱藏中間步驟」的開關也搬進它展開後的那一格。
+                      放在消息之后、加载点之前:一轮跑的过程中能看着那一行的數字長。 */}
+                  <GytTimingRows />
                   {isLoading && !firstTokenReceived && (
                     <AssistantMessageLoading />
                   )}
@@ -653,10 +662,10 @@ function ThreadInner() {
                 <div className="sticky bottom-0 flex flex-col items-center gap-4 bg-[#FBFCFB] sm:gap-8">
                   {!chatStarted && (
                     <div className="flex flex-col items-center text-center">
-                      <h1 className="text-[30px] leading-tight font-black tracking-tight text-[#171C1A] sm:text-[44px]">
+                      <h1 className="text-[30px] leading-tight font-black tracking-tight text-[var(--gyt-ink)] sm:text-[44px]">
                         有事就問工友通
                       </h1>
-                      <p className="mt-2 text-[15px] text-[#5F6B66] sm:mt-3 sm:text-[18px]">
+                      <p className="mt-2 text-[15px] text-[var(--gyt-muted)] sm:mt-3 sm:text-[18px]">
                         説一句話、拍張照,或者傳個文件,我來幫你派活
                       </p>
                     </div>
@@ -669,8 +678,8 @@ function ThreadInner() {
                     className={cn(
                       "relative z-10 mx-auto mb-4 w-full max-w-3xl overflow-hidden rounded-[26px] bg-white shadow-[0_2px_4px_rgba(23,28,26,0.04),0_20px_50px_rgba(23,28,26,0.09)] transition-all sm:mb-8",
                       dragOver
-                        ? "border-2 border-dotted border-[#16805C]"
-                        : "border border-solid border-[#E4E8E6]",
+                        ? "border-2 border-dotted border-[var(--gyt-green)]"
+                        : "border border-solid border-[var(--gyt-line)]",
                     )}
                   >
                     <form
@@ -700,7 +709,7 @@ function ThreadInner() {
                           }
                         }}
                         placeholder="對着我説話、拍張照,或問一句…"
-                        className="field-sizing-content resize-none border-none bg-transparent p-5 pb-2 text-[17px] text-[#33403A] shadow-none ring-0 outline-none placeholder:text-[#5F6B66] focus:ring-0 focus:outline-none"
+                        className="field-sizing-content resize-none border-none bg-transparent p-5 pb-2 text-[17px] text-[var(--gyt-ink-soft)] shadow-none ring-0 outline-none placeholder:text-[var(--gyt-muted)] focus:ring-0 focus:outline-none"
                       />
 
                       {/* 底部动作条 —— 手机上这里是**打卡功能的唯一入口**,挤爆等于打卡不可用。
@@ -714,21 +723,9 @@ function ThreadInner() {
                           · ≥640px 用 sm:flex-nowrap + sm:gap-6 原样退回今天的单行布局,
                             所以 768 / 1280 一个像素都不动。 */}
                       <div className="flex flex-wrap items-center gap-2 border-t border-[#EDF0EE] bg-white p-3 px-4 sm:flex-nowrap sm:gap-6">
-                        <div className="order-last shrink-0 sm:order-none">
-                          <div className="flex items-center space-x-2">
-                            <Switch
-                              id="render-tool-calls"
-                              checked={hideToolCalls ?? false}
-                              onCheckedChange={setHideToolCalls}
-                            />
-                            <Label
-                              htmlFor="render-tool-calls"
-                              className="text-sm whitespace-nowrap text-[#5F6B66]"
-                            >
-                              隱藏中間步驟
-                            </Label>
-                          </div>
-                        </div>
+                        {/* 「隱藏中間步驟」那顆開關 2026-09-18(FINDING-004 / FINDING-008)搬進了
+                            消息區底下那一行「過程 · N 步 ▸」展開後的格子裏 —— 它是閱讀偏好不是
+                            發送動作,和它管的東西放在一起。這裏不再有它。 */}
                         {/* 🔴 **拍照入口(2026-08-22)。整个产品的头号动作,而它在此之前
                             没有入口** —— 动作条上唯一的上传口写着「上傳圖紙·資料」
                             (工友要拍的是隐患照片,那句话在劝退),而且**没有 capture**:
@@ -751,7 +748,7 @@ function ThreadInner() {
                         <div className="flex shrink-0 items-center gap-2">
                         <Label
                           htmlFor="camera-input"
-                          className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[#16805C] bg-[#16805C] px-3 py-2 text-sm font-bold whitespace-nowrap text-white transition hover:bg-[#0F5F44] sm:min-h-0"
+                          className="flex pointer-coarse:min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--gyt-green)] bg-[var(--gyt-green)] px-3 py-2 text-sm font-bold whitespace-nowrap text-white transition hover:bg-[var(--gyt-green-deep)]"
                         >
                           <Camera className="size-4" />
                           <span>拍照</span>
@@ -785,13 +782,18 @@ function ThreadInner() {
                                看着像它们是一组。现在换行以**组**为单位,不会再拆散。
                             ⚠️ 竖线 `hidden sm:block`:窄屏本来就要换行,那时候竖线会
                                卡在行尾变成一根没来由的短杠。窄屏靠分组换行表达,不靠线。 */}
-                        {/* min-h-11 = 44px,触摸目标的通用下限;≥640px 退回原来的高度(sm:min-h-0)。 */}
+                        {/* pointer-coarse:min-h-11 = 触屏设备上 44px 下限(2026-09-18 FINDING-006:原来按宽度判
+                            `sm:min-h-0`,1024px 平板在监理面板拿得到 44px、在这儿拿不到;全站统一按设备判)。 */}
                         <Label
                           htmlFor="file-input"
-                          className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[#E4E8E6] bg-white px-3 py-2 text-sm font-bold whitespace-nowrap text-[#33403A] transition hover:border-[#8FC4B0] sm:min-h-0"
+                          title="上傳圖紙·資料"
+                          aria-label="上傳圖紙·資料"
+                          className="flex pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-full border border-[var(--gyt-line)] bg-white px-3 py-2 text-sm font-bold whitespace-nowrap text-[var(--gyt-ink-soft)] transition hover:border-[var(--gyt-mint)]"
                         >
-                          <Plus className="size-4 text-[#0F5F44]" />
-                          <span>上傳圖紙·資料</span>
+                          <Plus className="size-4 text-[var(--gyt-green-deep)]" />
+                          {/* 窄屏只露「＋」(FINDING-008:輸入條 8 個控件減到 5 個),title / aria 說全名;
+                              ≥640px 帶字。注意 pointer-coarse:min-w-11 給圖標態一個 44px 的寬。 */}
+                          <span className="hidden sm:inline">上傳圖紙·資料</span>
                         </Label>
                         <input
                           id="file-input"
@@ -805,15 +807,14 @@ function ThreadInner() {
 
                         <span
                           aria-hidden="true"
-                          className="hidden h-6 w-px shrink-0 bg-[#E4E8E6] sm:block"
+                          className="hidden h-6 w-px shrink-0 bg-[var(--gyt-line)] sm:block"
                         />
 
-                        <div className="flex shrink-0 items-center gap-2">
+                        <div className="relative flex shrink-0 items-center gap-2">
                         {/* 打卡入口(W7 · D15):点开是直连 POST /checkin 的自拍面板,
                             不进对话、不产生消息 —— 所以放在动作条而不是消息区
                             (tool-calls.tsx 只消费 ToolMessage,直连打卡根本不产生它,
                             W7 §1.5)。组件自带 type="button",不会误触本 form 的提交。 */}
-                        <CheckinEntry />
                         {/* 监理处置入口(W10):同样是**直连 HTTP 的操作台**,不进对话、
                             不产生消息 —— 所以和打卡并排放在动作条,不放消息区。
                             W9 当初就是放错了地方:它挂在 tool-calls.tsx 那张「隐患台账」卡上,
@@ -831,13 +832,72 @@ function ThreadInner() {
                             结果是:文件就在服务器上,而谁都拿不到。
                             按钮自带 type="button",刻意**没有徽章**(理由在组件头注:
                             存档不等人干活,红点只会让人去点掉一个不用处理的提醒)。 */}
-                        <ReportsEntry />
+                        {/* 「⋯」(2026-09-18 FINDING-008):打卡與巡檢記錄收進這個菜單 —— 輸入條從
+                            8 個控件減到 5 個(拍照 / ＋ / 隱患 / ⋯ / 發送)。兩個入口**一個不少**,
+                            只是多一下點擊;隱患留在外面是因為它帶待確認徽章、監理每天要看。
+                            菜單裏的兩顆仍是原組件(各自 portal 到 body 開自己的面板),
+                            點外面關閉靠一層透明遮罩,不引第三方 Popover(層疊上下文那條坑見 checkin.tsx)。 */}
+                        <button
+                          ref={moreBtnRef}
+                          type="button"
+                          aria-haspopup="menu"
+                          aria-expanded={moreOpen}
+                          aria-label="更多:打卡、巡檢記錄"
+                          title="更多:打卡、巡檢記錄"
+                          onClick={() => {
+                            // 開的那一刻按按鈕的 rect 定位(貼在按鈕上方、右對齊);關就只切 display。
+                            const r = moreBtnRef.current?.getBoundingClientRect();
+                            if (r) {
+                              setMorePos({
+                                right: Math.max(8, window.innerWidth - r.right),
+                                bottom: window.innerHeight - r.top + 8,
+                              });
+                            }
+                            setMoreOpen((v) => !v);
+                          }}
+                          className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[var(--gyt-line)] bg-white text-[var(--gyt-ink-soft)] transition hover:border-[var(--gyt-mint)] pointer-coarse:size-11"
+                        >
+                          <Ellipsis className="size-4" />
+                        </button>
+                        {/* 🔴 菜單必須 portal 到 body,**不能就地渲染**:輸入框外殼那層
+                            `relative z-10 … overflow-hidden` 是一個層疊上下文,往上彈的菜單會被
+                            它裁掉 —— 實測 elementFromPoint 打到的是遮罩,菜單根本看不見而且
+                            零報錯(checkin.tsx 頭注記的同一個坑)。位置按按鈕的 rect 算,
+                            貼在按鈕上方、右對齊。 */}
+                        {/* 🔴 菜單**常駐掛載、只切 display**,不隨開關卸載:CheckinEntry / ReportsEntry
+                            各自把「面板開着沒有」存在自己的 state 裏,點一下就卸載它們 =
+                            state 一起沒了,面板永遠打不開而且零報錯(第一版就是這麼壞的,
+                            iPhone 模擬實測「dialogs after 打卡: 0」)。 */}
+                        {mounted &&
+                          createPortal(
+                            <>
+                              {moreOpen && (
+                                <button
+                                  type="button"
+                                  aria-label="關閉菜單"
+                                  onClick={() => setMoreOpen(false)}
+                                  className="fixed inset-0 z-[60] cursor-default"
+                                />
+                              )}
+                              <div
+                                role="menu"
+                                hidden={!moreOpen}
+                                onClick={() => setMoreOpen(false)}
+                                style={morePos}
+                                className="fixed z-[61] flex min-w-[180px] flex-col gap-1 rounded-xl border border-[var(--gyt-line)] bg-white p-2 shadow-lg"
+                              >
+                                <CheckinEntry />
+                                <ReportsEntry />
+                              </div>
+                            </>,
+                            document.body,
+                          )}
                         </div>
                         {stream.isLoading ? (
                           <Button
                             key="stop"
                             onClick={() => stream.stop()}
-                            className="ml-auto min-h-11 shrink-0 rounded-full whitespace-nowrap sm:min-h-0"
+                            className="ml-auto pointer-coarse:min-h-11 shrink-0 rounded-full whitespace-nowrap"
                           >
                             <LoaderCircle className="h-4 w-4 animate-spin" />
                             停止
@@ -845,7 +905,7 @@ function ThreadInner() {
                         ) : (
                           <Button
                             type="submit"
-                            className="ml-auto min-h-11 shrink-0 rounded-full bg-[#16805C] px-7 text-[16px] font-black whitespace-nowrap text-white shadow-md transition-all hover:bg-[#0F5F44] sm:min-h-0"
+                            className="ml-auto pointer-coarse:min-h-11 shrink-0 rounded-full bg-[var(--gyt-green)] px-7 text-[16px] font-black whitespace-nowrap text-white shadow-md transition-all hover:bg-[var(--gyt-green-deep)]"
                             disabled={
                               isLoading ||
                               (!input.trim() && contentBlocks.length === 0)

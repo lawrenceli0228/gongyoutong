@@ -1285,6 +1285,15 @@ _清单行的键: Final[frozenset[str]] = frozenset(
         #      完全依赖看照片。真人反馈只有三个字:「没有照片」。
         #      ⚠️ 不是复查照片(那张在 hazard_docs.photo_id,一次复查一张)。
         "photo_id",
+        # ③ 2026-09-18(用户反馈:处置流程要体现在每条隐患下面)—— 行里的步骤条
+        #    要答两个问题,而清单原有的键答不了:
+        #    · was_suspended —— 这条**要不要走复工令那一格**。grade=严重 只说明"将会停工",
+        #      签发之后 grade 不能再改,但只有这个旗子能证明"真停过"(Codex#6 的同一个旗子);
+        #    · closed_reason —— closed 有两条进路(复查合格 / 不出文书关掉),步骤条对
+        #      后者要画成「確認 → 關掉」而不是把「簽發文書 ✓ 複查 ✓」全打勾 ——
+        #      那是给一条不存在的隐患编一整条证据链。只有 dismiss() 会写这一列。
+        "was_suspended",
+        "closed_reason",
     }
 )
 """清单/详情里一行**恰好**有的键。
@@ -1487,6 +1496,124 @@ class Test隐患清单:
         assert 待确认["data"]["total"] == 2
         assert [h["status"] for h in 待确认["data"]["hazards"]] == [hazards.STATUS_PENDING] * 2
 
+    def test_待复查只出签过文书等复查的那几档_与待确认不相交(
+        self, client: TestClient, 台账: _台账
+    ) -> None:
+        """2026-09-18 用户反馈:整改完等复查的要单独一张清单,不和待确认混。
+
+        两头都断:等于按 ``scoping.REINSPECT_STATUSES`` 算的,**且**与待确认那一档不相交 ——
+        只断前者的话,哪天有人把 pending 也塞进那张状态表,两边一起错、还互相印证。
+        """
+        待复查 = _清单(client, scope=scoping.SCOPE_REINSPECT)
+
+        照状态表算的 = {
+            r.hazard_no for r in hazards.list_rows() if r.status in scoping.REINSPECT_STATUSES
+        }
+        assert _编号(待复查) == 照状态表算的
+        assert 照状态表算的 == {台账.超期, 台账.今天到期, 台账.未归属超期}
+        assert _编号(待复查).isdisjoint(_编号(_清单(client, scope=scoping.SCOPE_PENDING)))
+        # 期限没到的也在:待复查按状态筛,不按日期
+        assert 台账.今天到期 in _编号(待复查)
+
+    def test_清单带按级别预填的默认期限_按钉住的今天算(self, client: TestClient) -> None:
+        """前端把这两个日期原样塞进 ``due_phrase``(监理不改就直接签),所以它们必须是
+        ``dates.py`` 认得的 ISO 串,而且按**工地日历日**算 —— 与 ``today`` 同一个时钟。
+        默认天数是 ``config.py`` 的两个旋钮(一般 7、严重 1)。"""
+        data = _清单(client)["data"]
+        assert data["today"] == TODAY_ISO, "桩没生效"
+        assert data["due_defaults"] == {
+            hazards.GRADE_NORMAL: "2026-08-27",
+            hazards.GRADE_SEVERE: "2026-08-21",
+        }
+
+    def test_默认期限的天数从配置读(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """两个数只在 ``config.py`` 有一份;前端拿到的已经是算好的日期,**不镜像天数**。"""
+        from gyt.config import get_settings
+
+        monkeypatch.setenv("GYT_SUPERVISION_DUE_DAYS_NORMAL", "3")
+        monkeypatch.setenv("GYT_SUPERVISION_DUE_DAYS_SEVERE", "0")
+        get_settings.cache_clear()
+        try:
+            data = _清单(client)["data"]
+        finally:
+            get_settings.cache_clear()
+        assert data["due_defaults"] == {
+            hazards.GRADE_NORMAL: "2026-08-23",
+            hazards.GRADE_SEVERE: TODAY_ISO,
+        }
+
+    def test_按照片编号筛_只出那几张照片上认出来的_不看状态(self, client: TestClient) -> None:
+        """2026-09-18 設計審查 FINDING-001:拍完照回答上方那張隱患卡,拿用戶消息裏的
+        ``photo_id`` 直查台賬 —— 不等被 ``output_mode="last_message"`` 丟掉的工具返回。
+
+        判據:``?photo_id=a,b`` 只出這幾張照片登記的隱患;scope **沒傳時缺省「全部」**
+        (同一張照片上認出的兩條,一條已確認、一條還待確認,卡上都要有);傳了就疊加
+        (監理面板「本次對話」模式下待確認那幾檔照樣能切)。認不出的編號 → 空清單
+        (不是 400:照片還沒登記完是正常時序,前端會再拉一次)。
+        """
+        甲 = _photo("甲.jpg")
+        乙 = _photo("乙.jpg")
+        a = _new_hazard(item="用电隐患")
+        b = _new_hazard(item="材料堆放混乱")
+        c = _new_hazard(item="临边无防护")
+        _new_hazard(item="未穿反光衣")  # 另一張照片,不該出現
+        # 直接改庫裏的 photo_id(create 走的是共用那張 _photo("现场.jpg"))
+        import sqlite3
+
+        from gyt.config import get_settings
+
+        with sqlite3.connect(get_settings().sqlite_path) as conn:
+            conn.execute("UPDATE hazards SET photo_id=? WHERE hazard_no IN (?,?)", (甲, a, b))
+            conn.execute("UPDATE hazards SET photo_id=? WHERE hazard_no=?", (乙, c))
+        hazards.confirm(b)  # b 已確認:狀態不限也要出
+
+        單張 = _清单(client, photo_id=甲)
+        assert _编号(單張) == {a, b}
+        assert 單張["data"]["scope"] == scoping.SCOPE_ALL
+        兩張 = _清单(client, photo_id=f"{甲},{乙}")
+        assert _编号(兩張) == {a, b, c}
+        # 傳了 scope 就疊加:待確認檔裏 b 已確認、不在;a 還在
+        待确认 = _清单(client, photo_id=甲, scope=scoping.SCOPE_PENDING)
+        assert _编号(待确认) == {a}
+        assert 待确认["data"]["scope"] == scoping.SCOPE_PENDING
+        assert _编号(_清单(client, photo_id="0" * 32)) == set()
+
+    def test_同一张照片重传_按内容指纹也能找到(self, client: TestClient) -> None:
+        """重傳同一張照片會登記成**新的** artifact_id,而隱患那一行冪等命中、``photo_id`` 停在
+        第一次那個。只按 id 匹配的話,重傳後的對話裏那張卡會空着,而隱患明明在 ——
+        所以端點還按 sidecar 的 ``sha256`` ↔ 行裏的 ``photo_sha256`` 匹配。
+        """
+        import hashlib
+
+        第一次 = _photo("第一次.jpg")
+        重傳 = _photo("重傳.jpg")  # 同一份 FAKE_JPEG 字節,另一個編號
+        assert 第一次 != 重傳
+        registration = hazards.create(
+            hazard_no=generate_unique(DocKind.HAZARD, lambda no: hazards.fetch(no) is not None),
+            project_id=PROJECT,
+            photo_sha256=hashlib.sha256(FAKE_JPEG).hexdigest(),
+            photo_id=第一次,
+            item="用电隐患",
+            severity="较大",
+            grade=hazards.GRADE_NORMAL,
+            grading_version="1",
+            needs_grading=False,
+        )
+        no = registration.row.hazard_no
+        assert _编号(_清单(client, photo_id=第一次)) == {no}
+        assert _编号(_清单(client, photo_id=重傳)) == {no}, "重傳的編號按內容指紋也該找到它"
+        # 認不出的編號(沒有 sidecar)不報錯、也匹配不到任何東西
+        assert _编号(_清单(client, photo_id="0" * 32)) == set()
+
+    def test_照片编号畸形就拒_不许静默当成全部(self, client: TestClient) -> None:
+        """一個非 32 位 hex 的串當 photo_id:400 而不是「當沒傳」—— 當沒傳 = 整張台賬
+        全回,卡上會列出別人照片的隱患讓人去確認。"""
+        resp = client.get("/supervision/hazards", params={"photo_id": "not-a-photo"})
+        assert resp.status_code == 400
+        assert resp.json()["ok"] is False
+
     def test_超期这一档与scoping的判据等价(self, client: TestClient, 台账: _台账) -> None:
         """判据只有一份(``scoping.is_overdue``),端点不许自己再写一套 —— 抄第二份的表现是
         面板筛出来的条数与对话里念的对不上,而两边测试都绿(TODO-45 A 组那类漂移)。
@@ -1634,7 +1761,7 @@ class Test隐患清单:
         assert data["overdue"] == 3
         assert data["pending"] == 1
 
-    def test_一行恰好这十二个键(self, client: TestClient, 台账: _台账) -> None:
+    def test_一行恰好这十四个键(self, client: TestClient, 台账: _台账) -> None:
         """键集合是**对外契约**:前端按它渲染,加字段要连前端一起改,减字段会让某一侧
         静默少一格(比如没了 ``severity``,未定级的隐患在面板上会被念成「一般」——
         而硬拦③ ``_require_graded`` 拦的正是这句话)。
@@ -1653,7 +1780,31 @@ class Test隐患清单:
             "severity",
             "project_id",
             "photo_id",
+            "was_suspended",
+            "closed_reason",
         }
+
+    def test_行里的was_suspended是真布尔_closed_reason只有关掉的那条才有(
+        self, client: TestClient, 台账: _台账
+    ) -> None:
+        """步骤条按这两个键分岔(见 ``_清单行的键`` 的注释③)。
+
+        ``was_suspended`` 库里是 0/1 整数,出去必须是布尔 —— 前端 ``toHazardBrief``
+        对布尔字段只认真布尔(同 ``needs_grading`` 那条规矩),给 1 会被当成「没有这个键」,
+        于是停过工的隐患在步骤条上**少一格复工令**,而没有任何报错。
+        """
+        停过工的 = _arrive(hazards.STATUS_SUSPENDED, grade=hazards.GRADE_SEVERE, item="停过工的")
+        关掉的 = _arrive(hazards.STATUS_OPEN, item="识错了关掉的")
+        assert hazards.dismiss(关掉的, reason="白色安全帽,现场核过")
+
+        行 = {h["hazard_no"]: h for h in _清单(client, scope=scoping.SCOPE_ALL)["data"]["hazards"]}
+        assert 行[停过工的]["was_suspended"] is True
+        assert 行[台账.在办]["was_suspended"] is False
+        assert 行[关掉的]["closed_reason"] == "白色安全帽,现场核过"
+        assert 行[关掉的]["status"] == hazards.STATUS_CLOSED
+        # 复查合格销项的那条 closed_reason 必须是 None:它不是"关掉"的,是走完流程的
+        assert 行[台账.已销项]["closed_reason"] is None
+        assert 行[台账.在办]["closed_reason"] is None
 
     def test_今天是钉住的那天且超期真按它算(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch

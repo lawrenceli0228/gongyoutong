@@ -41,6 +41,8 @@ import { useMemo } from "react";
 import { resolveLang } from "@/lib/lang-lib";
 import { useHantText } from "@/lib/hant-convert";
 import { isSyntheticBreakpointInterrupt } from "@/lib/interrupt-lib";
+import { photoIdsInText } from "@/lib/supervision-lib";
+import { HazardResultCard } from "../hazard-result-card";
 
 function CustomComponent({
   message,
@@ -164,9 +166,13 @@ export function AssistantMessage({
 }) {
   const content = message?.content ?? [];
   const contentString = getContentString(content);
+  // 🔴 默認 true(2026-09-18 設計審查 FINDING-004):中間過程默認折起來,
+  //    「過程 N 步 · Xs ▸」那一行(GytTimingRows)點開才見。**與 thread-index.tsx 的
+  //    同名 useQueryState 默認值必須一致**(nuqs 按 URL 參數共享,兩處默認不一樣的表現是
+  //    這邊當它 true、那邊當它 false,開關顯示的狀態與實際渲染對不上)。
   const [hideToolCalls] = useQueryState(
     "hideToolCalls",
-    parseAsBoolean.withDefault(false),
+    parseAsBoolean.withDefault(true),
   );
 
   const thread = useStreamContext();
@@ -274,9 +280,60 @@ export function AssistantMessage({
   // 只按 name 折叠的话,这句英文会先裸奔一会儿(真机截图踩过)。
   const isBackHandoff = /^Transferring back to /.test(contentString.trim());
 
-  if (isToolResult && hideToolCalls) {
+  // 調度中樞**派活那一條**(帶 transfer_to_* 工具調用的 supervisor 消息):正文是
+  // 「照片我收到了,這就讓管現場照片的同事看看…」那種路由旁白,對工友是過程不是答案。
+  // ⚠️ 流式期間工具調用是最後才到的,旁白會先露幾百毫秒再收起 —— 與 isBackHandoff
+  //    按內容兜底是同一類權衡;頂上藥丸(GytStatusCards)那時已經在報「已經交給 識隱患」。
+  const isRoutingHandoff =
+    message?.type === "ai" &&
+    !subAgentName &&
+    !!hasToolCalls &&
+    (message.tool_calls ?? []).some((tc) => /^transfer_to_/.test(tc.name ?? ""));
+
+  // 🔴 2026-09-18 FINDING-004:「隱藏中間步驟」隱藏的是**整個過程**,不只是工具調用。
+  //    在此之前開了開關仍留三種行:子 Agent 的折疊行、「交回調度中樞」、以及調度中樞的
+  //    路由旁白(還夾着英文 agent 名)—— 一次回答前面照樣六行。過程的摘要與明細
+  //    統一歸底下那一行「過程 N 步 · Xs ▸」(GytTimingRows),點開才見。
+  //    帶表格的子 Agent 消息**仍然顯示**:表格誰產誰展示(上面 hasMarkdownTable 那條定案)。
+  const isProcessMessage =
+    isToolResult ||
+    isBackHandoff ||
+    isRoutingHandoff ||
+    (!!subAgentName && !hasMarkdownTable);
+
+  if (isProcessMessage && hideToolCalls) {
     return null;
   }
+
+  // ── 拍完照那張隱患卡(2026-09-18 FINDING-001)掛在**本輪最後一條**調度中樞回答上方 ──
+  // 本輪 = 上一條 human 消息到這裏;照片編號從那條 human 消息裏抠(後端拼進去的
+  // `(照片编号:…)`,與 human.tsx 的 refPattern 同一個判據)。「最後一條」的判據:往後
+  // 到下一條 human 之前,沒有別的**非過程** AI 消息 —— 否則同一輪會渲出兩張卡。
+  const turnPhotoIds = (() => {
+    if (message?.type !== "ai" || isProcessMessage) return [] as string[];
+    const idx = thread.messages.findIndex((m) => m.id === message.id);
+    for (let i = idx - 1; i >= 0; i--) {
+      const m = thread.messages[i];
+      if (m.type === "human") return photoIdsInText(getContentString(m.content ?? []));
+    }
+    return [] as string[];
+  })();
+  const isLastAnswerOfTurn = (() => {
+    if (turnPhotoIds.length === 0 || !message) return false;
+    const idx = thread.messages.findIndex((m) => m.id === message.id);
+    for (let i = idx + 1; i < thread.messages.length; i++) {
+      const m = thread.messages[i];
+      if (m.type === "human") break;
+      if (m.type !== "ai") continue;
+      const named = "name" in m && m.name && m.name !== "supervisor";
+      const text = getContentString(m.content ?? []).trim();
+      const routing = ("tool_calls" in m ? (m.tool_calls ?? []) : []).some((tc) =>
+        /^transfer_to_/.test(tc.name ?? ""),
+      );
+      if (!named && !routing && !/^Transferring back to /.test(text)) return false;
+    }
+    return true;
+  })();
 
   return (
     <div className="group mr-auto flex w-full items-start gap-2">
@@ -321,6 +378,7 @@ export function AssistantMessage({
                 </Trace>
               ) : (
                 <div className="py-1">
+                  {isLastAnswerOfTurn && <HazardResultCard photoIds={turnPhotoIds} lang={lang} />}
                   <MarkdownText>{displayString}</MarkdownText>
                 </div>
               ))}

@@ -61,7 +61,7 @@ import 语句钉死了这两条。
     ``documents.py``。搬过来是因为 W10 的详情端点也要念这两个词,留在那儿
     它就成了第三份。顺带把 ``NO_VALUE``(那个「—」)一起搬了:``result_zh``
     离了它就得再抄一遍「—」,而抄一遍正是这次要消灭的东西。
-  · 筛子四词、超期判定、``hazard_item()`` 的对外形状 —— 原在 ``tools.py``,
+  · 筛子五词(2026-09-18 加「待复查」)、超期判定、``hazard_item()`` 的对外形状 —— 原在 ``tools.py``,
     改成公开名搬过来。tools.py 的 ``SCOPE_*`` / ``SCOPES`` 仍然转出去
     (它的 ``__all__`` 里有,老调用点不必改),真相在这里。
 
@@ -84,7 +84,7 @@ resuming)、``hazard_item`` 的键集合一个字节都没动 —— 改判据�
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Final
 
 # 期限的展示形态与 schedule 同源:「8月20日(周四)」这种带星期字的说法**只有**
@@ -165,11 +165,24 @@ if _MISSING_RESULT_ZH:  # pragma: no cover —— 配齐了就到不了这里
 
 SCOPE_ACTIVE: Final[str] = "在办"
 SCOPE_PENDING: Final[str] = "待确认"
+SCOPE_REINSPECT: Final[str] = "待复查"
 SCOPE_OVERDUE: Final[str] = "超期"
 SCOPE_ALL: Final[str] = "全部"
 
-SCOPES: Final[tuple[str, ...]] = (SCOPE_ACTIVE, SCOPE_PENDING, SCOPE_OVERDUE, SCOPE_ALL)
-"""隐患清单的筛子,**只认这四个词**(默认「在办」)。
+SCOPES: Final[tuple[str, ...]] = (
+    SCOPE_ACTIVE,
+    SCOPE_PENDING,
+    SCOPE_REINSPECT,
+    SCOPE_OVERDUE,
+    SCOPE_ALL,
+)
+"""隐患清单的筛子,**只认这五个词**(默认「在办」)。顺序 = 一条隐患走过的先后
+(待确认 → 待复查 → 超期),前端 ``HAZARD_SCOPES`` 逐字镜像、按同一顺序摆按钮。
+
+「待复查」是 2026-09-18 按用户反馈加的第五档:「整改完后的过程应该另有一个待复查清单,
+不和待确认混在一起」。两张清单上的人要做的事完全不同 —— 待确认是「看照片判是不是隐患」,
+待复查是「拿整改后的照片下合格/不合格结论」;混在「在办」里,监理翻一屏才找得到
+今天该去复查哪几条。
 
 刻意做成受控词表而不是自由文本:模型自己发明筛子(「严重的」「这周的」)时,
 静默按"全部"处理会让监理以为清单就这么多。词表外一律回一句人话让它换个词。
@@ -181,19 +194,31 @@ SCOPES: Final[tuple[str, ...]] = (SCOPE_ACTIVE, SCOPE_PENDING, SCOPE_OVERDUE, SC
 CLOSED_STATUSES: Final[tuple[str, ...]] = (db.STATUS_CLOSED, db.STATUS_ESCALATED)
 """「在办」要排除的两档 —— 状态机里的两个终点(``ALLOWED_TRANSITIONS`` 里出口是空集)。"""
 
-OVERDUE_STATUSES: Final[tuple[str, ...]] = (
+REINSPECT_STATUSES: Final[tuple[str, ...]] = (
     db.STATUS_NOTIFIED,
     db.STATUS_SUSPENDED,
     db.STATUS_REINSPECT_FAILED,
 )
-"""哪些状态才可能"超期"= **已经下过整改期限、现场还没改好**的三档。
+"""「待复查」= **已经下过整改期限、等监理去现场复查**的三档(含复查过一次不合格的)。
 
 三处不显然的排除,每一处都对应一条定案:
   · ``pending`` —— D17:自动登记的还没人确认,不算进整改率、不进超期清单;
-  · ``needs_grading=1`` —— Codex#11:没定级的隐患任何签发都被硬拒,催它没有意义
-    (判据写在 ``is_overdue`` 里,不在这张表);
-  · ``resuming`` —— 复查已经合格了,只是在等《复工令》。把它算成超期 = 拿"我们自己
-    还没签复工令"去指控施工方拒不整改。
+  · ``open`` —— 还没签文书、没下期限,施工方还不知道要改,谈不上复查;
+  · ``resuming`` —— 复查**已经合格**了,只是在等《复工令》。再列进待复查会让人
+    再去复查一次;算成超期更糟 = 拿"我们自己还没签复工令"去指控施工方拒不整改。
+"""
+
+OVERDUE_STATUSES: Final[tuple[str, ...]] = REINSPECT_STATUSES
+"""哪些状态才可能"超期"= 待复查那三档,**一个字不差**。
+
+这不是本仓反复警告的那种「今天碰巧相等、别合并」(``REASSIGNABLE_STATUSES`` vs
+``GRADABLE_STATUSES``)—— 它是**定义**:超期 = 待复查 ∧ 期限已过。一条隐患只有在
+等复查的时候才谈得上「过了期限还没改好」,所以超期清单永远是待复查清单的子集
+(``test_supervision_scoping.py`` 钉着这层包含关系)。哪天两张表真要分开,先回答
+「哪一档能超期却不用复查」—— 答不上来就别分。
+
+``needs_grading=1`` 的排除(Codex#11:没定级的隐患任何签发都被硬拒,催它没有意义)
+写在 ``is_overdue`` 里,不在这张表。
 """
 
 
@@ -216,6 +241,27 @@ def today_hk() -> date:
 def due_display(due_date: str | None) -> str | None:
     """ISO 期限 → 「8月20日(周四)」。没定期限就是 None(不是空串,少一种"看着像有"的形态)。"""
     return format_display(date.fromisoformat(due_date)) if due_date else None
+
+
+def due_defaults(today: date, *, normal_days: int, severe_days: int) -> dict[str, str]:
+    """签发文书时**按级别预填**的整改期限:``{级别: ISO 日期}``,两档都给。
+
+    2026-09-18 用户反馈的两句话合成这一件:「期限最好是选日期的形式而不是自己填,
+    不然格式不一致后面很难统计」+「思考下如何减少人工填报」。做法是清单端点把
+    这两个日期给前端,日期框里预填上,监理不改就直接签。
+
+    · 天数是 ``config.py`` 的两个旋钮,**由端点传进来** —— 本模块的 import 白名单里
+      没有 config,而且纯函数一眼能测;
+    · 用 ``today`` 参数而不是在里面调 ``today_hk()``:与清单里的 ``today`` 同一个快照,
+      跨过午夜那一秒两个数才不会各说各话;
+    · 返回 ISO 串而不是 ``date``:前端把它**原样**塞进 ``due_phrase`` 送回来,
+      ``dates.py`` 的 ISO 分支认的就是这种写法(它只拒过去的日期,所以 0 天合法)。
+      前端因此**一行日期换算都不用写**,天数也不用镜像。
+    """
+    return {
+        db.GRADE_NORMAL: (today + timedelta(days=normal_days)).isoformat(),
+        db.GRADE_SEVERE: (today + timedelta(days=severe_days)).isoformat(),
+    }
 
 
 def result_zh(result: str | None) -> str:
@@ -246,7 +292,7 @@ def is_overdue(row: db.HazardRow, today_iso: str) -> bool:
 
 
 def in_scope(row: db.HazardRow, *, scope: str, today_iso: str) -> bool:
-    """受控筛子。四个词各自的判据都在这一处,别散到调用点去。
+    """受控筛子。五个词各自的判据都在这一处,别散到调用点去。
 
     ⚠️ 不认识的 scope **落在「在办」这一档**(函数末尾那条 return)。所以调用方
     **必须先拿 ``SCOPES`` 把野词拦掉**,别指望这里替你报错 —— 静默按「在办」筛
@@ -256,6 +302,9 @@ def in_scope(row: db.HazardRow, *, scope: str, today_iso: str) -> bool:
         return True
     if scope == SCOPE_PENDING:
         return row.status == db.STATUS_PENDING
+    if scope == SCOPE_REINSPECT:
+        # 按状态筛、**不看日期**:期限没到监理提前去看是常事。按日期筛的是「超期」。
+        return row.status in REINSPECT_STATUSES
     if scope == SCOPE_OVERDUE:
         return is_overdue(row, today_iso)
     return row.status not in CLOSED_STATUSES  # SCOPE_ACTIVE
@@ -290,12 +339,15 @@ __all__ = [
     "NO_VALUE",
     "OVERDUE_STATUSES",
     "RESULT_ZH",
+    "REINSPECT_STATUSES",
     "SCOPES",
     "SCOPE_ACTIVE",
     "SCOPE_ALL",
     "SCOPE_OVERDUE",
+    "SCOPE_REINSPECT",
     "SCOPE_PENDING",
     "STATUS_ZH",
+    "due_defaults",
     "due_display",
     "hazard_item",
     "in_scope",

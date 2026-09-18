@@ -121,13 +121,16 @@ export function supervisionUrl(apiBase: string, endpoint: SupervisionEndpoint): 
  */
 export function hazardListUrl(
   apiBase: string,
-  opts: { scope?: string; projectId?: string | null } = {},
+  opts: { scope?: string; projectId?: string | null; photoIds?: readonly string[] } = {},
 ): string {
   const params = new URLSearchParams();
   const scope = (opts.scope ?? "").trim();
   if (scope) params.set("scope", scope);
   // 🔴 三态就靠这一行:只有 undefined / null 才「不写这个键」,空串必须写成有键无值。
   if (opts.projectId != null) params.set("project_id", opts.projectId);
+  // 按**照片**看(2026-09-18 FINDING-001,拍完照那張隱患卡):逗號拼、後端按「全部」算。
+  // 空數組 = 不寫這個鍵 —— `photo_id=` 空串後端會 400。
+  if (opts.photoIds && opts.photoIds.length > 0) params.set("photo_id", opts.photoIds.join(","));
   const query = params.toString();
   const base = `${stripTrailingSlash(apiBase)}/supervision/hazards`;
   return query ? `${base}?${query}` : base;
@@ -243,11 +246,19 @@ export type HazardGrade = (typeof HAZARD_GRADES)[number];
  */
 export const HAZARD_SCOPE_ACTIVE = "在办";
 export const HAZARD_SCOPE_PENDING = "待确认";
+/**
+ * 2026-09-18 加的第五档(用户反馈:「整改完后的过程应该另有一个待复查清单,不和待确认
+ * 混在一起」)。后端 `scoping.REINSPECT_STATUSES` = notified / suspended / reinspect_failed,
+ * 与 `reinspectableHazards()` 筛出来的是同一批 —— 那一格共用照片要不要出现、这一档清单
+ * 列哪些,判据同源。
+ */
+export const HAZARD_SCOPE_REINSPECT = "待复查";
 export const HAZARD_SCOPE_OVERDUE = "超期";
 export const HAZARD_SCOPE_ALL = "全部";
 export const HAZARD_SCOPES = [
   HAZARD_SCOPE_ACTIVE,
   HAZARD_SCOPE_PENDING,
+  HAZARD_SCOPE_REINSPECT,
   HAZARD_SCOPE_OVERDUE,
   HAZARD_SCOPE_ALL,
 ] as const;
@@ -302,33 +313,19 @@ export function isDownloadableDoc(doc: Pick<SupervisionDoc, "doc_type">): boolea
 export class SupervisionContractError extends Error {}
 
 /**
- * 整改期限的例句。🔴 **必须留简体 —— 它不是「字」是「值」。**
- *
- * 它是给人**照抄进输入框**的原话,抄完那一格原话原样送后端,由
- * `agents/schedule/dates.py` 解析;而那边的正则从头到尾只认简体:
- *     _NEXT_WEEKS_RE   = (下下周|下周)([一二三四五六日天1-7])
- *     _DAYS_RE         = (.+)天[后内]
- *     _BARE_WEEKDAY_RE = (?:周|星期|礼拜)([一二三四五六日天1-7])
- * 后端也没有任何繁→简归一化(全仓 grep 过)。
- *
- * 转成「下週三」的症状不是静默,是**更糟的一种可见错**:监理照着屏幕上的例句
- * 打进去,被回一句「这个日期我算不准」—— 而他刚刚照着系统教的写法写的,
- * 屏幕上没有任何线索说该换成哪一种写法,只会反复试、反复被拒。
- *
- * 与 supervision.tsx 的 `DUE_PHRASE_EXAMPLES` / `DUE_PHRASE_SAMPLE` 是**同一条约束**
- * (那两处是输入框上方的例句与 placeholder,这一处是「期限没填」时的报错)。
- * 拆成独立常量而不是把整句登记进豁免表:那样整句都不再受「默认繁體」守卫管,
- * 下次有人改这句措辞时漏转繁體不会有人发现 —— 现在只有例句这一小截豁免。
- *
- * ✅ **2026-08-18 后端补上了繁→简归一化**(`dates.py` 的 `_strip_noise()` 第一行),
- * 所以这一句已经可以是繁體了 —— 「下週三」现在与「下周三」解析结果完全一致。
- *
- * 🔴 约束本身没消失,只是判据变了:它仍然是**让人照抄的原话**,
- * 加新写法前必须先确认后端认得。已知仍不认的是「下星期三」「下禮拜三」——
- * 那是**词表缺口不是简繁缺口**(简体的「下星期三」一样被拒)。
- * 完整说明在 supervision.tsx 的 `DUE_PHRASE_EXAMPLES` 头注。
+ * 整改期限那一格 2026-09-18 起是**日期框**(用户反馈:「期限最好是选择日期的形式而不是
+ * 由他们自己填,不然格式不一致后面很难统计和展示」)。日期框的值天然是 `YYYY-MM-DD`,
+ * 后端 `dates.py` 的 ISO 分支原样认,所以前端仍然**一行日期换算都不写**,只是不再需要
+ * 那张「让人照抄的例句表」(`DUE_PHRASE_EXAMPLES`,已删;它当年存在的全部理由是
+ * 自由文本框里人不知道该怎么写)。后端的 `due_phrase` 字段名与中文短语解析都留着 ——
+ * 对话链、老前端、curl 都还能发「下周三」,只是面板不再让人打字。
  */
-const DUE_PHRASE_EXAMPLES = "「明天」「3天后」「下週三」「月底」";
+
+/** 关掉理由的最短字数,**镜像后端 `supervision_api._DISMISS_REASON_MIN_LEN`**。
+ * 漂了的表现不算静默(后端会回 400,那句人话原样上屏),但会让人以为是自己按错了。
+ * 2026-09-18 起提示文案裏直接念這個數(「至少 4 個字」):真人填了「已整改」被攔,
+ * 而提示沒說門檻在哪 —— 他看到的是「點不動」。所以它必須聲明在 SUPERVISION_MESSAGES 之前。 */
+export const DISMISS_REASON_MIN_LEN = 4;
 
 /**
  * 前端这份固定文案。后端 Envelope 的 `user_msg` 到了前端**原样透传**,
@@ -345,13 +342,13 @@ export const SUPERVISION_MESSAGES = Object.freeze({
   serverError: "服務器出錯了,稍等再試;一直這樣就找管理員。",
   badEnvelope:
     "服務器返回的內容格式不對。文書可能已經出了,先別重複點 —— 找管理員查一下台賬。",
-  missingDue: `得寫明整改期限(比如${DUE_PHRASE_EXAMPLES})。`,
+  missingDue: "得選一個整改期限(日期)。沒有期限的隱患不會進超期清單,也就永遠沒人來催。",
   badPhotoId: "複查照片編號不對:要 32 位的編號(在聊天記錄裏那張照片下面能看到)。",
   badGrade: "級別只能選「一般」或「嚴重」。",
   noSelection: "先勾選要確認的隱患。",
   // 2026-08-21:不出文书关掉时要写的原因。措辞给两个真实例子 ——
   // 只说「要写原因」的话人会写「不用了」,而那句话事后什么都回答不了。
-  missingReason: "關掉之前要寫清為什麼(比如「白色安全帽,現場核過」「已當場整改」)。這句話會留在台賬裏。",
+  missingReason: `關掉的原因至少 ${DISMISS_REASON_MIN_LEN} 個字,寫清為什麼(比如「白色安全帽,現場核過」「已當場整改,現場核過」)。這句話會留在台賬裏。`,
   // 2026-08-22:改期限时要写的原因。**同样带真实例子**,理由与上面那句一字不差。
   // 这一句还多一层:改期是可以被反复用的动作,一屏「順延」什麼都回答不了,
   // 而「這條被展了幾次期」正是事后最该问的那个问题。
@@ -490,6 +487,19 @@ export interface HazardBrief {
    * 「整改后」的证据,而那条红线的全部意义就是事后追责时分得清这两张。
    */
   photo_id?: string;
+  /**
+   * 真停过工没有(2026-09-18,给步骤条用)。**它是「要不要画复工令那一格」的凭据**,
+   * 与后端判「复查合格后必须先出复工令」(Codex#6)用的同一个旗子。
+   * `grade === 严重` 只说明"将会停工";签发之后级别不能再改,但只有这个旗子证明"真停过"。
+   * 老路(工具返回)没有它 —— 那时步骤条退回按级别推。
+   */
+  was_suspended?: boolean;
+  /**
+   * 不出文书关掉时写的理由(只有 `dismiss` 会写;`null` = 这条不是那么关掉的)。
+   * 步骤条靠它分辨 closed 的两条进路:复查合格销项 vs 识错了关掉 —— 后者只画
+   * 「確認 → 關掉」,**不许把签发/复查全打勾**(那是给一条不存在的隐患编证据链)。
+   */
+  closed_reason?: string | null;
 }
 
 /**
@@ -570,6 +580,10 @@ function toHazardBrief(entry: unknown): HazardBrief | null {
     // 塞个半截串进去只会得到一个破图框(而破图与「这条本来就没照片」在屏幕上
     // 长得一样,那正是本仓反复防的那类)。判据与 isPhotoId 同一个正则。
     ...(isPhotoId(textOf(rec, "photo_id")) ? { photo_id: textOf(rec, "photo_id") } : {}),
+    // 步骤条要的两个键(2026-09-18)。was_suspended 只认真布尔 —— 库里是 0/1,
+    // 后端负责转;真漏转了这里当成没有,**不许把 1 当 true**(同 overdue 那条规矩)。
+    ...(typeof rec.was_suspended === "boolean" ? { was_suspended: rec.was_suspended } : {}),
+    ...("closed_reason" in rec ? { closed_reason: nullableTextOf(rec, "closed_reason") } : {}),
   };
 }
 
@@ -721,6 +735,28 @@ export const ACTION_ENDPOINT: Readonly<Record<DisposalAction, SupervisionEndpoin
     reassign: "reassign",
   });
 
+/** 签发那两颗按钮共用的字(理由见 `ACTION_LABEL` 里 notice 那条)。 */
+export const ISSUE_LABEL = "簽發處置文書";
+
+/** 「会发一张纸出去」的两颗:文书种类由级别带出,按钮上不让人选。 */
+export const ISSUE_ACTIONS: ReadonlySet<DisposalAction> = new Set<DisposalAction>([
+  "notice",
+  "suspend",
+]);
+
+/**
+ * 这个级别签发时**会带出哪几份文书**(`DOC_TYPE_ZH` 的键,顺序 = 后端产出顺序)。
+ *
+ * 镜像 supervision_api 的两条路:`_work_notice` 一份;`_work_suspend` 三份原子产出
+ * (通知单 → 暂停令 → 致建设单位报告)。级别认不出 = 一份都不承诺(空数组),
+ * 别退到「一般」—— 那等于替人定了级。
+ */
+export function issuedDocTypes(grade: string): readonly string[] {
+  if (grade === GRADE_NORMAL) return ["notice"];
+  if (grade === GRADE_SEVERE) return ["notice", "suspension", "owner_report"];
+  return [];
+}
+
 /**
  * 按钮上的字。用「签发」而不是「生成」—— 这几份是要拿去签字盖章的法律文书。
  *
@@ -730,8 +766,14 @@ export const ACTION_ENDPOINT: Readonly<Record<DisposalAction, SupervisionEndpoin
  */
 export const ACTION_LABEL: Readonly<Record<DisposalAction, string>> = Object.freeze({
   grade: "人工定級",
-  notice: "簽發監理通知單",
-  suspend: "簽發暫停令(三份)",
+  // 🔴 通知单与暂停令**同一句字**(2026-09-18 用户反馈:「出监理通知单和工程暂停令
+  //    应该是根据事件等级自动带出的」)。逻辑上它们本来就是带出的 —— `availableActions`
+  //    对一般只给 notice、对严重只给 suspend,后端还有硬拦①② —— 但两颗按钮字不一样,
+  //    监理扫过一屏看到两种按钮,读成「要我选」。现在按钮统一,**带出哪几份写在按钮
+  //    下面那一行**(`issuedDocTypes`),暂停令那条路照旧要过二次确认(那句话里
+  //    仍然写明「三份」「停工」)。
+  notice: ISSUE_LABEL,
+  suspend: ISSUE_LABEL,
   reinspect: "登記複查結論",
   resume: "簽發工程復工令",
   escalate: "上報主管部門",
@@ -845,11 +887,35 @@ export function availableActions(hazard: HazardBrief): DisposalAction[] {
  * 要不要填整改期限(`due_phrase` 收用户原话,换算全在后端 dates.py)。
  *
  * `extend`(2026-08-22)当然也要 —— 它整个动作就是「换一个期限」。
- * 三处共用同一件后端换算(`_resolve_due`),所以界面上能写的说法**完全一样**,
- * 监理不用记两套(`DUE_PHRASE_EXAMPLES` 那张例句表因此也不用分叉)。
+ * 三处共用同一件后端换算(`_resolve_due`),日期框送的 ISO 串三处都认。
  */
 export function actionNeedsDuePhrase(action: DisposalAction): boolean {
   return action === "notice" || action === "suspend" || action === "extend";
+}
+
+/**
+ * 这一行**日期框里显示的**、也是**请求里发的**那个期限(2026-09-18)。
+ *
+ * 判据:人改过就用人改的;没改过,签发(notice / suspend)用后端按级别预填的那个
+ * (`HazardListResult.dueDefaults`);`extend` **不预填** —— 它整个动作就是「换一个期限」,
+ * 预填成默认值等于替监理决定展到哪天,而改期是要写理由、事后并排看的动作。
+ *
+ * 🔴 三处调用(行内日期框的 `value`、举手时的校验、真发请求)**必须都走这一个函数**。
+ *    各算一遍的下场是「屏幕上写着 8/27、发出去的是空串」,后端回一句「得写明期限」,
+ *    而那一格明明填着日期 —— 监理会以为是自己按错了。
+ *
+ * 没有默认值(老后端 / 级别认不出)就是空串,让 `actionBody` 的必填校验说话,不编日期。
+ */
+export function effectiveDuePhrase(input: {
+  typed: string;
+  action: DisposalAction;
+  grade: string;
+  dueDefaults: Readonly<Record<string, string>>;
+}): string {
+  const typed = input.typed.trim();
+  if (typed) return typed;
+  if (!ISSUE_ACTIONS.has(input.action)) return "";
+  return input.dueDefaults[input.grade] ?? "";
 }
 
 /**
@@ -885,6 +951,49 @@ export function actionNeedsProject(action: DisposalAction): boolean {
 /** 要不要挂复查照片(方案 §5.2 红线:拿不到照片就没有任何路径能改成 closed)。 */
 export function actionNeedsPhoto(action: DisposalAction): boolean {
   return action === "reinspect";
+}
+
+// ---------------------------------------------------------------------------
+// 動作優先(2026-09-18 設計審查 FINDING-003)
+// ---------------------------------------------------------------------------
+
+/**
+ * 一條隱患的**主按鈕**:= 步驟條上的當前步。pending 是「確認」(走批量端點、只帶這一條);
+ * 其餘是 `availableActions` 的第一顆 —— 那張表本來就是「主要動作在前」排的,所以
+ * open 未定級時主按鈕是定級(硬攔③:任何簽發都會被服務端拒),定過級才是簽發;
+ * 走完流程的是 null。
+ *
+ * 為什麼要有這一層:在此之前處置區把**所有可用動作的輸入框一次全擺出來**
+ * (`needsDue = actions.some(...)`),一條 open 的隱患點開就是日期框 + 關掉的原因 +
+ * 挪工地下拉 + 五顆按鈕 —— 人還沒說要幹什麼,先看到三件事要填。用戶反饋原話:
+ * 「太繁瑣、UI 不明確」。現在一條只露一顆主按鈕 + 「更多 ▾」,點了哪個才展開哪一格。
+ */
+export type PrimaryAction = DisposalAction | "confirm";
+
+export function primaryAction(hazard: HazardBrief): PrimaryAction | null {
+  if (hazard.status === "pending") return "confirm";
+  return availableActions(hazard)[0] ?? null;
+}
+
+/** 「更多 ▾」裏的那幾顆 = 可用動作減去主按鈕,順序不變,**一個都不丟**(功能不減)。 */
+export function secondaryActions(hazard: HazardBrief): DisposalAction[] {
+  const primary = primaryAction(hazard);
+  return availableActions(hazard).filter((a) => a !== primary);
+}
+
+/** 選了這個動作之後,那一格要露出哪幾個輸入。與四個 `actionNeeds*` 同源,只是換成一次拿全。 */
+export function actionFields(action: DisposalAction): {
+  due: boolean;
+  reason: boolean;
+  photo: boolean;
+  project: boolean;
+} {
+  return {
+    due: actionNeedsDuePhrase(action),
+    reason: actionNeedsReason(action),
+    photo: actionNeedsPhoto(action),
+    project: actionNeedsProject(action),
+  };
 }
 
 /**
@@ -1029,9 +1138,9 @@ export function confirmBatchPrompt(count: number): string {
  */
 export const SIGNER_NAME_STORAGE_KEY = "gyt:supervision:signer-name";
 
-/** 关掉理由的最短字数,**镜像后端 `supervision_api._DISMISS_REASON_MIN_LEN`**。
- * 漂了的表现不算静默(后端会回 400,那句人话原样上屏),但会让人以为是自己按错了。 */
-export const DISMISS_REASON_MIN_LEN = 4;
+// `DISMISS_REASON_MIN_LEN` 搬到文件前面(SUPERVISION_MESSAGES 之前)——
+// 那句「原因至少 N 個字」的提示要引用它,而 const 在模塊頂層有 TDZ,聲明在後面會在
+// 加載那一刻就 ReferenceError。定義見 `SUPERVISION_MESSAGES` 上方。
 
 /**
  * 改期理由的最短字数,**镜像后端 `supervision_api._DUE_REASON_MIN_LEN`**(2026-08-22)。
@@ -1454,8 +1563,29 @@ export interface HazardListResult {
    * 而监理据此说「就剩这些了」—— 少掉的那些一条都不会有任何提示。
    */
   truncated: boolean;
+  /**
+   * 签发时按级别预填的整改期限:`{级别: "YYYY-MM-DD"}`(2026-09-18)。后端按工地日历日
+   * 算好给的,前端塞进日期框、监理不改就原样当 `due_phrase` 送回 —— 所以这里
+   * **一行日期换算都没有**,天数(一般 7 / 严重 1)也不镜像,只在 `config.py` 有一份。
+   * 老后端没这个键 = 空表,日期框空着、必填校验说话,不编日期。
+   */
+  dueDefaults: Readonly<Record<string, string>>;
   /** 后端写好的人话,原样透传(不重新包装)。 */
   userMsg: string;
+}
+
+/** 后端给的默认期限只认 ISO 日期串;别的形态(「明天」/ 数字)一律丢,不猜。 */
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function dueDefaultsOf(rec: Record<string, unknown>): Readonly<Record<string, string>> {
+  const raw = asRecord(rec.due_defaults);
+  if (!raw) return {};
+  const out: Record<string, string> = {};
+  for (const [grade, value] of Object.entries(raw)) {
+    // 一档畸形只丢那一档:一档坏了不该连累另一档预填不出来
+    if (typeof value === "string" && ISO_DATE_PATTERN.test(value)) out[grade] = value;
+  }
+  return out;
 }
 
 /** 数一个计数字段;不是有限的非负数就用兜底值(**不编数**)。 */
@@ -1483,6 +1613,7 @@ function unreadableList(userMsg: string): HazardListResult {
     overdue: 0,
     unassigned: 0,
     truncated: false,
+    dueDefaults: {},
     userMsg,
   };
 }
@@ -1527,6 +1658,7 @@ export function parseHazardListEnvelope(bodyText: string): HazardListResult {
     overdue: countOf(data, "overdue", 0),
     unassigned: countOf(data, "unassigned", 0),
     truncated: data.truncated === true,
+    dueDefaults: dueDefaultsOf(data),
     userMsg,
   };
 }
@@ -2356,4 +2488,180 @@ export function describeSharedPhotoCoverage(count: number): string {
   // 1 条时不说「都」——「都」在中文里预设了复数,一条时读起来像界面算错了。
   if (count === 1) return "下面這 1 條隱患的複查結論用這張。";
   return `下面 ${count} 條隱患的複查結論都用這張。`;
+}
+
+// ---------------------------------------------------------------------------
+// 每条隐患下面的步骤条(2026-09-18 用户反馈:「处置流程要有逻辑地体现在每个事件下面」)
+// ---------------------------------------------------------------------------
+
+export type StepState = "done" | "current" | "todo";
+
+export interface DisposalStep {
+  /** 稳定的键,渲染当 key、测试当锚;不上屏。 */
+  key: "confirm" | "grade" | "issue" | "rectify" | "resume" | "close" | "escalate" | "dismiss";
+  /** 上屏的字。源码里就是繁體(界面恒繁體);它**不含**后端来的字。 */
+  label: string;
+  state: StepState;
+  /**
+   * 一小截备注(级别 / 期限 / 关掉的理由 / 带出哪种文书)。**可能含后端原值**
+   * (简体的级别名、`due_display`、`closed_reason`),渲染处要过一道 `useHantUI` ——
+   * 与 `confirmText` 同一条规矩:整句转,不只转其中一半。
+   */
+  note?: string;
+}
+
+/**
+ * 一条隐患**走到哪一步了**,按状态机(`db/hazards.py` 的 ASCII 图)画成一条线。
+ *
+ * 判据全在这一个纯函数里,渲染层只管把 done / current / todo 画成三种样子。
+ * 三条红线,每条对应一种「画错比不画更坏」:
+ *
+ *   · **未定级时不按默认档画路。** `needs_grading=1` 时 `grade` 是映射表给的默认档
+ *     (`currentGrade` 那条红线),按它画就会给一条其实很严重的隐患画一条没有复工令的路。
+ *   · **不出文书关掉的只画「確認 → 關掉」。** closed 有两条进路(复查合格 / dismiss),
+ *     只有 dismiss 写 `closed_reason`;把签发、复查全打勾,等于给一条识错了的"隐患"
+ *     编一整条证据链,而这条线就长在证据链的展开口上面。
+ *   · **认不出的状态一格都不画。** 状态机加了档而这里没跟上,宁可空着 —— 空着人会问,
+ *     画错人会信。
+ *
+ * 复工令那一格出不出:`was_suspended`(后端给的、真停过的凭据)**或**已判级别是严重
+ * (还没签、将会停工)。前者是事实,后者是路线 —— 老路(工具返回)没有前者时退到后者。
+ * 上报那条路(escalated)是从复查不合格分出去的终点,复工令没发生过,所以那一档不画它。
+ */
+export function disposalSteps(h: HazardBrief): DisposalStep[] {
+  const status = h.status;
+  if (!(HAZARD_STATUSES as readonly string[]).includes(status)) return [];
+
+  // 不出文书关掉的:两格,全 done。
+  if (status === "closed" && typeof h.closed_reason === "string" && h.closed_reason !== "") {
+    return [
+      { key: "confirm", label: "確認是隱患", state: "done" },
+      { key: "dismiss", label: "關掉(不出文書)", state: "done", note: h.closed_reason },
+    ];
+  }
+
+  const graded = currentGrade(h);
+  const isPending = status === "pending";
+  const isOpen = status === "open";
+  const issued = !isPending && !isOpen; // notified / suspended / reinspect_failed / resuming / closed / escalated
+  const rectifying = status === "notified" || status === "suspended" || status === "reinspect_failed";
+  const stopsWork = h.was_suspended === true || graded === GRADE_SEVERE;
+
+  const steps: DisposalStep[] = [
+    { key: "confirm", label: "確認是隱患", state: isPending ? "current" : "done" },
+    {
+      key: "grade",
+      label: "定級",
+      // pending 时永远是 todo(先确认再定级);open 时看有没有人判过。
+      state: isPending ? "todo" : graded === null ? "current" : "done",
+      ...(graded !== null ? { note: graded } : {}),
+    },
+    {
+      key: "issue",
+      label: "簽發文書",
+      state: issued ? "done" : isOpen && graded !== null ? "current" : "todo",
+      // 带出哪种:一般一份通知单、严重三份;没定级不承诺
+      ...(graded === GRADE_NORMAL
+        ? { note: "監理通知單" }
+        : graded === GRADE_SEVERE
+          ? { note: "暫停令等三份" }
+          : {}),
+    },
+    {
+      key: "rectify",
+      label: "整改・複查",
+      state: rectifying ? "current" : issued ? "done" : "todo",
+      ...rectifyNote(h),
+    },
+  ];
+  if (status === "escalated") {
+    steps.push({ key: "escalate", label: "上報主管部門", state: "done" });
+    return steps;
+  }
+  if (stopsWork) {
+    steps.push({
+      key: "resume",
+      label: "簽發復工令",
+      state: status === "resuming" ? "current" : status === "closed" ? "done" : "todo",
+    });
+  }
+  steps.push({ key: "close", label: "銷項", state: status === "closed" ? "done" : "todo" });
+  return steps;
+}
+
+/** 整改・複查那一格的备注:期限 / 已超期 / 上次复查不合格。老路没有期限字段时干脆没备注。 */
+function rectifyNote(h: HazardBrief): { note?: string } {
+  const parts: string[] = [];
+  if (h.status === "reinspect_failed") parts.push("上次複查不合格");
+  if (h.due_display) parts.push(h.overdue ? `已超期(期限 ${h.due_display})` : `期限 ${h.due_display}`);
+  else if (h.overdue) parts.push("已超期");
+  return parts.length ? { note: parts.join("・") } : {};
+}
+
+// ---------------------------------------------------------------------------
+// 拍完照的隱患卡(2026-09-18 設計審查 FINDING-001)
+// ---------------------------------------------------------------------------
+
+/**
+ * 從用戶消息裏抠出照片編號。認的是後端 `core/uploads.py` 拼進消息的那一段
+ * `(照片编号:a、b)`(頓號分隔、半角或全角括號),與 human.tsx 的 `refPattern` 同一個判據。
+ * 圖紙編號**不算**(那是 cad 的事)。去重、保持出現順序。
+ *
+ * 這是隱患卡的**唯一數據入口**:supervisor 的 `output_mode="last_message"` 把子 Agent 的
+ * 工具返回整個丟掉(CLAUDE.md 記着那張 HazardIntakeCard 一次都沒渲染出來過),
+ * 而用戶消息裏的編號是穩的 —— 卡拿它直查台賬。
+ */
+export function photoIdsInText(text: string): string[] {
+  const re = /[(（]照片编号[:：]\s*([0-9a-f]{32}(?:、[0-9a-f]{32})*)[)）]/g;
+  const out: string[] = [];
+  for (const m of text.matchAll(re)) {
+    for (const id of m[1].split("、")) if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** 客戶端再按 photo_id 篩一遍 —— 老後端不認 `?photo_id` 時會把整張台賬回來,不能照單全收。 */
+export function hazardsForPhotos(
+  list: readonly HazardBrief[],
+  photoIds: readonly string[],
+): HazardBrief[] {
+  if (photoIds.length === 0) return [];
+  return list.filter((h) => !!h.photo_id && photoIds.includes(h.photo_id));
+}
+
+/**
+ * 卡上「去監理處置 →」與動作條上那顆入口按鈕之間的約定:卡 dispatch 這個 DOM 事件,
+ * SupervisionEntry 收到就把面板打開。用事件而不是把 open 狀態提到頂層:兩件東西
+ * 各在對話流裏一個、動作條裏一個,中間隔着上游的 thread-index,提狀態要穿三層。
+ */
+export const OPEN_SUPERVISION_EVENT = "gyt:open-supervision";
+
+export function requestOpenSupervision(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(OPEN_SUPERVISION_EVENT));
+}
+
+/**
+ * 一條線程裏**用戶消息**帶過的全部照片編號(監理面板「本次對話」模式的篩子)。
+ * 只看 human:AI 複述編號不算(它可能在講別的線程的事)。content 是字符串(後端改寫過的
+ * 歷史消息)或文本塊數組(剛發出去那一瞬間)都認;去重、按出現順序。
+ * 參數收最小形狀,不 import SDK 類型 —— 本文件要保持零依賴(測試包直接 import 它)。
+ */
+export function threadPhotoIds(
+  messages: ReadonlyArray<{ type?: unknown; content?: unknown }>,
+): string[] {
+  const out: string[] = [];
+  for (const m of messages) {
+    if (m.type !== "human") continue;
+    const text =
+      typeof m.content === "string"
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content
+              .map((b) => (b && typeof b === "object" && typeof (b as { text?: unknown }).text === "string" ? (b as { text: string }).text : ""))
+              .join("\n")
+          : "";
+    for (const id of photoIdsInText(text)) if (!out.includes(id)) out.push(id);
+  }
+  return out;
 }
