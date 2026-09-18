@@ -213,7 +213,7 @@ export const KEEP_HANS = Object.freeze({
       contexts: [/^NewExpression$/],
     },
   },
-  // ── 徽章查表的中文键(三个文件,共 12 个)──────────────────────────────────
+  // ── 徽章查表的中文键(两个文件,共 8 个;supervision.tsx 那四个 2026-09-18 起退休)──────
   //
   // 这一组是 2026-08-18 补上扫描器盲区后才**第一次可见**的:CJK 是合法的 JS
   // 标识符字符,所以 `{ 重大: "…" }` 里的键是 `Identifier` 而不是 `StringLiteral`,
@@ -408,15 +408,9 @@ export const KEEP_HANS = Object.freeze({
 
   },
   "supervision.tsx": {
-    // ── 隐患定级徽章的查表键(四档)────────────────────────────────────────
-    // 2026-08-18 补上扫描器盲区后才第一次可见:CJK 是合法的 JS 标识符字符,
-    // 所以 `{ 重大: "…" }` 里的键是 Identifier 不是 StringLiteral,
-    // 在那之前**两道守卫一起看不见它们**(见 hant-scan.mjs 的 isChineseObjectKey)。
-    重大: { why: BADGE_BACKEND_KEY_WHY, contexts: [/^object-key$/] },
-    较大: { why: BADGE_BACKEND_KEY_WHY, contexts: [/^object-key$/] },
-    一般: { why: BADGE_BACKEND_KEY_WHY, contexts: [/^object-key$/] },
-    待定级: { why: BADGE_BACKEND_KEY_WHY, contexts: [/^object-key$/] },
-
+    // 墓碑:「重大 / 较大 / 一般 / 待定级」四个 object-key 曾登记在这儿(SEVERITY_CHIP
+    // 的键)。2026-09-18 FINDING-007 把现场那一档从头部徽章降成定级行旁的一句灰字,
+    // 那张配色表随之删除 —— 这一档在 supervision.tsx 里不再当键用。tool-calls.tsx 那份照旧。
   },
   "hant-convert.tsx": {
     "[gyt] 繁體字典没拉到,答话保持简体显示":

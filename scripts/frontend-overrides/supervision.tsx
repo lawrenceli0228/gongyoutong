@@ -211,17 +211,9 @@ const GRADE_CHIP: Record<string, string> = {
  */
 const GRADE_CHOICES = [GRADE_NORMAL, GRADE_SEVERE] as const;
 
-/**
- * 现场判定档次的徽章配色。四个取值来自 agents/safety/severity.py。
- * **与 tool-calls.tsx 的 SEVERITY_CHIP 是同一张表**(那边给识别回执的卡片用),
- * 配色对不上的话同一条隐患在两处颜色不一样,看着像两条不同的东西。
- */
-const SEVERITY_CHIP: Record<string, string> = {
-  重大: "bg-red-50 text-red-700 ring-red-200",
-  较大: "bg-amber-50 text-amber-700 ring-amber-200",
-  一般: "bg-sky-50 text-sky-700 ring-sky-200",
-  待定级: "bg-gray-100 text-gray-500 ring-gray-200",
-};
+// 墓碑:`SEVERITY_CHIP`(現場判定檔次的徽章配色)曾在這兒。2026-09-18 FINDING-007 把
+// 現場那一檔從頭部徽章降成定級行旁的一句灰字(「現場判「較大」」),不再配色 ——
+// 對監理它只是參考,配了色就與監理定級那顆搶眼。tool-calls.tsx 那份給識別回執卡用,照舊。
 
 /**
  * 二次确认条上那颗红按钮的字。**与 `ACTION_LABEL` 不是一回事** ——
@@ -1607,7 +1599,7 @@ function HazardRow({
   //
   // 🔴 这一段每一条底下都有一个「原值还在被谁用」,漂了就静默出错:
   //   · itemText     —— 只显示。8 类受控违规项里 5 类简繁不同形(临边无防护 / 用电隐患 …)
-  //   · severityText —— 原值 `hazard.severity` 还要当 `SEVERITY_CHIP` 的键(较大→較大 会丢配色)
+  //   · severityText —— 只顯示(定級行旁那句「現場判「較大」」);原值 `hazard.severity` 老路沒有
   //   · gradeText    —— 原值 `hazard.grade` 还要当 `GRADE_CHIP` 的键(严重→嚴重 会丢配色)
   //   · statusText   —— 后端 `status_display` 与本地兜底表**两条路供同一颗徽章**,
   //                     所以整个表达式一起过转换,不是只转其中一条 —— 只转一条的表现是
@@ -1691,27 +1683,18 @@ function HazardRow({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="font-medium text-gray-900">{itemText}</span>
-            {/* 🔴 现场那一档念的是 `severity`,**不是 `grade`**(supervision-lib 的
-                HazardBrief.severity 那条红线,与后端 `_hazard_line` 同一条规矩):
-                needs_grading=1 时 `grade` 是映射表给的默认值(一般),不是有人判过的
-                结论 —— 照它念,屏幕上写着「一般隐患」,人会照这句去签文书,然后被
-                服务端硬拦③拒掉,却不知道该先去定级。
-                `severity` 只有 GET 端点那条路会给;老路(工具返回)没有这个键,
-                那时这颗徽章干脆不出现,让下面那颗「监理定级」和「⚠ 需人工定级」说话。 */}
-            {hazard.severity && (
-              // 🔴 键用原值 `hazard.severity`(SEVERITY_CHIP 的键是简体,与后端
-              //    `agents/safety/severity.py` 同源);屏幕上那份用 severityText。
-              <Chip tone={SEVERITY_CHIP[hazard.severity] ?? "bg-gray-100 text-gray-600 ring-gray-200"}>
-                現場{severityText}
-              </Chip>
-            )}
-            {/* 监理那一档(一般/严重)只在**定过级之后**才显示 —— 它决定了下面出现的是
-                「签发通知单」还是「签发暂停令」(服务端硬拦①②),没定级时把默认值摆出来
-                就是在给一个还不成立的结论背书。 */}
+            {/* 級別只留**一顆**徽章(2026-09-18 設計審查 FINDING-007:原來「現場一般」「監理定級:一般」
+                「待確認」「未歸工地」四顆並排,手機上各佔一行)。
+                · 現場那一檔(`severity`)不再單獨一顆:它是 safety 的初判,對監理只是**參考**,
+                  搬到下面定級那一行旁邊(「現場判「較大」」),要改級的時候才需要看到它;
+                · 監理定級(一般/嚴重)只在**定過級之後**顯示,前綴「監理定級:」去掉 ——
+                  它決定下面出現的是通知單還是暫停令(服務端硬攔①②),沒定級時把默認值
+                  擺出來就是在給一個還不成立的結論背書(`currentGrade` 那條紅線);
+                · 未歸工地併進下面編號那一行。 */}
             {!hazard.needs_grading && hazard.grade && (
-              // 同上:键用原值(GRADE_CHIP 的键来自 db/hazards.py 的 GRADES),字用 gradeText。
+              // 鍵用原值(GRADE_CHIP 的鍵來自 db/hazards.py 的 GRADES),字用 gradeText。
               <Chip tone={GRADE_CHIP[hazard.grade] ?? "bg-gray-100 text-gray-600 ring-gray-200"}>
-                監理定級:{gradeText}
+                {gradeText}
               </Chip>
             )}
             <Chip tone={STATUS_CHIP[hazard.status] ?? "bg-gray-100 text-gray-600 ring-gray-200"}>
@@ -1731,18 +1714,18 @@ function HazardRow({
             {hazard.overdue && (
               <Chip tone="bg-red-100 text-red-800 ring-red-300">已超期</Chip>
             )}
-            {/* 未归工地(D6):`project_id === ""` 是**有意义的值**,不是缺失。
-                这一条在「按工地筛」的那一屏里永远不出现 —— 标出来,监理才知道
-                切回「全部」时多出来的是哪些。有归属的不显示编号:这里拿不到工地名,
-                摆一串 P-xxxx 只是噪声。 */}
-            {hazard.project_id === "" && (
-              <Chip tone="bg-gray-100 text-gray-600 ring-gray-200">未歸工地</Chip>
-            )}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
             <span className="font-mono text-[11px] break-all text-gray-400 select-all">
               {hazard.hazard_no}
             </span>
+            {/* 未归工地(D6):`project_id === ""` 是**有意义的值**,不是缺失。
+                这一条在「按工地筛」的那一屏里永远不出现 —— 标出来,监理才知道
+                切回「全部」时多出来的是哪些。有归属的不显示编号:这里拿不到工地名,
+                摆一串 P-xxxx 只是噪声。FINDING-007 起從徽章降成這行小字。 */}
+            {hazard.project_id === "" && (
+              <span className="text-[11px] text-gray-400">未歸工地</span>
+            )}
             {hasDueInfo && (
               <span className={`text-[11px] ${hazard.overdue ? "text-red-600" : "text-gray-400"}`}>
                 {/* 期限的人话由后端算(due_display),前端一行日期换算都不写 ——
@@ -1931,6 +1914,11 @@ function HazardRow({
                 <span className="text-[12px] text-gray-500">
                   {已判级别 ? "改判為" : "定級為"}
                 </span>
+                {/* 現場那一檔(safety 初判)在這兒當**參考**,不再是頭部的一顆徽章(FINDING-007)。
+                    老路(工具返回)沒有 severity,那時這句不出現。 */}
+                {hazard.severity && (
+                  <span className="text-[12px] text-gray-400">現場判「{severityText}」</span>
+                )}
                 {/* 🔴 `grade` 是**简体原值**,一路管着三件事:`已判级别 === grade` 的比较、
                     `GRADE_SEVERE` 的配色判断、以及 `onAct("grade", grade)` **送后端**
                     (`HAZARD_GRADES` 是受控词表,词表外后端回 400)。
