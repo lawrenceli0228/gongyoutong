@@ -241,6 +241,9 @@ const CONFIRM_BUTTON_LABEL: Readonly<Record<string, string>> = Object.freeze({
   suspend: "確認簽發",
   escalate: "確認簽發",
   reject: "確認刪掉",
+  // 2026-09-18 線上走查補的:關掉那條的確認條原先落到兜底的「確認」,與旁邊三顆
+  // 「確認簽發 / 確認刪掉」不是一個口徑 —— 人在按不可撤銷的那一下之前讀的就是這兩個字。
+  dismiss: "確認關掉",
 });
 
 /**
