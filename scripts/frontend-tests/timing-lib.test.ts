@@ -1124,7 +1124,7 @@ describe("界面文案恒繁體", () => {
   });
 
   it("AGENT_LABELS 的值也全是繁體", () => {
-    expect(AGENT_LABELS.supervisor).toBe("調度");
+    expect(AGENT_LABELS.supervisor).toBe("調度中樞"); // 與狀態行的藥丸同名(FINDING-005)
     expect(AGENT_LABELS.inspection).toBe("識隱患");
     expect(AGENT_LABELS.schedule).toBe("排期"); // 简繁同形,看着没改不是漏了
     expect(AGENT_LABELS.cad).toBe("圖紙");
