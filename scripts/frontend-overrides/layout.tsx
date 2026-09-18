@@ -116,6 +116,27 @@ export default function RootLayout({
             fontFamily: FONT_STACK,
             "--font-mono":
               "var(--gyt-font-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+            // ── 品牌色令牌(2026-09-18 設計審查 FINDING-009)──────────────────────
+            // 在此之前全站是三套色系並行:覆蓋件裏 `#16805C` 等品牌 hex 散落 30 多處、
+            // supervision.tsx 用 Tailwind 默認色板、ai.tsx 用 shadcn 令牌;後果是
+            // **主按鈕在輸入區是綠、在監理面板是黑**(`Button variant="default"` 吃上游
+            // globals.css 的 `--primary` = 近黑)。這裏是唯一定義處:各覆蓋件一律
+            // `bg-[var(--gyt-green)]` 這種寫法,不再手抄 hex。
+            // 對比度(GytStatusCards 頭注實測):green 當文字白底 4.91 過 AA;
+            // green-deep 7.66;muted 5.55;mint 只當背景/導線,**不當文字**。
+            "--gyt-green": "#16805C",
+            "--gyt-green-deep": "#0F5F44",
+            "--gyt-ink": "#171C1A",
+            "--gyt-ink-soft": "#33403A",
+            "--gyt-muted": "#5F6B66",
+            "--gyt-line": "#E4E8E6",
+            "--gyt-mint": "#8FC4B0",
+            "--gyt-soft": "#EEF3F1",
+            // shadcn 的主色映射到品牌綠:`<Button variant="default">` 從此與「發送」同色。
+            // 放在 body 上即可蓋過 :root 與 .dark 的定義 —— 自定義屬性在**用到的那個元素**
+            // 上解析,body 是它們的祖先。
+            "--primary": "#16805C",
+            "--primary-foreground": "#FFFFFF",
           } as React.CSSProperties
         }
       >

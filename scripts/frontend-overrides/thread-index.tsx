@@ -123,7 +123,7 @@ function GytBrand({
       className="flex shrink-0 cursor-pointer items-center gap-2 sm:gap-2.5"
     >
       {/* 窄屏把徽标与字号各降一档,给右侧那组顶栏入口腾出约 20px;≥640px 原样恢复。 */}
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] bg-[#16805C] text-base font-black text-white sm:h-9 sm:w-9 sm:text-lg">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] bg-[var(--gyt-green)] text-base font-black text-white sm:h-9 sm:w-9 sm:text-lg">
         工
       </span>
       {/* 360px 以下(iPhone SE 一代那种老屏)连字都放不下:顶栏可用 298px,
@@ -133,7 +133,7 @@ function GytBrand({
           底下那句大标题「有事就问工友通」也还在,认得出是谁家的产品。 */}
       <span
         className={cn(
-          "text-lg font-black tracking-tight whitespace-nowrap text-[#171C1A] sm:text-xl",
+          "text-lg font-black tracking-tight whitespace-nowrap text-[var(--gyt-ink)] sm:text-xl",
           hideTextOnMobile ? "hidden sm:inline" : "max-[359px]:hidden",
         )}
       >
@@ -653,10 +653,10 @@ function ThreadInner() {
                 <div className="sticky bottom-0 flex flex-col items-center gap-4 bg-[#FBFCFB] sm:gap-8">
                   {!chatStarted && (
                     <div className="flex flex-col items-center text-center">
-                      <h1 className="text-[30px] leading-tight font-black tracking-tight text-[#171C1A] sm:text-[44px]">
+                      <h1 className="text-[30px] leading-tight font-black tracking-tight text-[var(--gyt-ink)] sm:text-[44px]">
                         有事就問工友通
                       </h1>
-                      <p className="mt-2 text-[15px] text-[#5F6B66] sm:mt-3 sm:text-[18px]">
+                      <p className="mt-2 text-[15px] text-[var(--gyt-muted)] sm:mt-3 sm:text-[18px]">
                         説一句話、拍張照,或者傳個文件,我來幫你派活
                       </p>
                     </div>
@@ -669,8 +669,8 @@ function ThreadInner() {
                     className={cn(
                       "relative z-10 mx-auto mb-4 w-full max-w-3xl overflow-hidden rounded-[26px] bg-white shadow-[0_2px_4px_rgba(23,28,26,0.04),0_20px_50px_rgba(23,28,26,0.09)] transition-all sm:mb-8",
                       dragOver
-                        ? "border-2 border-dotted border-[#16805C]"
-                        : "border border-solid border-[#E4E8E6]",
+                        ? "border-2 border-dotted border-[var(--gyt-green)]"
+                        : "border border-solid border-[var(--gyt-line)]",
                     )}
                   >
                     <form
@@ -700,7 +700,7 @@ function ThreadInner() {
                           }
                         }}
                         placeholder="對着我説話、拍張照,或問一句…"
-                        className="field-sizing-content resize-none border-none bg-transparent p-5 pb-2 text-[17px] text-[#33403A] shadow-none ring-0 outline-none placeholder:text-[#5F6B66] focus:ring-0 focus:outline-none"
+                        className="field-sizing-content resize-none border-none bg-transparent p-5 pb-2 text-[17px] text-[var(--gyt-ink-soft)] shadow-none ring-0 outline-none placeholder:text-[var(--gyt-muted)] focus:ring-0 focus:outline-none"
                       />
 
                       {/* 底部动作条 —— 手机上这里是**打卡功能的唯一入口**,挤爆等于打卡不可用。
@@ -723,7 +723,7 @@ function ThreadInner() {
                             />
                             <Label
                               htmlFor="render-tool-calls"
-                              className="text-sm whitespace-nowrap text-[#5F6B66]"
+                              className="text-sm whitespace-nowrap text-[var(--gyt-muted)]"
                             >
                               隱藏中間步驟
                             </Label>
@@ -751,7 +751,7 @@ function ThreadInner() {
                         <div className="flex shrink-0 items-center gap-2">
                         <Label
                           htmlFor="camera-input"
-                          className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[#16805C] bg-[#16805C] px-3 py-2 text-sm font-bold whitespace-nowrap text-white transition hover:bg-[#0F5F44] sm:min-h-0"
+                          className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--gyt-green)] bg-[var(--gyt-green)] px-3 py-2 text-sm font-bold whitespace-nowrap text-white transition hover:bg-[var(--gyt-green-deep)] sm:min-h-0"
                         >
                           <Camera className="size-4" />
                           <span>拍照</span>
@@ -788,9 +788,9 @@ function ThreadInner() {
                         {/* min-h-11 = 44px,触摸目标的通用下限;≥640px 退回原来的高度(sm:min-h-0)。 */}
                         <Label
                           htmlFor="file-input"
-                          className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[#E4E8E6] bg-white px-3 py-2 text-sm font-bold whitespace-nowrap text-[#33403A] transition hover:border-[#8FC4B0] sm:min-h-0"
+                          className="flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--gyt-line)] bg-white px-3 py-2 text-sm font-bold whitespace-nowrap text-[var(--gyt-ink-soft)] transition hover:border-[var(--gyt-mint)] sm:min-h-0"
                         >
-                          <Plus className="size-4 text-[#0F5F44]" />
+                          <Plus className="size-4 text-[var(--gyt-green-deep)]" />
                           <span>上傳圖紙·資料</span>
                         </Label>
                         <input
@@ -805,7 +805,7 @@ function ThreadInner() {
 
                         <span
                           aria-hidden="true"
-                          className="hidden h-6 w-px shrink-0 bg-[#E4E8E6] sm:block"
+                          className="hidden h-6 w-px shrink-0 bg-[var(--gyt-line)] sm:block"
                         />
 
                         <div className="flex shrink-0 items-center gap-2">
@@ -845,7 +845,7 @@ function ThreadInner() {
                         ) : (
                           <Button
                             type="submit"
-                            className="ml-auto min-h-11 shrink-0 rounded-full bg-[#16805C] px-7 text-[16px] font-black whitespace-nowrap text-white shadow-md transition-all hover:bg-[#0F5F44] sm:min-h-0"
+                            className="ml-auto min-h-11 shrink-0 rounded-full bg-[var(--gyt-green)] px-7 text-[16px] font-black whitespace-nowrap text-white shadow-md transition-all hover:bg-[var(--gyt-green-deep)] sm:min-h-0"
                             disabled={
                               isLoading ||
                               (!input.trim() && contentBlocks.length === 0)

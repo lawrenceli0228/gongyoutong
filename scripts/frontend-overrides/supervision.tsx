@@ -362,7 +362,7 @@ function DisposalStepper({ steps, notes }: { steps: readonly DisposalStep[]; not
           step.state === "done"
             ? "bg-gray-100 text-gray-500 ring-gray-200"
             : step.state === "current"
-              ? "bg-[#33403A] text-white ring-[#33403A]"
+              ? "bg-[var(--gyt-ink-soft)] text-white ring-[var(--gyt-ink-soft)]"
               : "bg-white text-gray-400 ring-gray-200";
         return (
           <li key={step.key} className="flex items-center gap-1">
@@ -1772,7 +1772,7 @@ function HazardRow({
           disabled={!!armedAction}
           aria-expanded={workOpen || !!armedAction}
           title={armedAction ? "先把上面那句確認回答掉" : undefined}
-          className="ml-auto flex shrink-0 items-center gap-1 self-start rounded-md border border-gray-200 px-2.5 py-1.5 text-[12px] font-medium text-[#33403A] transition hover:border-[#8FC4B0] hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11"
+          className="ml-auto flex shrink-0 items-center gap-1 self-start rounded-md border border-gray-200 px-2.5 py-1.5 text-[12px] font-medium text-[var(--gyt-ink-soft)] transition hover:border-[var(--gyt-mint)] hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11"
         >
           {workOpen || armedAction ? "收起" : "處置"}
           <ChevronDown
@@ -2062,7 +2062,7 @@ function HazardRow({
                   action === "reject"
                     ? "text-gray-600 pointer-coarse:min-h-11"
                     : DOCLESS_ACTIONS.has(action)
-                      ? "text-[#33403A] pointer-coarse:min-h-11"
+                      ? "text-[var(--gyt-ink-soft)] pointer-coarse:min-h-11"
                       : "pointer-coarse:min-h-11"
                 }
               >
@@ -3223,7 +3223,7 @@ export function SupervisionPanel({
               onClick={() => setScope(s)}
               className={`rounded-full px-3 py-1 text-[13px] font-medium ring-1 ring-inset transition-colors disabled:cursor-not-allowed disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:px-4 ${
                 s === scope
-                  ? "bg-gray-900 text-white ring-gray-900"
+                  ? "bg-[var(--gyt-ink)] text-white ring-[var(--gyt-ink)]"
                   : "bg-white text-gray-600 ring-gray-300 hover:bg-gray-50"
               }`}
             >

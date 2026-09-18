@@ -50,17 +50,17 @@ function BootScreen() {
       aria-live="polite"
     >
       {/* logo 方块 —— 与顶栏那颗同色同圆角,只是大一号。 */}
-      <div className="flex h-14 w-14 items-center justify-center rounded-[16px] bg-[#16805C] text-[26px] font-black text-white shadow-[0_10px_30px_rgba(14,159,110,0.28)]">
+      <div className="flex h-14 w-14 items-center justify-center rounded-[16px] bg-[var(--gyt-green)] text-[26px] font-black text-white shadow-[0_10px_30px_rgba(14,159,110,0.28)]">
         工
       </div>
 
       <div className="flex flex-col items-center gap-2">
-        <div className="text-[17px] font-black tracking-tight text-[#171C1A]">
+        <div className="text-[17px] font-black tracking-tight text-[var(--gyt-ink)]">
           工友通
         </div>
         {/* 说人话,并且**说清在等什么** —— 「載入中」三个字回答不了「还要多久 / 卡住了吗」。
             对比度:#5F6B66 在 #EEF1F0 上是 4.73:1,过 AA(与 GytStatusCards 同一个灰)。 */}
-        <div className="text-[13px] font-medium text-[#5F6B66]">
+        <div className="text-[13px] font-medium text-[var(--gyt-muted)]">
           正在打開你的對話記錄…
         </div>
       </div>
@@ -69,7 +69,7 @@ function BootScreen() {
           `motion-reduce:animate-none` 是必须的:开了「减少动态效果」的用户
           看到的应该是一根静止的浅色条,不是一根永远在跑的。 */}
       <div className="h-1 w-[132px] overflow-hidden rounded-full bg-[#DCE3E0]">
-        <span className="block h-full w-1/3 rounded-full bg-[#16805C] motion-safe:animate-[gyt-boot_1.1s_ease-in-out_infinite] motion-reduce:w-full motion-reduce:opacity-40" />
+        <span className="block h-full w-1/3 rounded-full bg-[var(--gyt-green)] motion-safe:animate-[gyt-boot_1.1s_ease-in-out_infinite] motion-reduce:w-full motion-reduce:opacity-40" />
       </div>
 
       {/* keyframes 就地定义:globals.css 是上游的,不为一处加载态去覆盖它。 */}

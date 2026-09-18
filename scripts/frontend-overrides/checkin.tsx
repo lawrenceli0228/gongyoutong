@@ -857,7 +857,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
                     <img
                       src={photo.previewUrl}
                       alt="待提交的打卡照片"
-                      className="max-h-64 w-full rounded-[16px] border border-[#E4E8E6] object-contain"
+                      className="max-h-64 w-full rounded-[16px] border border-[var(--gyt-line)] object-contain"
                     />
                     <div className="flex items-center gap-2">
                       <Button
@@ -893,7 +893,7 @@ function CheckinDialog({ onClose }: { onClose: () => void }) {
                       autoPlay
                       playsInline
                       muted
-                      className="aspect-[3/4] w-full -scale-x-100 rounded-[18px] border border-[#E4E8E6] bg-[#141917] object-cover"
+                      className="aspect-[3/4] w-full -scale-x-100 rounded-[18px] border border-[var(--gyt-line)] bg-[#141917] object-cover"
                     />
                     <Button
                       onClick={capture}

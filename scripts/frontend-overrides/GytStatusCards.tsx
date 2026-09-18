@@ -95,7 +95,7 @@ function useActiveAgent(): string | null {
  * (白底 3.13、页底 2.88),这里落到过 AA 的 `#5F6B66`(白 5.55 / 页底 5.12)。
  * 🔴 低于此的层级用字号/字重表达,不用更浅的灰 —— 工地是户外强光,3:1 在太阳下等于没有。
  */
-const SUBTLE = "text-[#5F6B66]";
+const SUBTLE = "text-[var(--gyt-muted)]";
 
 /**
  * 关键帧 + 导线基础样式。内联注入,scoped 靠 `gyt-` 前缀。
@@ -108,8 +108,8 @@ function FlowStyle() {
       @keyframes gyt-halo { 0%,100% { box-shadow: 0 0 0 0 rgba(22,128,92,.16) } 50% { box-shadow: 0 0 0 8px rgba(22,128,92,0) } }
       @keyframes gyt-breathe { 0%,100% { opacity:.35 } 50% { opacity:1 } }
       @keyframes gyt-sweep { 0% { transform: translateX(-100%) } 100% { transform: translateX(320%) } }
-      .gyt-wire { background:#E4E8E6; }
-      .gyt-wire-lit { background:linear-gradient(180deg,#16805C,#8FC4B0); background-size:100% 80px; animation:gyt-flowdash 1.6s linear infinite; }
+      .gyt-wire { background:var(--gyt-line); }
+      .gyt-wire-lit { background:linear-gradient(180deg,var(--gyt-green),var(--gyt-mint)); background-size:100% 80px; animation:gyt-flowdash 1.6s linear infinite; }
       .gyt-halo { animation:gyt-halo 2.4s ease-out infinite; }
       .gyt-breathe { animation:gyt-breathe 1.6s ease-in-out infinite; }
       .gyt-sweep { animation:gyt-sweep 2.4s linear infinite; }
@@ -138,20 +138,20 @@ export function GytStatusCards({ onPick }: { onPick?: (text: string) => void } =
         <span
           className={cn(
             "flex items-center gap-2 rounded-full bg-white px-4 py-[7px] text-[13px] font-bold shadow-[0_1px_2px_rgba(23,28,26,.06)]",
-            active ? "text-[#0F5F44] gyt-halo" : SUBTLE,
+            active ? "text-[var(--gyt-green-deep)] gyt-halo" : SUBTLE,
           )}
         >
           <span
             className={cn(
               "flex h-5 w-5 items-center justify-center rounded-md text-[11px] font-black",
-              active ? "bg-[#16805C] text-white" : "bg-[#EEF3F1] text-[#16805C]",
+              active ? "bg-[var(--gyt-green)] text-white" : "bg-[var(--gyt-soft)] text-[var(--gyt-green)]",
             )}
           >
             工
           </span>
           {active ? (
             <>
-              已經交給 <b className="text-[#171C1A]">{activeName}</b> 在處理…
+              已經交給 <b className="text-[var(--gyt-ink)]">{activeName}</b> 在處理…
             </>
           ) : (
             "調度中樞 · 全部待命"
@@ -164,7 +164,7 @@ export function GytStatusCards({ onPick }: { onPick?: (text: string) => void } =
         <span className={cn("h-4 w-0.5", active ? "gyt-wire-lit" : "gyt-wire")} />
       </div>
       {/* 横向总线(对齐到四列的中心:12.5% ~ 87.5%) */}
-      <div className={cn("mx-[12.5%] h-0.5 rounded", active ? "bg-[#16805C]" : "gyt-wire")} />
+      <div className={cn("mx-[12.5%] h-0.5 rounded", active ? "bg-[var(--gyt-green)]" : "gyt-wire")} />
       {/* 四条降到卡片的竖导线;只有活跃那条会走 */}
       <div className="grid grid-cols-2 sm:grid-cols-4">
         {CARDS.map((c, i) => (
@@ -206,48 +206,54 @@ export function GytStatusCards({ onPick }: { onPick?: (text: string) => void } =
               title={pickable ? `試試:${c.sample}` : undefined}
               className={cn(
                 "rounded-[20px] bg-white p-3.5 shadow-[0_1px_2px_rgba(23,28,26,.05),0_14px_34px_rgba(23,28,26,.05)] transition",
-                lit && "shadow-[0_1px_2px_rgba(23,28,26,.05),0_14px_34px_rgba(22,128,92,.12)] outline outline-[1.5px] outline-[#16805C] gyt-halo",
+                lit && "shadow-[0_1px_2px_rgba(23,28,26,.05),0_14px_34px_rgba(22,128,92,.12)] outline outline-[1.5px] outline-[var(--gyt-green)] gyt-halo",
                 dim && "opacity-50",
                 pickable &&
-                  "cursor-pointer hover:-translate-y-px hover:shadow-[0_6px_18px_rgba(23,28,26,.09)] focus-visible:outline focus-visible:outline-[1.5px] focus-visible:outline-[#16805C] focus-visible:ring-2 focus-visible:ring-[#8FC4B0] focus-visible:outline-none",
+                  "cursor-pointer hover:-translate-y-px hover:shadow-[0_6px_18px_rgba(23,28,26,.09)] focus-visible:outline focus-visible:outline-[1.5px] focus-visible:outline-[var(--gyt-green)] focus-visible:ring-2 focus-visible:ring-[var(--gyt-mint)] focus-visible:outline-none",
               )}
             >
               <div className="flex items-center justify-between">
                 <span
                   className={cn(
                     "flex h-9 w-9 items-center justify-center rounded-[13px]",
-                    lit ? "bg-[#16805C]" : "bg-[#F2F5F4]",
+                    lit ? "bg-[var(--gyt-green)]" : "bg-[#F2F5F4]",
                   )}
                 >
-                  <Icon className="h-[18px] w-[18px]" strokeWidth={2} color={lit ? "#ffffff" : "#5F6B66"} />
+                  {/* 顏色走 style.color + lucide 默認的 stroke="currentColor":SVG 表現屬性裏不能放 var(),
+                      放進 color prop 會變成 stroke="var(…)" 而靜默失效(灰圖標變黑)。 */}
+                  <Icon
+                    className="h-[18px] w-[18px]"
+                    strokeWidth={2}
+                    style={{ color: lit ? "#ffffff" : "var(--gyt-muted)" }}
+                  />
                 </span>
                 <span
                   className={cn(
                     "flex items-center gap-1.5 text-[11px] font-bold",
-                    lit ? "text-[#0F5F44]" : SUBTLE,
+                    lit ? "text-[var(--gyt-green-deep)]" : SUBTLE,
                   )}
                 >
                   <span
                     className={cn(
                       "h-1.5 w-1.5 rounded-full",
-                      lit ? "gyt-breathe bg-[#16805C]" : "bg-[#C9D2CD]",
+                      lit ? "gyt-breathe bg-[var(--gyt-green)]" : "bg-[#C9D2CD]",
                     )}
                   />
                   {lit ? "正在忙" : "待命"}
                 </span>
               </div>
-              <div className="mt-3 text-[15px] font-black text-[#171C1A]">{c.name}</div>
+              <div className="mt-3 text-[15px] font-black text-[var(--gyt-ink)]">{c.name}</div>
               <div
                 className={cn(
                   "mt-0.5 text-[12px] font-medium leading-tight",
-                  lit ? "text-[#0F5F44]" : SUBTLE,
+                  lit ? "text-[var(--gyt-green-deep)]" : SUBTLE,
                 )}
               >
                 {lit ? c.busy : c.idle}
               </div>
               {lit && (
                 <div className="mt-3 h-1 overflow-hidden rounded bg-[#E3EFE9]">
-                  <span className="gyt-sweep block h-full w-1/3 rounded bg-[#16805C]" />
+                  <span className="gyt-sweep block h-full w-1/3 rounded bg-[var(--gyt-green)]" />
                 </div>
               )}
             </div>

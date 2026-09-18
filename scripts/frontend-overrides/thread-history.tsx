@@ -346,7 +346,7 @@ function ThreadRow({
             // rounded-[14px] + 当前项浅绿底(1b「流」):tailwind-merge 会用它盖掉 ghost 的 rounded-md。
             className={cn(
               "h-11 w-[280px] items-center justify-start rounded-[14px] text-left font-normal",
-              isActive && "bg-[#F0F5F3] font-bold text-[#171C1A] hover:bg-[#F0F5F3]",
+              isActive && "bg-[#F0F5F3] font-bold text-[var(--gyt-ink)] hover:bg-[#F0F5F3]",
             )}
             onClick={(e) => {
               e.preventDefault();
@@ -379,7 +379,7 @@ function ThreadRow({
               历史列表里变成繁體,他会以为点错了对话,然后一条条翻找那条「不见了」的记录。
             */}
             {isActive && (
-              <span className="mr-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#16805C]" />
+              <span className="mr-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--gyt-green)]" />
             )}
             <p className="max-w-[13rem] truncate text-ellipsis">{title}</p>
           </Button>
@@ -582,7 +582,7 @@ export default function ThreadHistory() {
               两个 h1 的代价只落在读屏用户身上:按标题跳转时,「歷史記錄」和页面主标题
               被念成同一级,听不出谁包着谁 —— 眼睛看的人一辈子发现不了。
               字号字重一个字没动,观感逐像素不变。 */}
-          <h2 className="text-xl font-black tracking-tight text-[#171C1A]">歷史記錄</h2>
+          <h2 className="text-xl font-black tracking-tight text-[var(--gyt-ink)]">歷史記錄</h2>
         </div>
         {threadsLoading ? (
           <ThreadHistoryLoading />
