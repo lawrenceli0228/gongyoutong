@@ -23,6 +23,7 @@ import {
   XIcon,
   Plus,
   Camera,
+  Ellipsis,
 } from "lucide-react";
 import { useQueryState, parseAsBoolean } from "nuqs";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
@@ -41,7 +42,7 @@ import {
 import { toast } from "sonner";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { Label } from "../ui/label";
-import { Switch } from "../ui/switch";
+import { createPortal } from "react-dom";
 import { useFileUpload } from "@/hooks/use-file-upload";
 // 发送前把附件块换成编号块 —— 附件在取件时就直传过了,这里只搬编号(见 handleSubmit)。
 import { toWireBlocks } from "@/lib/multimodal-utils";
@@ -162,13 +163,16 @@ function ThreadInner() {
     "chatHistoryOpen",
     parseAsBoolean.withDefault(false),
   );
-  // 默認 true(2026-09-18 FINDING-004)。**與 ai.tsx 的同名 useQueryState 默認值必須一致**,
-  // 理由寫在那邊。
-  const [hideToolCalls, setHideToolCalls] = useQueryState(
-    "hideToolCalls",
-    parseAsBoolean.withDefault(true),
-  );
+  // 「隱藏中間步驟」那個 URL 參數(hideToolCalls)這裏不再讀寫:開關搬進了 GytTimingRows,
+  // 判據在 ai.tsx,兩處默認都是 true(2026-09-18 FINDING-004 / 008)。
   const [input, setInput] = useState("");
+  /** 輸入條上「⋯」菜單開着沒有(FINDING-008:打卡 / 記錄收在裏面)。 */
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [morePos, setMorePos] = useState<{ right: number; bottom: number }>({ right: 8, bottom: 80 });
+  const moreBtnRef = useRef<HTMLButtonElement>(null);
+  // portal 要等客戶端掛載後才有 document.body(SSR 首幀沒有)
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   /** 输入框本体 —— 能力卡填例句之后要把光标送进去(2026-08-25 设计审计 D2)。 */
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const {
@@ -719,22 +723,9 @@ function ThreadInner() {
                           · ≥640px 用 sm:flex-nowrap + sm:gap-6 原样退回今天的单行布局,
                             所以 768 / 1280 一个像素都不动。 */}
                       <div className="flex flex-wrap items-center gap-2 border-t border-[#EDF0EE] bg-white p-3 px-4 sm:flex-nowrap sm:gap-6">
-                        <div className="order-last shrink-0 sm:order-none">
-                          {/* 开关本身只有 20px 高;整行给 44px 触控高度,Label 的 htmlFor 让整行都能点。 */}
-                          <div className="flex items-center space-x-2 pointer-coarse:min-h-11">
-                            <Switch
-                              id="render-tool-calls"
-                              checked={hideToolCalls ?? false}
-                              onCheckedChange={setHideToolCalls}
-                            />
-                            <Label
-                              htmlFor="render-tool-calls"
-                              className="text-sm whitespace-nowrap text-[var(--gyt-muted)]"
-                            >
-                              隱藏中間步驟
-                            </Label>
-                          </div>
-                        </div>
+                        {/* 「隱藏中間步驟」那顆開關 2026-09-18(FINDING-004 / FINDING-008)搬進了
+                            消息區底下那一行「過程 · N 步 ▸」展開後的格子裏 —— 它是閱讀偏好不是
+                            發送動作,和它管的東西放在一起。這裏不再有它。 */}
                         {/* 🔴 **拍照入口(2026-08-22)。整个产品的头号动作,而它在此之前
                             没有入口** —— 动作条上唯一的上传口写着「上傳圖紙·資料」
                             (工友要拍的是隐患照片,那句话在劝退),而且**没有 capture**:
@@ -795,10 +786,14 @@ function ThreadInner() {
                             `sm:min-h-0`,1024px 平板在监理面板拿得到 44px、在这儿拿不到;全站统一按设备判)。 */}
                         <Label
                           htmlFor="file-input"
-                          className="flex pointer-coarse:min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-[var(--gyt-line)] bg-white px-3 py-2 text-sm font-bold whitespace-nowrap text-[var(--gyt-ink-soft)] transition hover:border-[var(--gyt-mint)]"
+                          title="上傳圖紙·資料"
+                          aria-label="上傳圖紙·資料"
+                          className="flex pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-full border border-[var(--gyt-line)] bg-white px-3 py-2 text-sm font-bold whitespace-nowrap text-[var(--gyt-ink-soft)] transition hover:border-[var(--gyt-mint)]"
                         >
                           <Plus className="size-4 text-[var(--gyt-green-deep)]" />
-                          <span>上傳圖紙·資料</span>
+                          {/* 窄屏只露「＋」(FINDING-008:輸入條 8 個控件減到 5 個),title / aria 說全名;
+                              ≥640px 帶字。注意 pointer-coarse:min-w-11 給圖標態一個 44px 的寬。 */}
+                          <span className="hidden sm:inline">上傳圖紙·資料</span>
                         </Label>
                         <input
                           id="file-input"
@@ -815,12 +810,11 @@ function ThreadInner() {
                           className="hidden h-6 w-px shrink-0 bg-[var(--gyt-line)] sm:block"
                         />
 
-                        <div className="flex shrink-0 items-center gap-2">
+                        <div className="relative flex shrink-0 items-center gap-2">
                         {/* 打卡入口(W7 · D15):点开是直连 POST /checkin 的自拍面板,
                             不进对话、不产生消息 —— 所以放在动作条而不是消息区
                             (tool-calls.tsx 只消费 ToolMessage,直连打卡根本不产生它,
                             W7 §1.5)。组件自带 type="button",不会误触本 form 的提交。 */}
-                        <CheckinEntry />
                         {/* 监理处置入口(W10):同样是**直连 HTTP 的操作台**,不进对话、
                             不产生消息 —— 所以和打卡并排放在动作条,不放消息区。
                             W9 当初就是放错了地方:它挂在 tool-calls.tsx 那张「隐患台账」卡上,
@@ -838,7 +832,66 @@ function ThreadInner() {
                             结果是:文件就在服务器上,而谁都拿不到。
                             按钮自带 type="button",刻意**没有徽章**(理由在组件头注:
                             存档不等人干活,红点只会让人去点掉一个不用处理的提醒)。 */}
-                        <ReportsEntry />
+                        {/* 「⋯」(2026-09-18 FINDING-008):打卡與巡檢記錄收進這個菜單 —— 輸入條從
+                            8 個控件減到 5 個(拍照 / ＋ / 隱患 / ⋯ / 發送)。兩個入口**一個不少**,
+                            只是多一下點擊;隱患留在外面是因為它帶待確認徽章、監理每天要看。
+                            菜單裏的兩顆仍是原組件(各自 portal 到 body 開自己的面板),
+                            點外面關閉靠一層透明遮罩,不引第三方 Popover(層疊上下文那條坑見 checkin.tsx)。 */}
+                        <button
+                          ref={moreBtnRef}
+                          type="button"
+                          aria-haspopup="menu"
+                          aria-expanded={moreOpen}
+                          aria-label="更多:打卡、巡檢記錄"
+                          title="更多:打卡、巡檢記錄"
+                          onClick={() => {
+                            // 開的那一刻按按鈕的 rect 定位(貼在按鈕上方、右對齊);關就只切 display。
+                            const r = moreBtnRef.current?.getBoundingClientRect();
+                            if (r) {
+                              setMorePos({
+                                right: Math.max(8, window.innerWidth - r.right),
+                                bottom: window.innerHeight - r.top + 8,
+                              });
+                            }
+                            setMoreOpen((v) => !v);
+                          }}
+                          className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[var(--gyt-line)] bg-white text-[var(--gyt-ink-soft)] transition hover:border-[var(--gyt-mint)] pointer-coarse:size-11"
+                        >
+                          <Ellipsis className="size-4" />
+                        </button>
+                        {/* 🔴 菜單必須 portal 到 body,**不能就地渲染**:輸入框外殼那層
+                            `relative z-10 … overflow-hidden` 是一個層疊上下文,往上彈的菜單會被
+                            它裁掉 —— 實測 elementFromPoint 打到的是遮罩,菜單根本看不見而且
+                            零報錯(checkin.tsx 頭注記的同一個坑)。位置按按鈕的 rect 算,
+                            貼在按鈕上方、右對齊。 */}
+                        {/* 🔴 菜單**常駐掛載、只切 display**,不隨開關卸載:CheckinEntry / ReportsEntry
+                            各自把「面板開着沒有」存在自己的 state 裏,點一下就卸載它們 =
+                            state 一起沒了,面板永遠打不開而且零報錯(第一版就是這麼壞的,
+                            iPhone 模擬實測「dialogs after 打卡: 0」)。 */}
+                        {mounted &&
+                          createPortal(
+                            <>
+                              {moreOpen && (
+                                <button
+                                  type="button"
+                                  aria-label="關閉菜單"
+                                  onClick={() => setMoreOpen(false)}
+                                  className="fixed inset-0 z-[60] cursor-default"
+                                />
+                              )}
+                              <div
+                                role="menu"
+                                hidden={!moreOpen}
+                                onClick={() => setMoreOpen(false)}
+                                style={morePos}
+                                className="fixed z-[61] flex min-w-[180px] flex-col gap-1 rounded-xl border border-[var(--gyt-line)] bg-white p-2 shadow-lg"
+                              >
+                                <CheckinEntry />
+                                <ReportsEntry />
+                              </div>
+                            </>,
+                            document.body,
+                          )}
                         </div>
                         {stream.isLoading ? (
                           <Button
