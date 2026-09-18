@@ -319,6 +319,10 @@ export const TIMING_LABELS = Object.freeze({
   headPrefixCold: "最近",
   headStep: "步",
   headTotal: "合計",
+  /** 折疊行最前面那個詞(2026-09-18 FINDING-004):「過程 · 本輪 7 步 · 合計 30.4s」。 */
+  process: "過程",
+  /** 展開後那顆開關的字。它從輸入條搬過來,語義是「隱藏」(checked = 隱藏)。 */
+  hideSteps: "隱藏中間步驟(轉給 / 交回那些行)",
   /** 读屏用(视觉上那一坨 emoji + 数字念不出意思)。 */
   ariaLabel: "本輪各步耗時",
 });

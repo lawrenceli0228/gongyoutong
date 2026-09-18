@@ -162,9 +162,11 @@ function ThreadInner() {
     "chatHistoryOpen",
     parseAsBoolean.withDefault(false),
   );
+  // 默認 true(2026-09-18 FINDING-004)。**與 ai.tsx 的同名 useQueryState 默認值必須一致**,
+  // 理由寫在那邊。
   const [hideToolCalls, setHideToolCalls] = useQueryState(
     "hideToolCalls",
-    parseAsBoolean.withDefault(false),
+    parseAsBoolean.withDefault(true),
   );
   const [input, setInput] = useState("");
   /** 输入框本体 —— 能力卡填例句之后要把光标送进去(2026-08-25 设计审计 D2)。 */
@@ -638,11 +640,11 @@ function ThreadInner() {
                       `{ gyt_timing: {…} }`,在 providers/Stream.tsx 收下、存进
                       @/lib/timing-lib 那个 run 级 store —— **不是**从 messages 里
                       倒推的(耗时消息里根本没有,倒推不出来)。
-                      🔴 受 hideToolCalls 控制,与工具调用痕迹同一档:它俩是同一类
-                      东西(讲架构有用、给工地师傅看纯属干扰),开关只有一个,
-                      漏了这个条件的表现是「关了中间步骤,底下还挂着一坨秒数」。
-                      放在消息之后、加载点之前:一轮跑的过程中能看着它一行行长出来。 */}
-                  {!hideToolCalls && <GytTimingRows />}
+                      2026-09-18 FINDING-004 起它**不再受 hideToolCalls 控制**:它自己就是
+                      「過程 N 步 · Xs ▸」那一行 —— 默認折疊只露一行,點開才是各步耗時;
+                      「隱藏中間步驟」的開關也搬進它展開後的那一格。
+                      放在消息之后、加载点之前:一轮跑的过程中能看着那一行的數字長。 */}
+                  <GytTimingRows />
                   {isLoading && !firstTokenReceived && (
                     <AssistantMessageLoading />
                   )}

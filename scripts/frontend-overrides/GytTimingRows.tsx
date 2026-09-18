@@ -37,8 +37,11 @@
  * 他看不懂的红框是大事。这条与后端那侧「拿不到会话号就丢掉这条记录」同源。
  */
 
-import { useEffect, useRef, useSyncExternalStore } from "react";
-import { useQueryState } from "nuqs";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useQueryState, parseAsBoolean } from "nuqs";
+import { ChevronRight } from "lucide-react";
+import { Switch } from "../ui/switch";
+import { Label } from "../ui/label";
 
 import { getApiKey } from "@/lib/api-key";
 import { cn } from "@/lib/utils";
@@ -247,6 +250,16 @@ export function GytTimingRows() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId, apiBase, isLoading]);
 
+  // 「過程」那一行(2026-09-18 FINDING-004):**默認折疊**,只露一行摘要;點開才是各步耗時,
+  // 以及「隱藏中間步驟」那顆開關 —— 它是閱讀偏好不是發送動作,從輸入條搬到這兒
+  // (與它管的東西放在一起:關了,對話裏那些「轉給 / 交回」行才藏起來)。
+  // 展開狀態不進 URL、不跨會話記:過程明細是偶爾看一眼的東西。
+  const [expanded, setExpanded] = useState(false);
+  const [hideToolCalls, setHideToolCalls] = useQueryState(
+    "hideToolCalls",
+    parseAsBoolean.withDefault(true),
+  );
+
   // 一行都没有就整块消失(不留空壳)—— 还没取到、或者这一轮刚被清空。
   if (rows.length === 0) return null;
 
@@ -255,25 +268,49 @@ export function GytTimingRows() {
       aria-label={TIMING_LABELS.ariaLabel}
       className="mx-auto w-full max-w-3xl text-[13px]"
     >
-      <div className="px-1.5 py-1 text-[12px] font-medium text-gray-400">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="flex min-h-11 w-full cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] font-medium text-gray-400 transition-colors hover:bg-gray-50 hover:text-gray-600"
+      >
+        <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", expanded && "rotate-90")} />
         {/* 「合計」不是「耗時」:它是各步之和,不是这一轮的墙上时间
             (排队和空档不算,真并行还会重复计)。理由在 timing-lib.totalSeconds。
             前缀「本輪 / 最近」的判据见文件头注。 */}
-        {cold ? TIMING_LABELS.headPrefixCold : TIMING_LABELS.headPrefix} {rows.length}{" "}
-        {TIMING_LABELS.headStep} · {TIMING_LABELS.headTotal}{" "}
-        {formatSeconds(totalSeconds(rows))}
-      </div>
-      <ul className="grid gap-px">
-        {rows.map((t) => (
-          // key 用后端发的 seq:它在一个进程里唯一且稳定。
-          // (上一版用的是下标 —— 那时列表只追加;现在 ingest 会按 seq 排序合并,
-          //  下标不再稳定,继续用它会让 React 把行认错、状态串位。)
-          <TimingRow
-            key={t.seq}
-            timing={t}
-          />
-        ))}
-      </ul>
+        <span>
+          {TIMING_LABELS.process} · {cold ? TIMING_LABELS.headPrefixCold : TIMING_LABELS.headPrefix}{" "}
+          {rows.length} {TIMING_LABELS.headStep} · {TIMING_LABELS.headTotal}{" "}
+          {formatSeconds(totalSeconds(rows))}
+        </span>
+      </button>
+      {expanded && (
+        <div className="mt-1 border-l-2 border-gray-100 pl-2">
+          <ul className="grid gap-px">
+            {rows.map((t) => (
+              // key 用后端发的 seq:它在一个进程里唯一且稳定。
+              // (上一版用的是下标 —— 那时列表只追加;现在 ingest 会按 seq 排序合并,
+              //  下标不再稳定,继续用它会让 React 把行认错、状态串位。)
+              <TimingRow
+                key={t.seq}
+                timing={t}
+              />
+            ))}
+          </ul>
+          {/* 開關本身 20px 高,整行給 44px;Label 的 htmlFor 讓整行都能點。
+              ⚠️ 開關的語義是「隱藏」,所以 checked = hideToolCalls;默認 true。 */}
+          <div className="mt-1.5 flex items-center gap-2 px-1.5 pointer-coarse:min-h-11">
+            <Switch
+              id="render-tool-calls-process"
+              checked={hideToolCalls ?? true}
+              onCheckedChange={setHideToolCalls}
+            />
+            <Label htmlFor="render-tool-calls-process" className="text-[12px] text-gray-500">
+              {TIMING_LABELS.hideSteps}
+            </Label>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
