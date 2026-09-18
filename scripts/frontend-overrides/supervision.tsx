@@ -1483,6 +1483,10 @@ function HazardRow({
   expanded,
   detail,
   sharedPhoto,
+  sharedUpload,
+  sharedCoverage,
+  onPickSharedPhoto,
+  onRetrySharedPhoto,
   usedPhotoId,
   dueDefaults,
   today,
@@ -1519,8 +1523,19 @@ function HazardRow({
   chosen: PrimaryAction | null;
   /** 这条的详情三态;`undefined` = 还没开始读(见 `DetailState` 头注)。 */
   detail: DetailState | undefined;
-  /** 面板顶上那张共用照片现在什么样(整屏一份,不是每行一份)。 */
+  /** 那张共用照片现在什么样(整屏一份,不是每行一份)。 */
   sharedPhoto: SharedPhotoState;
+  /**
+   * 共用照片那一格要的另外三樣(2026-09-18 線上走查):上傳框**長在複查那一格裏**,不再在面板頂上。
+   * 動作優先(F3)之後,人是點開某一行的「登記複查結論」才想到要照片的 —— 上傳框在屏幕最上面、
+   * 而「合格」灰着的理由只在 title 裏(觸屏沒有 hover),手機上看到的就是「兩顆按鈕點不動」。
+   * 狀態仍是整屏一份(一張照片給幾條用),只是**渲染在人正在看的那一格**。
+   */
+  /** 上傳那一格要的原始狀態(`undefined` = 還沒選過圖);`sharedPhoto` 是它派生出來的三態。 */
+  sharedUpload: PhotoUpload | undefined;
+  sharedCoverage: string;
+  onPickSharedPhoto: (file: File) => void;
+  onRetrySharedPhoto: () => void;
   /** 这一行上一次登记复查用掉的编号;null = 这一轮还没登记过(见 `reinspectBlocker`)。 */
   usedPhotoId: string | null;
   /** 按级别预填的整改期限(后端随清单给,`{级别: ISO}`);老后端是空表。 */
@@ -1965,6 +1980,19 @@ function HazardRow({
         />
       )}
       {needsPhoto && (
+        // 🔴 上傳框就在這一格裏(2026-09-18 線上走查抓到的:它原本在面板頂上,點開行裏的
+        //    「登記複查結論」只見兩顆灰按鈕和一句「這條用別的照片」,不知道照片往哪傳)。
+        //    狀態是整屏共用的,幾條同時開着就幾處顯示同一張 —— 這是對的,那正是「一張照片給幾條用」。
+        <SharedReinspectPhotoField
+          upload={sharedUpload}
+          busy={busy}
+          artifactBase={artifactBase}
+          coverage={sharedCoverage}
+          onPick={onPickSharedPhoto}
+          onRetry={onRetrySharedPhoto}
+        />
+      )}
+      {needsPhoto && (
         <RowPhotoChoice
           hazardNo={hazard.hazard_no}
           rowPhotoId={form.photo}
@@ -2056,9 +2084,10 @@ function HazardRow({
                 >
                   不合格
                 </Button>
-                {(复查拦路?.reason === "already-used" || 复查拦路?.reason === "uploading") && (
-                  // 「正在传」也常驻:那一档的等待是有尽头的,而人盯着屏幕不知道
-                  // 自己在等什么最难受(这条从改造前就是这么定的,措辞跟着共用改了指向)。
+                {复查拦路 && (
+                  // 差什麼**常駐說出來**(2026-09-18 線上走查:原來只有 already-used / uploading
+                  // 兩檔常駐,「還沒傳照片」藏在 title 裏 —— 觸屏沒有 hover,人看到的是兩顆
+                  // 灰按鈕點不動)。現在上傳框就在同一格裏,這句話指的東西就在眼前。
                   <span className="text-[12px] text-gray-600">{复查拦路.message}</span>
                 )}
               </div>
@@ -3481,28 +3510,9 @@ export function SupervisionPanel({
             该挨着;而它比未归属更急(未归属的隐患还在台账里,这些压根不在)。 */}
         <IngestFailureNotice apiBase={apiBase} projectFilter={projectFilter} />
 
-        {/* ── 这次复查的照片:整屏一格,排在清单**之前** ──────────────────────
-            🔴 **只在这一屏至少有一条能复查时才出现。** 一条都没有的时候摆一个上传框
-            是纯噪音:人会以为哪儿漏了一步,或者去猜它到底管什么。判据用 `reinspectable`
-            (= `availableActions(h).includes("reinspect")`),与下面每一行「合格/不合格」
-            那两颗按钮出不出现是同一张表 —— 分开写就会出现「有框没按钮」或者反过来。
-
-            排在清单之前是刻意的:人的动作顺序就是「先拍照,再一条条下结论」。
-            排在后面的话,前几条的按钮是灰的而解释在屏幕更下方,人得先滚下去才知道差什么。
-
-            ⚠️ 它**不在** `phase === "ready"` 之外出现:正在读 / 读不出来的时候
-            `list` 是空的,`reinspectable` 自然也空,这一格跟着不出现 —— 不用额外加判据,
-            但别把 `list` 换成快照里的数,那份数是「拉取那一刻」的。 */}
-        {reinspectable.length > 0 && (
-          <SharedReinspectPhotoField
-            upload={sharedPhoto}
-            busy={busy}
-            artifactBase={artifactBase}
-            coverage={sharedCoverage}
-            onPick={(file) => void pickSharedPhoto(file)}
-            onRetry={retrySharedPhoto}
-          />
-        )}
+        {/* 這次複查的照片那一格 2026-09-18 起**搬進每一行「登記複查結論」的格子裏**(HazardRow 的
+            needsPhoto 分支),不再在面板頂上:動作優先之後人是在行裏動手的,上傳框得在眼前。
+            狀態仍是整屏一份(`sharedPhoto`),幾條同時開着就幾處顯示同一張。 */}
 
         <div className="flex flex-col gap-2">
           {/* 🔴 三种下场必须长得不一样(取数那个 effect 的头注写了全部理由):
@@ -3562,6 +3572,10 @@ export function SupervisionPanel({
                 chosen={chosenActions[hazard.hazard_no] ?? null}
                 detail={details[hazard.hazard_no]}
                 sharedPhoto={sharedPhotoState}
+                sharedUpload={sharedPhoto}
+                sharedCoverage={sharedCoverage}
+                onPickSharedPhoto={(file) => void pickSharedPhoto(file)}
+                onRetrySharedPhoto={retrySharedPhoto}
                 usedPhotoId={usedPhotos[hazard.hazard_no] ?? null}
                 dueDefaults={snapshot?.dueDefaults ?? {}}
                 today={snapshot?.today ?? ""}
