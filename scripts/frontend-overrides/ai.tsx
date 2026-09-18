@@ -41,6 +41,8 @@ import { useMemo } from "react";
 import { resolveLang } from "@/lib/lang-lib";
 import { useHantText } from "@/lib/hant-convert";
 import { isSyntheticBreakpointInterrupt } from "@/lib/interrupt-lib";
+import { photoIdsInText } from "@/lib/supervision-lib";
+import { HazardResultCard } from "../hazard-result-card";
 
 function CustomComponent({
   message,
@@ -303,6 +305,36 @@ export function AssistantMessage({
     return null;
   }
 
+  // ── 拍完照那張隱患卡(2026-09-18 FINDING-001)掛在**本輪最後一條**調度中樞回答上方 ──
+  // 本輪 = 上一條 human 消息到這裏;照片編號從那條 human 消息裏抠(後端拼進去的
+  // `(照片编号:…)`,與 human.tsx 的 refPattern 同一個判據)。「最後一條」的判據:往後
+  // 到下一條 human 之前,沒有別的**非過程** AI 消息 —— 否則同一輪會渲出兩張卡。
+  const turnPhotoIds = (() => {
+    if (message?.type !== "ai" || isProcessMessage) return [] as string[];
+    const idx = thread.messages.findIndex((m) => m.id === message.id);
+    for (let i = idx - 1; i >= 0; i--) {
+      const m = thread.messages[i];
+      if (m.type === "human") return photoIdsInText(getContentString(m.content ?? []));
+    }
+    return [] as string[];
+  })();
+  const isLastAnswerOfTurn = (() => {
+    if (turnPhotoIds.length === 0 || !message) return false;
+    const idx = thread.messages.findIndex((m) => m.id === message.id);
+    for (let i = idx + 1; i < thread.messages.length; i++) {
+      const m = thread.messages[i];
+      if (m.type === "human") break;
+      if (m.type !== "ai") continue;
+      const named = "name" in m && m.name && m.name !== "supervisor";
+      const text = getContentString(m.content ?? []).trim();
+      const routing = ("tool_calls" in m ? (m.tool_calls ?? []) : []).some((tc) =>
+        /^transfer_to_/.test(tc.name ?? ""),
+      );
+      if (!named && !routing && !/^Transferring back to /.test(text)) return false;
+    }
+    return true;
+  })();
+
   return (
     <div className="group mr-auto flex w-full items-start gap-2">
       <div className="flex w-full flex-col gap-2">
@@ -346,6 +378,7 @@ export function AssistantMessage({
                 </Trace>
               ) : (
                 <div className="py-1">
+                  {isLastAnswerOfTurn && <HazardResultCard photoIds={turnPhotoIds} lang={lang} />}
                   <MarkdownText>{displayString}</MarkdownText>
                 </div>
               ))}

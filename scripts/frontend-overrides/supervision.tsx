@@ -312,7 +312,7 @@ type CallOutcome =
  * 某一处漏了 x-api-key(公网上表现为每次都 401)或者漏了错误归一化
  * (于是屏幕上出现一行 "Failed to fetch",而这是给工地上的人看的界面)。
  */
-async function callSupervision(
+export async function callSupervision(
   apiBase: string,
   endpoint: SupervisionEndpoint,
   body: Record<string, unknown>,

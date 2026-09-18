@@ -28,6 +28,7 @@ import {
   HAZARD_SCOPE_PENDING,
   hazardListUrl,
   parseHazardListEnvelope,
+  OPEN_SUPERVISION_EVENT,
 } from "@/lib/supervision-lib";
 import { SupervisionPanel, useApiBase, useProjectFilter } from "./supervision";
 
@@ -165,6 +166,15 @@ export function SupervisionEntry() {
   }, [apiBase, projectFilter, open]);
 
   const close = useCallback(() => setOpen(false), []);
+
+  // 拍完照那張隱患卡上的「去監理處置 →」(hazard-result-card.tsx,2026-09-18 FINDING-001):
+  // 它在對話流裏、這顆按鈕在動作條裏,中間隔着上游的 thread-index —— 用一個 DOM 事件
+  // 約定(supervision-lib.OPEN_SUPERVISION_EVENT),不把 open 狀態提三層。
+  useEffect(() => {
+    const onOpen = () => setOpen(true);
+    window.addEventListener(OPEN_SUPERVISION_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_SUPERVISION_EVENT, onOpen);
+  }, []);
 
   const hasPending = pendingCount !== null && pendingCount > 0;
   const badgeText = hasPending && pendingCount > BADGE_MAX ? `${BADGE_MAX}+` : `${pendingCount}`;

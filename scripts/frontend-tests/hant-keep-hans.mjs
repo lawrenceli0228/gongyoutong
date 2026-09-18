@@ -213,7 +213,7 @@ export const KEEP_HANS = Object.freeze({
       contexts: [/^NewExpression$/],
     },
   },
-  // ── 徽章查表的中文键(两个文件,共 8 个;supervision.tsx 那四个 2026-09-18 起退休)──────
+  // ── 徽章查表的中文键(三个文件,共 12 个;supervision.tsx 那四个 2026-09-18 退休、hazard-result-card.tsx 同日加四个)──
   //
   // 这一组是 2026-08-18 补上扫描器盲区后才**第一次可见**的:CJK 是合法的 JS
   // 标识符字符,所以 `{ 重大: "…" }` 里的键是 `Identifier` 而不是 `StringLiteral`,
@@ -227,6 +227,14 @@ export const KEEP_HANS = Object.freeze({
     未完成: { why: BADGE_INNER_TABLE_WHY("任务状态"), contexts: [/^object-key$/] },
     已完成: { why: BADGE_INNER_TABLE_WHY("任务状态"), contexts: [/^object-key$/] },
     没定期限: { why: BADGE_INNER_TABLE_WHY("任务状态"), contexts: [/^object-key$/] },
+  },
+  "hazard-result-card.tsx": {
+    // 拍完照那張隱患卡的級別徽章配色表(2026-09-18 FINDING-001):鍵是後端簡體原值
+    // (`grade` 的一般/严重,沒定級時念 `severity` 的重大/较大),與 tool-calls.tsx 那份同理。
+    严重: { why: BADGE_INNER_TABLE_WHY("隐患定级"), contexts: [/^object-key$/] },
+    一般: { why: BADGE_INNER_TABLE_WHY("隐患定级"), contexts: [/^object-key$/] },
+    重大: { why: BADGE_INNER_TABLE_WHY("隐患定级"), contexts: [/^object-key$/] },
+    较大: { why: BADGE_INNER_TABLE_WHY("隐患定级"), contexts: [/^object-key$/] },
   },
   "tool-calls.tsx": {
     重大: { why: BADGE_INNER_TABLE_WHY("隐患定级"), contexts: [/^object-key$/] },

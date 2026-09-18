@@ -1440,9 +1440,47 @@ def _row_payload(row: hazards.HazardRow, *, today_iso: str) -> dict[str, Any]:
     }
 
 
+_PHOTO_ID_KEY: Final[str] = "photo_id"
+"""清单端点按**照片**筛的参数名(2026-09-18 設計審查 FINDING-001)。
+
+拍完照回答上方那張隱患卡拿它取數:用戶消息裏就有 ``(照片编号:<32位hex>)``,卡自己打
+``?photo_id=a,b``(逗號分隔、多張照片一次拉),不等被 supervisor 的
+``output_mode="last_message"`` 丟掉的工具返回(CLAUDE.md 記過那條路一次都沒通過)。
+"""
+
+
+def _photo_ids(params: dict[str, Any]) -> list[str] | None:
+    """``?photo_id=a,b`` → 去重後的編號列表;沒傳 → None;有一個不是 32 位 hex → 400。
+
+    畸形的**拒**而不是當沒傳:當沒傳 = 整張台賬全回,卡上會列出別人照片的隱患讓人去確認。
+    空串(``?photo_id=``)同樣拒 —— 它不是三態裏的一態,只是打錯了。
+    """
+    raw = params.get(_PHOTO_ID_KEY)
+    if raw is None:
+        return None
+    ids = [part.strip().lower() for part in str(raw).split(",")]
+    bad = [i for i in ids if not artifacts.ARTIFACT_ID_RE.fullmatch(i)]
+    if bad or not ids:
+        raise _refuse(
+            400,
+            ErrorCode.INVALID_INPUT,
+            "照片编号不对:要 32 位的编号,多张用逗号隔开。",
+        )
+    return list(dict.fromkeys(ids))
+
+
 def _work_list_hazards(params: dict[str, Any]) -> _Result:
-    """GET /supervision/hazards —— 隐患清单。一次取全后在内存里筛(禁在循环里逐条查)。"""
-    scope = _text(params, "scope") or scoping.SCOPE_ACTIVE
+    """GET /supervision/hazards —— 隐患清单。一次取全后在内存里筛(禁在循环里逐条查)。
+
+    帶 ``photo_id`` 時按**照片**看:只出那幾張照片登記的隱患、狀態不限(scope 一律按「全部」算,
+    傳了別的也忽略)—— 卡片是按照片看的,同一張照片上一條已確認、一條待確認,卡上都要有。
+    """
+    photo_ids = _photo_ids(params)
+    scope = (
+        scoping.SCOPE_ALL
+        if photo_ids is not None
+        else (_text(params, "scope") or scoping.SCOPE_ACTIVE)
+    )
     if scope not in scoping.SCOPES:
         # 🔴 明确拒绝,**不许静默回落到某一档**:``scoping.in_scope`` 认不出的词会落在
         #    「在办」而且一声不吭(它的 docstring 点名要求调用方自己拦野词),
@@ -1456,6 +1494,9 @@ def _work_list_hazards(params: dict[str, Any]) -> _Result:
 
     project_id = _optional_project_id(params)
     rows = hazards.list_rows(project_id=project_id)
+    if photo_ids is not None:
+        wanted = set(photo_ids)
+        rows = [r for r in rows if r.photo_id in wanted]
 
     # 未归属一共几条(D6)。**它不过筛子** —— 回答的是「有没有一批隐患没人看得见」,
     # 拿筛子筛过反而会把它藏起来(口径与 ``tools.list_hazards`` 一致)。

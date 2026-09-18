@@ -1544,6 +1544,48 @@ class Test隐患清单:
             hazards.GRADE_SEVERE: TODAY_ISO,
         }
 
+    def test_按照片编号筛_只出那几张照片上认出来的_不看状态(self, client: TestClient) -> None:
+        """2026-09-18 設計審查 FINDING-001:拍完照回答上方那張隱患卡,拿用戶消息裏的
+        ``photo_id`` 直查台賬 —— 不等被 ``output_mode="last_message"`` 丟掉的工具返回。
+
+        判據:``?photo_id=a,b`` 只出這幾張照片登記的隱患,**狀態不限**(同一張照片上
+        認出的兩條,一條已確認、一條還待確認,卡上都要有);認不出的編號 → 空清單
+        (不是 400:照片還沒登記完是正常時序,前端會再拉一次)。
+        ⚠️ 帶 ``photo_id`` 時 scope 一律按「全部」算 —— 卡片是按**照片**看的,
+        而不是按流程檔看的;傳了別的 scope 也不報錯,直接忽略。
+        """
+        甲 = _photo("甲.jpg")
+        乙 = _photo("乙.jpg")
+        a = _new_hazard(item="用电隐患")
+        b = _new_hazard(item="材料堆放混乱")
+        c = _new_hazard(item="临边无防护")
+        _new_hazard(item="未穿反光衣")  # 另一張照片,不該出現
+        # 直接改庫裏的 photo_id(create 走的是共用那張 _photo("现场.jpg"))
+        import sqlite3
+
+        from gyt.config import get_settings
+
+        with sqlite3.connect(get_settings().sqlite_path) as conn:
+            conn.execute("UPDATE hazards SET photo_id=? WHERE hazard_no IN (?,?)", (甲, a, b))
+            conn.execute("UPDATE hazards SET photo_id=? WHERE hazard_no=?", (乙, c))
+        hazards.confirm(b)  # b 已確認:狀態不限也要出
+
+        單張 = _清单(client, photo_id=甲)
+        assert _编号(單張) == {a, b}
+        assert 單張["data"]["scope"] == scoping.SCOPE_ALL
+        兩張 = _清单(client, photo_id=f"{甲},{乙}")
+        assert _编号(兩張) == {a, b, c}
+        # 傳了 scope 也被照片維度蓋掉(待確認檔裏 b 已不在,但卡上仍要它)
+        assert _编号(_清单(client, photo_id=甲, scope=scoping.SCOPE_PENDING)) == {a, b}
+        assert _编号(_清单(client, photo_id="0" * 32)) == set()
+
+    def test_照片编号畸形就拒_不许静默当成全部(self, client: TestClient) -> None:
+        """一個非 32 位 hex 的串當 photo_id:400 而不是「當沒傳」—— 當沒傳 = 整張台賬
+        全回,卡上會列出別人照片的隱患讓人去確認。"""
+        resp = client.get("/supervision/hazards", params={"photo_id": "not-a-photo"})
+        assert resp.status_code == 400
+        assert resp.json()["ok"] is False
+
     def test_超期这一档与scoping的判据等价(self, client: TestClient, 台账: _台账) -> None:
         """判据只有一份(``scoping.is_overdue``),端点不许自己再写一套 —— 抄第二份的表现是
         面板筛出来的条数与对话里念的对不上,而两边测试都绿(TODO-45 A 组那类漂移)。

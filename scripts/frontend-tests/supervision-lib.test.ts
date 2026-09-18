@@ -79,6 +79,9 @@ import {
   parsePhotoEnvelope,
   patchHazard,
   pendingHazards,
+  photoIdsInText,
+  hazardsForPhotos,
+  OPEN_SUPERVISION_EVENT,
   primaryAction,
   secondaryActions,
   actionFields,
@@ -2600,5 +2603,44 @@ describe("primaryAction / secondaryActions —— 一條隱患只露一顆主按
       expect(f.photo).toBe(actionNeedsPhoto(a));
       expect(f.project).toBe(actionNeedsProject(a));
     }
+  });
+});
+
+describe("拍完照的隱患卡(2026-09-18 FINDING-001):從用戶消息裏抠照片編號,按照片直查台賬", () => {
+  const A = "27ba7e5933f54547b77a30772959b3fb";
+  const B = "b2943b0eb7fc43b9b4f2db2a0b180731";
+  const BASE = "http://localhost:2024";
+
+  it("photoIdsInText:認後端拼的「(照片编号:a、b)」,半角全角括號都認,去重,圖紙編號不算", () => {
+    expect(photoIdsInText(`看看这张照片。(照片编号:${A})`)).toEqual([A]);
+    expect(photoIdsInText(`查一下\n(照片编号:${A}、${B})`)).toEqual([A, B]);
+    expect(photoIdsInText(`（照片编号：${A}）`)).toEqual([A]);
+    expect(photoIdsInText(`(照片编号:${A}) 再看 (照片编号:${A})`)).toEqual([A]);
+    expect(photoIdsInText(`(图纸编号:${A})`)).toEqual([]);
+    expect(photoIdsInText("没有照片")).toEqual([]);
+    expect(photoIdsInText("")).toEqual([]);
+  });
+
+  it("hazardListUrl 帶 photoIds:逗號拼、不帶 scope(後端按照片看時 scope 一律全部)", () => {
+    expect(hazardListUrl(BASE, { photoIds: [A, B] })).toBe(
+      `${BASE}/supervision/hazards?photo_id=${A}%2C${B}`,
+    );
+    // 空數組 = 沒這個鍵(不許拼出 photo_id= 讓後端 400)
+    expect(hazardListUrl(BASE, { photoIds: [] })).toBe(`${BASE}/supervision/hazards`);
+  });
+
+  it("hazardsForPhotos:客戶端再篩一遍 photo_id(老後端不認 photo_id 參數時的兜底),沒 photo_id 的行不算", () => {
+    const rows = [
+      hazard({ hazard_no: "1", photo_id: A }),
+      hazard({ hazard_no: "2", photo_id: B }),
+      hazard({ hazard_no: "3" }),
+    ];
+    expect(hazardsForPhotos(rows, [A]).map((h) => h.hazard_no)).toEqual(["1"]);
+    expect(hazardsForPhotos(rows, [A, B]).map((h) => h.hazard_no)).toEqual(["1", "2"]);
+    expect(hazardsForPhotos(rows, [])).toEqual([]);
+  });
+
+  it("OPEN_SUPERVISION_EVENT:卡上「去監理處置」與入口按鈕之間的約定名,改了兩邊一起改", () => {
+    expect(OPEN_SUPERVISION_EVENT).toBe("gyt:open-supervision");
   });
 });

@@ -121,13 +121,16 @@ export function supervisionUrl(apiBase: string, endpoint: SupervisionEndpoint): 
  */
 export function hazardListUrl(
   apiBase: string,
-  opts: { scope?: string; projectId?: string | null } = {},
+  opts: { scope?: string; projectId?: string | null; photoIds?: readonly string[] } = {},
 ): string {
   const params = new URLSearchParams();
   const scope = (opts.scope ?? "").trim();
   if (scope) params.set("scope", scope);
   // 🔴 三态就靠这一行:只有 undefined / null 才「不写这个键」,空串必须写成有键无值。
   if (opts.projectId != null) params.set("project_id", opts.projectId);
+  // 按**照片**看(2026-09-18 FINDING-001,拍完照那張隱患卡):逗號拼、後端按「全部」算。
+  // 空數組 = 不寫這個鍵 —— `photo_id=` 空串後端會 400。
+  if (opts.photoIds && opts.photoIds.length > 0) params.set("photo_id", opts.photoIds.join(","));
   const query = params.toString();
   const base = `${stripTrailingSlash(apiBase)}/supervision/hazards`;
   return query ? `${base}?${query}` : base;
@@ -2587,4 +2590,47 @@ function rectifyNote(h: HazardBrief): { note?: string } {
   if (h.due_display) parts.push(h.overdue ? `已超期(期限 ${h.due_display})` : `期限 ${h.due_display}`);
   else if (h.overdue) parts.push("已超期");
   return parts.length ? { note: parts.join("・") } : {};
+}
+
+// ---------------------------------------------------------------------------
+// 拍完照的隱患卡(2026-09-18 設計審查 FINDING-001)
+// ---------------------------------------------------------------------------
+
+/**
+ * 從用戶消息裏抠出照片編號。認的是後端 `core/uploads.py` 拼進消息的那一段
+ * `(照片编号:a、b)`(頓號分隔、半角或全角括號),與 human.tsx 的 `refPattern` 同一個判據。
+ * 圖紙編號**不算**(那是 cad 的事)。去重、保持出現順序。
+ *
+ * 這是隱患卡的**唯一數據入口**:supervisor 的 `output_mode="last_message"` 把子 Agent 的
+ * 工具返回整個丟掉(CLAUDE.md 記着那張 HazardIntakeCard 一次都沒渲染出來過),
+ * 而用戶消息裏的編號是穩的 —— 卡拿它直查台賬。
+ */
+export function photoIdsInText(text: string): string[] {
+  const re = /[(（]照片编号[:：]\s*([0-9a-f]{32}(?:、[0-9a-f]{32})*)[)）]/g;
+  const out: string[] = [];
+  for (const m of text.matchAll(re)) {
+    for (const id of m[1].split("、")) if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** 客戶端再按 photo_id 篩一遍 —— 老後端不認 `?photo_id` 時會把整張台賬回來,不能照單全收。 */
+export function hazardsForPhotos(
+  list: readonly HazardBrief[],
+  photoIds: readonly string[],
+): HazardBrief[] {
+  if (photoIds.length === 0) return [];
+  return list.filter((h) => !!h.photo_id && photoIds.includes(h.photo_id));
+}
+
+/**
+ * 卡上「去監理處置 →」與動作條上那顆入口按鈕之間的約定:卡 dispatch 這個 DOM 事件,
+ * SupervisionEntry 收到就把面板打開。用事件而不是把 open 狀態提到頂層:兩件東西
+ * 各在對話流裏一個、動作條裏一個,中間隔着上游的 thread-index,提狀態要穿三層。
+ */
+export const OPEN_SUPERVISION_EVENT = "gyt:open-supervision";
+
+export function requestOpenSupervision(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(OPEN_SUPERVISION_EVENT));
 }
