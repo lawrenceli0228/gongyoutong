@@ -1580,6 +1580,33 @@ class Test隐患清单:
         assert 待确认["data"]["scope"] == scoping.SCOPE_PENDING
         assert _编号(_清单(client, photo_id="0" * 32)) == set()
 
+    def test_同一张照片重传_按内容指纹也能找到(self, client: TestClient) -> None:
+        """重傳同一張照片會登記成**新的** artifact_id,而隱患那一行冪等命中、``photo_id`` 停在
+        第一次那個。只按 id 匹配的話,重傳後的對話裏那張卡會空着,而隱患明明在 ——
+        所以端點還按 sidecar 的 ``sha256`` ↔ 行裏的 ``photo_sha256`` 匹配。
+        """
+        import hashlib
+
+        第一次 = _photo("第一次.jpg")
+        重傳 = _photo("重傳.jpg")  # 同一份 FAKE_JPEG 字節,另一個編號
+        assert 第一次 != 重傳
+        registration = hazards.create(
+            hazard_no=generate_unique(DocKind.HAZARD, lambda no: hazards.fetch(no) is not None),
+            project_id=PROJECT,
+            photo_sha256=hashlib.sha256(FAKE_JPEG).hexdigest(),
+            photo_id=第一次,
+            item="用电隐患",
+            severity="较大",
+            grade=hazards.GRADE_NORMAL,
+            grading_version="1",
+            needs_grading=False,
+        )
+        no = registration.row.hazard_no
+        assert _编号(_清单(client, photo_id=第一次)) == {no}
+        assert _编号(_清单(client, photo_id=重傳)) == {no}, "重傳的編號按內容指紋也該找到它"
+        # 認不出的編號(沒有 sidecar)不報錯、也匹配不到任何東西
+        assert _编号(_清单(client, photo_id="0" * 32)) == set()
+
     def test_照片编号畸形就拒_不许静默当成全部(self, client: TestClient) -> None:
         """一個非 32 位 hex 的串當 photo_id:400 而不是「當沒傳」—— 當沒傳 = 整張台賬
         全回,卡上會列出別人照片的隱患讓人去確認。"""

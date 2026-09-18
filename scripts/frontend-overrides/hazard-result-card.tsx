@@ -51,6 +51,7 @@ import type { Lang } from "@/lib/lang-lib";
 import {
   actionBody,
   confirmBody,
+  HAZARD_SCOPE_ALL,
   hazardListUrl,
   hazardsForPhotos,
   hazardStatusZh,
@@ -83,6 +84,24 @@ function chipValue(h: HazardBrief): string {
 }
 
 type Phase = "idle" | "ready";
+
+/**
+ * 卡片出現時的動效(2026-09-18 用戶反饋:「隱患沒有動畫提示」)。
+ * 這張卡是整條流程裏**最該被看見的一下** —— 答案正文是一段字,卡從中間滑上來、
+ * 邊框亮兩下綠光,眼睛才會先落到它上面。只做兩下、1.2 秒一下,不常駐閃:常駐閃是噪音。
+ * 關鍵幀內聯在組件裏、`gyt-` 前綴(與 GytStatusCards 的 FlowStyle 同一套紀律:globals.css
+ * 是上游文件,不動);`prefers-reduced-motion` 一律關。
+ */
+function CardMotionStyle() {
+  return (
+    <style>{`
+      @keyframes gyt-hazard-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+      @keyframes gyt-hazard-halo { 0%, 100% { box-shadow: 0 0 0 0 rgba(22,128,92,0); } 40% { box-shadow: 0 0 0 6px rgba(22,128,92,.22); } }
+      .gyt-hazard-card { animation: gyt-hazard-in .35s ease-out both, gyt-hazard-halo 1.2s ease-out .35s 2; }
+      @media (prefers-reduced-motion: reduce) { .gyt-hazard-card { animation: none; } }
+    `}</style>
+  );
+}
 
 /** 多個串一次過 useHantText(hook 不能放進 map 裏):用 \u0001 拼、轉完再拆,字典是逐字換的,分隔符不動。 */
 const SEP = "\u0001";
@@ -121,7 +140,13 @@ export function HazardResultCard({ photoIds, lang }: { photoIds: readonly string
         }
         const parsed = parseHazardListEnvelope(await res.text());
         if (cancelled) return;
-        setList(parsed.ok ? hazardsForPhotos(parsed.hazards, photoIds) : []);
+        // 後端認得 `?photo_id` 時,沒傳 scope 它會回「全部」;老後端不認這個參數,回的是缺省「在办」
+        // 且整張台賬 —— 那時才在客戶端按 photo_id 兜底篩。
+        // 🔴 認得的時候**不許再按 photo_id 篩一遍**:同一張照片重傳會登記成新編號,而隱患那一行
+        //    冪等命中、photo_id 停在第一次那個,後端是按內容指紋(sha256)匹配到的 ——
+        //    客戶端再按 id 篩就把它篩掉了,卡空着而隱患明明在(2026-09-18 實測到)。
+        const honored = parsed.ok && parsed.scope === HAZARD_SCOPE_ALL;
+        setList(!parsed.ok ? [] : honored ? parsed.hazards : hazardsForPhotos(parsed.hazards, photoIds));
         setPhase("ready");
       } catch {
         if (!cancelled) {
@@ -229,7 +254,8 @@ export function HazardResultCard({ photoIds, lang }: { photoIds: readonly string
   const pendingCount = list.filter((h) => h.status === "pending").length;
 
   return (
-    <div className="mb-2 overflow-hidden rounded-xl border border-[var(--gyt-line)] bg-white text-[14px]">
+    <div className="gyt-hazard-card mb-2 overflow-hidden rounded-xl border border-[var(--gyt-line)] bg-white text-[14px]">
+      <CardMotionStyle />
       <div className="flex items-center gap-2 border-b border-[var(--gyt-line)] px-3 py-2 font-bold">
         <ShieldAlert className="size-4 text-[var(--gyt-green-deep)]" />
         <span>看到 {list.length} 處隱患</span>

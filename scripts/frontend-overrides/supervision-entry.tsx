@@ -21,7 +21,7 @@
  * 在 @/lib/supervision-lib —— 那一份零依赖,scripts/frontend-tests/ 的 vitest 直接测。
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardCheck } from "lucide-react";
 import { getApiKey } from "@/lib/api-key";
 import { useStreamContext } from "@/providers/Stream";
@@ -116,8 +116,26 @@ export function SupervisionEntry() {
     [stream.messages],
   );
   const sessionKey = sessionPhotoIds.join(",");
+  /** 這一輪跑完(isLoading 翻 false)立刻重數一次,不等 60 秒那一拍 —— 識完隱患那一刻徽章就該動。 */
+  const runDone = !stream.isLoading;
   /** null = 还没成功读到过(不显示徽章);数字 = 台账里待确认几条。 */
   const [pendingCount, setPendingCount] = useState<number | null>(null);
+  /**
+   * 徽章上的數**變大**了就彈一下(2026-09-18 用戶反饋:「隱患沒有動畫提示」)。
+   * 只在變大時彈:變小是有人處理掉了,不需要提醒;首次從 null 拿到數也彈 —— 對剛打開頁面的人,
+   * 那就是「有活等你」的第一聲。900ms 後自動停,不常駐。
+   */
+  const [bump, setBump] = useState(false);
+  const prevCount = useRef<number | null>(null);
+  useEffect(() => {
+    if (pendingCount === null) return;
+    const grew = prevCount.current === null ? pendingCount > 0 : pendingCount > prevCount.current;
+    prevCount.current = pendingCount;
+    if (!grew) return;
+    setBump(true);
+    const t = setTimeout(() => setBump(false), 900);
+    return () => clearTimeout(t);
+  }, [pendingCount]);
 
   /**
    * 数一次待确认。
@@ -181,9 +199,9 @@ export function SupervisionEntry() {
       clearInterval(timer);
       controller.abort();
     };
-    // sessionKey 代替 sessionPhotoIds 進依賴:按內容比
+    // sessionKey 代替 sessionPhotoIds 進依賴:按內容比;runDone 翻 true 時重跑 = 跑完立刻重數
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiBase, projectFilter, open, sessionKey]);
+  }, [apiBase, projectFilter, open, sessionKey, runDone]);
 
   const close = useCallback(() => setOpen(false), []);
 
@@ -207,6 +225,12 @@ export function SupervisionEntry() {
           · shrink-0 —— 不被兄弟元素压;
           · min-h-11 / min-w-11(44px)—— 触摸目标下限,sm: 之后归零,桌面观感不变。
           按钮上只放两个字也是为这条:这一行现在有四件东西了,每多一个字都是宽度。 */}
+      {/* 徽章彈一下的關鍵幀,內聯、gyt- 前綴(globals.css 是上游文件不動);減少動效時關。 */}
+      <style>{`
+        @keyframes gyt-badge-bump { 0% { transform: scale(1); } 35% { transform: scale(1.45); } 70% { transform: scale(.92); } 100% { transform: scale(1); } }
+        .gyt-badge-bump { animation: gyt-badge-bump .9s cubic-bezier(.2,.9,.3,1.3); }
+        @media (prefers-reduced-motion: reduce) { .gyt-badge-bump { animation: none; } }
+      `}</style>
       <button
         type="button"
         onClick={() => setOpen(true)}
@@ -223,7 +247,9 @@ export function SupervisionEntry() {
           // 行内的坏处是按钮会变宽一点 —— 但宽度是可预期的(上面 BADGE_MAX 封了顶)。
           <span
             aria-hidden="true"
-            className="inline-flex min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 py-0.5 text-[11px] font-bold text-white tabular-nums"
+            className={`inline-flex min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 py-0.5 text-[11px] font-bold text-white tabular-nums${
+              bump ? " gyt-badge-bump" : ""
+            }`}
           >
             {badgeText}
           </span>

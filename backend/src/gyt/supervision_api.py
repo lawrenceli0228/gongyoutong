@@ -1495,8 +1495,22 @@ def _work_list_hazards(params: dict[str, Any]) -> _Result:
     project_id = _optional_project_id(params)
     rows = hazards.list_rows(project_id=project_id)
     if photo_ids is not None:
+        # 🔴 除了按 photo_id,還按**內容指紋**匹配:同一張照片重傳一次會登記成**新的** artifact_id,
+        #    而隱患那一行是冪等命中(D14:``(project_id, photo_sha256, item)``),``photo_id`` 停在
+        #    第一次那個 —— 只按 id 匹配,重傳後的對話裏那張卡會空着,而隱患明明在。
+        #    sidecar 裏的 ``sha256`` 與 safety 登記時算的 ``photo_sha256`` 是同一份字節的同一個
+        #    摘要(``artifacts.register`` 存的 payload = ``resolve().read_bytes()`` 讀回的)。
+        #    讀不到 sidecar 的編號當它沒有指紋(照片可能已被清理),不報錯。
         wanted = set(photo_ids)
-        rows = [r for r in rows if r.photo_id in wanted]
+        shas: set[str] = set()
+        for pid in photo_ids:
+            try:
+                sha = artifacts.read_meta(pid).get("sha256")
+            except (ArtifactNotFound, OSError, ValueError):
+                continue
+            if isinstance(sha, str) and sha:
+                shas.add(sha)
+        rows = [r for r in rows if r.photo_id in wanted or r.photo_sha256 in shas]
 
     # 未归属一共几条(D6)。**它不过筛子** —— 回答的是「有没有一批隐患没人看得见」,
     # 拿筛子筛过反而会把它藏起来(口径与 ``tools.list_hazards`` 一致)。
