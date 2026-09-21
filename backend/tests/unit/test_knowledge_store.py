@@ -406,7 +406,47 @@ def test_数向量块_按scope项目source三元组分别计数() -> None:
     }
 
 
-def test_数向量块_内部炸了也回空且不抛(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_数向量块_走的是sqlite快路_chromadb压根不参与(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔴 /library 数块**不许**再去建 chromadb 客户端 —— 快慢差三个数量级。
+
+    实测(2026-09-21,948 块 / 3 份规范的库):惰性 `import chromadb` 4.5s
+    + 建 PersistentClient 与全量 metadata 扫描 1.5s,而直接读它那个 sqlite 是 0.012s。
+    也就是后端重启后第一次点「📚 資料庫」要干等 6 秒,买到的只是三个数字。
+
+    判据写成「把 PersistentClient 换成一炸就响的」:回落路一旦被走到就炸,
+    所以这条绿 = 快路真的把活干完了。**这也是唯一能抓住「快路被误删/被绕过」的用例** ——
+    只看返回值的话,慢路算出来的数字和快路一模一样,删掉快路没有任何东西会红。
+    """
+    _播种([("global", "", "GB50016.pdf"), ("global", "", "GB50016.pdf"), ("project", "P1", "任务书.pdf")])
+
+    def 炸(**_kwargs: object) -> object:
+        raise AssertionError("走到 chromadb 了 —— 快路没生效")
+
+    monkeypatch.setattr(chromadb, "PersistentClient", 炸)
+
+    assert store.count_chunks_by_doc() == {
+        ("global", "", "GB50016.pdf"): 2,
+        ("project", "P1", "任务书.pdf"): 1,
+    }
+
+
+def test_数向量块_快路分不出组但库里有货时_回落到chromadb(monkeypatch: pytest.MonkeyPatch) -> None:
+    """schema 漂移的形状是「查得到表、但一行都不返回」,**不抛异常**。
+
+    所以快路不能只接 sqlite3.Error 就算数:chromadb 哪天改了 segments/embeddings 的
+    关联方式,那条 JOIN 会安安静静地返回空,于是每份文档都成了 0 块,页面上**永远**
+    显示「入库中」,而日志、控制台、测试三处都不说话。哨兵是「embeddings 表非空」。
+
+    这里用「把 SQL 换成一条恒空的查询」来造漂移,断言最终数出来的还是对的
+    (= 回落到 chromadb 真的发生了)。
+    """
+    _播种([("global", "", "GB50016.pdf"), ("global", "", "GB50016.pdf")])
+    monkeypatch.setattr(store, "_COUNT_CHUNKS_SQL", "SELECT '', '', '', 0 WHERE 0")
+
+    assert store.count_chunks_by_doc() == {("global", "", "GB50016.pdf"): 2}
+
+
+def test_数向量块_两条路都断了才回空且不抛(monkeypatch: pytest.MonkeyPatch) -> None:
     """版本差异 / 磁盘异常 / 撞上竞态,一律按「这次数不出来」处理,绝不把异常放出去。
 
     ⚠️ 先播种再炸,是为了让「回 {}」这件事**有区分度**:空库也回 {},
@@ -419,6 +459,7 @@ def test_数向量块_内部炸了也回空且不抛(monkeypatch: pytest.MonkeyP
     def 炸(**_kwargs: object) -> object:
         raise RuntimeError("假装 chromadb 在这儿炸了")
 
+    monkeypatch.setattr(store, "_count_chunks_via_sqlite", lambda: None)
     monkeypatch.setattr(chromadb, "PersistentClient", 炸)
 
     assert store.count_chunks_by_doc() == {}

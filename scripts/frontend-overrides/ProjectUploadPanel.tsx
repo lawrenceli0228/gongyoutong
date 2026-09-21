@@ -1244,10 +1244,15 @@ export function LibraryButton() {
         </div>
 
         <div className="flex flex-col gap-5 overflow-y-auto px-7 py-6">
-          {loading && (
+          {/* 🔴 「加載中」只在**手里一份数据都没有**时占整个抽屉(首开那一次)。
+              在此之前的写法是 `{!loading && data && ...}` —— 只要 loading 为真就把
+              已经渲染好的列表整个换掉,于是**每点一次「刷新」、每 4 秒轮询一次**
+              (有文件在入库时),列表就闪成一句「加載中…」再闪回来。列表越长越难看,
+              而且人正看着某一行时它会在脚下消失。现在旧数据留在原地。 */}
+          {loading && !data && (
             <div className="py-10 text-center text-[15px] text-[var(--gyt-muted)]">加載中…</div>
           )}
-          {!loading && data && <LibraryBody data={data} reload={load} />}
+          {data && <LibraryBody data={data} reload={load} />}
         </div>
       </div>
     </div>

@@ -175,6 +175,13 @@ function ThreadInner() {
   useEffect(() => setMounted(true), []);
   /** 输入框本体 —— 能力卡填例句之后要把光标送进去(2026-08-25 设计审计 D2)。 */
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  /**
+   * 点四张能力卡时,输入框**占位符**换成那张卡的例句(灰字、选不中、一打字就让位)。
+   * 空串 = 没点过任何卡,用下面那句默认占位符。
+   * 🔴 刻意不写进 `input`:例句是「可以这么问」的示范,不是工友说的话 ——
+   *    真填进去的话它选得中、要先删掉才能打自己的,不删直接按發送就当他的话发出去了。
+   */
+  const [sampleHint, setSampleHint] = useState("");
   const {
     contentBlocks,
     setContentBlocks,
@@ -534,22 +541,20 @@ function ThreadInner() {
               🔴 進了對話只露一行藥丸(compact,2026-09-18 FINDING-002):四張卡在對話頁常駐時
                  手機上吃掉 330px,對話只剩 250px;正在忙的 Agent 名字藥丸自己會報。 */}
           <div className={cn(!chatStarted && "pt-16")}>
-            {/* onPick(2026-08-25 设计审计 D2):点带例句的卡 → 把例句**填进输入框**
-                并聚焦,不自动发送。卡片本身仍然是状态灯不是按钮,完整推演在
-                GytStatusCards.tsx 那个 onClick 上方。
-                聚焦要 requestAnimationFrame 兜一下:setInput 触发的重渲染这一帧还没提交,
-                同步 focus 会落在旧节点上,表现是「字填进去了但光标不在里面」。 */}
+            {/* onPick(2026-08-25 设计审计 D2):点带例句的卡 → 把例句**放进输入框的占位符**
+                并聚焦。卡片本身仍然是状态灯不是按钮,完整推演在 GytStatusCards.tsx
+                那个 onClick 上方。
+                🔴 **是占位符,不是真往输入框里填字**(2026-09-21 定)。填真字的毛病:
+                   那句话选得中、删得掉、不删直接按發送就发出去了 —— 例句是「可以这么问」
+                   的示范,不是工友的原话,替他把话写进嘴里是替他做决定。占位符是灰的、
+                   选不中,他一打字就自己让位,不用先全选删掉。
+                聚焦要 requestAnimationFrame 兜一下:setState 触发的重渲染这一帧还没提交,
+                同步 focus 会落在旧节点上。 */}
             <GytStatusCards
               compact={chatStarted}
               onPick={(text) => {
-                setInput(text);
-                requestAnimationFrame(() => {
-                  const el = composerRef.current;
-                  if (!el) return;
-                  el.focus();
-                  // 光标落到末尾,方便直接接着改(默认会全选或落在开头)
-                  el.setSelectionRange(text.length, text.length);
-                });
+                setSampleHint(text);
+                requestAnimationFrame(() => composerRef.current?.focus());
               }}
             />
           </div>
@@ -708,7 +713,7 @@ function ThreadInner() {
                             form?.requestSubmit();
                           }
                         }}
-                        placeholder="對着我説話、拍張照,或問一句…"
+                        placeholder={sampleHint || "對着我説話、拍張照,或問一句…"}
                         className="field-sizing-content resize-none border-none bg-transparent p-5 pb-2 text-[17px] text-[var(--gyt-ink-soft)] shadow-none ring-0 outline-none placeholder:text-[var(--gyt-muted)] focus:ring-0 focus:outline-none"
                       />
 

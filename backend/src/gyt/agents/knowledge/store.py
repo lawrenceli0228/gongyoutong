@@ -216,13 +216,88 @@ def get_vectorstore() -> Chroma:
         )
 
 
+# Chroma 落盘时的 sqlite 文件名(chromadb 1.x 固定这个名字,与 PersistentClient 的 path 同级)。
+_CHROMA_SQLITE_FILENAME: Final = "chroma.sqlite3"
+
+# 直接从 Chroma 的 sqlite 里按文档分组数块。
+#
+# 为什么敢绕开 chromadb 自己的 API:这三个值(scope / project_id / source)是**我们自己**
+# 入库时写进 metadata 的,不是 chroma 的内部字段;而 embedding_metadata 这张表就是它存
+# metadata 的地方,一行一个 key。所以这条 SQL 读的仍然是我们写下去的东西,只是不再让
+# chromadb 把**整库每一条** metadata 反序列化成 Python 对象再由我们 Counter 一遍。
+#
+# 🔴 `COUNT(DISTINCT e.embedding_id)` 不是装饰:一个 collection 在 `segments` 里有**两条**
+#    (metadata 段 + vector 段),哪天 chroma 把同一个 chunk 在两个段里都落一行,
+#    `COUNT(*)` 就会**整库翻倍**,而页面上只会显示成「已入库 1896 段」这种没人会起疑的数字。
+_COUNT_CHUNKS_SQL: Final = """
+SELECT COALESCE(sc.string_value, ''), COALESCE(pj.string_value, ''), src.string_value,
+       COUNT(DISTINCT e.embedding_id)
+  FROM embeddings e
+  JOIN segments sg ON sg.id = e.segment_id
+  JOIN collections co ON co.id = sg.collection AND co.name = ?
+  JOIN embedding_metadata src ON src.id = e.id AND src.key = 'source'
+  LEFT JOIN embedding_metadata sc ON sc.id = e.id AND sc.key = 'scope'
+  LEFT JOIN embedding_metadata pj ON pj.id = e.id AND pj.key = 'project_id'
+ GROUP BY 1, 2, 3
+"""
+
+
+def _count_chunks_via_sqlite() -> dict[tuple[str, str, str], int] | None:
+    """快路:只读 Chroma 的 sqlite 数块。返回 None = 这条路不可信,让调用方回落到 chromadb。
+
+    为什么要有这条路(2026-09-21 实测,948 块 / 3 份规范的库):
+
+        惰性 `import chromadb`(进程内第一次开资料库才付)    4.5 s
+        建 PersistentClient + 全量 metadata 扫描(首次)       1.5 s
+        本函数这条 SQL(含建连接)                            0.012 s
+
+    也就是后端重启后第一次点「📚 資料庫」要干等 6 秒,而那 6 秒买到的只是三个数字。
+    两条路在同一个库上对过账,分组和计数**逐条一致**。
+
+    ⚠️ 只读连接(`mode=ro`),绝不碰写:这个库正被 ingest / 检索那条路用着。
+       实测 journal_mode=delete(不是 WAL),所以只读连接看到的就是已提交状态。
+    ⚠️ **回落判据**要留神:schema 漂移时这条 SQL 多半是「查得到表但一行都不返回」,
+       不抛异常。所以拿 `embeddings` 表非空当哨兵 —— 库里明明有块却一组都分不出来,
+       那就是我们的 JOIN 跟新版对不上了,交回给 chromadb,别把「入库中」挂死在页面上。
+    """
+    import sqlite3
+
+    path = get_settings().chroma_dir / _CHROMA_SQLITE_FILENAME
+    if not path.is_file():
+        return {}  # 库还没建过 —— 这不是漂移,如实回「一块都没有」
+
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(_COUNT_CHUNKS_SQL, (COLLECTION_NAME,)).fetchall()
+            if not rows:
+                total = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+                if total:
+                    logger.warning(
+                        "Chroma sqlite 里有 %d 条向量却一组都分不出来,回落到 chromadb 数", total
+                    )
+                    return None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        logger.debug("直接读 Chroma sqlite 失败,回落到 chromadb", exc_info=True)
+        return None
+
+    return {(str(sc), str(pj), str(src)): int(n) for sc, pj, src, n in rows}
+
+
 def count_chunks_by_doc() -> dict[tuple[str, str, str], int]:
     """数每份文档在向量库里的 chunk 数,键 (scope, project_id, source)。供 /library 标入库进度。
 
-    只读 metadata、**绝不加载 embedding 模型** —— 走 chromadb 原生 client(不经 get_vectorstore,
-    否则一开资料库就把 2.2GB BGE-M3 拉进内存)。库还没建 / 并发锁 / 版本差异都回空 dict,绝不抛:
+    只读 metadata、**绝不加载 embedding 模型** —— 否则一开资料库就把 2.2GB BGE-M3 拉进内存。
+    先走 `_count_chunks_via_sqlite`(毫秒级);它说不可信才回落到 chromadb 原生 client
+    (秒级,见那边的实测表)。库还没建 / 并发锁 / 版本差异都回空 dict,绝不抛:
     浏览端点不该被向量库的临时状态拖垮(数不出就当「暂无 / 入库中」,下次刷新再数)。
     """
+    fast = _count_chunks_via_sqlite()
+    if fast is not None:
+        return fast
+
     import chromadb  # 惰性:见文件顶部说明(chromadb 也不轻,别进 import gyt.graph 的热路径)
 
     try:
