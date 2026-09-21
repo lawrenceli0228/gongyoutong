@@ -1,4 +1,4 @@
-"""从图上**已经写着的标高**推算层高 —— 纯函数,不碰盘、不联网、不调模型。
+"""从图上**已经写着的标高**推算总高度与层高 —— 纯函数,不碰盘、不联网、不调模型。
 
 ===========================================================================
 为什么这一步必须在代码里做,而不是让模型自己减
@@ -81,22 +81,26 @@ def parse_elevations(texts: Iterable[str]) -> list[float]:
     return sorted(found)
 
 
-def derive_floor_heights(texts: Iterable[str]) -> dict[str, Any] | None:
-    """由图上标高推算层高。推不出(或数据不够)返回 None —— **绝不挑一个最像的**。
+def derive_levels(texts: Iterable[str]) -> dict[str, Any] | None:
+    """由图上标高推算**总高度**与**层高**。标高不足两档(什么都推不出)才返回 None。
 
     返回:
         {
           "elevations": [-0.45, 0.0, 3.3, ...],        # 认出来的标高,低→高
           "steps": [{"from": 0.0, "to": 3.3, "height": 3.3}, ...],   # 相邻两档的高差
-          "typical": 3.3,                               # 标准层高(重复最多的那个)
-          "typical_count": 3,                           # 这段楼梯连着几层
-          "ladder": [2, 3, 4],                          # 楼梯那几档在 steps 里的下标
+          "overall": {"top": 20.3, "bottom": -0.45, "span": 20.75},  # 最高档到最低档
+          "typical": 3.3 | None,                        # 标准层高;推不出就是 None
+          "typical_count": 3 | None,                    # 这段楼梯连着几层
+          "ladder": [2, 3, 4] | None,                   # 楼梯那几档在 steps 里的下标
           "source": "derived_from_elevations",          # 出处标记,工具层据此措辞
         }
 
-    判据见模块头与 config 那三个阈值:落在合理层高区间内、且重复够次数的差值才算标准层高;
-    并列时取**矮的那个**(层高在安全计算里往小取更保守,而且并列本身就该让人自己看
-    `steps` 复核)。
+    🔴 **`overall` 和 `typical` 是两件独立的事,别捆在一起。** 第一版把它们捆着:
+    层高推不出就整个回 None,于是「总高度是多少」照样答不了 —— 而总高度只要有两档标高
+    就一定算得出。2026-09-21 用户第二次问的正是这个。
+
+    层高的判据见模块头与 config 那三个阈值;推不出就把 `typical` 留成 None,
+    **绝不挑一个最像的**。
     """
     settings = get_settings()
     elevations = parse_elevations(texts)
@@ -107,6 +111,20 @@ def derive_floor_heights(texts: Iterable[str]) -> dict[str, Any] | None:
         {"from": low, "to": high, "height": round(high - low, _ROUND_DIGITS)}
         for low, high in zip(elevations, elevations[1:], strict=False)
     ]
+    overall = {
+        "top": elevations[-1],
+        "bottom": elevations[0],
+        "span": round(elevations[-1] - elevations[0], _ROUND_DIGITS),
+    }
+    出: dict[str, Any] = {
+        "elevations": elevations,
+        "steps": steps,
+        "overall": overall,
+        "typical": None,
+        "typical_count": None,
+        "ladder": None,
+        "source": "derived_from_elevations",
+    }
 
     runs = _contiguous_runs(
         steps,
@@ -114,27 +132,23 @@ def derive_floor_heights(texts: Iterable[str]) -> dict[str, Any] | None:
         high=settings.cad_floor_height_max_m,
     )
     if not runs:
-        return None
+        return 出
 
     最长 = max(len(r) for r in runs)
     if 最长 < settings.cad_floor_height_min_repeats:
-        return None
+        return 出
 
     并列 = {steps[r[0]]["height"] for r in runs if len(r) == 最长}
     if len(并列) > 1:
         # 两段一样长、层高却不同(常见于一栋楼两个体量各自成系统)。这时「标准层高」
-        # 这个说法本身就不成立,报哪个都是替人做判断 —— 如实回 None,让他自己看标高。
-        return None
+        # 这个说法本身就不成立,报哪个都是替人做判断 —— 留 None,让他自己看标高。
+        return 出
 
     那一段 = next(r for r in runs if len(r) == 最长)
-    return {
-        "elevations": elevations,
-        "steps": steps,
-        "typical": steps[那一段[0]]["height"],
-        "typical_count": 最长,
-        "ladder": 那一段,  # 楼梯那几档在 steps 里的下标,describe 与调用方复核都用它
-        "source": "derived_from_elevations",
-    }
+    出["typical"] = steps[那一段[0]]["height"]
+    出["typical_count"] = 最长
+    出["ladder"] = 那一段  # 楼梯那几档在 steps 里的下标,describe 与调用方复核都用它
+    return 出
 
 
 def _contiguous_runs(steps: list[dict[str, float]], *, low: float, high: float) -> list[list[int]]:
@@ -167,16 +181,36 @@ def _contiguous_runs(steps: list[dict[str, float]], *, low: float, high: float) 
     return runs
 
 
-def describe_floor_heights(levels: dict[str, Any]) -> str:
-    """把推算结果说成工地上听得懂的一句话(工具层拼进 user_msg)。
+def describe_levels(levels: dict[str, Any]) -> str:
+    """把推算结果说成工地上听得懂的话(工具层拼进 user_msg):先总高度,再层高。
 
-    🔴 这句话里**必须**同时有三样:数、出处(从哪档标高数到哪档)、以及「这不是图上直接
-    标的层高」。少任何一样,工友都没法判断该不该信它 —— 而这正是当初宁可拒答的理由。
+    🔴 每个数都**必须**同时带三样:数、出处(从哪档标高到哪档)、以及「这是相减得出的、
+    不是图上直接标的」。少任何一样,工友都没法判断该不该信它 —— 而这正是当初宁可拒答的理由。
 
-    ⚠️ 阶梯只描述**连续的那一段**。同一个层高可能出现在楼里不相邻的两处(主楼 3.300、
-    另一头裙房也 3.300),把它们用「→」串成一条会画出一条并不存在的楼梯 ——
-    读的人会以为中间那几档也是这个层高。所以取最长的一段连续的报,其余进「其余几档」。
+    🔴 总高度那句里那一句「不等于规范意义的建筑高度」**不许删**。这张幼儿园立面最高的
+    20.300 是**塔楼尖顶**,而《建筑设计防火规范》GB 50016 附录 A 对局部突出屋顶的
+    瞭望塔、装饰构件等是有豁免条件的(面积占比不超过屋顶的 1/4 可不计入)。
+    把「最高标高减最低标高」当成建筑高度拿去套防火分类、套消防车登高面,是会出事的 ——
+    那是设计负责人签字的数,不是这里推出来的数。
     """
+    段落: list[str] = [_说总高度(levels)]
+    if levels.get("typical") is not None:
+        段落.append(_说层高(levels))
+    return "".join(段落)
+
+
+def _说总高度(levels: dict[str, Any]) -> str:
+    o = levels["overall"]
+    return (
+        f"按图上标高推算,最高 {_fmt(o['top'])}、最低 {_fmt(o['bottom'])},"
+        f"上下差 {_fmt(o['span'])} 米。"
+        "⚠️ 这是**图上最高与最低标高之差,由相减得出,不是图纸上直接标的总高**;"
+        "它也**不等于规范意义上的「建筑高度」**(规范对局部突出屋顶的塔楼、装饰构件另有算法),"
+        "要报审、套防火分类的话,以设计说明里标的建筑高度为准。"
+    )
+
+
+def _说层高(levels: dict[str, Any]) -> str:
     typical = levels["typical"]
     steps: list[dict[str, float]] = levels["steps"]
     楼梯: list[int] = levels["ladder"]
@@ -192,11 +226,10 @@ def describe_floor_heights(levels: dict[str, Any]) -> str:
         if 其余
         else "。"
     )
-
     return (
-        f"按图上标高推算,标准层高 {_fmt(typical)} 米 —— {阶梯} 连着 {levels['typical_count']} 层"
+        f"标准层高 {_fmt(typical)} 米 —— {阶梯} 连着 {levels['typical_count']} 层"
         f"都是这个数{尾巴}"
-        "⚠️ 这个数是**由图上标高相减得出的,不是图纸上直接标的「层高」**,关键数字以原图为准。"
+        "⚠️ 层高这个数同样是**由标高相减得出的,不是图纸上直接标的「层高」**,关键数字以原图为准。"
     )
 
 
@@ -209,4 +242,4 @@ def _fmt(value: float) -> str:
     return "±0.000" if value == 0 else f"{value:.3f}"
 
 
-__all__ = ["derive_floor_heights", "describe_floor_heights", "parse_elevations"]
+__all__ = ["derive_levels", "describe_levels", "parse_elevations"]

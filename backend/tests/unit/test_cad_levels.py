@@ -39,7 +39,7 @@ from gyt.agents.cad import levels
 
 def test_真实立面_推出的层高是3米3() -> None:
     """这一条就是那次线上体验测试的回归:同样的输入,现在必须给得出 3.300。"""
-    结果 = levels.derive_floor_heights(真实立面文字)
+    结果 = levels.derive_levels(真实立面文字)
 
     assert 结果 is not None, "图上标高够推层高了,不该再拒答"
     assert 结果["typical"] == 3.3
@@ -105,10 +105,21 @@ def test_同一张图上两套标高_不许跨着凑出假层高() -> None:
     ⚠️ 别把这条用例简化成「只留几个数」——**必须保留两套标高交错**的形状,
        那正是 bug 的成因;拆开测就再也抓不到了。
     """
-    两套 = ["-0.450", "-0.300", "±0.000", "3.300", "6.600", "7.200", "9.900",
-            "10.000", "12.700", "14.200", "20.300"]
+    两套 = [
+        "-0.450",
+        "-0.300",
+        "±0.000",
+        "3.300",
+        "6.600",
+        "7.200",
+        "9.900",
+        "10.000",
+        "12.700",
+        "14.200",
+        "20.300",
+    ]
 
-    结果 = levels.derive_floor_heights(两套)
+    结果 = levels.derive_levels(两套)
 
     assert 结果 is not None
     assert 结果["typical"] == 3.3, f"跨体量凑出来的差值又被当成层高了:{结果['typical']}"
@@ -118,22 +129,31 @@ def test_两段一样长层高却不同_不许替人挑一个() -> None:
     """一栋楼两个体量各自成系统(一边 3.000 两层、一边 3.600 两层)时,
     「标准层高」这说法本身就不成立。报哪个都是替人做判断,如实回 None。
     """
-    assert levels.derive_floor_heights(
-        ["±0.000", "3.000", "6.000", "50.000", "53.600", "57.200"]
-    ) is None
+    assert (
+        levels.derive_levels(["±0.000", "3.000", "6.000", "50.000", "53.600", "57.200"])["typical"]
+        is None
+    )
 
 
 # --- 下半截:**推不出就别给** -------------------------------------------------
 
 
-def test_只有一层_推不出层高() -> None:
-    """单层房子只有 ±0.000 与屋面标高,一个差值,凑不出「重复」—— 必须回 None。"""
-    assert levels.derive_floor_heights(["±0.000", "4.200"]) is None
+def test_只有一层_推不出层高_但总高度照样给得出() -> None:
+    """单层房子只有 ±0.000 与屋面标高,凑不出「连着两层」—— `typical` 必须是 None。
+
+    ⚠️ 但 `overall` 照给:总高度只要有两档标高就一定算得出。两者捆在一起是第一版的
+    bug —— 层高推不出就整个回 None,于是「总高度是多少」也跟着答不了。
+    """
+    结果 = levels.derive_levels(["±0.000", "4.200"])
+
+    assert 结果 is not None
+    assert 结果["typical"] is None, "一个差值不该凑出「标准层高」"
+    assert 结果["overall"]["span"] == 4.2
 
 
 def test_层层不等高_推不出标准层高() -> None:
     """每层都不一样高(3.0 / 3.6 / 4.2)时没有「标准层高」这回事,不许挑一个报。"""
-    assert levels.derive_floor_heights(["±0.000", "3.000", "6.600", "10.800"]) is None
+    assert levels.derive_levels(["±0.000", "3.000", "6.600", "10.800"])["typical"] is None
 
 
 def test_室内外高差与女儿墙不许被当成层高() -> None:
@@ -142,11 +162,46 @@ def test_室内外高差与女儿墙不许被当成层高() -> None:
     ⚠️ 这条和上一条不一样:这里**有**重复(0.150 出现两次),
     拿掉区间判据的话它会被当成「标准层高 0.15 米」报出去。
     """
-    assert levels.derive_floor_heights(["-0.450", "-0.300", "±0.000", "1.500"]) is None
+    assert levels.derive_levels(["-0.450", "-0.300", "±0.000", "1.500"])["typical"] is None
 
 
 def test_一个标高都没认出来_回None() -> None:
-    assert levels.derive_floor_heights(["轴号 ㉑", "比例 1:100"]) is None
+    """一档都没有(或只有一档)时连总高度都无从谈起 —— 这时才整个回 None。"""
+    assert levels.derive_levels(["轴号 ㉑", "比例 1:100"]) is None
+    assert levels.derive_levels(["±0.000"]) is None
+
+
+# --- 总高度 ------------------------------------------------------------------
+
+
+def test_真实立面_总高度是最高减最低() -> None:
+    """2026-09-21 用户第二问:「总高度是多少」。20.300 与 -0.450 都在数据里,不该再拒答。"""
+    结果 = levels.derive_levels(真实立面文字)
+
+    assert 结果["overall"] == {"top": 20.3, "bottom": -0.45, "span": 20.75}
+
+
+def test_报总高度必须说它不等于规范意义的建筑高度() -> None:
+    """🔴 这一条是安全条款,不是措辞洁癖。
+
+    这张图最高的 20.300 是**塔楼尖顶**,而 GB 50016 附录 A 对局部突出屋顶的瞭望塔、
+    装饰构件有豁免(占屋顶面积不超过 1/4 可不计入)。把「最高减最低」当成建筑高度
+    拿去套防火分类、套消防车登高面,是会出事的 —— 那是设计负责人签字的数。
+    """
+    话 = levels.describe_levels(levels.derive_levels(真实立面文字))
+
+    assert "20.750" in 话
+    assert "20.300" in 话 and "-0.450" in 话, "要能看出这个数是哪两档标高相减"
+    assert "不等于规范意义上的「建筑高度」" in 话
+    assert "设计说明" in 话, "要指一条拿到报审口径数字的路"
+
+
+def test_层高推不出时_那句话里只说总高度不提层高() -> None:
+    """别在推不出层高时硬挤一句空话出来。"""
+    话 = levels.describe_levels(levels.derive_levels(["±0.000", "4.200"]))
+
+    assert "4.200" in 话
+    assert "标准层高" not in 话
 
 
 # --- 说给人听的那句话 --------------------------------------------------------
@@ -158,9 +213,9 @@ def test_报层高时必须同时说出处和那句免责() -> None:
     缺了出处,工友没法对图复核;缺了那句免责,他会以为图纸上就写着这个数。
     当初宁可拒答,守的就是这个;现在给数了,这句话就是新的守门人。
     """
-    结果 = levels.derive_floor_heights(真实立面文字)
+    结果 = levels.derive_levels(真实立面文字)
     assert 结果 is not None
-    话 = levels.describe_floor_heights(结果)
+    话 = levels.describe_levels(结果)
 
     assert "3.300" in 话
     assert "±0.000→3.300→6.600→9.900" in 话, "要能看出这个数是从哪几档标高数出来的"
@@ -174,9 +229,9 @@ def test_不连续的同层高不许被串成一条假楼梯() -> None:
     串起来的话读的人会以为中间那几档也是这个层高,而那是图上没有的东西。
     只报最长的那一段连续的,其余进「其余几档」。
     """
-    结果 = levels.derive_floor_heights(["±0.000", "3.300", "6.600", "11.500", "14.800"])
+    结果 = levels.derive_levels(["±0.000", "3.300", "6.600", "11.500", "14.800"])
     assert 结果 is not None
-    话 = levels.describe_floor_heights(结果)
+    话 = levels.describe_levels(结果)
 
     assert "±0.000→3.300→6.600" in 话
     assert "11.500→14.800" not in 话.split("其余")[0], "不连续的那档不该出现在楼梯里"

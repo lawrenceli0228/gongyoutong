@@ -1239,10 +1239,10 @@ async def _read_pdf_text_by_vision(
         )
 
     shown = ";".join(lines[:8])
-    # 层高:由图上标高相减推出来(代码做,不让模型做 —— 理由见 levels.py 的模块头)。
+    # 总高度与层高:由图上标高相减推出来(代码做,不让模型做 —— 理由见 levels.py 的模块头)。
     # 这条路上的标高本身是**认**出来的、可能有误,所以那句「以原图为准」照旧在。
-    floors = levels_mod.derive_floor_heights(lines)
-    floors_msg = f" {levels_mod.describe_floor_heights(floors)}" if floors else ""
+    floors = levels_mod.derive_levels(lines)
+    floors_msg = f" {levels_mod.describe_levels(floors)}" if floors else ""
     return ok(
         data={
             "format": "pdf",
@@ -1283,8 +1283,8 @@ async def read_view_params(drawing: str, *, config: RunnableConfig) -> Envelope:
             # 认出来的字可能有误,文案会明说(见 _read_pdf_text_by_vision 的红线措辞)。
             return await _read_pdf_text_by_vision(drawing_id, name, view_type, view_label)
         ann_shown = "、".join(a["text"] for a in pdf_annotations[:8])
-        floors = levels_mod.derive_floor_heights(a["text"] for a in pdf_annotations)
-        floors_msg = f"{levels_mod.describe_floor_heights(floors)}" if floors else ""
+        floors = levels_mod.derive_levels(a["text"] for a in pdf_annotations)
+        floors_msg = f"{levels_mod.describe_levels(floors)}" if floors else ""
         return ok(
             data={
                 "format": "pdf",
@@ -1321,10 +1321,10 @@ async def read_view_params(drawing: str, *, config: RunnableConfig) -> Envelope:
     ann_shown = "、".join(a["text"] for a in annotations[:8]) or "(没有图上文字)"
     # 标高在 DXF 里既可能是图上文字、也可能写在标注文字里,两边都喂进去
     # (levels 的正则只认三位小数,尺寸链上的整数毫米不会被误当标高)。
-    floors = levels_mod.derive_floor_heights(
+    floors = levels_mod.derive_levels(
         [a["text"] for a in annotations] + [d["text"] for d in dims]
     )
-    floors_msg = f"{levels_mod.describe_floor_heights(floors)}" if floors else ""
+    floors_msg = f"{levels_mod.describe_levels(floors)}" if floors else ""
     return ok(
         data={
             "view_type": view_type,
