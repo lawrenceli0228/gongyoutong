@@ -348,6 +348,14 @@ class Settings(BaseSettings):
     # 因而 mm/cm/m 图都适用;放太大会把外围总尺寸串到房间,放太小会漏掉图外尺寸链。
     cad_dimension_max_perpendicular_ratio: float = Field(default=2.0, gt=0)
     cad_dimension_max_overrun_ratio: float = Field(default=0.25, ge=0)
+    # 由图上标高推算层高时的判据(agents/cad/levels.py)。把标高排序后逐个相减,
+    # 得到的一串高差里混着室内外高差(0.15)、台阶(0.30)、屋面女儿墙(1.5)、塔楼(6.1),
+    # **只有落在合理层高区间、且重复出现的那个差值才是层高**(楼层是一层层摞上去的,
+    # 标准层高必然连着出现;屋面塔楼那些各不相同,天然凑不出重复)。
+    # 区间放宽会把女儿墙/通高大厅误当层高;repeats 降到 1 会把任意两档凑巧差 3 米的认成层高。
+    cad_floor_height_min_m: float = Field(default=2.2, gt=0)
+    cad_floor_height_max_m: float = Field(default=6.0, gt=0)
+    cad_floor_height_min_repeats: int = Field(default=2, ge=1)
     photo_compress_target_mb: float = Field(default=4.0, gt=0)  # 压到多大再喂视觉模型
     photo_compress_max_edge_px: int = Field(default=2048, ge=1)  # 长边像素上限
 

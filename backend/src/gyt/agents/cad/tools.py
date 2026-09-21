@@ -35,6 +35,7 @@ from pypdf.errors import PyPdfError
 from pypdfium2 import PdfiumError
 
 from gyt.agents.cad import index, pdf_export, render, vision
+from gyt.agents.cad import levels as levels_mod
 from gyt.agents.cad.demo_registry import get_demo_drawings
 from gyt.config import ALLOWED_DRAWING_EXT, get_settings
 from gyt.core import artifacts, project_fs
@@ -1238,17 +1239,23 @@ async def _read_pdf_text_by_vision(
         )
 
     shown = ";".join(lines[:8])
+    # 层高:由图上标高相减推出来(代码做,不让模型做 —— 理由见 levels.py 的模块头)。
+    # 这条路上的标高本身是**认**出来的、可能有误,所以那句「以原图为准」照旧在。
+    floors = levels_mod.derive_floor_heights(lines)
+    floors_msg = f" {levels_mod.describe_floor_heights(floors)}" if floors else ""
     return ok(
         data={
             "format": "pdf",
             "view_type": view_type,
             # 独立字段:和矢量文字层的 annotations(精确)分开,标明来源是视觉识别(可能有误)。
             "annotations_recognized": lines,
+            "levels": floors,
             "source": "vision",
         },
         user_msg=(
             f"{name}({view_label},PDF)文字选不中(是图形或扫描的),下面是我**照图认出来**的 "
             f"{len(lines)} 条,**可能有误、可能漏,关键数字(标高/尺寸等)务必以原图为准**:{shown}。"
+            f"{floors_msg}"
         ),
     )
 
@@ -1276,11 +1283,19 @@ async def read_view_params(drawing: str, *, config: RunnableConfig) -> Envelope:
             # 认出来的字可能有误,文案会明说(见 _read_pdf_text_by_vision 的红线措辞)。
             return await _read_pdf_text_by_vision(drawing_id, name, view_type, view_label)
         ann_shown = "、".join(a["text"] for a in pdf_annotations[:8])
+        floors = levels_mod.derive_floor_heights(a["text"] for a in pdf_annotations)
+        floors_msg = f"{levels_mod.describe_floor_heights(floors)}" if floors else ""
         return ok(
-            data={"format": "pdf", "view_type": view_type, "annotations": pdf_annotations},
+            data={
+                "format": "pdf",
+                "view_type": view_type,
+                "annotations": pdf_annotations,
+                "levels": floors,
+            },
             user_msg=(
                 f"{name}({view_label},PDF)读到图上文字 {len(pdf_annotations)} 条:{ann_shown}。"
                 "这些是图上写着的字(含标高/房间名等),没写的读不了;图层/构件/标注读数 PDF 给不了。"
+                f"{floors_msg}"
             ),
         )
 
@@ -1304,17 +1319,25 @@ async def read_view_params(drawing: str, *, config: RunnableConfig) -> Envelope:
 
     dim_shown = "、".join(f"{d['text']}{units}" for d in dims[:6]) or "(没有标注尺寸)"
     ann_shown = "、".join(a["text"] for a in annotations[:8]) or "(没有图上文字)"
+    # 标高在 DXF 里既可能是图上文字、也可能写在标注文字里,两边都喂进去
+    # (levels 的正则只认三位小数,尺寸链上的整数毫米不会被误当标高)。
+    floors = levels_mod.derive_floor_heights(
+        [a["text"] for a in annotations] + [d["text"] for d in dims]
+    )
+    floors_msg = f"{levels_mod.describe_floor_heights(floors)}" if floors else ""
     return ok(
         data={
             "view_type": view_type,
             "dimensions": dims,
             "annotations": annotations,
             "units_label": units,
+            "levels": floors,
         },
         user_msg=(
             f"{name}({view_label})读到:标注尺寸 {len(dims)} 处、图上文字 {len(annotations)} 条。"
             f"标注:{dim_shown}。文字(含标高/层高等):{ann_shown}。"
             "这些都是图上已经标/写的,没标的量不了。"
+            f"{floors_msg}"
         ),
     )
 
