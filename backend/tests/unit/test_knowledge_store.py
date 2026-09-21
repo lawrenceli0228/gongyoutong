@@ -417,7 +417,13 @@ def test_数向量块_走的是sqlite快路_chromadb压根不参与(monkeypatch:
     所以这条绿 = 快路真的把活干完了。**这也是唯一能抓住「快路被误删/被绕过」的用例** ——
     只看返回值的话,慢路算出来的数字和快路一模一样,删掉快路没有任何东西会红。
     """
-    _播种([("global", "", "GB50016.pdf"), ("global", "", "GB50016.pdf"), ("project", "P1", "任务书.pdf")])
+    _播种(
+        [
+            ("global", "", "GB50016.pdf"),
+            ("global", "", "GB50016.pdf"),
+            ("project", "P1", "任务书.pdf"),
+        ]
+    )
 
     def 炸(**_kwargs: object) -> object:
         raise AssertionError("走到 chromadb 了 —— 快路没生效")

@@ -1321,9 +1321,7 @@ async def read_view_params(drawing: str, *, config: RunnableConfig) -> Envelope:
     ann_shown = "、".join(a["text"] for a in annotations[:8]) or "(没有图上文字)"
     # 标高在 DXF 里既可能是图上文字、也可能写在标注文字里,两边都喂进去
     # (levels 的正则只认三位小数,尺寸链上的整数毫米不会被误当标高)。
-    floors = levels_mod.derive_levels(
-        [a["text"] for a in annotations] + [d["text"] for d in dims]
-    )
+    floors = levels_mod.derive_levels([a["text"] for a in annotations] + [d["text"] for d in dims])
     floors_msg = f"{levels_mod.describe_levels(floors)}" if floors else ""
     return ok(
         data={
