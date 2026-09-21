@@ -339,7 +339,15 @@ const MarkdownTextImpl: FC<{ children: string }> = ({ children }) => {
   return (
     <div className="markdown-content">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        // 🔴 `singleTilde: false` 不能省(2026-09-21 线上体验测试抓到)。
+        //    GFM 默认**单个** `~` 就构成删除线,而中文图纸/规范里 `~` 表范围是家常便饭
+        //    (`①~㉑轴`、`第5~8層`、`3.300~6.600`)。一句话里出现两个 `~`,中间那段就被
+        //    整体划掉,**而且两个波浪号本身消失** —— 「①~㉑軸」当场读成「①㉑軸」。
+        //    实测那次:cad 答立面标高,原文「左側立面(㉑~①)標高:… 右側立面(①~㉑)標高:…」
+        //    渲染成 `左側立面(㉑<del>①)標高:… 右側立面(①</del>㉑)標高:…`,
+        //    两行标高全被划了删除线,工友看到的是「这答案作废了?」。
+        //    关掉之后 `~~真删除线~~`(两个波浪)照常工作 —— 我们要的正是这个口径。
+        remarkPlugins={[[remarkGfm, { singleTilde: false }], remarkMath]}
         rehypePlugins={[rehypeKatex]}
         components={defaultComponents}
       >
